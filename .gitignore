@@ -30,3 +30,10 @@
 *.exe
 *.out
 *.app
+/build
+/test_results
+/Testing
+/.vscode
+ExportDisplay.txt
+toolchain.cmake
+*.spv

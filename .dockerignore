@@ -1,0 +1,7 @@
+build
+.vs
+test_results
+Testing
+docker
+.dockerignore
+dockerbuild.sh

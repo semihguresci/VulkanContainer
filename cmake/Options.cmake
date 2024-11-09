@@ -1,0 +1,1 @@
+option(ENABLE_TESTS "Enable building and running tests" ON)
