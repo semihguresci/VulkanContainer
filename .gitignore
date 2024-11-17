@@ -37,3 +37,4 @@
 ExportDisplay.txt
 toolchain.cmake
 *.spv
+/external
