@@ -1,0 +1,14 @@
+{
+  "dependencies": [
+    "gtest",
+    "fmt",
+    "nlohmann-json",
+    "glm",
+    "glfw3",
+    "imgui",
+    "vulkan-headers",
+    "vulkan-memory-allocator",
+    "volk",
+    "vulkan"
+  ]
+}

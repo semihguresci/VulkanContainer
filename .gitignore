@@ -38,3 +38,6 @@ ExportDisplay.txt
 toolchain.cmake
 *.spv
 /external
+/out
+/vcpkg_installed
+/.vs
