@@ -22,13 +22,17 @@ add_library(VulkanDependencies INTERFACE)
 target_link_libraries(VulkanDependencies INTERFACE Vulkan::Vulkan)
 target_link_libraries(VulkanDependencies INTERFACE Vulkan::Headers)
 target_link_libraries(VulkanDependencies INTERFACE volk::volk volk::volk_headers)
- target_link_libraries(VulkanDependencies INTERFACE GPUOpen::VulkanMemoryAllocator)
+target_link_libraries(VulkanDependencies INTERFACE GPUOpen::VulkanMemoryAllocator)
 target_include_directories(VulkanDependencies INTERFACE ${Vulkan_INCLUDE_DIRS})
 target_link_libraries(VulkanDependencies INTERFACE glfw)
 target_link_libraries(VulkanDependencies INTERFACE glm::glm)
 target_link_libraries(VulkanDependencies INTERFACE imgui::imgui)
 target_link_libraries(VulkanDependencies INTERFACE fmt::fmt)
 
+
+if(ENABLE_VULKAN_VALIDATION_LAYERS)
+target_link_libraries(VulkanDependencies INTERFACE Vulkan::Vulkan ${VulkanValidationLayers_LIBRARY})
+endif()
 # Find and include Boost
 #find_package(Boost REQUIRED)
 #if(Boost_FOUND)

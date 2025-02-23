@@ -6,9 +6,13 @@
     "glm",
     "glfw3",
     "imgui",
+    "vulkan",
+    "vulkan-sdk-components",
+    "vulkan-utility-libraries",
     "vulkan-headers",
     "vulkan-memory-allocator",
     "volk",
-    "vulkan"
+    "vulkan-validationlayers",
+    "glslang"
   ]
 }

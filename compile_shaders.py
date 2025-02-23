@@ -1,5 +1,6 @@
 import os
 import subprocess
+import sys
 
 def compile_shaders(input_dir, output_dir):
     """Compiles shaders from input_dir to output_dir."""
@@ -27,3 +28,19 @@ def compile_shaders(input_dir, output_dir):
                     print(f"Failed to compile {shader_path}")
 
 
+def main():
+    if len(sys.argv) != 3:
+        print("Usage: python compile_shaders.py <input_dir> <output_dir>")
+        sys.exit(1)
+
+    input_dir = sys.argv[1]
+    output_dir = sys.argv[2]
+
+    if not os.path.isdir(input_dir):
+        print(f"Error: Input directory '{input_dir}' does not exist.")
+        sys.exit(1)
+
+    compile_shaders(input_dir, output_dir)
+
+if __name__ == "__main__":
+    main()
