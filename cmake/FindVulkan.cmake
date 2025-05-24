@@ -1,64 +1,59 @@
+# Cross-platform FindVulkan.cmake
+# Supports system Vulkan SDK on Windows and Linux
+
+# Allow user override or detect environment
+set(VULKAN_SDK_PATH "$ENV{VULKAN_SDK}" CACHE PATH "Path to Vulkan SDK")
+
 if(WIN32)
-    if (DEFINED ENV{VULKAN_SDK})
-        set(Vulkan_SDK_PATH "$ENV{VULKAN_SDK}")
-        message(STATUS "Found Vulkan SDK at: ${Vulkan_SDK_PATH}")
-        set(CMAKE_PREFIX_PATH "$ENV{VULKAN_SDK}" ${CMAKE_PREFIX_PATH})
-    else()
-        message(FATAL_ERROR "Vulkan SDK not found. Please set the VULKAN_SDK environment variable.")
+    if(NOT VULKAN_SDK_PATH)
+        message(FATAL_ERROR "VULKAN_SDK environment variable not set. Please install the Vulkan SDK.")
     endif()
 
-    
-
-    # Add include directories and library directories for Vulkan
-    set(Vulkan_INCLUDE_DIR "${Vulkan_SDK_PATH}/Include")
-    set(Vulkan_LIBRARY_DIR "${Vulkan_SDK_PATH}/Lib")
-    find_library(Vulkan_LIBRARY NAMES vulkan-1 HINTS "${Vulkan_LIBRARY_DIR}")
-  
-    set(Vulkan_INCLUDE_DIRS "${Vulkan_INCLUDE_DIR}")
-    set(Vulkan_LIBRARIES "${Vulkan_LIBRARY}")
-    set(Vulkan_FOUND TRUE)
-
-if (Vulkan_FOUND)
-    include_directories(${Vulkan_INCLUDE_DIRS})
-    set(Vulkan::Vulkan ${Vulkan_LIBRARIES})
-endif()
-
-if(ENABLE_VULKAN_VALIDATION_LAYERS)
-
-set(VulkanValidationLayers_INCLUDE_DIR "${Vulkan_INCLUDE_DIR}") 
-set(VulkanValidationLayers_LIBRARY_DIR "${Vulkan_LIBRARY_DIR}") 
-
-find_library(VulkanValidationLayers_LIBRARY
-    NAMES vulkan-1
-    PATHS "${Vulkan_LIBRARY_DIRS}" "${Vulkan_SDK}/Lib"
-    REQUIRED
-)
-if(VulkanValidationLayers_LIBRARY)
-    set(VulkanValidationLayers_FOUND TRUE)
-    message(STATUS "Vulkan Validation Layers found.")
-    set(VulkanValidationLayers_INCLUDE_DIRS "${VulkanValidationLayers_INCLUDE_DIR}")
-    set(VulkanValidationLayers_LIBRARIES "${VulkanValidationLayers_LIBRARY}")
-    include_directories(${VulkanValidationLayers_INCLUDE_DIRS})
-    set(VulkanValidationLayers::VulkanValidationLayers ${VulkanValidationLayers_LIBRARIES})
-
-else()
-    set(VulkanValidationLayers_FOUND FALSE)
-    message(WARNING "Vulkan Validation Layers not found.")
-endif()
-
-endif()
+    set(Vulkan_INCLUDE_DIR "${VULKAN_SDK_PATH}/Include")
+    set(Vulkan_LIBRARY "${VULKAN_SDK_PATH}/Lib/vulkan-1.lib")
+    set(Vulkan_LAYER_DIR "${VULKAN_SDK_PATH}/etc/vulkan/explicit_layer.d")
 
 elseif(UNIX)
-   find_package(Vulkan REQUIRED)
-   find_package(VulkanValidationLayers REQUIRED)
-   if(Vulkan_FOUND)
-        message(STATUS "Vulkan found!")
-        message(STATUS "Vulkan include directory: ${Vulkan_INCLUDE_DIRS}")
-        message(STATUS "Vulkan libraries: ${Vulkan_LIBRARIES}")
-   else()
-        message(FATAL_ERROR "Vulkan not found!")
+    find_package(PkgConfig)
+    if(PKG_CONFIG_FOUND)
+        pkg_check_modules(VULKAN REQUIRED vulkan)
+        set(Vulkan_INCLUDE_DIR "${VULKAN_INCLUDE_DIRS}")
+        set(Vulkan_LIBRARY "${VULKAN_LIBRARIES}")
     endif()
+
+    if(NOT Vulkan_INCLUDE_DIR)
+        find_path(Vulkan_INCLUDE_DIR vulkan/vulkan.h PATH_SUFFIXES include)
+    endif()
+
+    if(NOT Vulkan_LIBRARY)
+        find_library(Vulkan_LIBRARY NAMES vulkan PATH_SUFFIXES lib)
+    endif()
+
+    if(VULKAN_SDK_PATH)
+        list(APPEND Vulkan_INCLUDE_DIR "${VULKAN_SDK_PATH}/include")
+        list(APPEND Vulkan_LIBRARY "${VULKAN_SDK_PATH}/lib/libvulkan.so")
+    endif()
+
+    set(Vulkan_LAYER_DIR "/etc/vulkan/explicit_layer.d")
 endif()
 
+include(FindPackageHandleStandardArgs)
+find_package_handle_standard_args(Vulkan DEFAULT_MSG Vulkan_LIBRARY Vulkan_INCLUDE_DIR)
 
+if(Vulkan_FOUND)
+    set(Vulkan_LIBRARIES ${Vulkan_LIBRARY})
+    set(Vulkan_INCLUDE_DIRS ${Vulkan_INCLUDE_DIR})
+    include_directories(${Vulkan_INCLUDE_DIR})
+    message(STATUS "Vulkan found: ${Vulkan_LIBRARY}")
+    message(STATUS "Vulkan include dir: ${Vulkan_INCLUDE_DIR}")
 
+    if(NOT TARGET Vulkan::Vulkan)
+        add_library(Vulkan::Vulkan UNKNOWN IMPORTED)
+        set_target_properties(Vulkan::Vulkan PROPERTIES
+            IMPORTED_LOCATION "${Vulkan_LIBRARY}"
+            INTERFACE_INCLUDE_DIRECTORIES "${Vulkan_INCLUDE_DIR}"
+        )
+    endif()
+else()
+    message(FATAL_ERROR "Vulkan not found")
+endif()

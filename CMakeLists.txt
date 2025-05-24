@@ -6,9 +6,13 @@ project(VulkanProject)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+
 # Include third-party dependencies
 include(cmake/Options.cmake)
 include(cmake/Dependencies.cmake)
+
+find_package(Vulkan REQUIRED)
 
 # Add source files and executable
 add_executable(${PROJECT_NAME} src/main.cpp)
@@ -20,8 +24,6 @@ target_link_libraries(${PROJECT_NAME} PRIVATE VulkanDependencies)
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE ${Vulkan_INCLUDE_DIRS})
-
-
 
 # Include the tests configuration
 include(${CMAKE_SOURCE_DIR}/tests/CMakeLists.tests.cmake)
