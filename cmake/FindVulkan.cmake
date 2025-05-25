@@ -11,7 +11,16 @@ if(WIN32)
 
     set(Vulkan_INCLUDE_DIR "${VULKAN_SDK_PATH}/Include")
     set(Vulkan_LIBRARY "${VULKAN_SDK_PATH}/Lib/vulkan-1.lib")
-    set(Vulkan_LAYER_DIR "${VULKAN_SDK_PATH}/etc/vulkan/explicit_layer.d")
+    set(Vulkan_LAYER_DIR "${VULKAN_SDK_PATH}/Bin")
+    set(ENV{VK_LAYER_PATH} "${Vulkan_LAYER_DIR}")
+
+    # Check for Vulkan validation layer JSON
+    set(VulkanValidationLayer_JSON "${Vulkan_LAYER_DIR}/VkLayer_khronos_validation.json")
+    if(EXISTS "${VulkanValidationLayer_JSON}")
+        message(STATUS "Found Vulkan validation layer JSON at: ${VulkanValidationLayer_JSON}")
+    else()
+        message(WARNING "Vulkan validation layer JSON not found at: ${VulkanValidationLayer_JSON}")
+    endif()
 
 elseif(UNIX)
     find_package(PkgConfig)
@@ -34,7 +43,20 @@ elseif(UNIX)
         list(APPEND Vulkan_LIBRARY "${VULKAN_SDK_PATH}/lib/libvulkan.so")
     endif()
 
+    # Set Vulkan layer directory
     set(Vulkan_LAYER_DIR "/etc/vulkan/explicit_layer.d")
+    if(EXISTS "${VULKAN_SDK_PATH}/etc/vulkan/explicit_layer.d")
+        set(Vulkan_LAYER_DIR "${VULKAN_SDK_PATH}/etc/vulkan/explicit_layer.d")
+    endif()
+    set(ENV{VK_LAYER_PATH} "${Vulkan_LAYER_DIR}")
+
+    # Check for Vulkan validation layer JSON
+    set(VulkanValidationLayer_JSON "${Vulkan_LAYER_DIR}/VkLayer_khronos_validation.json")
+    if(EXISTS "${VulkanValidationLayer_JSON}")
+        message(STATUS "Found Vulkan validation layer JSON at: ${VulkanValidationLayer_JSON}")
+    else()
+        message(WARNING "Vulkan validation layer JSON not found at: ${VulkanValidationLayer_JSON}")
+    endif()
 endif()
 
 include(FindPackageHandleStandardArgs)

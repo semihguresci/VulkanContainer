@@ -1,47 +1,154 @@
 ﻿# cmake/Dependencies.cmake
 
+# Set up external directory
 if(NOT DEFINED EXTERNAL_DIR)
-    set(EXTERNAL_DIR "${CMAKE_SOURCE_DIR}/external")
+    set(EXTERNAL_DIR "${CMAKE_SOURCE_DIR}/external" CACHE PATH "Directory for external dependencies")
 endif()
 
 include(cmake/DependenciesSettings.cmake)
 
-# Use custom FindVulkan
+# Find Vulkan with custom module
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-include(cmake/FindVulkan.cmake)
-
-# Prefer system Vulkan SDK
-set(Vulkan_INCLUDE_DIR "$ENV{VULKAN_SDK}/Include" CACHE PATH "Vulkan include dir")
-set(Vulkan_LIBRARY "$ENV{VULKAN_SDK}/Lib/vulkan-1.lib" CACHE FILEPATH "Vulkan library")
 find_package(Vulkan REQUIRED)
 
 if(Vulkan_FOUND)
-    message(STATUS "✅ Vulkan was found: ${Vulkan_LIBRARY}")
+    message(STATUS "✅ Vulkan found - Version: ${Vulkan_VERSION}")
 else()
-    message(FATAL_ERROR "❌ Vulkan was NOT found. Please set VULKAN_SDK or install Vulkan SDK.")
+    message(FATAL_ERROR "❌ Vulkan not found - Please install Vulkan SDK and set VULKAN_SDK")
 endif()
 
-# Other packages from vcpkg
-find_package(volk CONFIG REQUIRED)
-find_package(VulkanMemoryAllocator CONFIG REQUIRED)
-find_package(glm CONFIG REQUIRED)
-find_package(fmt CONFIG REQUIRED)
-find_package(glfw3 CONFIG REQUIRED)
-find_package(GTest CONFIG REQUIRED)
-find_package(imgui CONFIG REQUIRED)
-
+# Create consolidated dependencies target
 add_library(VulkanDependencies INTERFACE)
 
-target_link_libraries(VulkanDependencies INTERFACE Vulkan::Vulkan)
-target_link_libraries(VulkanDependencies INTERFACE volk::volk volk::volk_headers)
-target_link_libraries(VulkanDependencies INTERFACE GPUOpen::VulkanMemoryAllocator)
-target_include_directories(VulkanDependencies INTERFACE ${Vulkan_INCLUDE_DIRS})
-target_link_libraries(VulkanDependencies INTERFACE glfw)
-target_link_libraries(VulkanDependencies INTERFACE glm::glm)
-target_link_libraries(VulkanDependencies INTERFACE imgui::imgui)
-target_link_libraries(VulkanDependencies INTERFACE fmt::fmt)
+# Define all required packages
+set(REQUIRED_PACKAGES
+    volk
+    VulkanMemoryAllocator
+    glm
+    fmt
+    glfw3
+    GTest
+    imgui
+    assimp
+    cxxopts
+    EnTT
+    glslang
+    PNG
+    libzip
+    nlohmann_json
+    spdlog
+    yaml-cpp
+    Eigen3
+    VulkanUtilityLibraries
+    libjpeg-turbo
+)
 
-# Validation layers disabled by design — don't try to link unless explicitly handled
-if(ENABLE_VULKAN_VALIDATION_LAYERS AND DEFINED VulkanValidationLayers_LIBRARY)
-    message(WARNING "You enabled validation layers but VulkanValidationLayers_LIBRARY is not defined.")
+# Find all packages
+foreach(pkg IN LISTS REQUIRED_PACKAGES)
+    find_package(${pkg} CONFIG REQUIRED)
+endforeach()
+
+# Handle TinyGLTF separately
+find_package(tinygltf CONFIG QUIET)
+if(NOT tinygltf_FOUND)
+    find_path(TINYGLTF_INCLUDE_DIRS "tiny_gltf.h")
+    if(TINYGLTF_INCLUDE_DIRS)
+        add_library(tinygltf INTERFACE)
+        target_include_directories(tinygltf INTERFACE ${TINYGLTF_INCLUDE_DIRS})
+        add_library(tinygltf::tinygltf ALIAS tinygltf)
+        message(STATUS "✅ TinyGLTF found (manual)")
+    else()
+        message(WARNING "⚠️ TinyGLTF not found - some features may be disabled")
+    endif()
 endif()
+
+find_path(STB_INCLUDE_DIRS "stb_image.h" PATH_SUFFIXES stb)
+if (STB_INCLUDE_DIRS)
+    add_library(stb INTERFACE)
+    target_include_directories(stb INTERFACE ${STB_INCLUDE_DIRS})
+    add_library(stb::stb ALIAS stb)
+    message(STATUS "✅ STB found (manual)")
+else()
+  message(WARNING "⚠️ STB not found - some features may be disabled")
+endif()
+
+
+
+
+# Include directories
+target_include_directories(VulkanDependencies INTERFACE
+    ${Vulkan_INCLUDE_DIRS}
+    ${Stb_INCLUDE_DIR}
+    $<IF:$<TARGET_EXISTS:tinygltf::tinygltf>,${TINYGLTF_INCLUDE_DIRS},"">
+    $<IF:$<TARGET_EXISTS:stb::stb>,${STB_INCLUDE_DIRS},"">
+)
+
+# Vulkan-related libraries
+set(VULKAN_LIBS
+    Vulkan::Vulkan
+    volk::volk
+    volk::volk_headers
+    GPUOpen::VulkanMemoryAllocator
+    Vulkan::SafeStruct
+    Vulkan::LayerSettings
+    Vulkan::UtilityHeaders
+    Vulkan::CompilerConfiguration
+)
+
+# Graphics/rendering libraries
+set(GRAPHICS_LIBS
+    glfw
+    glm::glm
+    imgui::imgui
+    glslang::glslang
+    glslang::glslang-default-resource-limits
+    glslang::SPIRV
+    glslang::SPVRemapper
+)
+
+# Utility libraries
+set(UTILITY_LIBS
+    fmt::fmt
+    spdlog::spdlog
+    yaml-cpp::yaml-cpp
+    nlohmann_json::nlohmann_json
+    cxxopts::cxxopts
+    EnTT::EnTT
+    Eigen3::Eigen
+)
+
+# Media libraries
+set(MEDIA_LIBS
+    assimp::assimp
+    PNG::PNG
+    libzip::zip
+    $<IF:$<TARGET_EXISTS:tinygltf::tinygltf>,tinygltf::tinygltf,"">
+    $<IF:$<TARGET_EXISTS:stb::stb>,stb::stb,"">
+    $<IF:$<TARGET_EXISTS:libjpeg-turbo::turbojpeg>,libjpeg-turbo::turbojpeg,libjpeg-turbo::turbojpeg-static>
+)
+    
+# Combine all libraries
+target_link_libraries(VulkanDependencies INTERFACE
+    ${VULKAN_LIBS}
+    ${GRAPHICS_LIBS}
+    ${UTILITY_LIBS}
+    ${MEDIA_LIBS}
+)
+
+# Optional: Check presence of validation layer JSON
+if(ENABLE_VULKAN_VALIDATION_LAYERS)
+    if(EXISTS "${Vulkan_LAYER_DIR}/VkLayer_khronos_validation.json")
+        message(STATUS "✅ Vulkan validation layers available at: ${Vulkan_LAYER_DIR}")
+        set(ENV{VK_LAYER_PATH} "${Vulkan_LAYER_DIR}")
+    else()
+        message(WARNING "⚠️ Vulkan validation layers requested but not found in: ${Vulkan_LAYER_DIR}")
+    endif()
+endif()
+
+# Print summary
+message(STATUS "--------------------------------------------------")
+message(STATUS "Dependency Configuration Summary:")
+message(STATUS "Vulkan: ${Vulkan_VERSION}")
+message(STATUS "GLSLang: ${glslang_VERSION}")
+message(STATUS "spdlog: ${spdlog_VERSION}")
+message(STATUS "--------------------------------------------------")

@@ -16,6 +16,8 @@
 #include <optional>
 #include <set>
 
+#include <Container/utility/Logger.h>
+
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
 
@@ -183,6 +185,10 @@ private:
         createIndexBuffer();
         createCommandBuffers();
         createSyncObjects();
+        utility::logger::ContainerLogger::instance().renderer()->info(
+            "Initializing Vulkan renderer");
+        utility::logger::ContainerLogger::instance().vulkan()->debug(
+            "Debugging Vulkan initialization");
     }
 
     void mainLoop() {

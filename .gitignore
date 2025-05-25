@@ -41,3 +41,4 @@ toolchain.cmake
 /out
 /vcpkg_installed
 /.vs
+/vcpkg

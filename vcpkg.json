@@ -9,6 +9,19 @@
     "vulkan-utility-libraries",
     "vulkan-memory-allocator",
     "volk",
-    "glslang"
+    "glslang",
+    "tinygltf",
+    "stb",
+    "spdlog",
+    "entt",
+    "assimp",
+    "yaml-cpp",
+    "cxxopts",
+    "libzip",
+    "libpng",
+    "libjpeg-turbo",
+    "opencv",
+    "boost",
+    "eigen3"
   ]
 }
