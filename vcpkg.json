@@ -9,7 +9,7 @@
     "vulkan-utility-libraries",
     "vulkan-memory-allocator",
     "volk",
-    "slang",
+    "shader-slang",
     "tinygltf",
     "stb",
     "spdlog",
