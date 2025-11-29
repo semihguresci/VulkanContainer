@@ -111,7 +111,7 @@ set(MATERIALX_LIBS
     MaterialXCore
     MaterialXFormat
     MaterialXGenShader
-    MaterialXRenderGlsl
+    MaterialXRender
 )
 
 # Utility libraries

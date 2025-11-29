@@ -1,31 +1,71 @@
 import os
 import subprocess
 import sys
+from typing import Dict, List, Tuple
 
-def compile_shaders(input_dir, output_dir):
-    """Compiles shaders from input_dir to output_dir."""
+
+SLANG_TARGETS: List[Tuple[str, str, str]] = [
+    ("vsMain", "vertex", "vert"),
+    ("psMain", "fragment", "frag"),
+]
+
+PROFILES: Dict[str, str] = {
+    "vertex": "vs_6_0",
+    "fragment": "ps_6_0",
+}
+
+
+def compile_slang_shader(shader_path: str, output_dir: str) -> None:
+    """
+    Compile a Slang shader with predefined entry points to SPIR-V.
+
+    Each shader file is expected to expose a vertex entry point named
+    `vsMain` and a fragment entry point named `psMain`.
+    """
+    print(f"Compiling Slang shader: {shader_path}")
+
+    os.makedirs(output_dir, exist_ok=True)
+    shader_name, _ = os.path.splitext(os.path.basename(shader_path))
+
+    for entry, stage, suffix in SLANG_TARGETS:
+        profile = PROFILES[stage]
+        output_file = os.path.join(output_dir, f"{shader_name}.{suffix}.spv")
+        command = [
+            "slangc",
+            shader_path,
+            "-target",
+            "spirv",
+            "-stage",
+            stage,
+            "-profile",
+            profile,
+            "-entry",
+            entry,
+            "-o",
+            output_file,
+        ]
+
+        print(f"Running: {' '.join(command)}")
+        try:
+            subprocess.run(command, check=True)
+            print(f"Successfully compiled {entry} to {output_file}")
+        except subprocess.CalledProcessError as exc:
+            raise RuntimeError(
+                f"Failed to compile entry '{entry}' from {shader_path}"
+            ) from exc
+
+
+def compile_shaders(input_dir: str, output_dir: str) -> None:
+    """Compiles all Slang shaders from input_dir to output_dir."""
     print(f"Compiling shaders from directory: {input_dir} to {output_dir}")
-
-    os.makedirs(output_dir, exist_ok=True) 
 
     for root, _, files in os.walk(input_dir):
         for file in files:
-            if file.endswith((".glsl", ".vert", ".frag", ".geom", ".tesc", ".tese", ".comp", ".mesh")):
+            if file.endswith(".slang"):
                 shader_path = os.path.join(root, file)
-                print(f"Found shader: {shader_path}")
-
                 relative_path = os.path.relpath(root, input_dir)
                 output_subdir = os.path.join(output_dir, relative_path)
-                os.makedirs(output_subdir, exist_ok=True)
-
-                output_file = os.path.join(output_subdir, f"{file}.spv")
-
-                print(f"Compiling {shader_path} to {output_file}")
-                try:
-                    subprocess.run(["glslc", shader_path, "-o", output_file], check=True)
-                    print(f"Successfully compiled {shader_path} to {output_file}")
-                except subprocess.CalledProcessError:
-                    print(f"Failed to compile {shader_path}")
+                compile_slang_shader(shader_path, output_subdir)
 
 
 def main():
@@ -41,6 +81,7 @@ def main():
         sys.exit(1)
 
     compile_shaders(input_dir, output_dir)
+
 
 if __name__ == "__main__":
     main()
