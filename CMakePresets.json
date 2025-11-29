@@ -8,7 +8,9 @@
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       },
       "environment": {
-        "VCPKG_ROOT": "${sourceDir}/vcpkg"
+        "VCPKG_ROOT": "${sourceDir}/vcpkg",
+        "VCPKG_DEFAULT_BINARY_CACHE": "${sourceDir}/.vcpkg-cache",
+        "VCPKG_FEATURE_FLAGS": "manifests,binarycaching"
       }
     },
     {
@@ -35,7 +37,7 @@
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/out/build/${presetName}",
       "installDir": "${sourceDir}/out/install/${presetName}",
-      "inherits": "base", 
+      "inherits": "base",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       },
