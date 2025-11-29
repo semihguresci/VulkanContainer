@@ -24,6 +24,7 @@ add_library(VulkanDependencies INTERFACE)
 set(REQUIRED_PACKAGES
     volk
     VulkanMemoryAllocator
+    MaterialX
     glm
     fmt
     glfw3
@@ -32,7 +33,7 @@ set(REQUIRED_PACKAGES
     assimp
     cxxopts
     EnTT
-    glslang
+    slang
     PNG
     libzip
     nlohmann_json
@@ -95,15 +96,22 @@ set(VULKAN_LIBS
     Vulkan::CompilerConfiguration
 )
 
+ set(SHADER_LIBS
+     slang::slang
+    )
+
 # Graphics/rendering libraries
 set(GRAPHICS_LIBS
     glfw
     glm::glm
     imgui::imgui
-    glslang::glslang
-    glslang::glslang-default-resource-limits
-    glslang::SPIRV
-    glslang::SPVRemapper
+)
+
+set(MATERIALX_LIBS
+    MaterialXCore
+    MaterialXFormat
+    MaterialXGenShader
+    MaterialXRenderGlsl
 )
 
 # Utility libraries
@@ -130,9 +138,11 @@ set(MEDIA_LIBS
 # Combine all libraries
 target_link_libraries(VulkanDependencies INTERFACE
     ${VULKAN_LIBS}
+    ${SHADER_LIBS}
     ${GRAPHICS_LIBS}
     ${UTILITY_LIBS}
     ${MEDIA_LIBS}
+    ${MATERIALX_LIBS}
 )
 
 # Optional: Check presence of validation layer JSON
@@ -149,6 +159,6 @@ endif()
 message(STATUS "--------------------------------------------------")
 message(STATUS "Dependency Configuration Summary:")
 message(STATUS "Vulkan: ${Vulkan_VERSION}")
-message(STATUS "GLSLang: ${glslang_VERSION}")
+message(STATUS "Shader Backend: ${SHADER_BACKEND} (${slang_VERSION})")
 message(STATUS "spdlog: ${spdlog_VERSION}")
 message(STATUS "--------------------------------------------------")

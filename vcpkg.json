@@ -9,7 +9,7 @@
     "vulkan-utility-libraries",
     "vulkan-memory-allocator",
     "volk",
-    "glslang",
+    "slang",
     "tinygltf",
     "stb",
     "spdlog",
@@ -22,6 +22,7 @@
     "libjpeg-turbo",
     "opencv",
     "boost",
-    "eigen3"
+    "eigen3",
+    "materialx"
   ]
 }
