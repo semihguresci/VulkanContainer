@@ -4,6 +4,8 @@ add_library(VulkanContainer_utility
     VkResultToString.cpp
     MaterialXIntegration.cpp
     VulkanMemoryManager.cpp
+    VulkanDevice.cpp
+    VulkanInstance.cpp
     SwapChainManager.cpp
     FrameSyncManager.cpp
     WindowManager.cpp
