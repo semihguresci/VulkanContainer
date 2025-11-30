@@ -57,21 +57,19 @@ def compile_slang_shader(shader_path: str, output_dir: str) -> None:
         print(f"No known entry points found in {shader_path}. Nothing to compile.")
         return
 
-    command: List[str] = ["slangc", shader_path]
+    command: List[str] = ["slangc", shader_path, "-target", "spirv"]
 
     for entry, stage, suffix in stages_to_compile:
         profile = PROFILES[stage]
         output_file = os.path.join(output_dir, f"{shader_name}.{suffix}.spv")
         command.extend(
             [
-                "-target",
-                "spirv",
+                "-entry",
+                entry,
                 "-stage",
                 stage,
                 "-profile",
                 profile,
-                "-entry",
-                entry,
                 "-o",
                 output_file,
             ]
