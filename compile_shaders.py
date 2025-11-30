@@ -65,35 +65,43 @@ def compile_slang_shader(shader_path: str, output_dir: str) -> None:
             os.path.join(output_dir, f"{shader_name}.{suffix}.spv")
         )
 
-        # Use a unique target name per entry point to avoid conflicting
-        # profiles and output paths when compiling multiple stages in one call.
-        target_name = f"spirv-{suffix}"
+        # Give each entry its own target alias while keeping the actual
+        # codegen target the same (SPIR-V). This avoids conflicts where a
+        # single target name would otherwise be associated with multiple
+        # profiles or outputs.
+        target_alias = f"{suffix}:spirv"
 
         command.extend(
             [
                 "-target",
-                target_name,
-                "-entry",
-                entry,
-                "-stage",
-                stage,
+                target_alias,
                 "-profile",
                 profile,
+                "-entry",
+                entry,
                 "-o",
                 output_file,
             ]
         )
 
     print(f"Running: {' '.join(command)}")
-    try:
-        subprocess.run(command, check=True)
+    result = subprocess.run(
+        command, capture_output=True, text=True, check=False
+    )
+
+    if result.stdout:
+        print(result.stdout)
+    if result.stderr:
+        print(result.stderr, file=sys.stderr)
+
+    if result.returncode == 0:
         for entry, _, suffix in stages_to_compile:
             output_file = os.path.join(output_dir, f"{shader_name}.{suffix}.spv")
             print(f"Successfully compiled {entry} to {output_file}")
-    except subprocess.CalledProcessError as exc:
+    else:
         raise RuntimeError(
             f"Failed to compile one or more entries {[entry for entry, _, _ in stages_to_compile]} from {shader_path}"
-        ) from exc
+        )
 
 
 def compile_shaders(input_dir: str, output_dir: str) -> None:
