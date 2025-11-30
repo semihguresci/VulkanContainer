@@ -1,9 +1,8 @@
 #include <Container/utility/VulkanMemoryManager.h>
+#include <Container/utility/VulkanAlignment.h>
 
 #include <cstring>
 #include <stdexcept>
-
-#include <boost/align/align.hpp>
 
 namespace utility {
 namespace memory {
@@ -233,7 +232,7 @@ auto BufferArena::allocate(VkDeviceSize size, VkDeviceSize alignment)
   }
 
   const VkDeviceSize aligned_offset =
-      boost::alignment::align_up(next_offset_, alignment);
+      VulkanAlignment::alignUp(next_offset_, alignment);
 
   if (aligned_offset > total_size_ || total_size_ - aligned_offset < size) {
     throw std::runtime_error("BufferArena out of space for allocation");
