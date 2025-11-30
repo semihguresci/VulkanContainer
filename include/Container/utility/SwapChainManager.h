@@ -45,6 +45,7 @@ public:
     [[nodiscard]] const std::vector<VkImageView>& imageViews() const {
         return swapChainImageViews_;
     }
+    [[nodiscard]] size_t imageCount() const { return swapChainImages_.size(); }
     [[nodiscard]] const std::vector<VkFramebuffer>& framebuffers() const {
         return swapChainFramebuffers_;
     }

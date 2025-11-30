@@ -67,6 +67,7 @@ void VulkanDevice::createLogicalDevice() {
       static_cast<uint32_t>(queueCreateInfos.size());
   deviceCreateInfo.pQueueCreateInfos = queueCreateInfos.data();
   deviceCreateInfo.pEnabledFeatures = &createInfo_.enabledFeatures;
+  deviceCreateInfo.pNext = createInfo_.next;
   deviceCreateInfo.enabledExtensionCount =
       static_cast<uint32_t>(createInfo_.requiredExtensions.size());
   deviceCreateInfo.ppEnabledExtensionNames = createInfo_.requiredExtensions.data();
