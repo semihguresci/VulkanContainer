@@ -12,6 +12,8 @@
 namespace utility {
 namespace memory {
 
+class VulkanMemoryManager;
+
 struct AllocatedBuffer {
   VkBuffer buffer{VK_NULL_HANDLE};
   VmaAllocation allocation{VK_NULL_HANDLE};
