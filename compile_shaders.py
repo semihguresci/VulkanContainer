@@ -64,10 +64,15 @@ def compile_slang_shader(shader_path: str, output_dir: str) -> None:
         output_file = os.path.normpath(
             os.path.join(output_dir, f"{shader_name}.{suffix}.spv")
         )
+
+        # Use a unique target name per entry point to avoid conflicting
+        # profiles and output paths when compiling multiple stages in one call.
+        target_name = f"spirv-{suffix}"
+
         command.extend(
             [
                 "-target",
-                "spirv",
+                target_name,
                 "-entry",
                 entry,
                 "-stage",
