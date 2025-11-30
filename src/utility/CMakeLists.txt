@@ -3,6 +3,7 @@ add_library(VulkanContainer_utility
     Logger.cpp
     VkResultToString.cpp
     MaterialXIntegration.cpp
+    VulkanMemoryManager.cpp
 )
 
 

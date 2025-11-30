@@ -24,6 +24,7 @@ add_library(VulkanDependencies INTERFACE)
 set(REQUIRED_PACKAGES
     volk
     VulkanMemoryAllocator
+    vma
     MaterialX
     glm
     fmt
@@ -42,6 +43,7 @@ set(REQUIRED_PACKAGES
     Eigen3
     VulkanUtilityLibraries
     libjpeg-turbo
+    Boost
 )
 
 # Find all packages
@@ -90,6 +92,7 @@ set(VULKAN_LIBS
     volk::volk
     volk::volk_headers
     GPUOpen::VulkanMemoryAllocator
+    VMA::VMA
     Vulkan::SafeStruct
     Vulkan::LayerSettings
     Vulkan::UtilityHeaders
@@ -122,6 +125,7 @@ set(UTILITY_LIBS
     cxxopts::cxxopts
     EnTT::EnTT
     Eigen3::Eigen
+    Boost::boost
 )
 
 # Media libraries
