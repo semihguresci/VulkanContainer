@@ -17,6 +17,7 @@
 #include <set>
 
 #include <Container/utility/Logger.h>
+#include <Container/utility/MaterialXIntegration.h>
 
 const uint32_t WIDTH = 800;
 const uint32_t HEIGHT = 600;
@@ -105,6 +106,10 @@ const std::vector<uint16_t> indices = {
     0, 1, 2, 2, 3, 0
 };
 
+struct MaterialConstants {
+    alignas(16) glm::vec4 baseColor{1.0f};
+};
+
 class HelloTriangleApplication {
 public:
     void run() {
@@ -137,6 +142,9 @@ private:
     VkRenderPass renderPass;
     VkPipelineLayout pipelineLayout;
     VkPipeline graphicsPipeline;
+
+    utility::materialx::SlangMaterialXBridge materialXBridge;
+    MaterialConstants materialConstants{};
 
     VkCommandPool commandPool;
 
@@ -178,6 +186,7 @@ private:
         createSwapChain();
         createImageViews();
         createRenderPass();
+        loadMaterialXMaterial();
         createGraphicsPipeline();
         createFramebuffers();
         createCommandPool();
@@ -275,7 +284,7 @@ private:
         appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
         appInfo.pEngineName = "No Engine";
         appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-        appInfo.apiVersion = VK_API_VERSION_1_0;
+        appInfo.apiVersion = VK_API_VERSION_1_3;
 
         VkInstanceCreateInfo createInfo{};
         createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
@@ -513,24 +522,33 @@ private:
         }
     }
 
-    void createGraphicsPipeline() {
-        auto vertShaderCode = readFile("shaders/base.vert.spv");
-        auto fragShaderCode = readFile("shaders/base.frag.spv");
+    void loadMaterialXMaterial() {
+        try {
+            auto document = materialXBridge.loadDocument("materials/base.mtlx");
+            materialConstants.baseColor =
+                materialXBridge.extractBaseColor(document);
+        } catch (const std::exception& exc) {
+            std::cerr << "MaterialX load failed: " << exc.what() << std::endl;
+            materialConstants.baseColor = glm::vec4(1.0f);
+        }
+    }
 
-        VkShaderModule vertShaderModule = createShaderModule(vertShaderCode);
-        VkShaderModule fragShaderModule = createShaderModule(fragShaderCode);
+    void createGraphicsPipeline() {
+        auto shaderCode = readFile("spv_shaders/base.spv");
+
+        VkShaderModule shaderModule = createShaderModule(shaderCode);
 
         VkPipelineShaderStageCreateInfo vertShaderStageInfo{};
         vertShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         vertShaderStageInfo.stage = VK_SHADER_STAGE_VERTEX_BIT;
-        vertShaderStageInfo.module = vertShaderModule;
-        vertShaderStageInfo.pName = "main";
+        vertShaderStageInfo.module = shaderModule;
+        vertShaderStageInfo.pName = "vertMain";
 
         VkPipelineShaderStageCreateInfo fragShaderStageInfo{};
         fragShaderStageInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         fragShaderStageInfo.stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        fragShaderStageInfo.module = fragShaderModule;
-        fragShaderStageInfo.pName = "main";
+        fragShaderStageInfo.module = shaderModule;
+        fragShaderStageInfo.pName = "fragMain";
 
         VkPipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
 
@@ -596,8 +614,14 @@ private:
 
         VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
         pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        VkPushConstantRange materialRange{};
+        materialRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+        materialRange.offset = 0;
+        materialRange.size = sizeof(MaterialConstants);
+
         pipelineLayoutInfo.setLayoutCount = 0;
-        pipelineLayoutInfo.pushConstantRangeCount = 0;
+        pipelineLayoutInfo.pushConstantRangeCount = 1;
+        pipelineLayoutInfo.pPushConstantRanges = &materialRange;
 
         if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr, &pipelineLayout) != VK_SUCCESS) {
             throw std::runtime_error("failed to create pipeline layout!");
@@ -623,8 +647,7 @@ private:
             throw std::runtime_error("failed to create graphics pipeline!");
         }
 
-        vkDestroyShaderModule(device, fragShaderModule, nullptr);
-        vkDestroyShaderModule(device, vertShaderModule, nullptr);
+        vkDestroyShaderModule(device, shaderModule, nullptr);
     }
 
     void createFramebuffers() {
@@ -811,6 +834,9 @@ private:
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
+            vkCmdPushConstants(commandBuffer, pipelineLayout,
+                                VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                sizeof(MaterialConstants), &materialConstants);
 
             VkViewport viewport{};
             viewport.x = 0.0f;
