@@ -20,8 +20,6 @@ add_subdirectory(src)
 # Add source files and executable
 add_executable(${PROJECT_NAME} main.cpp)
 
-file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/materials DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
-file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/shaders DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 # Link libraries
 target_link_libraries(${PROJECT_NAME} PRIVATE
     VulkanContainer_Core
@@ -30,12 +28,15 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 
 add_custom_target(CompileShaders
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/compile_shaders.py
-            ${CMAKE_SOURCE_DIR}/shaders ${CMAKE_SOURCE_DIR}/shaders
+            ${CMAKE_SOURCE_DIR}/shaders ${CMAKE_BINARY_DIR}/shaders
     WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
     COMMENT "Compiling Slang shaders to SPIR-V"
 )
 
 add_dependencies(${PROJECT_NAME} CompileShaders)
+
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/materials DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/shaders DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE ${Vulkan_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/include)

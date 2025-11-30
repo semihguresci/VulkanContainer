@@ -31,11 +31,6 @@ PROFILES: Dict[str, str] = {
 def compile_slang_shader(shader_path: str, output_dir: str) -> None:
     """
     Compile a Slang shader with predefined entry points to SPIR-V.
-
-    The script checks for common entry-point names covering vertex,
-    fragment, compute, geometry, hull (tessellation control), domain
-    (tessellation evaluation), amplification/task, and mesh stages, and
-    compiles any that are present in a single slangc invocation per file.
     """
     print(f"Compiling Slang shader: {shader_path}")
 
@@ -57,34 +52,30 @@ def compile_slang_shader(shader_path: str, output_dir: str) -> None:
         print(f"No known entry points found in {shader_path}. Nothing to compile.")
         return
 
-    command: List[str] = ["slangc", shader_path, "-target", "spirv"]
-
+    # Compile each entry point separately
     for entry, stage, suffix in stages_to_compile:
         profile = PROFILES[stage]
-        output_file = os.path.join(output_dir, f"{shader_name}.{suffix}.spv")
-        command.extend(
-            [
-                "-entry",
-                entry,
-                "-stage",
-                stage,
-                "-profile",
-                profile,
-                "-o",
-                output_file,
-            ]
-        )
+        output_file = os.path.normpath(os.path.join(output_dir, f"{shader_name}.{suffix}.spv"))
+        
+        command: List[str] = [
+            "slangc", shader_path, 
+            "-target", "spirv",
+            "-entry", entry,
+            "-stage", stage,
+            "-profile", profile,
+            "-o", output_file
+        ]
 
-    print(f"Running: {' '.join(command)}")
-    try:
-        subprocess.run(command, check=True)
-        for entry, _, suffix in stages_to_compile:
-            output_file = os.path.join(output_dir, f"{shader_name}.{suffix}.spv")
+        print(f"Running: {' '.join(command)}")
+        try:
+            result = subprocess.run(command, check=True, capture_output=True, text=True)
             print(f"Successfully compiled {entry} to {output_file}")
-    except subprocess.CalledProcessError as exc:
-        raise RuntimeError(
-            f"Failed to compile one or more entries {[entry for entry, _, _ in stages_to_compile]} from {shader_path}"
-        ) from exc
+        except subprocess.CalledProcessError as exc:
+            print(f"STDOUT: {exc.stdout}")
+            print(f"STDERR: {exc.stderr}")
+            raise RuntimeError(
+                f"Failed to compile entry '{entry}' from {shader_path}"
+            ) from exc
 
 
 def compile_shaders(input_dir: str, output_dir: str) -> None:
@@ -96,7 +87,7 @@ def compile_shaders(input_dir: str, output_dir: str) -> None:
             if file.endswith(".slang"):
                 shader_path = os.path.join(root, file)
                 relative_path = os.path.relpath(root, input_dir)
-                output_subdir = os.path.join(output_dir, relative_path)
+                output_subdir = os.path.normpath(os.path.join(output_dir, relative_path))
                 compile_slang_shader(shader_path, output_subdir)
 
 
