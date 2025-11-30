@@ -12,13 +12,13 @@ struct ObjectBuffer
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] ConstantBuffer<ObjectBuffer> uObjects[];
 
-[[vk::push_constant]]
 struct PushConstants
 {
     uint objectIndex;
 };
 
-PushConstants pc;
+[[vk::push_constant]]
+ConstantBuffer<PushConstants> pc;
 
 struct VSInput
 {

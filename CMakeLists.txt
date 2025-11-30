@@ -57,7 +57,7 @@ else()
 
             add_custom_command(
                 OUTPUT "${VERT_OUTPUT}"
-                COMMAND ${SLANGC_EXECUTABLE} "${SLANG_SOURCE}" -target spirv-unknown-vulkan-1.2 -profile vs_6_0 -entry vertMain -o "${VERT_OUTPUT}"
+                COMMAND ${SLANGC_EXECUTABLE} "${SLANG_SOURCE}" -target spirv -entry vertMain -o "${VERT_OUTPUT}"
                 DEPENDS "${SLANG_SOURCE}" "${COMPILED_SHADERS_DIR}"
                 COMMENT "Compiling ${SLANG_SOURCE} (vertMain) -> ${VERT_OUTPUT}"
                 VERBATIM
@@ -65,7 +65,7 @@ else()
 
             add_custom_command(
                 OUTPUT "${FRAG_OUTPUT}"
-                COMMAND ${SLANGC_EXECUTABLE} "${SLANG_SOURCE}" -target spirv-unknown-vulkan-1.2 -profile ps_6_0 -entry fragMain -o "${FRAG_OUTPUT}"
+                COMMAND ${SLANGC_EXECUTABLE} "${SLANG_SOURCE}" -target spirv -entry fragMain -o "${FRAG_OUTPUT}"
                 DEPENDS "${SLANG_SOURCE}" "${COMPILED_SHADERS_DIR}"
                 COMMENT "Compiling ${SLANG_SOURCE} (fragMain) -> ${FRAG_OUTPUT}"
                 VERBATIM
