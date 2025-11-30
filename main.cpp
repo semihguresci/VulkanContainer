@@ -3,6 +3,8 @@
 #include <Container/utility/Logger.h>
 #include <Container/utility/MaterialXIntegration.h>
 #include <Container/utility/SwapChainManager.h>
+#include <Container/utility/VulkanDevice.h>
+#include <Container/utility/VulkanInstance.h>
 #include <Container/utility/VulkanMemoryManager.h>
 #include <Container/utility/WindowManager.h>
 #include <GLFW/glfw3.h>
@@ -18,7 +20,6 @@
 #include <glm/glm.hpp>
 #include <iostream>
 #include <memory>
-#include <set>
 #include <stdexcept>
 #include <vector>
 
@@ -122,15 +123,12 @@ class HelloTriangleApplication {
   std::unique_ptr<window::WindowManager> windowManager;
   std::unique_ptr<window::Window> window;
 
-  VkInstance instance;
-  VkDebugUtilsMessengerEXT debugMessenger;
-  VkSurfaceKHR surface;
+  std::shared_ptr<utility::vulkan::VulkanInstance> instanceWrapper;
+  std::shared_ptr<utility::vulkan::VulkanDevice> deviceWrapper;
 
-  VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
-  VkDevice device;
-
-  VkQueue graphicsQueue;
-  VkQueue presentQueue;
+  VkInstance instance = VK_NULL_HANDLE;
+  VkDebugUtilsMessengerEXT debugMessenger = VK_NULL_HANDLE;
+  VkSurfaceKHR surface = VK_NULL_HANDLE;
 
   std::unique_ptr<SwapChainManager> swapChainManager;
 
@@ -168,10 +166,10 @@ class HelloTriangleApplication {
     createInstance();
     setupDebugMessenger();
     createSurface();
-    pickPhysicalDevice();
-    createLogicalDevice();
+    createDevice();
     swapChainManager = std::make_unique<SwapChainManager>(
-        window->getNativeWindow(), physicalDevice, device, surface);
+        window->getNativeWindow(), deviceWrapper->physicalDevice(),
+        deviceWrapper->device(), surface);
     swapChainManager->initialize();
     createRenderPass();
     loadMaterialXMaterial();
@@ -182,8 +180,8 @@ class HelloTriangleApplication {
     createVertexBuffer();
     createIndexBuffer();
     createCommandBuffers();
-    frameSyncManager =
-        std::make_unique<FrameSyncManager>(device, MAX_FRAMES_IN_FLIGHT);
+    frameSyncManager = std::make_unique<FrameSyncManager>(
+        deviceWrapper->device(), MAX_FRAMES_IN_FLIGHT);
     frameSyncManager->initialize();
     utility::logger::ContainerLogger::instance().renderer()->info(
         "Initializing Vulkan renderer");
@@ -197,7 +195,7 @@ class HelloTriangleApplication {
       drawFrame();
     }
 
-    vkDeviceWaitIdle(device);
+    vkDeviceWaitIdle(deviceWrapper->device());
   }
 
   void cleanup() {
@@ -205,9 +203,9 @@ class HelloTriangleApplication {
       swapChainManager->cleanup();
     }
 
-    vkDestroyPipeline(device, graphicsPipeline, nullptr);
-    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-    vkDestroyRenderPass(device, renderPass, nullptr);
+    vkDestroyPipeline(deviceWrapper->device(), graphicsPipeline, nullptr);
+    vkDestroyPipelineLayout(deviceWrapper->device(), pipelineLayout, nullptr);
+    vkDestroyRenderPass(deviceWrapper->device(), renderPass, nullptr);
 
     if (memoryManager) {
       indexArena.reset();
@@ -217,16 +215,16 @@ class HelloTriangleApplication {
 
     frameSyncManager.reset();
 
-    vkDestroyCommandPool(device, commandPool, nullptr);
+    vkDestroyCommandPool(deviceWrapper->device(), commandPool, nullptr);
 
-    vkDestroyDevice(device, nullptr);
+    deviceWrapper.reset();
 
     if (enableValidationLayers) {
       DestroyDebugUtilsMessengerEXT(instance, debugMessenger, nullptr);
     }
 
     vkDestroySurfaceKHR(instance, surface, nullptr);
-    vkDestroyInstance(instance, nullptr);
+    instanceWrapper.reset();
 
     window.reset();
     windowManager.reset();
@@ -240,7 +238,7 @@ class HelloTriangleApplication {
       window->waitForEvents();
     }
 
-    vkDeviceWaitIdle(device);
+    vkDeviceWaitIdle(deviceWrapper->device());
 
     if (swapChainManager) {
       swapChainManager->recreate(renderPass);
@@ -248,44 +246,23 @@ class HelloTriangleApplication {
   }
 
   void createInstance() {
-    if (enableValidationLayers && !checkValidationLayerSupport()) {
-      throw std::runtime_error(
-          "validation layers requested, but not available!");
-    }
-
-    VkApplicationInfo appInfo{};
-    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pApplicationName = "Hello Triangle";
-    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.pEngineName = "No Engine";
-    appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.apiVersion = VK_API_VERSION_1_3;
-
-    VkInstanceCreateInfo createInfo{};
-    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    createInfo.pApplicationInfo = &appInfo;
-
-    auto extensions = getRequiredExtensions();
-    createInfo.enabledExtensionCount = static_cast<uint32_t>(extensions.size());
-    createInfo.ppEnabledExtensionNames = extensions.data();
+    utility::vulkan::InstanceCreateInfo createInfo{};
+    createInfo.applicationName = "Hello Triangle";
+    createInfo.engineName = "No Engine";
+    createInfo.apiVersion = VK_API_VERSION_1_3;
+    createInfo.enableValidationLayers = enableValidationLayers;
+    createInfo.validationLayers = validationLayers;
+    createInfo.requiredExtensions = getRequiredExtensions();
 
     VkDebugUtilsMessengerCreateInfoEXT debugCreateInfo{};
     if (enableValidationLayers) {
-      createInfo.enabledLayerCount =
-          static_cast<uint32_t>(validationLayers.size());
-      createInfo.ppEnabledLayerNames = validationLayers.data();
-
       populateDebugMessengerCreateInfo(debugCreateInfo);
-      createInfo.pNext = (VkDebugUtilsMessengerCreateInfoEXT*)&debugCreateInfo;
-    } else {
-      createInfo.enabledLayerCount = 0;
-
-      createInfo.pNext = nullptr;
+      createInfo.next = &debugCreateInfo;
     }
 
-    if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
-      throw std::runtime_error("failed to create instance!");
-    }
+    instanceWrapper =
+        std::make_shared<utility::vulkan::VulkanInstance>(createInfo);
+    instance = instanceWrapper->instance();
   }
 
   void populateDebugMessengerCreateInfo(
@@ -316,77 +293,14 @@ class HelloTriangleApplication {
 
   void createSurface() { surface = window->createSurface(instance); }
 
-  void pickPhysicalDevice() {
-    uint32_t deviceCount = 0;
-    vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
+  void createDevice() {
+    utility::vulkan::DeviceCreateInfo createInfo{};
+    createInfo.requiredExtensions = deviceExtensions;
+    createInfo.validationLayers = validationLayers;
+    createInfo.enableValidationLayers = enableValidationLayers;
 
-    if (deviceCount == 0) {
-      throw std::runtime_error("failed to find GPUs with Vulkan support!");
-    }
-
-    std::vector<VkPhysicalDevice> devices(deviceCount);
-    vkEnumeratePhysicalDevices(instance, &deviceCount, devices.data());
-
-    for (const auto& device : devices) {
-      if (isDeviceSuitable(device)) {
-        physicalDevice = device;
-        break;
-      }
-    }
-
-    if (physicalDevice == VK_NULL_HANDLE) {
-      throw std::runtime_error("failed to find a suitable GPU!");
-    }
-  }
-
-  void createLogicalDevice() {
-    QueueFamilyIndices indices =
-        SwapChainManager::FindQueueFamilies(physicalDevice, surface);
-
-    std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-    std::set<uint32_t> uniqueQueueFamilies = {indices.graphicsFamily.value(),
-                                              indices.presentFamily.value()};
-
-    float queuePriority = 1.0f;
-    for (uint32_t queueFamily : uniqueQueueFamilies) {
-      VkDeviceQueueCreateInfo queueCreateInfo{};
-      queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-      queueCreateInfo.queueFamilyIndex = queueFamily;
-      queueCreateInfo.queueCount = 1;
-      queueCreateInfo.pQueuePriorities = &queuePriority;
-      queueCreateInfos.push_back(queueCreateInfo);
-    }
-
-    VkPhysicalDeviceFeatures deviceFeatures{};
-
-    VkDeviceCreateInfo createInfo{};
-    createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-
-    createInfo.queueCreateInfoCount =
-        static_cast<uint32_t>(queueCreateInfos.size());
-    createInfo.pQueueCreateInfos = queueCreateInfos.data();
-
-    createInfo.pEnabledFeatures = &deviceFeatures;
-
-    createInfo.enabledExtensionCount =
-        static_cast<uint32_t>(deviceExtensions.size());
-    createInfo.ppEnabledExtensionNames = deviceExtensions.data();
-
-    if (enableValidationLayers) {
-      createInfo.enabledLayerCount =
-          static_cast<uint32_t>(validationLayers.size());
-      createInfo.ppEnabledLayerNames = validationLayers.data();
-    } else {
-      createInfo.enabledLayerCount = 0;
-    }
-
-    if (vkCreateDevice(physicalDevice, &createInfo, nullptr, &device) !=
-        VK_SUCCESS) {
-      throw std::runtime_error("failed to create logical device!");
-    }
-
-    vkGetDeviceQueue(device, indices.graphicsFamily.value(), 0, &graphicsQueue);
-    vkGetDeviceQueue(device, indices.presentFamily.value(), 0, &presentQueue);
+    deviceWrapper = std::make_shared<utility::vulkan::VulkanDevice>(
+        instance, surface, createInfo);
   }
 
   void createRenderPass() {
@@ -426,8 +340,8 @@ class HelloTriangleApplication {
     renderPassInfo.dependencyCount = 1;
     renderPassInfo.pDependencies = &dependency;
 
-    if (vkCreateRenderPass(device, &renderPassInfo, nullptr, &renderPass) !=
-        VK_SUCCESS) {
+    if (vkCreateRenderPass(deviceWrapper->device(), &renderPassInfo, nullptr,
+                           &renderPass) != VK_SUCCESS) {
       throw std::runtime_error("failed to create render pass!");
     }
   }
@@ -542,8 +456,8 @@ class HelloTriangleApplication {
     pipelineLayoutInfo.pushConstantRangeCount = 1;
     pipelineLayoutInfo.pPushConstantRanges = &materialRange;
 
-    if (vkCreatePipelineLayout(device, &pipelineLayoutInfo, nullptr,
-                               &pipelineLayout) != VK_SUCCESS) {
+    if (vkCreatePipelineLayout(deviceWrapper->device(), &pipelineLayoutInfo,
+                               nullptr, &pipelineLayout) != VK_SUCCESS) {
       throw std::runtime_error("failed to create pipeline layout!");
     }
 
@@ -563,32 +477,32 @@ class HelloTriangleApplication {
     pipelineInfo.subpass = 0;
     pipelineInfo.basePipelineHandle = VK_NULL_HANDLE;
 
-    if (vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo,
-                                  nullptr, &graphicsPipeline) != VK_SUCCESS) {
+    if (vkCreateGraphicsPipelines(deviceWrapper->device(), VK_NULL_HANDLE, 1,
+                                  &pipelineInfo, nullptr,
+                                  &graphicsPipeline) != VK_SUCCESS) {
       throw std::runtime_error("failed to create graphics pipeline!");
     }
 
-    vkDestroyShaderModule(device, shaderModule, nullptr);
+    vkDestroyShaderModule(deviceWrapper->device(), shaderModule, nullptr);
   }
 
   void createCommandPool() {
-    QueueFamilyIndices queueFamilyIndices =
-        SwapChainManager::FindQueueFamilies(physicalDevice, surface);
+    QueueFamilyIndices queueFamilyIndices = deviceWrapper->queueFamilyIndices();
 
     VkCommandPoolCreateInfo poolInfo{};
     poolInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
     poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     poolInfo.queueFamilyIndex = queueFamilyIndices.graphicsFamily.value();
 
-    if (vkCreateCommandPool(device, &poolInfo, nullptr, &commandPool) !=
-        VK_SUCCESS) {
+    if (vkCreateCommandPool(deviceWrapper->device(), &poolInfo, nullptr,
+                            &commandPool) != VK_SUCCESS) {
       throw std::runtime_error("failed to create graphics command pool!");
     }
   }
 
   void createMemoryManager() {
     memoryManager = std::make_unique<utility::memory::VulkanMemoryManager>(
-        instance, physicalDevice, device);
+        instance, deviceWrapper->physicalDevice(), deviceWrapper->device());
 
     vertexArena = std::make_unique<utility::memory::BufferArena>(
         *memoryManager, MAX_VERTEX_ARENA_SIZE,
@@ -640,7 +554,8 @@ class HelloTriangleApplication {
     allocInfo.commandBufferCount = 1;
 
     VkCommandBuffer commandBuffer;
-    vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
+    vkAllocateCommandBuffers(deviceWrapper->device(), &allocInfo,
+                             &commandBuffer);
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -661,10 +576,12 @@ class HelloTriangleApplication {
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
 
-    vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(graphicsQueue);
+    vkQueueSubmit(deviceWrapper->graphicsQueue(), 1, &submitInfo,
+                  VK_NULL_HANDLE);
+    vkQueueWaitIdle(deviceWrapper->graphicsQueue());
 
-    vkFreeCommandBuffers(device, commandPool, 1, &commandBuffer);
+    vkFreeCommandBuffers(deviceWrapper->device(), commandPool, 1,
+                         &commandBuffer);
   }
 
   void createCommandBuffers() {
@@ -676,8 +593,8 @@ class HelloTriangleApplication {
     allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     allocInfo.commandBufferCount = (uint32_t)commandBuffers.size();
 
-    if (vkAllocateCommandBuffers(device, &allocInfo, commandBuffers.data()) !=
-        VK_SUCCESS) {
+    if (vkAllocateCommandBuffers(deviceWrapper->device(), &allocInfo,
+                                 commandBuffers.data()) != VK_SUCCESS) {
       throw std::runtime_error("failed to allocate command buffers!");
     }
   }
@@ -745,10 +662,10 @@ class HelloTriangleApplication {
     frameSyncManager->waitForFrame(currentFrame);
 
     uint32_t imageIndex;
-    VkResult result =
-        vkAcquireNextImageKHR(device, swapChainManager->swapChain(), UINT64_MAX,
-                              frameSyncManager->imageAvailable(currentFrame),
-                              VK_NULL_HANDLE, &imageIndex);
+    VkResult result = vkAcquireNextImageKHR(
+        deviceWrapper->device(), swapChainManager->swapChain(), UINT64_MAX,
+        frameSyncManager->imageAvailable(currentFrame), VK_NULL_HANDLE,
+        &imageIndex);
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR) {
       recreateSwapChain();
@@ -782,13 +699,13 @@ class HelloTriangleApplication {
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
-    if (vkQueueSubmit(graphicsQueue, 1, &submitInfo,
+    if (vkQueueSubmit(deviceWrapper->graphicsQueue(), 1, &submitInfo,
                       frameSyncManager->fence(currentFrame)) != VK_SUCCESS) {
       throw std::runtime_error("failed to submit draw command buffer!");
     }
 
     result = swapChainManager->present(
-        presentQueue, imageIndex,
+        deviceWrapper->presentQueue(), imageIndex,
         frameSyncManager->renderFinished(currentFrame));
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
@@ -809,48 +726,12 @@ class HelloTriangleApplication {
     createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
 
     VkShaderModule shaderModule;
-    if (vkCreateShaderModule(device, &createInfo, nullptr, &shaderModule) !=
-        VK_SUCCESS) {
+    if (vkCreateShaderModule(deviceWrapper->device(), &createInfo, nullptr,
+                             &shaderModule) != VK_SUCCESS) {
       throw std::runtime_error("failed to create shader module!");
     }
 
     return shaderModule;
-  }
-
-  bool isDeviceSuitable(VkPhysicalDevice device) {
-    QueueFamilyIndices indices =
-        SwapChainManager::FindQueueFamilies(device, surface);
-
-    bool extensionsSupported = checkDeviceExtensionSupport(device);
-
-    bool swapChainAdequate = false;
-    if (extensionsSupported) {
-      SwapChainSupportDetails swapChainSupport =
-          SwapChainManager::QuerySwapChainSupport(device, surface);
-      swapChainAdequate = !swapChainSupport.formats.empty() &&
-                          !swapChainSupport.presentModes.empty();
-    }
-
-    return indices.isComplete() && extensionsSupported && swapChainAdequate;
-  }
-
-  bool checkDeviceExtensionSupport(VkPhysicalDevice device) {
-    uint32_t extensionCount;
-    vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
-                                         nullptr);
-
-    std::vector<VkExtensionProperties> availableExtensions(extensionCount);
-    vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
-                                         availableExtensions.data());
-
-    std::set<std::string> requiredExtensions(deviceExtensions.begin(),
-                                             deviceExtensions.end());
-
-    for (const auto& extension : availableExtensions) {
-      requiredExtensions.erase(extension.extensionName);
-    }
-
-    return requiredExtensions.empty();
   }
 
   std::vector<const char*> getRequiredExtensions() {
@@ -866,31 +747,6 @@ class HelloTriangleApplication {
     }
 
     return extensions;
-  }
-
-  bool checkValidationLayerSupport() {
-    uint32_t layerCount;
-    vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
-
-    std::vector<VkLayerProperties> availableLayers(layerCount);
-    vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
-
-    for (const char* layerName : validationLayers) {
-      bool layerFound = false;
-
-      for (const auto& layerProperties : availableLayers) {
-        if (strcmp(layerName, layerProperties.layerName) == 0) {
-          layerFound = true;
-          break;
-        }
-      }
-
-      if (!layerFound) {
-        return false;
-      }
-    }
-
-    return true;
   }
 
   static std::vector<char> readFile(const std::string& filename) {
