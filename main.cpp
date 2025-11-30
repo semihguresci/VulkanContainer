@@ -171,7 +171,7 @@ private:
         pickPhysicalDevice();
         createLogicalDevice();
         swapChainManager = std::make_unique<SwapChainManager>(
-            window->handle(), physicalDevice, device, surface);
+            window->getNativeWindow(), physicalDevice, device, surface);
         swapChainManager->initialize();
         createRenderPass();
         loadMaterialXMaterial();
