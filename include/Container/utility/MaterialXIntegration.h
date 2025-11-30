@@ -3,6 +3,7 @@
 #include <glm/vec3.hpp>
 #include <glm/vec4.hpp>
 
+
 #include <MaterialXCore/Document.h>
 #include <MaterialXFormat/XmlIo.h>
 

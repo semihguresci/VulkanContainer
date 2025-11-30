@@ -97,10 +97,7 @@ set(VULKAN_LIBS
 )
 
  set(SHADER_LIBS
-      slang::gfx 
       slang::slang 
-      slang::slang-llvm 
-      slang::slang-glslang
     )
 
 # Graphics/rendering libraries
@@ -114,7 +111,6 @@ set(MATERIALX_LIBS
     MaterialXCore
     MaterialXFormat
     MaterialXGenShader
-    MaterialXRender
 )
 
 # Utility libraries

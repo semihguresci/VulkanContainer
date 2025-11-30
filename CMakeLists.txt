@@ -19,6 +19,8 @@ add_subdirectory(src)
 # Add source files and executable
 add_executable(${PROJECT_NAME} main.cpp)
 
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/materials DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
+file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/shaders DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 # Link libraries
 target_link_libraries(${PROJECT_NAME} PRIVATE
     VulkanContainer_Core  
