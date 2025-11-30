@@ -11,6 +11,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 # Include third-party dependencies
 include(cmake/Options.cmake)
 include(cmake/Dependencies.cmake)
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 find_package(Vulkan REQUIRED)
 
@@ -23,9 +24,18 @@ file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/materials DESTINATION ${CMAKE_CURRENT_BINA
 file(COPY ${CMAKE_CURRENT_SOURCE_DIR}/shaders DESTINATION ${CMAKE_CURRENT_BINARY_DIR})
 # Link libraries
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    VulkanContainer_Core  
+    VulkanContainer_Core
     VulkanDependencies
 )
+
+add_custom_target(CompileShaders
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/compile_shaders.py
+            ${CMAKE_SOURCE_DIR}/shaders ${CMAKE_SOURCE_DIR}/shaders
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    COMMENT "Compiling Slang shaders to SPIR-V"
+)
+
+add_dependencies(${PROJECT_NAME} CompileShaders)
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE ${Vulkan_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/include)

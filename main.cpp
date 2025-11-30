@@ -106,6 +106,10 @@ const std::vector<uint16_t> indices = {
     0, 1, 2, 2, 3, 0
 };
 
+struct MaterialConstants {
+    alignas(16) glm::vec4 baseColor{1.0f};
+};
+
 class HelloTriangleApplication {
 public:
     void run() {
@@ -140,7 +144,7 @@ private:
     VkPipeline graphicsPipeline;
 
     utility::materialx::SlangMaterialXBridge materialXBridge;
-    glm::vec4 materialBaseColor{1.0f, 1.0f, 1.0f, 1.0f};
+    MaterialConstants materialConstants{};
 
     VkCommandPool commandPool;
 
@@ -521,10 +525,11 @@ private:
     void loadMaterialXMaterial() {
         try {
             auto document = materialXBridge.loadDocument("materials/base.mtlx");
-            materialBaseColor = materialXBridge.extractBaseColor(document);
+            materialConstants.baseColor =
+                materialXBridge.extractBaseColor(document);
         } catch (const std::exception& exc) {
             std::cerr << "MaterialX load failed: " << exc.what() << std::endl;
-            materialBaseColor = glm::vec4(1.0f);
+            materialConstants.baseColor = glm::vec4(1.0f);
         }
     }
 
@@ -614,7 +619,7 @@ private:
         VkPushConstantRange materialRange{};
         materialRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
         materialRange.offset = 0;
-        materialRange.size = sizeof(glm::vec4);
+        materialRange.size = sizeof(MaterialConstants);
 
         pipelineLayoutInfo.setLayoutCount = 0;
         pipelineLayoutInfo.pushConstantRangeCount = 1;
@@ -832,7 +837,9 @@ private:
         vkCmdBeginRenderPass(commandBuffer, &renderPassInfo, VK_SUBPASS_CONTENTS_INLINE);
 
             vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, graphicsPipeline);
-            vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(glm::vec4), &materialBaseColor);
+            vkCmdPushConstants(commandBuffer, pipelineLayout,
+                                VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+                                sizeof(MaterialConstants), &materialConstants);
 
             VkViewport viewport{};
             viewport.x = 0.0f;

@@ -1,4 +1,5 @@
 import os
+import re
 import subprocess
 import sys
 from typing import Dict, List, Tuple
@@ -7,11 +8,23 @@ from typing import Dict, List, Tuple
 SLANG_TARGETS: List[Tuple[str, str, str]] = [
     ("vsMain", "vertex", "vert"),
     ("psMain", "fragment", "frag"),
+    ("csMain", "compute", "comp"),
+    ("gsMain", "geometry", "geom"),
+    ("hsMain", "hull", "tesc"),
+    ("dsMain", "domain", "tese"),
+    ("asMain", "amplification", "task"),
+    ("msMain", "mesh", "mesh"),
 ]
 
 PROFILES: Dict[str, str] = {
     "vertex": "vs_6_0",
     "fragment": "ps_6_0",
+    "compute": "cs_6_0",
+    "geometry": "gs_6_0",
+    "hull": "hs_6_0",
+    "domain": "ds_6_0",
+    "amplification": "as_6_5",
+    "mesh": "ms_6_5",
 }
 
 
@@ -19,40 +32,63 @@ def compile_slang_shader(shader_path: str, output_dir: str) -> None:
     """
     Compile a Slang shader with predefined entry points to SPIR-V.
 
-    Each shader file is expected to expose a vertex entry point named
-    `vsMain` and a fragment entry point named `psMain`.
+    The script checks for common entry-point names covering vertex,
+    fragment, compute, geometry, hull (tessellation control), domain
+    (tessellation evaluation), amplification/task, and mesh stages, and
+    compiles any that are present in a single slangc invocation per file.
     """
     print(f"Compiling Slang shader: {shader_path}")
 
     os.makedirs(output_dir, exist_ok=True)
     shader_name, _ = os.path.splitext(os.path.basename(shader_path))
 
-    for entry, stage, suffix in SLANG_TARGETS:
-        profile = PROFILES[stage]
-        output_file = os.path.join(output_dir, f"{shader_name}.{suffix}.spv")
-        command = [
-            "slangc",
-            shader_path,
-            "-target",
-            "spirv",
-            "-stage",
-            stage,
-            "-profile",
-            profile,
-            "-entry",
-            entry,
-            "-o",
-            output_file,
-        ]
+    with open(shader_path, "r", encoding="utf-8") as file:
+        source = file.read()
 
-        print(f"Running: {' '.join(command)}")
-        try:
-            subprocess.run(command, check=True)
+    stages_to_compile: List[Tuple[str, str, str]] = []
+
+    for entry, stage, suffix in SLANG_TARGETS:
+        if re.search(rf"\b{re.escape(entry)}\s*\(", source):
+            stages_to_compile.append((entry, stage, suffix))
+        else:
+            print(f"Skipping missing entry '{entry}' in {shader_path}")
+
+    if not stages_to_compile:
+        print(f"No known entry points found in {shader_path}. Nothing to compile.")
+        return
+
+    command: List[str] = ["slangc", shader_path]
+
+    for entry, stage, suffix in stages_to_compile:
+        profile = PROFILES[stage]
+        output_file = os.path.normpath(
+            os.path.join(output_dir, f"{shader_name}.{suffix}.spv")
+        )
+        command.extend(
+            [
+                "-target",
+                "spirv",
+                "-entry",
+                entry,
+                "-stage",
+                stage,
+                "-profile",
+                profile,
+                "-o",
+                output_file,
+            ]
+        )
+
+    print(f"Running: {' '.join(command)}")
+    try:
+        subprocess.run(command, check=True)
+        for entry, _, suffix in stages_to_compile:
+            output_file = os.path.join(output_dir, f"{shader_name}.{suffix}.spv")
             print(f"Successfully compiled {entry} to {output_file}")
-        except subprocess.CalledProcessError as exc:
-            raise RuntimeError(
-                f"Failed to compile entry '{entry}' from {shader_path}"
-            ) from exc
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Failed to compile one or more entries {[entry for entry, _, _ in stages_to_compile]} from {shader_path}"
+        ) from exc
 
 
 def compile_shaders(input_dir: str, output_dir: str) -> None:
