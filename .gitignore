@@ -42,3 +42,4 @@ toolchain.cmake
 /vcpkg_installed
 /.vs
 /vcpkg
+/.vcpkg-cache

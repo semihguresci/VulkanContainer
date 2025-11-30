@@ -19,8 +19,6 @@ add_subdirectory(src)
 # Add source files and executable
 add_executable(${PROJECT_NAME} main.cpp)
 
-# Include the shader compilation target
-include(cmake/CompileShaders.cmake)
 # Link libraries
 target_link_libraries(${PROJECT_NAME} PRIVATE
     VulkanContainer_Core  

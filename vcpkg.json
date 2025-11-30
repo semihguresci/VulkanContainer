@@ -20,7 +20,6 @@
     "libzip",
     "libpng",
     "libjpeg-turbo",
-    "opencv",
     "boost",
     "eigen3",
     "materialx"

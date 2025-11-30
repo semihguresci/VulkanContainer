@@ -3,7 +3,10 @@
   "configurePresets": [
     {
       "name": "default",
-      "inherits": [ "windows-debug", "windows-release", "linux-debug", "linux-release" ]
+      "inherits": [ "windows-debug", "windows-release", "linux-debug", "linux-release" ],
+      "environment": {
+       "VCPKG_ROOT": "F:/Projects/vcpkg"
+      }
     }
   ]
 }

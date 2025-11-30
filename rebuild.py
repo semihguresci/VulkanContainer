@@ -1,49 +1,33 @@
 import os
-import shutil
 import subprocess
 import argparse
 
-# Define paths
 root_dir = os.path.dirname(os.path.abspath(__file__))
-build_dir = os.path.join(root_dir, "build")
 
-# Parse command-line arguments
 parser = argparse.ArgumentParser(description="Build and run tests for the project.")
 parser.add_argument("--run-tests", action="store_true", help="Run tests after building the project.")
-parser.add_argument("--external-dir", type=str, default=os.path.join(root_dir, "external"), help="Path to store third-party dependencies.")
+parser.add_argument("--preset", type=str, default="windows-release",
+                    help="CMake configure preset to use (windows-release/linux-release/etc.)")
 
 args = parser.parse_args()
 
-# Remove the existing build directory
-print("Removing the build directory...")
-shutil.rmtree(build_dir, ignore_errors=True)
+preset = args.preset
 
-# Recreate the build directory
-print("Creating a fresh build directory...")
-os.makedirs(build_dir, exist_ok=True)
+# Configure using preset
+print(f"Configuring with preset '{preset}'...")
+subprocess.run(["cmake", "--preset", preset], cwd=root_dir, check=True)
 
-external_dir = args.external_dir.replace("\\", "/")
+# Figure out build dir from preset convention
+build_dir = os.path.join(root_dir, "out", "build", preset)
 
-# Configure the project using CMake
-print("Configuring the project with CMake...")
-subprocess.run(["cmake", "..", f"-DEXTERNAL_DIR={external_dir}"], cwd=build_dir, check=True)
-
-# Build the project with specified options
 print("Building the project...")
-subprocess.run(
-    ["cmake", "-S", root_dir, "-B", build_dir, "-DCMAKE_BUILD_TYPE=Release", "-DENABLE_TESTS=1"],
-    check=True
-)
+subprocess.run(["cmake", "--build", build_dir, "--config", "Release"], check=True)
 
-# Build the main executable first
-subprocess.run(["cmake", "--build", build_dir, "--target", "VulkanProject"], check=True)
+# Build main executable (correct target name)
+subprocess.run(["cmake", "--build", build_dir, "--target", "VulkanContainer", "--config", "Release"], check=True)
 
-# Build and run the tests if requested
 if args.run_tests:
-    # Build the tests
-    subprocess.run(["cmake", "--build", build_dir, "--target", "build_tests"], check=True)
-
-    # Run the tests
-    subprocess.run(["cmake", "--build", build_dir, "--target", "run_tests"], check=True)
+    subprocess.run(["cmake", "--build", build_dir, "--target", "build_tests", "--config", "Release"], check=True)
+    subprocess.run(["cmake", "--build", build_dir, "--target", "run_tests", "--config", "Release"], check=True)
 
 print("Rebuild complete.")

@@ -97,7 +97,10 @@ set(VULKAN_LIBS
 )
 
  set(SHADER_LIBS
-     slang::slang
+      slang::gfx 
+      slang::slang 
+      slang::slang-llvm 
+      slang::slang-glslang
     )
 
 # Graphics/rendering libraries
@@ -159,6 +162,6 @@ endif()
 message(STATUS "--------------------------------------------------")
 message(STATUS "Dependency Configuration Summary:")
 message(STATUS "Vulkan: ${Vulkan_VERSION}")
-message(STATUS "Shader Backend: ${SHADER_BACKEND} (${slang_VERSION})")
+message(STATUS "slang :(${slang_VERSION})")
 message(STATUS "spdlog: ${spdlog_VERSION}")
 message(STATUS "--------------------------------------------------")
