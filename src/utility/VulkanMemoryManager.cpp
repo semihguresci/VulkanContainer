@@ -1,3 +1,4 @@
+#define VMA_IMPLEMENTATION
 #include <Container/utility/VulkanMemoryManager.h>
 #include <Container/utility/VulkanAlignment.h>
 
