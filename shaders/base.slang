@@ -1,31 +1,23 @@
-struct VSInput
-{
-    [[vk::location(0)]] float2 position;
-    [[vk::location(1)]] float3 color;
+struct VSInput {
+    float2 inPosition;
+    float3 inColor;
 };
 
 struct VSOutput
 {
-    [[vk::builtin("Position")]] float4 position;
-    [[vk::location(0)]] float3 color;
+    float4 pos : SV_Position;
+    float3 color;
 };
 
-struct MaterialConstants
-{
-    float4 baseColor;
-};
-
-[[vk::push_constant]] ConstantBuffer<MaterialConstants> gMaterial;
-
-VSOutput vsMain(VSInput input)
-{
+[shader("vertex")]
+VSOutput vertMain(VSInput input) {
     VSOutput output;
-    output.position = float4(input.position, 0.0f, 1.0f);
-    output.color = input.color;
+    output.pos = float4(input.inPosition, 0.0, 1.0);
+    output.color = input.inColor;
     return output;
 }
 
-float4 psMain(VSOutput input) : SV_Target0
-{
-    return float4(input.color, 1.0f) * gMaterial.baseColor;
+[shader("fragment")]
+float4 fragMain(VSOutput vertIn) : SV_TARGET {
+    return float4(vertIn.color, 1.0);
 }
