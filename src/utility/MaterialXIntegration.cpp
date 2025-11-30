@@ -34,9 +34,9 @@ SlangMaterialXBridge::SlangMaterialXBridge() = default;
 MaterialX::DocumentPtr SlangMaterialXBridge::loadDocument(const std::string& filename) {
     auto document = MaterialX::createDocument();
     MaterialX::XmlReadOptions options;
-    options.readXInclude = true;
+    options.readXIncludes = true;
 
-    MaterialX::readFromXmlFile(document, filename, &options);
+    MaterialX::readFromXmlFile(document, filename, MaterialX::FileSearchPath(), &options);
     document->importLibrary(MaterialX::createDocument());
     return document;
 }
@@ -48,7 +48,7 @@ glm::vec4 SlangMaterialXBridge::extractBaseColor(const MaterialX::DocumentPtr& d
         return glm::vec4(defaultColor[0], defaultColor[1], defaultColor[2], 1.0f);
     }
 
-    for (const auto& material : document->getMaterials()) {
+    for (const auto& material : document->getMaterialNodes()) {
         for (const auto& shaderRef : material->getShaderRefs()) {
             if (auto input = shaderRef->getInput("base_color")) {
                 auto baseColor = parseColorOrDefault(input->getValue(), defaultColor);
