@@ -96,6 +96,15 @@ endif()
 
 add_dependencies(${PROJECT_NAME} shaders)
 
+add_custom_target(copy_materials ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/materials
+            ${CMAKE_BINARY_DIR}/materials
+    COMMENT "Copying MaterialX assets to build directory"
+)
+
+add_dependencies(${PROJECT_NAME} copy_materials)
+
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE ${Vulkan_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/include)

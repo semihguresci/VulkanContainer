@@ -32,7 +32,7 @@ const std::vector<const char*> validationLayers = {
     "VK_LAYER_KHRONOS_validation"};
 
 const std::vector<const char*> deviceExtensions = {
-    VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    VK_KHR_SWAPCHAIN_EXTENSION_NAME, VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME};
 
 const bool enableValidationLayers = true;
 
@@ -151,6 +151,7 @@ class HelloTriangleApplication {
   std::vector<VkCommandBuffer> commandBuffers;
 
   std::unique_ptr<FrameSyncManager> frameSyncManager;
+  std::vector<VkFence> imagesInFlight;
   uint32_t currentFrame = 0;
 
   bool framebufferResized = false;
@@ -182,7 +183,8 @@ class HelloTriangleApplication {
     createCommandBuffers();
     frameSyncManager = std::make_unique<FrameSyncManager>(
         deviceWrapper->device(), MAX_FRAMES_IN_FLIGHT);
-    frameSyncManager->initialize();
+    frameSyncManager->initialize(swapChainManager->imageCount());
+    imagesInFlight.assign(swapChainManager->imageCount(), VK_NULL_HANDLE);
     utility::logger::ContainerLogger::instance().renderer()->info(
         "Initializing Vulkan renderer");
     utility::logger::ContainerLogger::instance().vulkan()->debug(
@@ -242,6 +244,9 @@ class HelloTriangleApplication {
 
     if (swapChainManager) {
       swapChainManager->recreate(renderPass);
+      frameSyncManager->recreateRenderFinishedSemaphores(
+          swapChainManager->imageCount());
+      imagesInFlight.assign(swapChainManager->imageCount(), VK_NULL_HANDLE);
     }
   }
 
@@ -298,6 +303,12 @@ class HelloTriangleApplication {
     createInfo.requiredExtensions = deviceExtensions;
     createInfo.validationLayers = validationLayers;
     createInfo.enableValidationLayers = enableValidationLayers;
+
+    VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
+    bufferDeviceAddressFeatures.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+    bufferDeviceAddressFeatures.bufferDeviceAddress = VK_TRUE;
+    createInfo.next = &bufferDeviceAddressFeatures;
 
     deviceWrapper = std::make_shared<utility::vulkan::VulkanDevice>(
         instance, surface, createInfo);
@@ -674,7 +685,13 @@ class HelloTriangleApplication {
       throw std::runtime_error("failed to acquire swap chain image!");
     }
 
+    if (imagesInFlight[imageIndex] != VK_NULL_HANDLE) {
+      vkWaitForFences(deviceWrapper->device(), 1, &imagesInFlight[imageIndex],
+                     VK_TRUE, UINT64_MAX);
+    }
+
     frameSyncManager->resetFence(currentFrame);
+    imagesInFlight[imageIndex] = frameSyncManager->fence(currentFrame);
 
     vkResetCommandBuffer(commandBuffers[currentFrame],
                          /*VkCommandBufferResetFlagBits*/ 0);
@@ -695,7 +712,7 @@ class HelloTriangleApplication {
     submitInfo.pCommandBuffers = &commandBuffers[currentFrame];
 
     VkSemaphore signalSemaphores[] = {
-        frameSyncManager->renderFinished(currentFrame)};
+        frameSyncManager->renderFinishedForImage(imageIndex)};
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = signalSemaphores;
 
@@ -706,7 +723,7 @@ class HelloTriangleApplication {
 
     result = swapChainManager->present(
         deviceWrapper->presentQueue(), imageIndex,
-        frameSyncManager->renderFinished(currentFrame));
+        frameSyncManager->renderFinishedForImage(imageIndex));
 
     if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
         framebufferResized) {

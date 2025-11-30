@@ -13,6 +13,7 @@ struct DeviceCreateInfo {
   std::vector<const char*> validationLayers{};
   bool enableValidationLayers{false};
   VkPhysicalDeviceFeatures enabledFeatures{};
+  const void* next{nullptr};
 };
 
 class VulkanDevice {
