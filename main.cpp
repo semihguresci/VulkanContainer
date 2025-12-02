@@ -13,8 +13,7 @@
 #include <Container/utility/VulkanMemoryManager.h>
 #include <Container/utility/WindowManager.h>
 #include <GLFW/glfw3.h>
-
-#include <vulkan/vulkan.hpp>
+#include <vk_mem_alloc.h>
 
 #include <algorithm>
 #include <array>
@@ -23,16 +22,16 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <limits>
 #include <fstream>
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <utility>
 #include <vector>
-#include <vk_mem_alloc.h>
+#include <vulkan/vulkan.hpp>
 
 using utility::FrameSyncManager;
 using utility::QueueFamilyIndices;
@@ -448,7 +447,7 @@ class HelloTriangleApplication {
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
     std::array<VkDescriptorSetLayoutBinding, 2> bindings = {cameraBinding,
-                                                             objectBinding};
+                                                            objectBinding};
 
     std::array<VkDescriptorBindingFlags, 2> bindingFlags = {
         0u, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
@@ -482,8 +481,10 @@ class HelloTriangleApplication {
   }
 
   void buildSceneGraph() {
-    rootNode = sceneGraph.createNode(glm::mat4(1.0f), defaultMaterialIndex, false);
-    cubeNode = sceneGraph.createNode(glm::mat4(1.0f), defaultMaterialIndex, true);
+    rootNode =
+        sceneGraph.createNode(glm::mat4(1.0f), defaultMaterialIndex, false);
+    cubeNode =
+        sceneGraph.createNode(glm::mat4(1.0f), defaultMaterialIndex, true);
     sceneGraph.setParent(cubeNode, rootNode);
     sceneGraph.updateWorldTransforms();
     renderableNodes = sceneGraph.renderableNodes();
@@ -588,8 +589,8 @@ class HelloTriangleApplication {
 
     std::vector<VkDescriptorSetLayout> setLayouts = {descriptorSetLayout};
     std::vector<VkPushConstantRange> pushConstants = {pushConstantRange};
-    pipelineLayout = pipelineManager->createPipelineLayout(setLayouts,
-                                                           pushConstants);
+    pipelineLayout =
+        pipelineManager->createPipelineLayout(setLayouts, pushConstants);
 
     VkGraphicsPipelineCreateInfo pipelineInfo{};
     pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
@@ -651,8 +652,7 @@ class HelloTriangleApplication {
 
     objectBuffer = memoryManager->createBuffer(
         sizeof(ObjectData) * config_.maxSceneObjects,
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VMA_MEMORY_USAGE_AUTO,
+        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
             VMA_ALLOCATION_CREATE_MAPPED_BIT);
 
@@ -665,8 +665,8 @@ class HelloTriangleApplication {
     void* mapped = buffer.allocation_info.pMappedData;
     bool mappedHere = false;
     if (mapped == nullptr) {
-      if (vmaMapMemory(memoryManager->allocator(), buffer.allocation, &mapped) !=
-          VK_SUCCESS) {
+      if (vmaMapMemory(memoryManager->allocator(), buffer.allocation,
+                       &mapped) != VK_SUCCESS) {
         throw std::runtime_error("failed to map buffer for writing");
       }
       mappedHere = true;
@@ -682,8 +682,8 @@ class HelloTriangleApplication {
   void updateCameraBuffer() {
     if (!swapChainManager) return;
     const auto extent = swapChainManager->extent();
-    const float aspect = static_cast<float>(extent.width) /
-                         static_cast<float>(extent.height);
+    const float aspect =
+        static_cast<float>(extent.width) / static_cast<float>(extent.height);
 
     const glm::mat4 view =
         glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f),
@@ -715,7 +715,8 @@ class HelloTriangleApplication {
       const uint32_t nodeIndex = renderableNodes[i];
       const auto* node = sceneGraph.getNode(nodeIndex);
       const glm::mat4 model = node ? node->worldTransform : glm::mat4(1.0f);
-      const uint32_t materialIndex = node ? node->materialIndex : defaultMaterialIndex;
+      const uint32_t materialIndex =
+          node ? node->materialIndex : defaultMaterialIndex;
       objectData[i].model = model;
       objectData[i].color = resolveMaterialColor(materialIndex);
     }
@@ -775,8 +776,8 @@ class HelloTriangleApplication {
       objectBufferInfos.resize(objectData.size());
       for (size_t i = 0; i < objectData.size(); ++i) {
         objectBufferInfos[i].buffer = objectBuffer.buffer;
-        objectBufferInfos[i].offset = static_cast<VkDeviceSize>(
-            i * sizeof(ObjectData));
+        objectBufferInfos[i].offset =
+            static_cast<VkDeviceSize>(i * sizeof(ObjectData));
         objectBufferInfos[i].range = sizeof(ObjectData);
       }
     } else {
@@ -843,8 +844,8 @@ class HelloTriangleApplication {
     allocInfo.commandBufferCount = 1;
 
     vk::Device device{deviceWrapper->device()};
-    auto commandBuffer = device.allocateCommandBuffersUnique(allocInfo).front();
-
+    auto commandBuffers = device.allocateCommandBuffersUnique(allocInfo);
+    auto& commandBuffer = commandBuffers.front();
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
@@ -912,9 +913,10 @@ class HelloTriangleApplication {
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
     pushConstants.objectIndex = 0;
-    vkCmdPushConstants(commandBuffer, pipelineLayout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(BindlessPushConstants), &pushConstants);
+    vkCmdPushConstants(
+        commandBuffer, pipelineLayout,
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+        sizeof(BindlessPushConstants), &pushConstants);
 
     VkViewport viewport{};
     viewport.x = 0.0f;
@@ -966,7 +968,7 @@ class HelloTriangleApplication {
     if (imagesInFlight[imageIndex]) {
       auto inFlightFence = static_cast<VkFence>(imagesInFlight[imageIndex]);
       vkWaitForFences(deviceWrapper->device(), 1, &inFlightFence, VK_TRUE,
-                     UINT64_MAX);
+                      UINT64_MAX);
     }
 
     frameSyncManager->resetFence(currentFrame);
