@@ -2,7 +2,7 @@
 
 #include <vector>
 
-#include <vulkan/vulkan.h>
+#include <vulkan/vulkan.hpp>
 
 namespace utility {
 
@@ -10,7 +10,7 @@ namespace utility {
 // and rendering completion.
 class FrameSyncManager {
 public:
-    FrameSyncManager(VkDevice device, size_t framesInFlight);
+    FrameSyncManager(vk::Device device, size_t framesInFlight);
     ~FrameSyncManager();
 
     FrameSyncManager(const FrameSyncManager&) = delete;
@@ -19,9 +19,9 @@ public:
     void initialize(size_t swapChainImageCount);
     void cleanup();
 
-    [[nodiscard]] VkSemaphore imageAvailable(size_t frameIndex) const;
-    [[nodiscard]] VkSemaphore renderFinishedForImage(size_t imageIndex) const;
-    [[nodiscard]] VkFence fence(size_t frameIndex) const;
+    [[nodiscard]] vk::Semaphore imageAvailable(size_t frameIndex) const;
+    [[nodiscard]] vk::Semaphore renderFinishedForImage(size_t imageIndex) const;
+    [[nodiscard]] vk::Fence fence(size_t frameIndex) const;
 
     void waitForFrame(size_t frameIndex) const;
     void resetFence(size_t frameIndex) const;
@@ -33,13 +33,13 @@ public:
 private:
     void destroyRenderFinishedSemaphores();
 
-    VkDevice device_{VK_NULL_HANDLE};
+    vk::Device device_{};
     size_t framesInFlight_{};
     size_t swapChainImageCount_{0};
 
-    std::vector<VkSemaphore> imageAvailableSemaphores_;
-    std::vector<VkSemaphore> renderFinishedSemaphores_;
-    std::vector<VkFence> inFlightFences_;
+    std::vector<vk::UniqueSemaphore> imageAvailableSemaphores_;
+    std::vector<vk::UniqueSemaphore> renderFinishedSemaphores_;
+    std::vector<vk::UniqueFence> inFlightFences_;
 };
 
 }  // namespace utility
