@@ -1041,6 +1041,9 @@ class HelloTriangleApplication {
                 VkDebugUtilsMessageTypeFlagsEXT messageType,
                 const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
                 void* pUserData) {
+    (void)messageSeverity;
+    (void)messageType;
+    (void)pUserData;
     std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
 
     return VK_FALSE;
