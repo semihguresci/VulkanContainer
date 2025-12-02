@@ -1,7 +1,7 @@
 # Geometry component
 add_library(VulkanContainer_geometry
     Mesh.cpp
-    # Other geometry source files...
+    Model.cpp
 )
 
 target_compile_features(VulkanContainer_geometry PUBLIC cxx_std_23)
