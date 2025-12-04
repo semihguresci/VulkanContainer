@@ -98,6 +98,8 @@ add_dependencies(${PROJECT_NAME} copy_materials)
 set(MODELS_DIR "${CMAKE_SOURCE_DIR}/models")
 set(MODELS_OUTPUT_DIR "${CMAKE_BINARY_DIR}/models")
 
+find_package(Git QUIET)
+
 add_custom_command(
     OUTPUT
         "${MODELS_OUTPUT_DIR}/basic_cube.gltf"
@@ -118,15 +120,40 @@ add_custom_command(
     VERBATIM
 )
 
+set(GENERATE_MODEL_OUTPUTS
+    "${MODELS_OUTPUT_DIR}/basic_cube.gltf"
+    "${MODELS_OUTPUT_DIR}/cube_baseColor.png"
+    "${MODELS_OUTPUT_DIR}/cube_emissive.png"
+    "${MODELS_OUTPUT_DIR}/cube_metallicRoughness.png"
+    "${MODELS_OUTPUT_DIR}/cube_normal.png"
+    "${MODELS_OUTPUT_DIR}/cube_occlusion.png"
+    "${MODELS_OUTPUT_DIR}/basic_triangle.gltf"
+)
+
+if(GIT_FOUND)
+    set(GLTF_SAMPLE_MODELS_DIR "${MODELS_OUTPUT_DIR}/glTF-Sample-Models")
+    set(GLTF_SAMPLE_MODELS_STAMP "${GLTF_SAMPLE_MODELS_DIR}/.fetched")
+
+    add_custom_command(
+        OUTPUT "${GLTF_SAMPLE_MODELS_STAMP}"
+        COMMAND ${CMAKE_COMMAND}
+                -DDESTINATION="${GLTF_SAMPLE_MODELS_DIR}"
+                -DSTAMP_FILE="${GLTF_SAMPLE_MODELS_STAMP}"
+                -DGIT_EXECUTABLE="${GIT_EXECUTABLE}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/fetch_gltf_sample_models.cmake"
+        DEPENDS "${CMAKE_SOURCE_DIR}/cmake/fetch_gltf_sample_models.cmake"
+        COMMENT "Fetching glTF Sample Models repository"
+        VERBATIM
+    )
+
+    list(APPEND GENERATE_MODEL_OUTPUTS "${GLTF_SAMPLE_MODELS_STAMP}")
+else()
+    message(WARNING "Git not found; glTF Sample Models repository will not be fetched.")
+endif()
+
 add_custom_target(generate_models ALL
     DEPENDS
-        "${MODELS_OUTPUT_DIR}/basic_cube.gltf"
-        "${MODELS_OUTPUT_DIR}/cube_baseColor.png"
-        "${MODELS_OUTPUT_DIR}/cube_emissive.png"
-        "${MODELS_OUTPUT_DIR}/cube_metallicRoughness.png"
-        "${MODELS_OUTPUT_DIR}/cube_normal.png"
-        "${MODELS_OUTPUT_DIR}/cube_occlusion.png"
-        "${MODELS_OUTPUT_DIR}/basic_triangle.gltf"
+        ${GENERATE_MODEL_OUTPUTS}
 )
 
 add_dependencies(${PROJECT_NAME} generate_models)
