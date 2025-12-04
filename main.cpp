@@ -815,7 +815,8 @@ class HelloTriangleApplication {
     allocInfo.commandBufferCount = 1;
 
     vk::Device device{deviceWrapper->device()};
-    auto commandBuffer = device.allocateCommandBuffersUnique(allocInfo).front();
+    auto commandBuffers = device.allocateCommandBuffersUnique(allocInfo);
+    auto& commandBuffer = commandBuffers.front();
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
