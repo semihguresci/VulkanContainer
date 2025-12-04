@@ -95,14 +95,41 @@ add_custom_target(copy_materials ALL
 
 add_dependencies(${PROJECT_NAME} copy_materials)
 
-add_custom_target(copy_models ALL
-    COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_SOURCE_DIR}/models
-            ${CMAKE_BINARY_DIR}/models
-    COMMENT "Copying glTF assets to build directory"
+set(MODELS_DIR "${CMAKE_SOURCE_DIR}/models")
+set(MODELS_OUTPUT_DIR "${CMAKE_BINARY_DIR}/models")
+
+add_custom_command(
+    OUTPUT
+        "${MODELS_OUTPUT_DIR}/basic_cube.gltf"
+        "${MODELS_OUTPUT_DIR}/cube_baseColor.png"
+        "${MODELS_OUTPUT_DIR}/cube_emissive.png"
+        "${MODELS_OUTPUT_DIR}/cube_metallicRoughness.png"
+        "${MODELS_OUTPUT_DIR}/cube_normal.png"
+        "${MODELS_OUTPUT_DIR}/cube_occlusion.png"
+        "${MODELS_OUTPUT_DIR}/basic_triangle.gltf"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${MODELS_OUTPUT_DIR}"
+    COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/cmake/generate_pbr_cube_assets.py"
+            --output-dir "${MODELS_OUTPUT_DIR}"
+            --static-model "${MODELS_DIR}/basic_triangle.gltf"
+    DEPENDS
+        "${CMAKE_SOURCE_DIR}/cmake/generate_pbr_cube_assets.py"
+        "${MODELS_DIR}/basic_triangle.gltf"
+    COMMENT "Generating glTF assets with Python"
+    VERBATIM
 )
 
-add_dependencies(${PROJECT_NAME} copy_models)
+add_custom_target(generate_models ALL
+    DEPENDS
+        "${MODELS_OUTPUT_DIR}/basic_cube.gltf"
+        "${MODELS_OUTPUT_DIR}/cube_baseColor.png"
+        "${MODELS_OUTPUT_DIR}/cube_emissive.png"
+        "${MODELS_OUTPUT_DIR}/cube_metallicRoughness.png"
+        "${MODELS_OUTPUT_DIR}/cube_normal.png"
+        "${MODELS_OUTPUT_DIR}/cube_occlusion.png"
+        "${MODELS_OUTPUT_DIR}/basic_triangle.gltf"
+)
+
+add_dependencies(${PROJECT_NAME} generate_models)
 
 
 # Include directories
