@@ -137,9 +137,9 @@ if(GIT_FOUND)
     add_custom_command(
         OUTPUT "${GLTF_SAMPLE_MODELS_STAMP}"
         COMMAND ${CMAKE_COMMAND}
-                -DDESTINATION="${GLTF_SAMPLE_MODELS_DIR}"
-                -DSTAMP_FILE="${GLTF_SAMPLE_MODELS_STAMP}"
-                -DGIT_EXECUTABLE="${GIT_EXECUTABLE}"
+                "-DDESTINATION:PATH=${GLTF_SAMPLE_MODELS_DIR}"
+                "-DSTAMP_FILE:FILEPATH=${GLTF_SAMPLE_MODELS_STAMP}"
+                "-DGIT_EXECUTABLE:FILEPATH=${GIT_EXECUTABLE}"
                 -P "${CMAKE_SOURCE_DIR}/cmake/fetch_gltf_sample_models.cmake"
         DEPENDS "${CMAKE_SOURCE_DIR}/cmake/fetch_gltf_sample_models.cmake"
         COMMENT "Fetching glTF Sample Models repository"
