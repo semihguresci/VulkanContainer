@@ -846,7 +846,8 @@ class HelloTriangleApplication {
     vk::CommandBufferAllocateInfo allocInfo{};
     allocInfo.commandPool = commandPool.get();
     allocInfo.level = vk::CommandBufferLevel::ePrimary;
-    allocInfo.commandBufferCount = swapChainManager->imageCount();
+    allocInfo.commandBufferCount =
+        static_cast<uint32_t>(swapChainManager->imageCount());
 
     vk::Device device{deviceWrapper->device()};
     commandBuffers = device.allocateCommandBuffersUnique(allocInfo);
@@ -1037,13 +1038,10 @@ class HelloTriangleApplication {
   }
 
   static VKAPI_ATTR VkBool32 VKAPI_CALL
-  debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-                VkDebugUtilsMessageTypeFlagsEXT messageType,
+  debugCallback([[maybe_unused]] VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+                [[maybe_unused]] VkDebugUtilsMessageTypeFlagsEXT messageType,
                 const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                void* pUserData) {
-    (void)messageSeverity;
-    (void)messageType;
-    (void)pUserData;
+                [[maybe_unused]] void* pUserData) {
     std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
 
     return VK_FALSE;

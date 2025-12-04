@@ -1,9 +1,5 @@
 #include <Container/geometry/Model.h>
 
-#define TINYGLTF_IMPLEMENTATION
-#define STB_IMAGE_IMPLEMENTATION
-#define STB_IMAGE_WRITE_IMPLEMENTATION
-#define TINYGLTF_NOEXCEPTION
 #include <tiny_gltf.h>
 
 #include <glm/vec4.hpp>
