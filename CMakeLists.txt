@@ -95,6 +95,15 @@ add_custom_target(copy_materials ALL
 
 add_dependencies(${PROJECT_NAME} copy_materials)
 
+add_custom_target(copy_models ALL
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_SOURCE_DIR}/models
+            ${CMAKE_BINARY_DIR}/models
+    COMMENT "Copying glTF assets to build directory"
+)
+
+add_dependencies(${PROJECT_NAME} copy_models)
+
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE ${Vulkan_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/include)

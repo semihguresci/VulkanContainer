@@ -3,6 +3,7 @@
 #include <vulkan/vulkan.hpp>
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace app {
@@ -15,6 +16,7 @@ struct AppConfig {
   vk::DeviceSize maxVertexArenaSize{4 * 1024 * 1024};
   vk::DeviceSize maxIndexArenaSize{2 * 1024 * 1024};
   bool enableValidationLayers{true};
+  std::string modelPath{"models/basic_triangle.gltf"};
   std::vector<const char*> validationLayers{"VK_LAYER_KHRONOS_validation"};
   std::vector<const char*> deviceExtensions{
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,

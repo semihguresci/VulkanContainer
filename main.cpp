@@ -1,5 +1,6 @@
 #define GLFW_INCLUDE_VULKAN
 #include <Container/app/AppConfig.h>
+#include <Container/geometry/Model.h>
 #include <Container/utility/FrameSyncManager.h>
 #include <Container/utility/Logger.h>
 #include <Container/utility/MaterialManager.h>
@@ -63,60 +64,6 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance,
   }
 }
 
-struct Vertex {
-  glm::vec3 pos;
-  glm::vec3 color;
-
-  static VkVertexInputBindingDescription getBindingDescription() {
-    VkVertexInputBindingDescription bindingDescription{};
-    bindingDescription.binding = 0;
-    bindingDescription.stride = sizeof(Vertex);
-    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
-
-    return bindingDescription;
-  }
-
-  static std::array<VkVertexInputAttributeDescription, 2>
-  getAttributeDescriptions() {
-    std::array<VkVertexInputAttributeDescription, 2> attributeDescriptions{};
-
-    attributeDescriptions[0].binding = 0;
-    attributeDescriptions[0].location = 0;
-    attributeDescriptions[0].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributeDescriptions[0].offset = offsetof(Vertex, pos);
-
-    attributeDescriptions[1].binding = 0;
-    attributeDescriptions[1].location = 1;
-    attributeDescriptions[1].format = VK_FORMAT_R32G32B32_SFLOAT;
-    attributeDescriptions[1].offset = offsetof(Vertex, color);
-
-    return attributeDescriptions;
-  }
-};
-
-const std::vector<Vertex> vertices = {
-    {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-    {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-    {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}},
-    {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 0.0f}},
-    {{-0.5f, -0.5f, 0.5f}, {1.0f, 0.0f, 1.0f}},
-    {{0.5f, -0.5f, 0.5f}, {0.0f, 1.0f, 1.0f}},
-    {{0.5f, 0.5f, 0.5f}, {1.0f, 0.5f, 0.2f}},
-    {{-0.5f, 0.5f, 0.5f}, {0.2f, 0.8f, 0.5f}}};
-
-const std::vector<uint16_t> indices = {
-    // front (+Z)
-    4, 5, 6, 6, 7, 4,
-    // back (-Z)
-    0, 3, 2, 2, 1, 0,
-    // left (-X)
-    0, 4, 7, 7, 3, 0,
-    // right (+X)
-    5, 1, 2, 2, 6, 5,
-    // top (+Y)
-    3, 7, 6, 6, 2, 3,
-    // bottom (-Y)
-    0, 1, 5, 5, 4, 0};
 
 struct CameraData {
   alignas(16) glm::mat4 viewProj{1.0f};
@@ -174,6 +121,10 @@ class HelloTriangleApplication {
   uint32_t cubeNode = utility::scene::SceneGraph::kInvalidNode;
   glm::vec4 materialBaseColor{1.0f};
   uint32_t defaultMaterialIndex = std::numeric_limits<uint32_t>::max();
+  geometry::Model model{};
+  std::vector<geometry::Vertex> vertices{};
+  std::vector<uint32_t> indices{};
+  VkIndexType indexType{VK_INDEX_TYPE_UINT32};
 
   utility::vulkan::UniqueCommandPool commandPool;
   std::vector<vk::UniqueCommandBuffer> commandBuffers;
@@ -224,6 +175,7 @@ class HelloTriangleApplication {
     swapChainManager->createFramebuffers(renderPass.get());
     createCommandPool();
     createMemoryManager();
+    loadModel();
     createVertexBuffer();
     createIndexBuffer();
     createSceneBuffers();
@@ -517,8 +469,8 @@ class HelloTriangleApplication {
     vertexInputInfo.sType =
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
 
-    auto bindingDescription = Vertex::getBindingDescription();
-    auto attributeDescriptions = Vertex::getAttributeDescriptions();
+    auto bindingDescription = geometry::Vertex::bindingDescription();
+    auto attributeDescriptions = geometry::Vertex::attributeDescriptions();
 
     vertexInputInfo.vertexBindingDescriptionCount = 1;
     vertexInputInfo.vertexAttributeDescriptionCount =
@@ -807,15 +759,35 @@ class HelloTriangleApplication {
                            descriptorWrites.data(), 0, nullptr);
   }
 
+  void loadModel() {
+    model = geometry::Model::MakeCube();
+    if (!config_.modelPath.empty()) {
+      try {
+        model = geometry::Model::LoadFromGltf(config_.modelPath);
+      } catch (const std::exception& exc) {
+        std::cerr << "glTF load failed: " << exc.what()
+                  << "; falling back to cube model." << std::endl;
+      }
+    }
+
+    if (model.empty()) {
+      model = geometry::Model::MakeCube();
+    }
+
+    vertices = model.vertices();
+    indices = model.indices();
+    indexType = VK_INDEX_TYPE_UINT32;
+  }
+
   void createVertexBuffer() {
-    vertexSlice = uploadBufferToArena(boost::span<const Vertex>(vertices),
-                                      *vertexArena, alignof(Vertex));
+    vertexSlice = uploadBufferToArena(boost::span<const geometry::Vertex>(vertices),
+                                      *vertexArena, alignof(geometry::Vertex));
   }
 
   void createIndexBuffer() {
     constexpr VkDeviceSize indexAlignment =
-        std::max<VkDeviceSize>(sizeof(uint16_t), 4U);
-    indexSlice = uploadBufferToArena(boost::span<const uint16_t>(indices),
+        std::max<VkDeviceSize>(sizeof(uint32_t), 4U);
+    indexSlice = uploadBufferToArena(boost::span<const uint32_t>(indices),
                                      *indexArena, indexAlignment);
   }
 
@@ -843,7 +815,8 @@ class HelloTriangleApplication {
     allocInfo.commandBufferCount = 1;
 
     vk::Device device{deviceWrapper->device()};
-    auto commandBuffer = device.allocateCommandBuffersUnique(allocInfo).front();
+    auto commandBuffers = device.allocateCommandBuffersUnique(allocInfo);
+    auto& commandBuffer = commandBuffers.front();
 
     VkCommandBufferBeginInfo beginInfo{};
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
@@ -874,7 +847,8 @@ class HelloTriangleApplication {
     vk::CommandBufferAllocateInfo allocInfo{};
     allocInfo.commandPool = commandPool.get();
     allocInfo.level = vk::CommandBufferLevel::ePrimary;
-    allocInfo.commandBufferCount = swapChainManager->imageCount();
+    allocInfo.commandBufferCount =
+        static_cast<uint32_t>(swapChainManager->imageCount());
 
     vk::Device device{deviceWrapper->device()};
     commandBuffers = device.allocateCommandBuffersUnique(allocInfo);
@@ -935,7 +909,7 @@ class HelloTriangleApplication {
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
 
     vkCmdBindIndexBuffer(commandBuffer, indexSlice.buffer, indexSlice.offset,
-                         VK_INDEX_TYPE_UINT16);
+                         indexType);
 
     vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indices.size()), 1, 0,
                      0, 0);
@@ -1065,10 +1039,10 @@ class HelloTriangleApplication {
   }
 
   static VKAPI_ATTR VkBool32 VKAPI_CALL
-  debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-                VkDebugUtilsMessageTypeFlagsEXT messageType,
+  debugCallback([[maybe_unused]] VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+                [[maybe_unused]] VkDebugUtilsMessageTypeFlagsEXT messageType,
                 const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
-                void* pUserData) {
+                [[maybe_unused]] void* pUserData) {
     std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
 
     return VK_FALSE;
