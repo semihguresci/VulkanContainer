@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <fstream>
 #include <glm/glm.hpp>
@@ -139,6 +140,16 @@ class HelloTriangleApplication {
   std::vector<ObjectData> objectData;
   BindlessPushConstants pushConstants{};
 
+  glm::vec3 cameraPosition{2.0f, 2.0f, 2.0f};
+  float cameraYaw{-135.0f};
+  float cameraPitch{-35.0f};
+  float cameraMoveSpeed{3.5f};
+  float mouseSensitivity{0.15f};
+  double lastFrameTimeSeconds{0.0};
+  double lastMouseX{0.0};
+  double lastMouseY{0.0};
+  bool firstMouseUpdate{true};
+
   utility::memory::BufferSlice vertexSlice{};
   utility::memory::BufferSlice indexSlice{};
 
@@ -193,8 +204,15 @@ class HelloTriangleApplication {
   }
 
   void mainLoop() {
+    lastFrameTimeSeconds = windowManager->getTime();
     while (!window->shouldClose()) {
+      const double currentTime = windowManager->getTime();
+      const float deltaTime =
+          static_cast<float>(currentTime - lastFrameTimeSeconds);
+      lastFrameTimeSeconds = currentTime;
+
       window->pollEvents();
+      processInput(deltaTime);
       drawFrame();
     }
 
@@ -612,6 +630,81 @@ class HelloTriangleApplication {
     updateObjectBuffer();
   }
 
+  glm::vec3 computeCameraFront() const {
+    glm::vec3 front{};
+    front.x =
+        std::cos(glm::radians(cameraYaw)) * std::cos(glm::radians(cameraPitch));
+    front.y =
+        std::sin(glm::radians(cameraYaw)) * std::cos(glm::radians(cameraPitch));
+    front.z = std::sin(glm::radians(cameraPitch));
+    return glm::normalize(front);
+  }
+
+  glm::vec3 computeCameraUp(const glm::vec3& front) const {
+    const glm::vec3 worldUp{0.0f, 0.0f, 1.0f};
+    const glm::vec3 right = glm::normalize(glm::cross(front, worldUp));
+    return glm::normalize(glm::cross(right, front));
+  }
+
+  void updateMouseLook(GLFWwindow* glfwWindow) {
+    double xpos = 0.0;
+    double ypos = 0.0;
+    glfwGetCursorPos(glfwWindow, &xpos, &ypos);
+
+    if (firstMouseUpdate) {
+      lastMouseX = xpos;
+      lastMouseY = ypos;
+      firstMouseUpdate = false;
+      return;
+    }
+
+    const double xoffset = xpos - lastMouseX;
+    const double yoffset = lastMouseY - ypos;
+    lastMouseX = xpos;
+    lastMouseY = ypos;
+
+    if (glfwGetMouseButton(glfwWindow, GLFW_MOUSE_BUTTON_RIGHT) != GLFW_PRESS) {
+      return;
+    }
+
+    cameraYaw += static_cast<float>(xoffset) * mouseSensitivity;
+    cameraPitch += static_cast<float>(yoffset) * mouseSensitivity;
+    cameraPitch = std::clamp(cameraPitch, -89.0f, 89.0f);
+  }
+
+  void processInput(float deltaTime) {
+    GLFWwindow* glfwWindow = window ? window->getNativeWindow() : nullptr;
+    if (glfwWindow == nullptr) return;
+
+    updateMouseLook(glfwWindow);
+
+    const glm::vec3 front = computeCameraFront();
+    const glm::vec3 up = computeCameraUp(front);
+    const glm::vec3 right = glm::normalize(glm::cross(front, up));
+
+    const float velocity = cameraMoveSpeed * deltaTime;
+    if (glfwGetKey(glfwWindow, GLFW_KEY_W) == GLFW_PRESS) {
+      cameraPosition += front * velocity;
+    }
+    if (glfwGetKey(glfwWindow, GLFW_KEY_S) == GLFW_PRESS) {
+      cameraPosition -= front * velocity;
+    }
+    if (glfwGetKey(glfwWindow, GLFW_KEY_A) == GLFW_PRESS) {
+      cameraPosition -= right * velocity;
+    }
+    if (glfwGetKey(glfwWindow, GLFW_KEY_D) == GLFW_PRESS) {
+      cameraPosition += right * velocity;
+    }
+    if (glfwGetKey(glfwWindow, GLFW_KEY_E) == GLFW_PRESS) {
+      cameraPosition += up * velocity;
+    }
+    if (glfwGetKey(glfwWindow, GLFW_KEY_Q) == GLFW_PRESS) {
+      cameraPosition -= up * velocity;
+    }
+
+    updateCameraBuffer();
+  }
+
   void writeToBuffer(const utility::memory::AllocatedBuffer& buffer,
                      const void* data, size_t size) {
     void* mapped = buffer.allocation_info.pMappedData;
@@ -637,10 +730,13 @@ class HelloTriangleApplication {
     const float aspect = static_cast<float>(extent.width) /
                          static_cast<float>(extent.height);
 
+    const glm::vec3 front = computeCameraFront();
+    const glm::vec3 up = computeCameraUp(front);
+
     const glm::mat4 view =
-        glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f),
-                    glm::vec3(0.0f, 0.0f, 1.0f));
-    glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 10.0f);
+        glm::lookAt(cameraPosition, cameraPosition + front, up);
+    glm::mat4 proj =
+        glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
     proj[1][1] *= -1.0f;
 
     cameraData.viewProj = proj * view;
