@@ -2,6 +2,8 @@
 #include <Container/app/AppConfig.h>
 #include <Container/geometry/Model.h>
 #include <Container/utility/FrameSyncManager.h>
+#include <Container/utility/Camera.h>
+#include <Container/utility/InputManager.h>
 #include <Container/utility/Logger.h>
 #include <Container/utility/MaterialManager.h>
 #include <Container/utility/MaterialXIntegration.h>
@@ -140,15 +142,9 @@ class HelloTriangleApplication {
   std::vector<ObjectData> objectData;
   BindlessPushConstants pushConstants{};
 
-  glm::vec3 cameraPosition{2.0f, 2.0f, 2.0f};
-  float cameraYaw{-135.0f};
-  float cameraPitch{-35.0f};
-  float cameraMoveSpeed{3.5f};
-  float mouseSensitivity{0.15f};
+  std::unique_ptr<utility::camera::BaseCamera> camera;
+  utility::input::InputManager inputManager{};
   double lastFrameTimeSeconds{0.0};
-  double lastMouseX{0.0};
-  double lastMouseY{0.0};
-  bool firstMouseUpdate{true};
 
   utility::memory::BufferSlice vertexSlice{};
   utility::memory::BufferSlice indexSlice{};
@@ -163,6 +159,7 @@ class HelloTriangleApplication {
     windowManager = std::make_unique<window::WindowManager>();
     window = windowManager->createWindow(config_.windowWidth,
                                          config_.windowHeight, "Vulkan");
+    inputManager.setWindow(window->getNativeWindow());
     window->setFramebufferResizeCallback(
         [this](int, int) { framebufferResized = true; });
   }
@@ -189,6 +186,7 @@ class HelloTriangleApplication {
     loadModel();
     createVertexBuffer();
     createIndexBuffer();
+    createCamera();
     createSceneBuffers();
     createDescriptorPool();
     allocateAndWriteDescriptorSet();
@@ -630,78 +628,19 @@ class HelloTriangleApplication {
     updateObjectBuffer();
   }
 
-  glm::vec3 computeCameraFront() const {
-    glm::vec3 front{};
-    front.x =
-        std::cos(glm::radians(cameraYaw)) * std::cos(glm::radians(cameraPitch));
-    front.y =
-        std::sin(glm::radians(cameraYaw)) * std::cos(glm::radians(cameraPitch));
-    front.z = std::sin(glm::radians(cameraPitch));
-    return glm::normalize(front);
-  }
-
-  glm::vec3 computeCameraUp(const glm::vec3& front) const {
-    const glm::vec3 worldUp{0.0f, 0.0f, 1.0f};
-    const glm::vec3 right = glm::normalize(glm::cross(front, worldUp));
-    return glm::normalize(glm::cross(right, front));
-  }
-
-  void updateMouseLook(GLFWwindow* glfwWindow) {
-    double xpos = 0.0;
-    double ypos = 0.0;
-    glfwGetCursorPos(glfwWindow, &xpos, &ypos);
-
-    if (firstMouseUpdate) {
-      lastMouseX = xpos;
-      lastMouseY = ypos;
-      firstMouseUpdate = false;
-      return;
-    }
-
-    const double xoffset = xpos - lastMouseX;
-    const double yoffset = lastMouseY - ypos;
-    lastMouseX = xpos;
-    lastMouseY = ypos;
-
-    if (glfwGetMouseButton(glfwWindow, GLFW_MOUSE_BUTTON_RIGHT) != GLFW_PRESS) {
-      return;
-    }
-
-    cameraYaw += static_cast<float>(xoffset) * mouseSensitivity;
-    cameraPitch += static_cast<float>(yoffset) * mouseSensitivity;
-    cameraPitch = std::clamp(cameraPitch, -89.0f, 89.0f);
+  void createCamera() {
+    auto perspective = std::make_unique<utility::camera::PerspectiveCamera>();
+    perspective->setPosition({2.0f, 2.0f, 2.0f});
+    perspective->setYawPitch(-135.0f, -35.0f);
+    camera = std::move(perspective);
+    inputManager.setMoveSpeed(3.5f);
+    inputManager.setMouseSensitivity(0.15f);
   }
 
   void processInput(float deltaTime) {
-    GLFWwindow* glfwWindow = window ? window->getNativeWindow() : nullptr;
-    if (glfwWindow == nullptr) return;
+    if (!camera) return;
 
-    updateMouseLook(glfwWindow);
-
-    const glm::vec3 front = computeCameraFront();
-    const glm::vec3 up = computeCameraUp(front);
-    const glm::vec3 right = glm::normalize(glm::cross(front, up));
-
-    const float velocity = cameraMoveSpeed * deltaTime;
-    if (glfwGetKey(glfwWindow, GLFW_KEY_W) == GLFW_PRESS) {
-      cameraPosition += front * velocity;
-    }
-    if (glfwGetKey(glfwWindow, GLFW_KEY_S) == GLFW_PRESS) {
-      cameraPosition -= front * velocity;
-    }
-    if (glfwGetKey(glfwWindow, GLFW_KEY_A) == GLFW_PRESS) {
-      cameraPosition -= right * velocity;
-    }
-    if (glfwGetKey(glfwWindow, GLFW_KEY_D) == GLFW_PRESS) {
-      cameraPosition += right * velocity;
-    }
-    if (glfwGetKey(glfwWindow, GLFW_KEY_E) == GLFW_PRESS) {
-      cameraPosition += up * velocity;
-    }
-    if (glfwGetKey(glfwWindow, GLFW_KEY_Q) == GLFW_PRESS) {
-      cameraPosition -= up * velocity;
-    }
-
+    inputManager.updateCamera(*camera, deltaTime);
     updateCameraBuffer();
   }
 
@@ -725,21 +664,12 @@ class HelloTriangleApplication {
   }
 
   void updateCameraBuffer() {
-    if (!swapChainManager) return;
+    if (!swapChainManager || !camera) return;
     const auto extent = swapChainManager->extent();
     const float aspect = static_cast<float>(extent.width) /
                          static_cast<float>(extent.height);
 
-    const glm::vec3 front = computeCameraFront();
-    const glm::vec3 up = computeCameraUp(front);
-
-    const glm::mat4 view =
-        glm::lookAt(cameraPosition, cameraPosition + front, up);
-    glm::mat4 proj =
-        glm::perspective(glm::radians(60.0f), aspect, 0.1f, 100.0f);
-    proj[1][1] *= -1.0f;
-
-    cameraData.viewProj = proj * view;
+    cameraData.viewProj = camera->viewProjection(aspect);
     if (cameraBuffer.buffer != VK_NULL_HANDLE) {
       writeToBuffer(cameraBuffer, &cameraData, sizeof(CameraData));
     }
