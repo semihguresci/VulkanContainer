@@ -6,6 +6,13 @@ if(NOT DEFINED STAMP_FILE)
     message(FATAL_ERROR "STAMP_FILE must be defined when fetching glTF Sample Models.")
 endif()
 
+# Skip work when a previous fetch already produced both the destination directory
+# and the stamp file. This prevents re-downloading the archive on every build.
+if(EXISTS "${STAMP_FILE}" AND EXISTS "${DESTINATION}")
+    message(STATUS "glTF Sample Models already present at ${DESTINATION}; skipping download.")
+    return()
+endif()
+
 set(REPO_ARCHIVE_URL "https://github.com/KhronosGroup/glTF-Sample-Models/archive/refs/heads/master.zip")
 set(TEMP_DIR "${DESTINATION}.tmp")
 set(ARCHIVE_PATH "${TEMP_DIR}/glTF-Sample-Models.zip")
