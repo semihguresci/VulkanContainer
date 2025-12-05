@@ -130,26 +130,21 @@ set(GENERATE_MODEL_OUTPUTS
     "${MODELS_OUTPUT_DIR}/basic_triangle.gltf"
 )
 
-if(GIT_FOUND)
-    set(GLTF_SAMPLE_MODELS_DIR "${MODELS_OUTPUT_DIR}/glTF-Sample-Models")
-    set(GLTF_SAMPLE_MODELS_STAMP "${GLTF_SAMPLE_MODELS_DIR}/.fetched")
+set(GLTF_SAMPLE_MODELS_DIR "${MODELS_OUTPUT_DIR}/glTF-Sample-Models")
+set(GLTF_SAMPLE_MODELS_STAMP "${GLTF_SAMPLE_MODELS_DIR}/.fetched")
 
-    add_custom_command(
-        OUTPUT "${GLTF_SAMPLE_MODELS_STAMP}"
-        COMMAND ${CMAKE_COMMAND}
-                "-DDESTINATION:PATH=${GLTF_SAMPLE_MODELS_DIR}"
-                "-DSTAMP_FILE:FILEPATH=${GLTF_SAMPLE_MODELS_STAMP}"
-                "-DGIT_EXECUTABLE:FILEPATH=${GIT_EXECUTABLE}"
-                -P "${CMAKE_SOURCE_DIR}/cmake/fetch_gltf_sample_models.cmake"
-        DEPENDS "${CMAKE_SOURCE_DIR}/cmake/fetch_gltf_sample_models.cmake"
-        COMMENT "Fetching glTF Sample Models repository"
-        VERBATIM
-    )
+add_custom_command(
+    OUTPUT "${GLTF_SAMPLE_MODELS_STAMP}"
+    COMMAND ${CMAKE_COMMAND}
+            "-DDESTINATION:PATH=${GLTF_SAMPLE_MODELS_DIR}"
+            "-DSTAMP_FILE:FILEPATH=${GLTF_SAMPLE_MODELS_STAMP}"
+            -P "${CMAKE_SOURCE_DIR}/cmake/fetch_gltf_sample_models.cmake"
+    DEPENDS "${CMAKE_SOURCE_DIR}/cmake/fetch_gltf_sample_models.cmake"
+    COMMENT "Downloading glTF Sample Models repository archive"
+    VERBATIM
+)
 
-    list(APPEND GENERATE_MODEL_OUTPUTS "${GLTF_SAMPLE_MODELS_STAMP}")
-else()
-    message(WARNING "Git not found; glTF Sample Models repository will not be fetched.")
-endif()
+list(APPEND GENERATE_MODEL_OUTPUTS "${GLTF_SAMPLE_MODELS_STAMP}")
 
 add_custom_target(generate_models ALL
     DEPENDS
