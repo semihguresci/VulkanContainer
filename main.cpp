@@ -159,7 +159,7 @@ class HelloTriangleApplication {
     windowManager = std::make_unique<window::WindowManager>();
     window = windowManager->createWindow(config_.windowWidth,
                                          config_.windowHeight, "Vulkan");
-    inputManager.setWindow(window->getNativeWindow());
+    inputManager.bindWindow(window->getNativeWindow());
     window->setFramebufferResizeCallback(
         [this](int, int) { framebufferResized = true; });
   }
@@ -633,6 +633,7 @@ class HelloTriangleApplication {
     perspective->setPosition({2.0f, 2.0f, 2.0f});
     perspective->setYawPitch(-135.0f, -35.0f);
     camera = std::move(perspective);
+    inputManager.setCamera(camera.get());
     inputManager.setMoveSpeed(3.5f);
     inputManager.setMouseSensitivity(0.15f);
   }
@@ -640,8 +641,10 @@ class HelloTriangleApplication {
   void processInput(float deltaTime) {
     if (!camera) return;
 
-    inputManager.updateCamera(*camera, deltaTime);
-    updateCameraBuffer();
+    const bool cameraChanged = inputManager.update(deltaTime);
+    if (cameraChanged) {
+      updateCameraBuffer();
+    }
   }
 
   void writeToBuffer(const utility::memory::AllocatedBuffer& buffer,
