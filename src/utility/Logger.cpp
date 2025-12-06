@@ -15,8 +15,8 @@ ContainerLogger::ContainerLogger() {
   console_sink->set_level(spdlog::level::trace);
 
   // Create file sink (example)
-  auto file_sink = std::make_shared<spdlog::sinks::basic_file_sink_mt>(
-      "logs/container.log", true);
+  auto file_sink =
+      std::make_shared<spdlog::sinks::basic_file_sink_mt>("logs/container.log", true);
   file_sink->set_level(spdlog::level::trace);
 
   // Create loggers
@@ -32,9 +32,7 @@ ContainerLogger::ContainerLogger() {
   vulkan_logger_->set_level(spdlog::level::trace);
 }
 
-ContainerLogger::~ContainerLogger() {
-  spdlog::drop_all();  // Cleanup
-}
+ContainerLogger::~ContainerLogger() { spdlog::drop_all(); }
 
 SpdLogger& ContainerLogger::renderer() { return renderer_logger_; }
 
@@ -51,3 +49,4 @@ void ContainerLogger::log_vk_result(VkResult result, std::string_view operation,
 
 }  // namespace logger
 }  // namespace utility
+
