@@ -75,6 +75,8 @@ struct CameraData {
 struct ObjectData {
   alignas(16) glm::mat4 model{1.0f};
   alignas(16) glm::vec4 color{1.0f};
+  alignas(4) uint32_t baseColorTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(12) glm::vec3 padding{};
 };
 
 struct BindlessPushConstants {
@@ -114,6 +116,7 @@ class HelloTriangleApplication {
   VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
   VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+  VkSampler baseColorSampler = VK_NULL_HANDLE;
 
   utility::materialx::SlangMaterialXBridge materialXBridge;
   utility::material::TextureManager textureManager{};
@@ -177,6 +180,7 @@ class HelloTriangleApplication {
     swapChainManager->initialize();
     createRenderPass();
     createDescriptorSetLayout();
+    createSampler();
     loadMaterialXMaterial();
     buildSceneGraph();
     createGraphicsPipeline();
@@ -228,6 +232,11 @@ class HelloTriangleApplication {
       pipelineLayout = VK_NULL_HANDLE;
       descriptorPool = VK_NULL_HANDLE;
       descriptorSetLayout = VK_NULL_HANDLE;
+    }
+
+    if (baseColorSampler != VK_NULL_HANDLE) {
+      vkDestroySampler(deviceWrapper->device(), baseColorSampler, nullptr);
+      baseColorSampler = VK_NULL_HANDLE;
     }
 
     renderPass.reset();
@@ -339,13 +348,11 @@ class HelloTriangleApplication {
     VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{};
     descriptorIndexingFeatures.sType =
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
-    descriptorIndexingFeatures.shaderUniformBufferArrayNonUniformIndexing =
-        VK_TRUE;
     descriptorIndexingFeatures.runtimeDescriptorArray = VK_TRUE;
     descriptorIndexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
     descriptorIndexingFeatures.descriptorBindingVariableDescriptorCount =
         VK_TRUE;
-    descriptorIndexingFeatures.descriptorBindingUniformBufferUpdateAfterBind =
+    descriptorIndexingFeatures.shaderSampledImageArrayNonUniformIndexing =
         VK_TRUE;
 
     VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
@@ -410,25 +417,64 @@ class HelloTriangleApplication {
 
     VkDescriptorSetLayoutBinding objectBinding{};
     objectBinding.binding = 1;
-    objectBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    objectBinding.descriptorCount = config_.maxSceneObjects;
+    objectBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    objectBinding.descriptorCount = 1;
     objectBinding.stageFlags =
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings = {cameraBinding,
-                                                             objectBinding};
+    VkDescriptorSetLayoutBinding samplerBinding{};
+    samplerBinding.binding = 2;
+    samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    samplerBinding.descriptorCount = 1;
+    samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorBindingFlags, 2> bindingFlags = {
-        0u, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-                VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
-                VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT};
+    VkDescriptorSetLayoutBinding textureBinding{};
+    textureBinding.binding = 3;
+    textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    textureBinding.descriptorCount = config_.maxSceneObjects;
+    textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 4> bindings = {
+        cameraBinding, objectBinding, samplerBinding, textureBinding};
+
+    std::array<VkDescriptorBindingFlags, 4> bindingFlags = {
+        0u,
+        0u,
+        0u,
+        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+            VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT};
 
     descriptorSetLayout = pipelineManager->createDescriptorSetLayout(
         std::vector<VkDescriptorSetLayoutBinding>(bindings.begin(),
                                                   bindings.end()),
         std::vector<VkDescriptorBindingFlags>(bindingFlags.begin(),
                                               bindingFlags.end()),
-        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT);
+        0);
+  }
+
+  void createSampler() {
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = 0.0f;
+    samplerInfo.mipLodBias = 0.0f;
+
+    if (vkCreateSampler(deviceWrapper->device(), &samplerInfo, nullptr,
+                        &baseColorSampler) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create texture sampler!");
+    }
   }
 
   void loadMaterialXMaterial() {
@@ -619,7 +665,7 @@ class HelloTriangleApplication {
 
     objectBuffer = memoryManager->createBuffer(
         sizeof(ObjectData) * config_.maxSceneObjects,
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VMA_MEMORY_USAGE_AUTO,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
             VMA_ALLOCATION_CREATE_MAPPED_BIT);
@@ -685,6 +731,13 @@ class HelloTriangleApplication {
     return currentMaterialBaseColor();
   }
 
+  uint32_t resolveMaterialTextureIndex(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return material->baseColorTextureIndex;
+    }
+    return std::numeric_limits<uint32_t>::max();
+  }
+
   void syncObjectDataFromSceneGraph() {
     sceneGraph.updateWorldTransforms();
     renderableNodes = sceneGraph.renderableNodes();
@@ -699,6 +752,7 @@ class HelloTriangleApplication {
       const uint32_t materialIndex = node ? node->materialIndex : defaultMaterialIndex;
       objectData[i].model = model;
       objectData[i].color = resolveMaterialColor(materialIndex);
+      objectData[i].baseColorTextureIndex = resolveMaterialTextureIndex(materialIndex);
     }
   }
 
@@ -717,28 +771,44 @@ class HelloTriangleApplication {
   }
 
   void createDescriptorPool() {
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSize.descriptorCount = config_.maxSceneObjects + 1;
+    VkDescriptorPoolSize uniformPool{};
+    uniformPool.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uniformPool.descriptorCount = config_.maxSceneObjects + 1;
+
+    VkDescriptorPoolSize storagePool{};
+    storagePool.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    storagePool.descriptorCount = 1;
+
+    VkDescriptorPoolSize sampledImagePool{};
+    sampledImagePool.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    sampledImagePool.descriptorCount = config_.maxSceneObjects;
+
+    VkDescriptorPoolSize samplerPool{};
+    samplerPool.type = VK_DESCRIPTOR_TYPE_SAMPLER;
+    samplerPool.descriptorCount = 1;
 
     descriptorPool = pipelineManager->createDescriptorPool(
-        std::vector<VkDescriptorPoolSize>{poolSize}, 1,
-        VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT);
+        std::vector<VkDescriptorPoolSize>{uniformPool, storagePool, sampledImagePool,
+                                          samplerPool},
+        1, 0);
   }
 
   void allocateAndWriteDescriptorSet() {
-    VkDescriptorSetVariableDescriptorCountAllocateInfo countInfo{};
-    countInfo.sType =
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
-    countInfo.descriptorSetCount = 1;
-    uint32_t descriptorCount = config_.maxSceneObjects;
-    countInfo.pDescriptorCounts = &descriptorCount;
+    const uint32_t textureDescriptorCount = std::min<uint32_t>(
+        config_.maxSceneObjects,
+        std::max<uint32_t>(1u, static_cast<uint32_t>(textureManager.textureCount())));
 
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptorPool;
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts = &descriptorSetLayout;
+    uint32_t descriptorCount = textureDescriptorCount;
+    VkDescriptorSetVariableDescriptorCountAllocateInfo countInfo{};
+    countInfo.sType =
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
+    countInfo.descriptorSetCount = 1;
+    countInfo.pDescriptorCounts = &descriptorCount;
     allocInfo.pNext = &countInfo;
 
     if (vkAllocateDescriptorSets(deviceWrapper->device(), &allocInfo,
@@ -751,37 +821,70 @@ class HelloTriangleApplication {
     cameraBufferInfo.offset = 0;
     cameraBufferInfo.range = sizeof(CameraData);
 
-    std::vector<VkDescriptorBufferInfo> objectBufferInfos{};
-    if (!objectData.empty()) {
-      objectBufferInfos.resize(objectData.size());
-      for (size_t i = 0; i < objectData.size(); ++i) {
-        objectBufferInfos[i].buffer = objectBuffer.buffer;
-        objectBufferInfos[i].offset = static_cast<VkDeviceSize>(
-            i * sizeof(ObjectData));
-        objectBufferInfos[i].range = sizeof(ObjectData);
+    VkDescriptorBufferInfo objectBufferInfo{};
+    objectBufferInfo.buffer = objectBuffer.buffer;
+    objectBufferInfo.offset = 0;
+    objectBufferInfo.range = sizeof(ObjectData) * config_.maxSceneObjects;
+
+    std::vector<VkWriteDescriptorSet> descriptorWrites{};
+
+    VkWriteDescriptorSet cameraWrite{};
+    cameraWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    cameraWrite.dstSet = descriptorSet;
+    cameraWrite.dstBinding = 0;
+    cameraWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    cameraWrite.descriptorCount = 1;
+    cameraWrite.pBufferInfo = &cameraBufferInfo;
+    descriptorWrites.push_back(cameraWrite);
+
+    VkWriteDescriptorSet objectWrite{};
+    objectWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    objectWrite.dstSet = descriptorSet;
+    objectWrite.dstBinding = 1;
+    objectWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    objectWrite.descriptorCount = 1;
+    objectWrite.pBufferInfo = &objectBufferInfo;
+    descriptorWrites.push_back(objectWrite);
+
+    std::vector<VkDescriptorImageInfo> textureInfos{};
+    const size_t textureCount = textureManager.textureCount();
+    if (textureCount > 0) {
+      textureInfos.reserve(std::min<size_t>(textureCount, textureDescriptorCount));
+      const size_t maxTextures = std::min<size_t>(textureDescriptorCount, textureCount);
+      for (size_t i = 0; i < maxTextures; ++i) {
+        const auto* tex = textureManager.getTexture(static_cast<uint32_t>(i));
+        if (tex == nullptr) continue;
+        VkDescriptorImageInfo info{};
+        info.sampler = VK_NULL_HANDLE;
+        info.imageView = tex->imageView;
+        info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        textureInfos.push_back(info);
       }
-    } else {
-      objectBufferInfos.push_back({objectBuffer.buffer, 0, sizeof(ObjectData)});
+
+      if (!textureInfos.empty()) {
+        VkWriteDescriptorSet textureWrite{};
+        textureWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        textureWrite.dstSet = descriptorSet;
+        textureWrite.dstBinding = 3;
+        textureWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        textureWrite.descriptorCount =
+            static_cast<uint32_t>(textureInfos.size());
+        textureWrite.pImageInfo = textureInfos.data();
+        descriptorWrites.push_back(textureWrite);
+      }
     }
 
-    std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+    VkDescriptorImageInfo samplerInfo{};
+    samplerInfo.sampler = baseColorSampler;
 
-    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrites[0].dstSet = descriptorSet;
-    descriptorWrites[0].dstBinding = 0;
-    descriptorWrites[0].dstArrayElement = 0;
-    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    descriptorWrites[0].descriptorCount = 1;
-    descriptorWrites[0].pBufferInfo = &cameraBufferInfo;
-
-    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrites[1].dstSet = descriptorSet;
-    descriptorWrites[1].dstBinding = 1;
-    descriptorWrites[1].dstArrayElement = 0;
-    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    descriptorWrites[1].descriptorCount =
-        static_cast<uint32_t>(objectBufferInfos.size());
-    descriptorWrites[1].pBufferInfo = objectBufferInfos.data();
+    VkWriteDescriptorSet samplerWrite{};
+    samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    samplerWrite.dstSet = descriptorSet;
+    samplerWrite.dstBinding = 2;
+    samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    samplerWrite.descriptorCount = 1;
+    samplerWrite.pImageInfo = &samplerInfo;
+    descriptorWrites.push_back(samplerWrite);
 
     vkUpdateDescriptorSets(deviceWrapper->device(),
                            static_cast<uint32_t>(descriptorWrites.size()),
