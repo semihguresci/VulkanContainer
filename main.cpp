@@ -2,6 +2,8 @@
 #include <Container/app/AppConfig.h>
 #include <Container/geometry/Model.h>
 #include <Container/utility/FrameSyncManager.h>
+#include <Container/utility/Camera.h>
+#include <Container/utility/InputManager.h>
 #include <Container/utility/Logger.h>
 #include <Container/utility/MaterialManager.h>
 #include <Container/utility/MaterialXIntegration.h>
@@ -24,6 +26,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <cmath>
 #include <limits>
 #include <fstream>
 #include <glm/glm.hpp>
@@ -139,6 +142,10 @@ class HelloTriangleApplication {
   std::vector<ObjectData> objectData;
   BindlessPushConstants pushConstants{};
 
+  std::unique_ptr<utility::camera::BaseCamera> camera;
+  utility::input::InputManager inputManager{};
+  double lastFrameTimeSeconds{0.0};
+
   utility::memory::BufferSlice vertexSlice{};
   utility::memory::BufferSlice indexSlice{};
 
@@ -152,6 +159,7 @@ class HelloTriangleApplication {
     windowManager = std::make_unique<window::WindowManager>();
     window = windowManager->createWindow(config_.windowWidth,
                                          config_.windowHeight, "Vulkan");
+    inputManager.bindWindow(window->getNativeWindow());
     window->setFramebufferResizeCallback(
         [this](int, int) { framebufferResized = true; });
   }
@@ -178,6 +186,7 @@ class HelloTriangleApplication {
     loadModel();
     createVertexBuffer();
     createIndexBuffer();
+    createCamera();
     createSceneBuffers();
     createDescriptorPool();
     allocateAndWriteDescriptorSet();
@@ -193,8 +202,15 @@ class HelloTriangleApplication {
   }
 
   void mainLoop() {
+    lastFrameTimeSeconds = windowManager->getTime();
     while (!window->shouldClose()) {
+      const double currentTime = windowManager->getTime();
+      const float deltaTime =
+          static_cast<float>(currentTime - lastFrameTimeSeconds);
+      lastFrameTimeSeconds = currentTime;
+
       window->pollEvents();
+      processInput(deltaTime);
       drawFrame();
     }
 
@@ -612,6 +628,25 @@ class HelloTriangleApplication {
     updateObjectBuffer();
   }
 
+  void createCamera() {
+    auto perspective = std::make_unique<utility::camera::PerspectiveCamera>();
+    perspective->setPosition({2.0f, 2.0f, 2.0f});
+    perspective->setYawPitch(-135.0f, -35.0f);
+    camera = std::move(perspective);
+    inputManager.setCamera(camera.get());
+    inputManager.setMoveSpeed(3.5f);
+    inputManager.setMouseSensitivity(0.15f);
+  }
+
+  void processInput(float deltaTime) {
+    if (!camera) return;
+
+    const bool cameraChanged = inputManager.update(deltaTime);
+    if (cameraChanged) {
+      updateCameraBuffer();
+    }
+  }
+
   void writeToBuffer(const utility::memory::AllocatedBuffer& buffer,
                      const void* data, size_t size) {
     void* mapped = buffer.allocation_info.pMappedData;
@@ -632,18 +667,12 @@ class HelloTriangleApplication {
   }
 
   void updateCameraBuffer() {
-    if (!swapChainManager) return;
+    if (!swapChainManager || !camera) return;
     const auto extent = swapChainManager->extent();
     const float aspect = static_cast<float>(extent.width) /
                          static_cast<float>(extent.height);
 
-    const glm::mat4 view =
-        glm::lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.0f),
-                    glm::vec3(0.0f, 0.0f, 1.0f));
-    glm::mat4 proj = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 10.0f);
-    proj[1][1] *= -1.0f;
-
-    cameraData.viewProj = proj * view;
+    cameraData.viewProj = camera->viewProjection(aspect);
     if (cameraBuffer.buffer != VK_NULL_HANDLE) {
       writeToBuffer(cameraBuffer, &cameraData, sizeof(CameraData));
     }

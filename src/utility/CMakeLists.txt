@@ -12,6 +12,7 @@ add_library(VulkanContainer_utility
     SwapChainManager.cpp
     FrameSyncManager.cpp
     WindowManager.cpp
+    InputManager.cpp
 )
 
 
