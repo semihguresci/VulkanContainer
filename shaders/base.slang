@@ -7,14 +7,21 @@ struct ObjectBuffer
 {
     float4x4 model;
     float4 color;
-    uint textureIndex;
-    float3 padding;
+    float3 emissiveColor;
+    float emissiveStrength;
+    float2 metallicRoughness;
+    uint baseColorTextureIndex;
+    uint normalTextureIndex;
+    uint occlusionTextureIndex;
+    uint emissiveTextureIndex;
+    uint metallicRoughnessTextureIndex;
+    uint padding;
 };
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
 [[vk::binding(2, 0)]] SamplerState baseSampler;
-[[vk::binding(3, 0)]] Texture2D baseColorTextures[];
+[[vk::binding(3, 0)]] Texture2D materialTextures[];
 
 struct PushConstants
 {
@@ -36,7 +43,14 @@ struct VSOutput
     float4 pos : SV_Position;
     [[vk::location(0)]] float3 baseColor;
     [[vk::location(1)]] float2 texCoord;
-    [[vk::location(2)]] uint textureIndex;
+    [[vk::location(2)]] uint baseColorTextureIndex;
+    [[vk::location(3)]] uint normalTextureIndex;
+    [[vk::location(4)]] uint occlusionTextureIndex;
+    [[vk::location(5)]] uint emissiveTextureIndex;
+    [[vk::location(6)]] uint metallicRoughnessTextureIndex;
+    [[vk::location(7)]] float3 emissiveColor;
+    [[vk::location(8)]] float emissiveStrength;
+    [[vk::location(9)]] float2 metallicRoughness;
 };
 
 [shader("vertex")]
@@ -49,19 +63,68 @@ VSOutput vertMain(VSInput input)
     output.pos = mul(uCamera.viewProj, worldPos);
     output.baseColor = obj.color.rgb;
     output.texCoord = input.inTexCoord;
-    output.textureIndex = obj.textureIndex;
+    output.baseColorTextureIndex = obj.baseColorTextureIndex;
+    output.normalTextureIndex = obj.normalTextureIndex;
+    output.occlusionTextureIndex = obj.occlusionTextureIndex;
+    output.emissiveTextureIndex = obj.emissiveTextureIndex;
+    output.metallicRoughnessTextureIndex = obj.metallicRoughnessTextureIndex;
+    output.emissiveColor = obj.emissiveColor;
+    output.emissiveStrength = obj.emissiveStrength;
+    output.metallicRoughness = obj.metallicRoughness;
     return output;
 }
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_Target0
 {
-    if (vertIn.textureIndex != 0xffffffff)
+    float3 baseColor = vertIn.baseColor;
+    float baseAlpha = 1.0;
+
+    if (vertIn.baseColorTextureIndex != 0xffffffff)
     {
-        uint texIndex = NonUniformResourceIndex(vertIn.textureIndex);
-        float4 texColor = baseColorTextures[texIndex].Sample(baseSampler, vertIn.texCoord);
-        return float4(texColor.rgb * vertIn.baseColor, texColor.a);
+        uint texIndex = NonUniformResourceIndex(vertIn.baseColorTextureIndex);
+        float4 texColor = materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord);
+        baseColor *= texColor.rgb;
+        baseAlpha = texColor.a;
     }
 
-    return float4(vertIn.baseColor, 1.0);
+    if (vertIn.occlusionTextureIndex != 0xffffffff)
+    {
+        uint texIndex = NonUniformResourceIndex(vertIn.occlusionTextureIndex);
+        float occlusion = materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).r;
+        baseColor *= occlusion;
+    }
+
+    float sampledMetallic = vertIn.metallicRoughness.x;
+    float sampledRoughness = vertIn.metallicRoughness.y;
+    if (vertIn.metallicRoughnessTextureIndex != 0xffffffff)
+    {
+        uint texIndex = NonUniformResourceIndex(vertIn.metallicRoughnessTextureIndex);
+        float4 mrSample = materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord);
+        sampledRoughness *= mrSample.g;
+        sampledMetallic *= mrSample.b;
+    }
+
+    if (vertIn.normalTextureIndex != 0xffffffff)
+    {
+        uint texIndex = NonUniformResourceIndex(vertIn.normalTextureIndex);
+        float3 normalSample = materialTextures[texIndex]
+                                  .Sample(baseSampler, vertIn.texCoord)
+                                  .xyz * 2.0 - 1.0;
+        float facing = saturate(normalSample.z * 0.5 + 0.5);
+        baseColor *= lerp(1.0, facing, 0.5);
+    }
+
+    if (vertIn.emissiveTextureIndex != 0xffffffff)
+    {
+        uint texIndex = NonUniformResourceIndex(vertIn.emissiveTextureIndex);
+        float3 emissive = materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).rgb;
+        baseColor += emissive * vertIn.emissiveStrength;
+    }
+
+    baseColor = lerp(baseColor, baseColor * (1.0 - sampledRoughness * 0.5), 0.5);
+    baseColor = lerp(baseColor, baseColor * (1.0 - sampledMetallic * 0.35), 0.35);
+    baseColor += vertIn.emissiveColor * vertIn.emissiveStrength;
+
+    return float4(baseColor, baseAlpha);
 }

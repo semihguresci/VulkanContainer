@@ -75,8 +75,15 @@ struct CameraData {
 struct ObjectData {
   alignas(16) glm::mat4 model{1.0f};
   alignas(16) glm::vec4 color{1.0f};
+  alignas(16) glm::vec3 emissiveColor{0.0f, 0.0f, 0.0f};
+  alignas(4) float emissiveStrength{1.0f};
+  alignas(8) glm::vec2 metallicRoughness{1.0f, 1.0f};
   alignas(4) uint32_t baseColorTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(12) glm::vec3 padding{};
+  alignas(4) uint32_t normalTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t occlusionTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t emissiveTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t metallicRoughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t padding{0};
 };
 
 struct BindlessPushConstants {
@@ -487,6 +494,10 @@ class HelloTriangleApplication {
       material.baseColor = glm::vec4(1.0f);
     }
 
+    material.emissiveColor = glm::vec3(0.0f);
+    material.metallicFactor = 1.0f;
+    material.roughnessFactor = 1.0f;
+
     materialBaseColor = material.baseColor;
     if (defaultMaterialIndex == std::numeric_limits<uint32_t>::max()) {
       defaultMaterialIndex = materialManager.createMaterial(material);
@@ -738,6 +749,48 @@ class HelloTriangleApplication {
     return std::numeric_limits<uint32_t>::max();
   }
 
+  uint32_t resolveMaterialNormalTexture(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return material->normalTextureIndex;
+    }
+    return std::numeric_limits<uint32_t>::max();
+  }
+
+  uint32_t resolveMaterialOcclusionTexture(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return material->occlusionTextureIndex;
+    }
+    return std::numeric_limits<uint32_t>::max();
+  }
+
+  uint32_t resolveMaterialEmissiveTexture(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return material->emissiveTextureIndex;
+    }
+    return std::numeric_limits<uint32_t>::max();
+  }
+
+  uint32_t resolveMaterialMetallicRoughnessTexture(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return material->metallicRoughnessTextureIndex;
+    }
+    return std::numeric_limits<uint32_t>::max();
+  }
+
+  glm::vec2 resolveMaterialMetallicRoughnessFactors(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return glm::vec2(material->metallicFactor, material->roughnessFactor);
+    }
+    return glm::vec2(1.0f, 1.0f);
+  }
+
+  glm::vec4 resolveMaterialEmissive(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return glm::vec4(material->emissiveColor, 1.0f);
+    }
+    return glm::vec4(0.0f);
+  }
+
   void syncObjectDataFromSceneGraph() {
     sceneGraph.updateWorldTransforms();
     renderableNodes = sceneGraph.renderableNodes();
@@ -752,7 +805,14 @@ class HelloTriangleApplication {
       const uint32_t materialIndex = node ? node->materialIndex : defaultMaterialIndex;
       objectData[i].model = model;
       objectData[i].color = resolveMaterialColor(materialIndex);
+      objectData[i].emissiveColor = resolveMaterialEmissive(materialIndex);
+      objectData[i].metallicRoughness = resolveMaterialMetallicRoughnessFactors(materialIndex);
       objectData[i].baseColorTextureIndex = resolveMaterialTextureIndex(materialIndex);
+      objectData[i].normalTextureIndex = resolveMaterialNormalTexture(materialIndex);
+      objectData[i].occlusionTextureIndex = resolveMaterialOcclusionTexture(materialIndex);
+      objectData[i].emissiveTextureIndex = resolveMaterialEmissiveTexture(materialIndex);
+      objectData[i].metallicRoughnessTextureIndex =
+          resolveMaterialMetallicRoughnessTexture(materialIndex);
     }
   }
 
