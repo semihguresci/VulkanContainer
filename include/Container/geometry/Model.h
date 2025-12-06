@@ -7,6 +7,12 @@
 
 namespace geometry {
 
+class Model;
+
+namespace gltf {
+Model LoadModelFromFile(const std::string& path);
+}
+
 class Model {
  public:
   Model() = default;
@@ -24,6 +30,8 @@ class Model {
   bool empty() const { return vertices_.empty() || indices_.empty(); }
 
  private:
+  friend Model gltf::LoadModelFromFile(const std::string& path);
+
   explicit Model(std::vector<Mesh> meshes);
   void flattenMeshes();
 
