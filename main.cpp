@@ -10,12 +10,14 @@
 #include <Container/utility/PipelineManager.h>
 #include <Container/utility/SceneGraph.h>
 #include <Container/utility/SwapChainManager.h>
+#include <Container/utility/VulkanAlignment.h>
 #include <Container/utility/VulkanDevice.h>
 #include <Container/utility/VulkanHandles.h>
 #include <Container/utility/VulkanInstance.h>
 #include <Container/utility/VulkanMemoryManager.h>
 #include <Container/utility/WindowManager.h>
 #include <GLFW/glfw3.h>
+#include <tiny_gltf.h>
 
 #include <vulkan/vulkan.hpp>
 
@@ -27,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <filesystem>
 #include <limits>
 #include <fstream>
 #include <glm/glm.hpp>
@@ -37,6 +40,9 @@
 #include <utility>
 #include <vector>
 #include <vk_mem_alloc.h>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
 
 using utility::FrameSyncManager;
 using utility::QueueFamilyIndices;
@@ -128,6 +134,8 @@ class HelloTriangleApplication {
   utility::materialx::SlangMaterialXBridge materialXBridge;
   utility::material::TextureManager textureManager{};
   utility::material::MaterialManager materialManager{};
+  std::vector<VmaAllocation> textureAllocations{};
+  std::vector<VkImage> textureImages{};
   utility::scene::SceneGraph sceneGraph{};
   std::vector<uint32_t> renderableNodes{};
   uint32_t rootNode = utility::scene::SceneGraph::kInvalidNode;
@@ -189,14 +197,15 @@ class HelloTriangleApplication {
     createDescriptorSetLayout();
     createSampler();
     loadMaterialXMaterial();
-    buildSceneGraph();
     createGraphicsPipeline();
     swapChainManager->createFramebuffers(renderPass.get());
     createCommandPool();
     createMemoryManager();
+    loadGltfTexturesAndMaterials(config_.modelPath);
     loadModel();
     createVertexBuffer();
     createIndexBuffer();
+    buildSceneGraph();
     createCamera();
     createSceneBuffers();
     createDescriptorPool();
@@ -244,6 +253,24 @@ class HelloTriangleApplication {
     if (baseColorSampler != VK_NULL_HANDLE) {
       vkDestroySampler(deviceWrapper->device(), baseColorSampler, nullptr);
       baseColorSampler = VK_NULL_HANDLE;
+    }
+
+    for (size_t i = 0; i < textureImages.size(); ++i) {
+      if (textureManager.getTexture(static_cast<uint32_t>(i)) != nullptr) {
+        vkDestroyImageView(deviceWrapper->device(),
+                          textureManager.getTexture(static_cast<uint32_t>(i))->imageView,
+                          nullptr);
+      }
+    }
+    for (auto image : textureImages) {
+      if (image != VK_NULL_HANDLE) {
+        vkDestroyImage(deviceWrapper->device(), image, nullptr);
+      }
+    }
+    for (auto allocation : textureAllocations) {
+      if (allocation != VK_NULL_HANDLE && memoryManager) {
+        vmaFreeMemory(memoryManager->allocator(), allocation);
+      }
     }
 
     renderPass.reset();
@@ -841,7 +868,9 @@ class HelloTriangleApplication {
 
     VkDescriptorPoolSize sampledImagePool{};
     sampledImagePool.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    sampledImagePool.descriptorCount = config_.maxSceneObjects;
+    sampledImagePool.descriptorCount =
+        std::max<uint32_t>(config_.maxSceneObjects,
+                           static_cast<uint32_t>(textureManager.textureCount()));
 
     VkDescriptorPoolSize samplerPool{};
     samplerPool.type = VK_DESCRIPTOR_TYPE_SAMPLER;
@@ -999,6 +1028,106 @@ class HelloTriangleApplication {
     return slice;
   }
 
+  VkCommandBuffer beginSingleTimeCommands() {
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = commandPool.get();
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(deviceWrapper->device(), &allocInfo, &commandBuffer);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    return commandBuffer;
+  }
+
+  void endSingleTimeCommands(VkCommandBuffer commandBuffer) {
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    vkQueueSubmit(deviceWrapper->graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(deviceWrapper->graphicsQueue());
+
+    vkFreeCommandBuffers(deviceWrapper->device(), commandPool.get(), 1,
+                         &commandBuffer);
+  }
+
+  void transitionImageLayout(VkImage image, VkImageLayout oldLayout,
+                             VkImageLayout newLayout) {
+    VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkPipelineStageFlags sourceStage;
+    VkPipelineStageFlags destinationStage;
+
+    if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+        newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+      barrier.srcAccessMask = 0;
+      barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+      sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+      destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
+               newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+      barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+      sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+      destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    } else {
+      throw std::invalid_argument("unsupported layout transition!");
+    }
+
+    vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0,
+                         nullptr, 0, nullptr, 1, &barrier);
+
+    endSingleTimeCommands(commandBuffer);
+  }
+
+  void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width,
+                         uint32_t height) {
+    VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {width, height, 1};
+
+    vkCmdCopyBufferToImage(commandBuffer, buffer, image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    endSingleTimeCommands(commandBuffer);
+  }
+
   void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size,
                   VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0) {
     vk::CommandBufferAllocateInfo allocInfo{};
@@ -1033,6 +1162,212 @@ class HelloTriangleApplication {
     vkQueueSubmit(deviceWrapper->graphicsQueue(), 1, &submitInfo,
                   VK_NULL_HANDLE);
     vkQueueWaitIdle(deviceWrapper->graphicsQueue());
+  }
+
+  VkImageView createImageView(VkImage image, VkFormat format) {
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    VkImageView imageView;
+    if (vkCreateImageView(deviceWrapper->device(), &viewInfo, nullptr,
+                          &imageView) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create texture image view!");
+    }
+
+    return imageView;
+  }
+
+  utility::material::TextureResource createTextureFromFile(
+      const std::string& texturePath) {
+    int texWidth, texHeight, texChannels;
+    stbi_uc* pixels = stbi_load(texturePath.c_str(), &texWidth, &texHeight,
+                                &texChannels, STBI_rgb_alpha);
+    if (!pixels) {
+      throw std::runtime_error("failed to load texture image: " + texturePath);
+    }
+
+    VkDeviceSize imageSize = static_cast<VkDeviceSize>(texWidth) *
+                             static_cast<VkDeviceSize>(texHeight) * 4;
+    utility::memory::StagingBuffer stagingBuffer(*memoryManager, imageSize);
+    stagingBuffer.upload(
+        {reinterpret_cast<const std::byte*>(pixels), static_cast<size_t>(imageSize)});
+    stbi_image_free(pixels);
+
+    VkImage textureImage;
+    VmaAllocation textureAllocation;
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = static_cast<uint32_t>(texWidth);
+    imageInfo.extent.height = static_cast<uint32_t>(texHeight);
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.flags = 0;
+
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+    if (vmaCreateImage(memoryManager->allocator(), &imageInfo, &allocInfo,
+                       &textureImage, &textureAllocation, nullptr) !=
+        VK_SUCCESS) {
+      throw std::runtime_error("failed to create texture image!");
+    }
+
+    transitionImageLayout(textureImage, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    copyBufferToImage(stagingBuffer.buffer().buffer, textureImage,
+                      static_cast<uint32_t>(texWidth),
+                      static_cast<uint32_t>(texHeight));
+    transitionImageLayout(textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    VkImageView imageView = createImageView(textureImage, imageInfo.format);
+
+    textureImages.push_back(textureImage);
+    textureAllocations.push_back(textureAllocation);
+
+    utility::material::TextureResource resource{};
+    resource.image = textureImage;
+    resource.imageView = imageView;
+    resource.name = texturePath;
+    return resource;
+  }
+
+  void loadGltfTexturesAndMaterials(const std::string& gltfPath) {
+    tinygltf::TinyGLTF loader;
+    tinygltf::Model gltfModel;
+    std::string err;
+    std::string warn;
+
+    const bool isBinary = gltfPath.size() > 4 &&
+                          gltfPath.substr(gltfPath.size() - 4) == ".glb";
+    bool loaded = false;
+    if (isBinary) {
+      loaded = loader.LoadBinaryFromFile(&gltfModel, &err, &warn, gltfPath);
+    } else {
+      loaded = loader.LoadASCIIFromFile(&gltfModel, &err, &warn, gltfPath);
+    }
+
+    if (!warn.empty()) {
+      std::clog << "glTF warning: " << warn << std::endl;
+    }
+    if (!loaded) {
+      std::cerr << "Failed to load glTF materials: " << err << std::endl;
+      return;
+    }
+
+    std::vector<uint32_t> imageToTexture(gltfModel.images.size(),
+                                         std::numeric_limits<uint32_t>::max());
+    const auto baseDir = std::filesystem::path(gltfPath).parent_path();
+
+    for (size_t i = 0; i < gltfModel.images.size(); ++i) {
+      const auto& image = gltfModel.images[i];
+      if (image.uri.empty()) continue;
+      const auto fullPath = (baseDir / image.uri).string();
+      try {
+        auto resource = createTextureFromFile(fullPath);
+        imageToTexture[i] = textureManager.registerTexture(resource);
+      } catch (const std::exception& exc) {
+        std::cerr << "Texture load failed for " << fullPath << ": "
+                  << exc.what() << std::endl;
+      }
+    }
+
+    const auto existingMaterials = materialManager.materialCount();
+    for (const auto& mat : gltfModel.materials) {
+      utility::material::Material material{};
+      if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
+        material.baseColor =
+            glm::vec4(static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[0]),
+                      static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[1]),
+                      static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[2]),
+                      static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[3]));
+      }
+
+      material.metallicFactor =
+          static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
+      material.roughnessFactor =
+          static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
+      if (mat.emissiveFactor.size() == 3) {
+        material.emissiveColor = glm::vec3(
+            static_cast<float>(mat.emissiveFactor[0]),
+            static_cast<float>(mat.emissiveFactor[1]),
+            static_cast<float>(mat.emissiveFactor[2]));
+      }
+
+      const auto baseIndex = mat.pbrMetallicRoughness.baseColorTexture.index;
+      if (baseIndex >= 0 &&
+          static_cast<size_t>(baseIndex) < gltfModel.textures.size()) {
+        const auto& tex = gltfModel.textures[baseIndex];
+        if (tex.source >= 0 &&
+            static_cast<size_t>(tex.source) < imageToTexture.size()) {
+          material.baseColorTextureIndex = imageToTexture[tex.source];
+        }
+      }
+
+      const auto metallicIndex = mat.pbrMetallicRoughness.metallicRoughnessTexture.index;
+      if (metallicIndex >= 0 &&
+          static_cast<size_t>(metallicIndex) < gltfModel.textures.size()) {
+        const auto& tex = gltfModel.textures[metallicIndex];
+        if (tex.source >= 0 &&
+            static_cast<size_t>(tex.source) < imageToTexture.size()) {
+          material.metallicRoughnessTextureIndex = imageToTexture[tex.source];
+        }
+      }
+
+      const auto normalIndex = mat.normalTexture.index;
+      if (normalIndex >= 0 &&
+          static_cast<size_t>(normalIndex) < gltfModel.textures.size()) {
+        const auto& tex = gltfModel.textures[normalIndex];
+        if (tex.source >= 0 &&
+            static_cast<size_t>(tex.source) < imageToTexture.size()) {
+          material.normalTextureIndex = imageToTexture[tex.source];
+        }
+      }
+
+      const auto occlusionIndex = mat.occlusionTexture.index;
+      if (occlusionIndex >= 0 &&
+          static_cast<size_t>(occlusionIndex) < gltfModel.textures.size()) {
+        const auto& tex = gltfModel.textures[occlusionIndex];
+        if (tex.source >= 0 &&
+            static_cast<size_t>(tex.source) < imageToTexture.size()) {
+          material.occlusionTextureIndex = imageToTexture[tex.source];
+        }
+      }
+
+      const auto emissiveIndex = mat.emissiveTexture.index;
+      if (emissiveIndex >= 0 &&
+          static_cast<size_t>(emissiveIndex) < gltfModel.textures.size()) {
+        const auto& tex = gltfModel.textures[emissiveIndex];
+        if (tex.source >= 0 &&
+            static_cast<size_t>(tex.source) < imageToTexture.size()) {
+          material.emissiveTextureIndex = imageToTexture[tex.source];
+        }
+      }
+
+      materialManager.createMaterial(material);
+    }
+
+    if (!gltfModel.materials.empty()) {
+      defaultMaterialIndex =
+          static_cast<uint32_t>(existingMaterials);
+    }
   }
 
   void createCommandBuffers() {
