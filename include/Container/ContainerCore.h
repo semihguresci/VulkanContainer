@@ -17,8 +17,9 @@ class ContainerCore {
   ContainerCore(ContainerCore&&) = delete;
   ContainerCore& operator=(ContainerCore&&) = delete;
 
-  constexpr auto version() noexcept -> Version;
+  constexpr auto version() const noexcept -> Version;
 };
 }  // namespace Container
 
-#endif
+#endif  // CONTAINER_CORE_H
+

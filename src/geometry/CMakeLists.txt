@@ -1,5 +1,6 @@
 # Geometry component
 add_library(VulkanContainer_geometry
+    GltfModelLoader.cpp
     Mesh.cpp
     Model.cpp
     tinygltf_impl.cpp
