@@ -29,7 +29,7 @@ struct VSInput
 struct VSOutput
 {
     float4 pos : SV_Position;
-    [[vk::location(0)]] float3 color;
+    [[vk::location(0)]] float3 baseColor;
 };
 
 [shader("vertex")]
@@ -41,12 +41,15 @@ VSOutput vertMain(VSInput input)
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);
-    output.color = input.inColor * obj.color.rgb;
+    // Prefer the material's base color; vertex color data is ignored for now so
+    // glTF textures and factors can drive the appearance instead of per-vertex
+    // attributes.
+    output.baseColor = obj.color.rgb;
     return output;
 }
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_Target0
 {
-    return float4(vertIn.color, 1.0);
+    return float4(vertIn.baseColor, 1.0);
 }
