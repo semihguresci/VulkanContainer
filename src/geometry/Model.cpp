@@ -2,6 +2,7 @@
 
 #include <tiny_gltf.h>
 
+#include <glm/vec2.hpp>
 #include <glm/vec4.hpp>
 
 #include <cctype>
@@ -113,6 +114,27 @@ std::vector<Vertex> mergeAttributes(const tinygltf::Model& model,
     }
   }
 
+  auto texCoordIt = primitive.attributes.find("TEXCOORD_0");
+  if (texCoordIt != primitive.attributes.end()) {
+    const auto& texCoordAccessor = model.accessors[texCoordIt->second];
+    if (texCoordAccessor.type != TINYGLTF_TYPE_VEC2 ||
+        texCoordAccessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
+      throw std::runtime_error("TEXCOORD_0 must be a VEC2 float attribute");
+    }
+
+    const auto& texCoordView = model.bufferViews[texCoordAccessor.bufferView];
+    const auto& texCoordBuffer = model.buffers[texCoordView.buffer];
+    const size_t stride = texCoordAccessor.ByteStride(texCoordView);
+    const auto* dataStart =
+        texCoordBuffer.data.data() + texCoordView.byteOffset + texCoordAccessor.byteOffset;
+
+    for (size_t i = 0; i < texCoordAccessor.count && i < vertices.size(); ++i) {
+      const auto* element = dataStart + i * stride;
+      const auto* value = reinterpret_cast<const float*>(element);
+      vertices[i].texCoord = glm::vec2(value[0], value[1]);
+    }
+  }
+
   return vertices;
 }
 
@@ -173,14 +195,14 @@ Model Model::LoadFromGltf(const std::string& path) {
 
 Model Model::MakeCube() {
   const std::vector<Vertex> cubeVertices = {
-      {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-      {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-      {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}},
-      {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 0.0f}},
-      {{-0.5f, -0.5f, 0.5f}, {1.0f, 0.0f, 1.0f}},
-      {{0.5f, -0.5f, 0.5f}, {0.0f, 1.0f, 1.0f}},
-      {{0.5f, 0.5f, 0.5f}, {1.0f, 0.5f, 0.2f}},
-      {{-0.5f, 0.5f, 0.5f}, {0.2f, 0.8f, 0.5f}}};
+      {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {0.0f, 0.0f}},
+      {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {1.0f, 0.0f}},
+      {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {1.0f, 1.0f}},
+      {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 0.0f}, {0.0f, 1.0f}},
+      {{-0.5f, -0.5f, 0.5f}, {1.0f, 0.0f, 1.0f}, {0.0f, 0.0f}},
+      {{0.5f, -0.5f, 0.5f}, {0.0f, 1.0f, 1.0f}, {1.0f, 0.0f}},
+      {{0.5f, 0.5f, 0.5f}, {1.0f, 0.5f, 0.2f}, {1.0f, 1.0f}},
+      {{-0.5f, 0.5f, 0.5f}, {0.2f, 0.8f, 0.5f}, {0.0f, 1.0f}}};
 
   const std::vector<uint32_t> cubeIndices = {4, 5, 6, 6, 7, 4, 0, 3, 2, 2, 1, 0,
                                              0, 4, 7, 7, 3, 0, 5, 1, 2, 2, 6, 5,

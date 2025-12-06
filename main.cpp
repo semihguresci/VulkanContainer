@@ -10,12 +10,14 @@
 #include <Container/utility/PipelineManager.h>
 #include <Container/utility/SceneGraph.h>
 #include <Container/utility/SwapChainManager.h>
+#include <Container/utility/VulkanAlignment.h>
 #include <Container/utility/VulkanDevice.h>
 #include <Container/utility/VulkanHandles.h>
 #include <Container/utility/VulkanInstance.h>
 #include <Container/utility/VulkanMemoryManager.h>
 #include <Container/utility/WindowManager.h>
 #include <GLFW/glfw3.h>
+#include <tiny_gltf.h>
 
 #include <vulkan/vulkan.hpp>
 
@@ -27,6 +29,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
+#include <filesystem>
 #include <limits>
 #include <fstream>
 #include <glm/glm.hpp>
@@ -37,6 +40,8 @@
 #include <utility>
 #include <vector>
 #include <vk_mem_alloc.h>
+
+#include <stb_image.h>
 
 using utility::FrameSyncManager;
 using utility::QueueFamilyIndices;
@@ -75,6 +80,15 @@ struct CameraData {
 struct ObjectData {
   alignas(16) glm::mat4 model{1.0f};
   alignas(16) glm::vec4 color{1.0f};
+  alignas(16) glm::vec3 emissiveColor{0.0f, 0.0f, 0.0f};
+  alignas(4) float emissiveStrength{1.0f};
+  alignas(8) glm::vec2 metallicRoughness{1.0f, 1.0f};
+  alignas(4) uint32_t baseColorTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t normalTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t occlusionTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t emissiveTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t metallicRoughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t padding{0};
 };
 
 struct BindlessPushConstants {
@@ -114,10 +128,13 @@ class HelloTriangleApplication {
   VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
   VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
   VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
+  VkSampler baseColorSampler = VK_NULL_HANDLE;
 
   utility::materialx::SlangMaterialXBridge materialXBridge;
   utility::material::TextureManager textureManager{};
   utility::material::MaterialManager materialManager{};
+  std::vector<VmaAllocation> textureAllocations{};
+  std::vector<VkImage> textureImages{};
   utility::scene::SceneGraph sceneGraph{};
   std::vector<uint32_t> renderableNodes{};
   uint32_t rootNode = utility::scene::SceneGraph::kInvalidNode;
@@ -177,15 +194,17 @@ class HelloTriangleApplication {
     swapChainManager->initialize();
     createRenderPass();
     createDescriptorSetLayout();
+    createSampler();
     loadMaterialXMaterial();
-    buildSceneGraph();
     createGraphicsPipeline();
     swapChainManager->createFramebuffers(renderPass.get());
     createCommandPool();
     createMemoryManager();
+    loadGltfTexturesAndMaterials(config_.modelPath);
     loadModel();
     createVertexBuffer();
     createIndexBuffer();
+    buildSceneGraph();
     createCamera();
     createSceneBuffers();
     createDescriptorPool();
@@ -228,6 +247,29 @@ class HelloTriangleApplication {
       pipelineLayout = VK_NULL_HANDLE;
       descriptorPool = VK_NULL_HANDLE;
       descriptorSetLayout = VK_NULL_HANDLE;
+    }
+
+    if (baseColorSampler != VK_NULL_HANDLE) {
+      vkDestroySampler(deviceWrapper->device(), baseColorSampler, nullptr);
+      baseColorSampler = VK_NULL_HANDLE;
+    }
+
+    for (size_t i = 0; i < textureImages.size(); ++i) {
+      if (textureManager.getTexture(static_cast<uint32_t>(i)) != nullptr) {
+        vkDestroyImageView(deviceWrapper->device(),
+                          textureManager.getTexture(static_cast<uint32_t>(i))->imageView,
+                          nullptr);
+      }
+    }
+    for (auto image : textureImages) {
+      if (image != VK_NULL_HANDLE) {
+        vkDestroyImage(deviceWrapper->device(), image, nullptr);
+      }
+    }
+    for (auto allocation : textureAllocations) {
+      if (allocation != VK_NULL_HANDLE && memoryManager) {
+        vmaFreeMemory(memoryManager->allocator(), allocation);
+      }
     }
 
     renderPass.reset();
@@ -339,13 +381,11 @@ class HelloTriangleApplication {
     VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{};
     descriptorIndexingFeatures.sType =
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
-    descriptorIndexingFeatures.shaderUniformBufferArrayNonUniformIndexing =
-        VK_TRUE;
     descriptorIndexingFeatures.runtimeDescriptorArray = VK_TRUE;
     descriptorIndexingFeatures.descriptorBindingPartiallyBound = VK_TRUE;
     descriptorIndexingFeatures.descriptorBindingVariableDescriptorCount =
         VK_TRUE;
-    descriptorIndexingFeatures.descriptorBindingUniformBufferUpdateAfterBind =
+    descriptorIndexingFeatures.shaderSampledImageArrayNonUniformIndexing =
         VK_TRUE;
 
     VkPhysicalDeviceBufferDeviceAddressFeatures bufferDeviceAddressFeatures{};
@@ -410,25 +450,64 @@ class HelloTriangleApplication {
 
     VkDescriptorSetLayoutBinding objectBinding{};
     objectBinding.binding = 1;
-    objectBinding.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    objectBinding.descriptorCount = config_.maxSceneObjects;
+    objectBinding.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    objectBinding.descriptorCount = 1;
     objectBinding.stageFlags =
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorSetLayoutBinding, 2> bindings = {cameraBinding,
-                                                             objectBinding};
+    VkDescriptorSetLayoutBinding samplerBinding{};
+    samplerBinding.binding = 2;
+    samplerBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    samplerBinding.descriptorCount = 1;
+    samplerBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
 
-    std::array<VkDescriptorBindingFlags, 2> bindingFlags = {
-        0u, VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-                VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT |
-                VK_DESCRIPTOR_BINDING_UPDATE_AFTER_BIND_BIT};
+    VkDescriptorSetLayoutBinding textureBinding{};
+    textureBinding.binding = 3;
+    textureBinding.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    textureBinding.descriptorCount = config_.maxSceneObjects;
+    textureBinding.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+
+    std::array<VkDescriptorSetLayoutBinding, 4> bindings = {
+        cameraBinding, objectBinding, samplerBinding, textureBinding};
+
+    std::array<VkDescriptorBindingFlags, 4> bindingFlags = {
+        0u,
+        0u,
+        0u,
+        VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+            VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT};
 
     descriptorSetLayout = pipelineManager->createDescriptorSetLayout(
         std::vector<VkDescriptorSetLayoutBinding>(bindings.begin(),
                                                   bindings.end()),
         std::vector<VkDescriptorBindingFlags>(bindingFlags.begin(),
                                               bindingFlags.end()),
-        VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT);
+        0);
+  }
+
+  void createSampler() {
+    VkSamplerCreateInfo samplerInfo{};
+    samplerInfo.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+    samplerInfo.magFilter = VK_FILTER_LINEAR;
+    samplerInfo.minFilter = VK_FILTER_LINEAR;
+    samplerInfo.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+    samplerInfo.anisotropyEnable = VK_FALSE;
+    samplerInfo.maxAnisotropy = 1.0f;
+    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.unnormalizedCoordinates = VK_FALSE;
+    samplerInfo.compareEnable = VK_FALSE;
+    samplerInfo.compareOp = VK_COMPARE_OP_ALWAYS;
+    samplerInfo.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+    samplerInfo.minLod = 0.0f;
+    samplerInfo.maxLod = 0.0f;
+    samplerInfo.mipLodBias = 0.0f;
+
+    if (vkCreateSampler(deviceWrapper->device(), &samplerInfo, nullptr,
+                        &baseColorSampler) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create texture sampler!");
+    }
   }
 
   void loadMaterialXMaterial() {
@@ -440,6 +519,10 @@ class HelloTriangleApplication {
       std::cerr << "MaterialX load failed: " << exc.what() << std::endl;
       material.baseColor = glm::vec4(1.0f);
     }
+
+    material.emissiveColor = glm::vec3(0.0f);
+    material.metallicFactor = 1.0f;
+    material.roughnessFactor = 1.0f;
 
     materialBaseColor = material.baseColor;
     if (defaultMaterialIndex == std::numeric_limits<uint32_t>::max()) {
@@ -619,7 +702,7 @@ class HelloTriangleApplication {
 
     objectBuffer = memoryManager->createBuffer(
         sizeof(ObjectData) * config_.maxSceneObjects,
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VMA_MEMORY_USAGE_AUTO,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
             VMA_ALLOCATION_CREATE_MAPPED_BIT);
@@ -685,6 +768,55 @@ class HelloTriangleApplication {
     return currentMaterialBaseColor();
   }
 
+  uint32_t resolveMaterialTextureIndex(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return material->baseColorTextureIndex;
+    }
+    return std::numeric_limits<uint32_t>::max();
+  }
+
+  uint32_t resolveMaterialNormalTexture(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return material->normalTextureIndex;
+    }
+    return std::numeric_limits<uint32_t>::max();
+  }
+
+  uint32_t resolveMaterialOcclusionTexture(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return material->occlusionTextureIndex;
+    }
+    return std::numeric_limits<uint32_t>::max();
+  }
+
+  uint32_t resolveMaterialEmissiveTexture(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return material->emissiveTextureIndex;
+    }
+    return std::numeric_limits<uint32_t>::max();
+  }
+
+  uint32_t resolveMaterialMetallicRoughnessTexture(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return material->metallicRoughnessTextureIndex;
+    }
+    return std::numeric_limits<uint32_t>::max();
+  }
+
+  glm::vec2 resolveMaterialMetallicRoughnessFactors(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return glm::vec2(material->metallicFactor, material->roughnessFactor);
+    }
+    return glm::vec2(1.0f, 1.0f);
+  }
+
+  glm::vec4 resolveMaterialEmissive(uint32_t materialIndex) const {
+    if (const auto* material = materialManager.getMaterial(materialIndex)) {
+      return glm::vec4(material->emissiveColor, 1.0f);
+    }
+    return glm::vec4(0.0f);
+  }
+
   void syncObjectDataFromSceneGraph() {
     sceneGraph.updateWorldTransforms();
     renderableNodes = sceneGraph.renderableNodes();
@@ -699,6 +831,14 @@ class HelloTriangleApplication {
       const uint32_t materialIndex = node ? node->materialIndex : defaultMaterialIndex;
       objectData[i].model = model;
       objectData[i].color = resolveMaterialColor(materialIndex);
+      objectData[i].emissiveColor = resolveMaterialEmissive(materialIndex);
+      objectData[i].metallicRoughness = resolveMaterialMetallicRoughnessFactors(materialIndex);
+      objectData[i].baseColorTextureIndex = resolveMaterialTextureIndex(materialIndex);
+      objectData[i].normalTextureIndex = resolveMaterialNormalTexture(materialIndex);
+      objectData[i].occlusionTextureIndex = resolveMaterialOcclusionTexture(materialIndex);
+      objectData[i].emissiveTextureIndex = resolveMaterialEmissiveTexture(materialIndex);
+      objectData[i].metallicRoughnessTextureIndex =
+          resolveMaterialMetallicRoughnessTexture(materialIndex);
     }
   }
 
@@ -717,28 +857,46 @@ class HelloTriangleApplication {
   }
 
   void createDescriptorPool() {
-    VkDescriptorPoolSize poolSize{};
-    poolSize.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    poolSize.descriptorCount = config_.maxSceneObjects + 1;
+    VkDescriptorPoolSize uniformPool{};
+    uniformPool.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    uniformPool.descriptorCount = config_.maxSceneObjects + 1;
+
+    VkDescriptorPoolSize storagePool{};
+    storagePool.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    storagePool.descriptorCount = 1;
+
+    VkDescriptorPoolSize sampledImagePool{};
+    sampledImagePool.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    sampledImagePool.descriptorCount =
+        std::max<uint32_t>(config_.maxSceneObjects,
+                           static_cast<uint32_t>(textureManager.textureCount()));
+
+    VkDescriptorPoolSize samplerPool{};
+    samplerPool.type = VK_DESCRIPTOR_TYPE_SAMPLER;
+    samplerPool.descriptorCount = 1;
 
     descriptorPool = pipelineManager->createDescriptorPool(
-        std::vector<VkDescriptorPoolSize>{poolSize}, 1,
-        VK_DESCRIPTOR_POOL_CREATE_UPDATE_AFTER_BIND_BIT);
+        std::vector<VkDescriptorPoolSize>{uniformPool, storagePool, sampledImagePool,
+                                          samplerPool},
+        1, 0);
   }
 
   void allocateAndWriteDescriptorSet() {
-    VkDescriptorSetVariableDescriptorCountAllocateInfo countInfo{};
-    countInfo.sType =
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
-    countInfo.descriptorSetCount = 1;
-    uint32_t descriptorCount = config_.maxSceneObjects;
-    countInfo.pDescriptorCounts = &descriptorCount;
+    const uint32_t textureDescriptorCount = std::min<uint32_t>(
+        config_.maxSceneObjects,
+        std::max<uint32_t>(1u, static_cast<uint32_t>(textureManager.textureCount())));
 
     VkDescriptorSetAllocateInfo allocInfo{};
     allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
     allocInfo.descriptorPool = descriptorPool;
     allocInfo.descriptorSetCount = 1;
     allocInfo.pSetLayouts = &descriptorSetLayout;
+    uint32_t descriptorCount = textureDescriptorCount;
+    VkDescriptorSetVariableDescriptorCountAllocateInfo countInfo{};
+    countInfo.sType =
+        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
+    countInfo.descriptorSetCount = 1;
+    countInfo.pDescriptorCounts = &descriptorCount;
     allocInfo.pNext = &countInfo;
 
     if (vkAllocateDescriptorSets(deviceWrapper->device(), &allocInfo,
@@ -751,37 +909,70 @@ class HelloTriangleApplication {
     cameraBufferInfo.offset = 0;
     cameraBufferInfo.range = sizeof(CameraData);
 
-    std::vector<VkDescriptorBufferInfo> objectBufferInfos{};
-    if (!objectData.empty()) {
-      objectBufferInfos.resize(objectData.size());
-      for (size_t i = 0; i < objectData.size(); ++i) {
-        objectBufferInfos[i].buffer = objectBuffer.buffer;
-        objectBufferInfos[i].offset = static_cast<VkDeviceSize>(
-            i * sizeof(ObjectData));
-        objectBufferInfos[i].range = sizeof(ObjectData);
+    VkDescriptorBufferInfo objectBufferInfo{};
+    objectBufferInfo.buffer = objectBuffer.buffer;
+    objectBufferInfo.offset = 0;
+    objectBufferInfo.range = sizeof(ObjectData) * config_.maxSceneObjects;
+
+    std::vector<VkWriteDescriptorSet> descriptorWrites{};
+
+    VkWriteDescriptorSet cameraWrite{};
+    cameraWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    cameraWrite.dstSet = descriptorSet;
+    cameraWrite.dstBinding = 0;
+    cameraWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    cameraWrite.descriptorCount = 1;
+    cameraWrite.pBufferInfo = &cameraBufferInfo;
+    descriptorWrites.push_back(cameraWrite);
+
+    VkWriteDescriptorSet objectWrite{};
+    objectWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    objectWrite.dstSet = descriptorSet;
+    objectWrite.dstBinding = 1;
+    objectWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    objectWrite.descriptorCount = 1;
+    objectWrite.pBufferInfo = &objectBufferInfo;
+    descriptorWrites.push_back(objectWrite);
+
+    std::vector<VkDescriptorImageInfo> textureInfos{};
+    const size_t textureCount = textureManager.textureCount();
+    if (textureCount > 0) {
+      textureInfos.reserve(std::min<size_t>(textureCount, textureDescriptorCount));
+      const size_t maxTextures = std::min<size_t>(textureDescriptorCount, textureCount);
+      for (size_t i = 0; i < maxTextures; ++i) {
+        const auto* tex = textureManager.getTexture(static_cast<uint32_t>(i));
+        if (tex == nullptr) continue;
+        VkDescriptorImageInfo info{};
+        info.sampler = VK_NULL_HANDLE;
+        info.imageView = tex->imageView;
+        info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        textureInfos.push_back(info);
       }
-    } else {
-      objectBufferInfos.push_back({objectBuffer.buffer, 0, sizeof(ObjectData)});
+
+      if (!textureInfos.empty()) {
+        VkWriteDescriptorSet textureWrite{};
+        textureWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        textureWrite.dstSet = descriptorSet;
+        textureWrite.dstBinding = 3;
+        textureWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+        textureWrite.descriptorCount =
+            static_cast<uint32_t>(textureInfos.size());
+        textureWrite.pImageInfo = textureInfos.data();
+        descriptorWrites.push_back(textureWrite);
+      }
     }
 
-    std::array<VkWriteDescriptorSet, 2> descriptorWrites{};
+    VkDescriptorImageInfo samplerInfo{};
+    samplerInfo.sampler = baseColorSampler;
 
-    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrites[0].dstSet = descriptorSet;
-    descriptorWrites[0].dstBinding = 0;
-    descriptorWrites[0].dstArrayElement = 0;
-    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    descriptorWrites[0].descriptorCount = 1;
-    descriptorWrites[0].pBufferInfo = &cameraBufferInfo;
-
-    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrites[1].dstSet = descriptorSet;
-    descriptorWrites[1].dstBinding = 1;
-    descriptorWrites[1].dstArrayElement = 0;
-    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    descriptorWrites[1].descriptorCount =
-        static_cast<uint32_t>(objectBufferInfos.size());
-    descriptorWrites[1].pBufferInfo = objectBufferInfos.data();
+    VkWriteDescriptorSet samplerWrite{};
+    samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    samplerWrite.dstSet = descriptorSet;
+    samplerWrite.dstBinding = 2;
+    samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    samplerWrite.descriptorCount = 1;
+    samplerWrite.pImageInfo = &samplerInfo;
+    descriptorWrites.push_back(samplerWrite);
 
     vkUpdateDescriptorSets(deviceWrapper->device(),
                            static_cast<uint32_t>(descriptorWrites.size()),
@@ -836,6 +1027,106 @@ class HelloTriangleApplication {
     return slice;
   }
 
+  VkCommandBuffer beginSingleTimeCommands() {
+    VkCommandBufferAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    allocInfo.commandPool = commandPool.get();
+    allocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    vkAllocateCommandBuffers(deviceWrapper->device(), &allocInfo, &commandBuffer);
+
+    VkCommandBufferBeginInfo beginInfo{};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+
+    vkBeginCommandBuffer(commandBuffer, &beginInfo);
+    return commandBuffer;
+  }
+
+  void endSingleTimeCommands(VkCommandBuffer commandBuffer) {
+    vkEndCommandBuffer(commandBuffer);
+
+    VkSubmitInfo submitInfo{};
+    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+    submitInfo.commandBufferCount = 1;
+    submitInfo.pCommandBuffers = &commandBuffer;
+
+    vkQueueSubmit(deviceWrapper->graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE);
+    vkQueueWaitIdle(deviceWrapper->graphicsQueue());
+
+    vkFreeCommandBuffers(deviceWrapper->device(), commandPool.get(), 1,
+                         &commandBuffer);
+  }
+
+  void transitionImageLayout(VkImage image, VkImageLayout oldLayout,
+                             VkImageLayout newLayout) {
+    VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+    VkImageMemoryBarrier barrier{};
+    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    barrier.oldLayout = oldLayout;
+    barrier.newLayout = newLayout;
+    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    barrier.subresourceRange.baseMipLevel = 0;
+    barrier.subresourceRange.levelCount = 1;
+    barrier.subresourceRange.baseArrayLayer = 0;
+    barrier.subresourceRange.layerCount = 1;
+
+    VkPipelineStageFlags sourceStage;
+    VkPipelineStageFlags destinationStage;
+
+    if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
+        newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
+      barrier.srcAccessMask = 0;
+      barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+
+      sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+      destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
+               newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+      barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+
+      sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+      destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+    } else {
+      throw std::invalid_argument("unsupported layout transition!");
+    }
+
+    vkCmdPipelineBarrier(commandBuffer, sourceStage, destinationStage, 0, 0,
+                         nullptr, 0, nullptr, 1, &barrier);
+
+    endSingleTimeCommands(commandBuffer);
+  }
+
+  void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width,
+                         uint32_t height) {
+    VkCommandBuffer commandBuffer = beginSingleTimeCommands();
+
+    VkBufferImageCopy region{};
+    region.bufferOffset = 0;
+    region.bufferRowLength = 0;
+    region.bufferImageHeight = 0;
+
+    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    region.imageSubresource.mipLevel = 0;
+    region.imageSubresource.baseArrayLayer = 0;
+    region.imageSubresource.layerCount = 1;
+
+    region.imageOffset = {0, 0, 0};
+    region.imageExtent = {width, height, 1};
+
+    vkCmdCopyBufferToImage(commandBuffer, buffer, image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+
+    endSingleTimeCommands(commandBuffer);
+  }
+
   void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size,
                   VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0) {
     vk::CommandBufferAllocateInfo allocInfo{};
@@ -870,6 +1161,212 @@ class HelloTriangleApplication {
     vkQueueSubmit(deviceWrapper->graphicsQueue(), 1, &submitInfo,
                   VK_NULL_HANDLE);
     vkQueueWaitIdle(deviceWrapper->graphicsQueue());
+  }
+
+  VkImageView createImageView(VkImage image, VkFormat format) {
+    VkImageViewCreateInfo viewInfo{};
+    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    viewInfo.image = image;
+    viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    viewInfo.format = format;
+    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    viewInfo.subresourceRange.baseMipLevel = 0;
+    viewInfo.subresourceRange.levelCount = 1;
+    viewInfo.subresourceRange.baseArrayLayer = 0;
+    viewInfo.subresourceRange.layerCount = 1;
+
+    VkImageView imageView;
+    if (vkCreateImageView(deviceWrapper->device(), &viewInfo, nullptr,
+                          &imageView) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create texture image view!");
+    }
+
+    return imageView;
+  }
+
+  utility::material::TextureResource createTextureFromFile(
+      const std::string& texturePath) {
+    int texWidth, texHeight, texChannels;
+    stbi_uc* pixels = stbi_load(texturePath.c_str(), &texWidth, &texHeight,
+                                &texChannels, STBI_rgb_alpha);
+    if (!pixels) {
+      throw std::runtime_error("failed to load texture image: " + texturePath);
+    }
+
+    VkDeviceSize imageSize = static_cast<VkDeviceSize>(texWidth) *
+                             static_cast<VkDeviceSize>(texHeight) * 4;
+    utility::memory::StagingBuffer stagingBuffer(*memoryManager, imageSize);
+    stagingBuffer.upload(
+        {reinterpret_cast<const std::byte*>(pixels), static_cast<size_t>(imageSize)});
+    stbi_image_free(pixels);
+
+    VkImage textureImage;
+    VmaAllocation textureAllocation;
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = static_cast<uint32_t>(texWidth);
+    imageInfo.extent.height = static_cast<uint32_t>(texHeight);
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = 1;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+    imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage =
+        VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    imageInfo.flags = 0;
+
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+    if (vmaCreateImage(memoryManager->allocator(), &imageInfo, &allocInfo,
+                       &textureImage, &textureAllocation, nullptr) !=
+        VK_SUCCESS) {
+      throw std::runtime_error("failed to create texture image!");
+    }
+
+    transitionImageLayout(textureImage, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+    copyBufferToImage(stagingBuffer.buffer().buffer, textureImage,
+                      static_cast<uint32_t>(texWidth),
+                      static_cast<uint32_t>(texHeight));
+    transitionImageLayout(textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+    VkImageView imageView = createImageView(textureImage, imageInfo.format);
+
+    textureImages.push_back(textureImage);
+    textureAllocations.push_back(textureAllocation);
+
+    utility::material::TextureResource resource{};
+    resource.image = textureImage;
+    resource.imageView = imageView;
+    resource.name = texturePath;
+    return resource;
+  }
+
+  void loadGltfTexturesAndMaterials(const std::string& gltfPath) {
+    tinygltf::TinyGLTF loader;
+    tinygltf::Model gltfModel;
+    std::string err;
+    std::string warn;
+
+    const bool isBinary = gltfPath.size() > 4 &&
+                          gltfPath.substr(gltfPath.size() - 4) == ".glb";
+    bool loaded = false;
+    if (isBinary) {
+      loaded = loader.LoadBinaryFromFile(&gltfModel, &err, &warn, gltfPath);
+    } else {
+      loaded = loader.LoadASCIIFromFile(&gltfModel, &err, &warn, gltfPath);
+    }
+
+    if (!warn.empty()) {
+      std::clog << "glTF warning: " << warn << std::endl;
+    }
+    if (!loaded) {
+      std::cerr << "Failed to load glTF materials: " << err << std::endl;
+      return;
+    }
+
+    std::vector<uint32_t> imageToTexture(gltfModel.images.size(),
+                                         std::numeric_limits<uint32_t>::max());
+    const auto baseDir = std::filesystem::path(gltfPath).parent_path();
+
+    for (size_t i = 0; i < gltfModel.images.size(); ++i) {
+      const auto& image = gltfModel.images[i];
+      if (image.uri.empty()) continue;
+      const auto fullPath = (baseDir / image.uri).string();
+      try {
+        auto resource = createTextureFromFile(fullPath);
+        imageToTexture[i] = textureManager.registerTexture(resource);
+      } catch (const std::exception& exc) {
+        std::cerr << "Texture load failed for " << fullPath << ": "
+                  << exc.what() << std::endl;
+      }
+    }
+
+    const auto existingMaterials = materialManager.materialCount();
+    for (const auto& mat : gltfModel.materials) {
+      utility::material::Material material{};
+      if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
+        material.baseColor =
+            glm::vec4(static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[0]),
+                      static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[1]),
+                      static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[2]),
+                      static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[3]));
+      }
+
+      material.metallicFactor =
+          static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
+      material.roughnessFactor =
+          static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
+      if (mat.emissiveFactor.size() == 3) {
+        material.emissiveColor = glm::vec3(
+            static_cast<float>(mat.emissiveFactor[0]),
+            static_cast<float>(mat.emissiveFactor[1]),
+            static_cast<float>(mat.emissiveFactor[2]));
+      }
+
+      const auto baseIndex = mat.pbrMetallicRoughness.baseColorTexture.index;
+      if (baseIndex >= 0 &&
+          static_cast<size_t>(baseIndex) < gltfModel.textures.size()) {
+        const auto& tex = gltfModel.textures[baseIndex];
+        if (tex.source >= 0 &&
+            static_cast<size_t>(tex.source) < imageToTexture.size()) {
+          material.baseColorTextureIndex = imageToTexture[tex.source];
+        }
+      }
+
+      const auto metallicIndex = mat.pbrMetallicRoughness.metallicRoughnessTexture.index;
+      if (metallicIndex >= 0 &&
+          static_cast<size_t>(metallicIndex) < gltfModel.textures.size()) {
+        const auto& tex = gltfModel.textures[metallicIndex];
+        if (tex.source >= 0 &&
+            static_cast<size_t>(tex.source) < imageToTexture.size()) {
+          material.metallicRoughnessTextureIndex = imageToTexture[tex.source];
+        }
+      }
+
+      const auto normalIndex = mat.normalTexture.index;
+      if (normalIndex >= 0 &&
+          static_cast<size_t>(normalIndex) < gltfModel.textures.size()) {
+        const auto& tex = gltfModel.textures[normalIndex];
+        if (tex.source >= 0 &&
+            static_cast<size_t>(tex.source) < imageToTexture.size()) {
+          material.normalTextureIndex = imageToTexture[tex.source];
+        }
+      }
+
+      const auto occlusionIndex = mat.occlusionTexture.index;
+      if (occlusionIndex >= 0 &&
+          static_cast<size_t>(occlusionIndex) < gltfModel.textures.size()) {
+        const auto& tex = gltfModel.textures[occlusionIndex];
+        if (tex.source >= 0 &&
+            static_cast<size_t>(tex.source) < imageToTexture.size()) {
+          material.occlusionTextureIndex = imageToTexture[tex.source];
+        }
+      }
+
+      const auto emissiveIndex = mat.emissiveTexture.index;
+      if (emissiveIndex >= 0 &&
+          static_cast<size_t>(emissiveIndex) < gltfModel.textures.size()) {
+        const auto& tex = gltfModel.textures[emissiveIndex];
+        if (tex.source >= 0 &&
+            static_cast<size_t>(tex.source) < imageToTexture.size()) {
+          material.emissiveTextureIndex = imageToTexture[tex.source];
+        }
+      }
+
+      materialManager.createMaterial(material);
+    }
+
+    if (!gltfModel.materials.empty()) {
+      defaultMaterialIndex =
+          static_cast<uint32_t>(existingMaterials);
+    }
   }
 
   void createCommandBuffers() {
