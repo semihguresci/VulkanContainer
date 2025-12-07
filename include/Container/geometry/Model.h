@@ -7,10 +7,13 @@
 
 namespace geometry {
 
+struct GltfLoadResult;
+
 class Model;
 
 namespace gltf {
 Model LoadModelFromFile(const std::string& path);
+GltfLoadResult LoadModelWithSource(const std::string& path);
 }
 
 class Model {
@@ -31,6 +34,7 @@ class Model {
 
  private:
   friend Model gltf::LoadModelFromFile(const std::string& path);
+  friend GltfLoadResult gltf::LoadModelWithSource(const std::string& path);
 
   explicit Model(std::vector<Mesh> meshes);
   void flattenMeshes();
