@@ -51,6 +51,7 @@ struct VSOutput
     [[vk::location(7)]] float3 emissiveColor;
     [[vk::location(8)]] float emissiveStrength;
     [[vk::location(9)]] float2 metallicRoughness;
+    [[vk::location(10)]] float3 worldPos;
 };
 
 [shader("vertex")]
@@ -71,6 +72,7 @@ VSOutput vertMain(VSInput input)
     output.emissiveColor = obj.emissiveColor;
     output.emissiveStrength = obj.emissiveStrength;
     output.metallicRoughness = obj.metallicRoughness;
+    output.worldPos = worldPos.xyz;
     return output;
 }
 
@@ -105,15 +107,41 @@ float4 fragMain(VSOutput vertIn) : SV_Target0
         sampledMetallic *= mrSample.b;
     }
 
+    float3 dpdx = ddx(vertIn.worldPos);
+    float3 dpdy = ddy(vertIn.worldPos);
+    float2 duvdx = ddx(vertIn.texCoord);
+    float2 duvdy = ddy(vertIn.texCoord);
+
+    float3 geomNormal = normalize(cross(dpdx, dpdy));
+    if (!all(isfinite(geomNormal)) || length(geomNormal) < 1e-4)
+    {
+        geomNormal = float3(0.0, 0.0, 1.0);
+    }
+
+    float3 tangent = dpdx * duvdy.y - dpdy * duvdx.y;
+    float3 bitangent = -dpdx * duvdy.x + dpdy * duvdx.x;
+    if (length(tangent) < 1e-4 || length(bitangent) < 1e-4)
+    {
+        tangent = float3(1.0, 0.0, 0.0);
+        bitangent = float3(0.0, 1.0, 0.0);
+    }
+    tangent = normalize(tangent);
+    bitangent = normalize(bitangent);
+
+    float3 shadingNormal = geomNormal;
     if (vertIn.normalTextureIndex != 0xffffffff)
     {
         uint texIndex = NonUniformResourceIndex(vertIn.normalTextureIndex);
         float3 normalSample = materialTextures[texIndex]
                                   .Sample(baseSampler, vertIn.texCoord)
                                   .xyz * 2.0 - 1.0;
-        float facing = saturate(normalSample.z * 0.5 + 0.5);
-        baseColor *= lerp(1.0, facing, 0.5);
+        float3x3 tbn = float3x3(tangent, bitangent, geomNormal);
+        shadingNormal = normalize(mul(normalSample, tbn));
     }
+
+    float3 lightDir = normalize(float3(0.5, 0.75, 1.0));
+    float lighting = saturate(dot(shadingNormal, lightDir));
+    baseColor *= 0.2 + 0.8 * lighting;
 
     if (vertIn.emissiveTextureIndex != 0xffffffff)
     {
