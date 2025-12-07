@@ -231,9 +231,7 @@ std::vector<Mesh> parseMeshes(const tinygltf::Model& model) {
   return meshes;
 }
 
-}  // namespace
-
-Model LoadModelFromFile(const std::string& path) {
+tinygltf::Model loadGltfModel(const std::string& path) {
   tinygltf::TinyGLTF loader;
   tinygltf::Model model;
   std::string err;
@@ -253,12 +251,30 @@ Model LoadModelFromFile(const std::string& path) {
     throw std::runtime_error("Failed to load glTF file: " + err);
   }
 
+  return model;
+}
+
+}  // namespace
+
+Model LoadModelFromFile(const std::string& path) {
+  auto model = loadGltfModel(path);
   auto meshes = parseMeshes(model);
   if (meshes.empty()) {
     throw std::runtime_error("No renderable primitives found in glTF file");
   }
 
   return Model{std::move(meshes)};
+}
+
+GltfLoadResult LoadModelWithSource(const std::string& path) {
+  auto gltfModel = loadGltfModel(path);
+
+  auto meshes = parseMeshes(gltfModel);
+  if (meshes.empty()) {
+    throw std::runtime_error("No renderable primitives found in glTF file");
+  }
+
+  return GltfLoadResult{Model{std::move(meshes)}, std::move(gltfModel)};
 }
 
 }  // namespace gltf

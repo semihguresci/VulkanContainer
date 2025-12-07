@@ -142,6 +142,7 @@ class HelloTriangleApplication {
   glm::vec4 materialBaseColor{1.0f};
   uint32_t defaultMaterialIndex = std::numeric_limits<uint32_t>::max();
   geometry::Model model{};
+  tinygltf::Model gltfModel{};
   std::vector<geometry::Vertex> vertices{};
   std::vector<uint32_t> indices{};
   VkIndexType indexType{VK_INDEX_TYPE_UINT32};
@@ -200,8 +201,7 @@ class HelloTriangleApplication {
     swapChainManager->createFramebuffers(renderPass.get());
     createCommandPool();
     createMemoryManager();
-    loadGltfTexturesAndMaterials(config_.modelPath);
-    loadModel();
+    loadGltfAssets();
     createVertexBuffer();
     createIndexBuffer();
     buildSceneGraph();
@@ -979,11 +979,22 @@ class HelloTriangleApplication {
                            descriptorWrites.data(), 0, nullptr);
   }
 
-  void loadModel() {
+  void loadGltfAssets() {
     model = geometry::Model::MakeCube();
+    gltfModel = tinygltf::Model{};
+
     if (!config_.modelPath.empty()) {
       try {
-        model = geometry::Model::LoadFromGltf(config_.modelPath);
+        auto gltfResult = geometry::gltf::LoadModelWithSource(config_.modelPath);
+        gltfModel = std::move(gltfResult.gltfModel);
+        model = std::move(gltfResult.model);
+
+        const auto baseDir = std::filesystem::path(config_.modelPath).parent_path();
+        auto imageToTexture = materialXBridge.loadTexturesForGltf(
+            gltfModel, baseDir, textureManager,
+            [this](const std::string& path) { return createTextureFromFile(path); });
+        materialXBridge.loadMaterialsForGltf(gltfModel, imageToTexture,
+                                             materialManager, defaultMaterialIndex);
       } catch (const std::exception& exc) {
         std::cerr << "glTF load failed: " << exc.what()
                   << "; falling back to cube model." << std::endl;
@@ -1248,126 +1259,6 @@ class HelloTriangleApplication {
     return resource;
   }
 
-  void loadGltfTexturesAndMaterials(const std::string& gltfPath) {
-    tinygltf::TinyGLTF loader;
-    tinygltf::Model gltfModel;
-    std::string err;
-    std::string warn;
-
-    const bool isBinary = gltfPath.size() > 4 &&
-                          gltfPath.substr(gltfPath.size() - 4) == ".glb";
-    bool loaded = false;
-    if (isBinary) {
-      loaded = loader.LoadBinaryFromFile(&gltfModel, &err, &warn, gltfPath);
-    } else {
-      loaded = loader.LoadASCIIFromFile(&gltfModel, &err, &warn, gltfPath);
-    }
-
-    if (!warn.empty()) {
-      std::clog << "glTF warning: " << warn << std::endl;
-    }
-    if (!loaded) {
-      std::cerr << "Failed to load glTF materials: " << err << std::endl;
-      return;
-    }
-
-    std::vector<uint32_t> imageToTexture(gltfModel.images.size(),
-                                         std::numeric_limits<uint32_t>::max());
-    const auto baseDir = std::filesystem::path(gltfPath).parent_path();
-
-    for (size_t i = 0; i < gltfModel.images.size(); ++i) {
-      const auto& image = gltfModel.images[i];
-      if (image.uri.empty()) continue;
-      const auto fullPath = (baseDir / image.uri).string();
-      try {
-        auto resource = createTextureFromFile(fullPath);
-        imageToTexture[i] = textureManager.registerTexture(resource);
-      } catch (const std::exception& exc) {
-        std::cerr << "Texture load failed for " << fullPath << ": "
-                  << exc.what() << std::endl;
-      }
-    }
-
-    const auto existingMaterials = materialManager.materialCount();
-    for (const auto& mat : gltfModel.materials) {
-      utility::material::Material material{};
-      if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
-        material.baseColor =
-            glm::vec4(static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[0]),
-                      static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[1]),
-                      static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[2]),
-                      static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[3]));
-      }
-
-      material.metallicFactor =
-          static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
-      material.roughnessFactor =
-          static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
-      if (mat.emissiveFactor.size() == 3) {
-        material.emissiveColor = glm::vec3(
-            static_cast<float>(mat.emissiveFactor[0]),
-            static_cast<float>(mat.emissiveFactor[1]),
-            static_cast<float>(mat.emissiveFactor[2]));
-      }
-
-      const auto baseIndex = mat.pbrMetallicRoughness.baseColorTexture.index;
-      if (baseIndex >= 0 &&
-          static_cast<size_t>(baseIndex) < gltfModel.textures.size()) {
-        const auto& tex = gltfModel.textures[baseIndex];
-        if (tex.source >= 0 &&
-            static_cast<size_t>(tex.source) < imageToTexture.size()) {
-          material.baseColorTextureIndex = imageToTexture[tex.source];
-        }
-      }
-
-      const auto metallicIndex = mat.pbrMetallicRoughness.metallicRoughnessTexture.index;
-      if (metallicIndex >= 0 &&
-          static_cast<size_t>(metallicIndex) < gltfModel.textures.size()) {
-        const auto& tex = gltfModel.textures[metallicIndex];
-        if (tex.source >= 0 &&
-            static_cast<size_t>(tex.source) < imageToTexture.size()) {
-          material.metallicRoughnessTextureIndex = imageToTexture[tex.source];
-        }
-      }
-
-      const auto normalIndex = mat.normalTexture.index;
-      if (normalIndex >= 0 &&
-          static_cast<size_t>(normalIndex) < gltfModel.textures.size()) {
-        const auto& tex = gltfModel.textures[normalIndex];
-        if (tex.source >= 0 &&
-            static_cast<size_t>(tex.source) < imageToTexture.size()) {
-          material.normalTextureIndex = imageToTexture[tex.source];
-        }
-      }
-
-      const auto occlusionIndex = mat.occlusionTexture.index;
-      if (occlusionIndex >= 0 &&
-          static_cast<size_t>(occlusionIndex) < gltfModel.textures.size()) {
-        const auto& tex = gltfModel.textures[occlusionIndex];
-        if (tex.source >= 0 &&
-            static_cast<size_t>(tex.source) < imageToTexture.size()) {
-          material.occlusionTextureIndex = imageToTexture[tex.source];
-        }
-      }
-
-      const auto emissiveIndex = mat.emissiveTexture.index;
-      if (emissiveIndex >= 0 &&
-          static_cast<size_t>(emissiveIndex) < gltfModel.textures.size()) {
-        const auto& tex = gltfModel.textures[emissiveIndex];
-        if (tex.source >= 0 &&
-            static_cast<size_t>(tex.source) < imageToTexture.size()) {
-          material.emissiveTextureIndex = imageToTexture[tex.source];
-        }
-      }
-
-      materialManager.createMaterial(material);
-    }
-
-    if (!gltfModel.materials.empty()) {
-      defaultMaterialIndex =
-          static_cast<uint32_t>(existingMaterials);
-    }
-  }
 
   void createCommandBuffers() {
     vk::CommandBufferAllocateInfo allocInfo{};
