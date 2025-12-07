@@ -6,6 +6,7 @@
 #include <Container/utility/InputManager.h>
 #include <Container/utility/Logger.h>
 #include <Container/utility/MaterialManager.h>
+#include <Container/geometry/GltfModelLoader.h>
 #include <Container/utility/MaterialXIntegration.h>
 #include <Container/utility/PipelineManager.h>
 #include <Container/utility/SceneGraph.h>

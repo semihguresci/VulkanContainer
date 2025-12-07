@@ -10,7 +10,9 @@ namespace geometry {
 class Model;
 
 namespace gltf {
+struct GltfLoadResult;
 Model LoadModelFromFile(const std::string& path);
+GltfLoadResult LoadModelWithSource(const std::string& path);
 }
 
 class Model {
@@ -27,10 +29,11 @@ class Model {
   const std::vector<Mesh>& meshes() const { return meshes_; }
   const std::vector<Vertex>& vertices() const { return vertices_; }
   const std::vector<uint32_t>& indices() const { return indices_; }
-  bool empty() const { return vertices_.empty() || indices_.empty(); }
+ bool empty() const { return vertices_.empty() || indices_.empty(); }
 
  private:
   friend Model gltf::LoadModelFromFile(const std::string& path);
+  friend gltf::GltfLoadResult gltf::LoadModelWithSource(const std::string& path);
 
   explicit Model(std::vector<Mesh> meshes);
   void flattenMeshes();
