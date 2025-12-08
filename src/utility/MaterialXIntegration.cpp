@@ -442,7 +442,14 @@ std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
   for (size_t i = 0; i < model.images.size(); ++i) {
     const auto& image = model.images[i];
     if (image.uri.empty()) continue;
-    const auto fullPath = (baseDir / image.uri).string();
+
+    const auto fullPath = (baseDir / image.uri).lexically_normal().string();
+
+    if (const auto cachedIndex = textureManager.findTextureIndex(fullPath)) {
+      imageToTexture[i] = *cachedIndex;
+      continue;
+    }
+
     try {
       auto resource = textureLoader(fullPath);
       imageToTexture[i] = textureManager.registerTexture(resource);

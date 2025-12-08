@@ -1198,6 +1198,15 @@ class HelloTriangleApplication {
 
   utility::material::TextureResource createTextureFromFile(
       const std::string& texturePath) {
+    const auto normalizedPath =
+        std::filesystem::path(texturePath).lexically_normal().string();
+    if (const auto existingIndex =
+            textureManager.findTextureIndex(normalizedPath)) {
+      if (const auto* existing = textureManager.getTexture(*existingIndex)) {
+        return *existing;
+      }
+    }
+
     int texWidth, texHeight, texChannels;
     stbi_uc* pixels = stbi_load(texturePath.c_str(), &texWidth, &texHeight,
                                 &texChannels, STBI_rgb_alpha);
@@ -1256,7 +1265,7 @@ class HelloTriangleApplication {
     utility::material::TextureResource resource{};
     resource.image = textureImage;
     resource.imageView = imageView;
-    resource.name = texturePath;
+    resource.name = normalizedPath;
     return resource;
   }
 
