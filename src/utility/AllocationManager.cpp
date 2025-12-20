@@ -101,20 +101,18 @@ utility::material::TextureResource AllocationManager::createTextureFromFile(
       {reinterpret_cast<const std::byte*>(pixels), static_cast<size_t>(imageSize)});
   stbi_image_free(pixels);
 
-  vk::ImageCreateInfo imageInfo{
-      .imageType = vk::ImageType::e2D,
-      .extent = vk::Extent3D{static_cast<uint32_t>(texWidth),
-                             static_cast<uint32_t>(texHeight), 1},
-      .mipLevels = 1,
-      .arrayLayers = 1,
-      .format = vk::Format::eR8G8B8A8Srgb,
-      .tiling = vk::ImageTiling::eOptimal,
-      .initialLayout = vk::ImageLayout::eUndefined,
-      .usage = vk::ImageUsageFlagBits::eTransferDst |
-               vk::ImageUsageFlagBits::eSampled,
-      .sharingMode = vk::SharingMode::eExclusive,
-      .samples = vk::SampleCountFlagBits::e1,
-  };
+  vk::ImageCreateInfo imageInfo{};
+  imageInfo.imageType = vk::ImageType::e2D;
+  imageInfo.extent =
+      vk::Extent3D{static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1};
+  imageInfo.mipLevels = 1;
+  imageInfo.arrayLayers = 1;
+  imageInfo.format = vk::Format::eR8G8B8A8Srgb;
+  imageInfo.tiling = vk::ImageTiling::eOptimal;
+  imageInfo.initialLayout = vk::ImageLayout::eUndefined;
+  imageInfo.usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled;
+  imageInfo.sharingMode = vk::SharingMode::eExclusive;
+  imageInfo.samples = vk::SampleCountFlagBits::e1;
 
   VmaAllocationCreateInfo allocInfo{};
   allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
