@@ -103,18 +103,17 @@ utility::material::TextureResource AllocationManager::createTextureFromFile(
       {reinterpret_cast<const std::byte*>(pixels), static_cast<size_t>(imageSize)});
   stbi_image_free(pixels);
 
-  vk::ImageCreateInfo imageInfo{};
-  imageInfo.imageType = vk::ImageType::e2D;
-  imageInfo.extent =
-      vk::Extent3D{static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1};
-  imageInfo.mipLevels = 1;
-  imageInfo.arrayLayers = 1;
-  imageInfo.format = vk::Format::eR8G8B8A8Srgb;
-  imageInfo.tiling = vk::ImageTiling::eOptimal;
-  imageInfo.initialLayout = vk::ImageLayout::eUndefined;
-  imageInfo.usage = vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled;
-  imageInfo.sharingMode = vk::SharingMode::eExclusive;
-  imageInfo.samples = vk::SampleCountFlagBits::e1;
+  vk::ImageCreateInfo imageInfo(
+      {},
+      vk::ImageType::e2D,
+      vk::Format::eR8G8B8A8Srgb,
+      vk::Extent3D{static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight), 1},
+      1, 1, vk::SampleCountFlagBits::e1, vk::ImageTiling::eOptimal,
+      vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+      vk::SharingMode::eExclusive,
+      0,
+      nullptr,
+      vk::ImageLayout::eUndefined);
 
   VmaAllocationCreateInfo allocInfo{};
   allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
@@ -171,16 +170,14 @@ void AllocationManager::resetTextureAllocations() {
 }
 
 vk::CommandBuffer AllocationManager::beginSingleTimeCommands() {
-  vk::CommandBufferAllocateInfo allocInfo{};
-  allocInfo.level = vk::CommandBufferLevel::ePrimary;
-  allocInfo.commandPool = commandPool_;
-  allocInfo.commandBufferCount = 1;
+  vk::CommandBufferAllocateInfo allocInfo(
+      commandPool_, vk::CommandBufferLevel::ePrimary, 1);
 
   vk::Device device{device_};
   auto commandBuffers = device.allocateCommandBuffers(allocInfo);
 
-  vk::CommandBufferBeginInfo beginInfo{};
-  beginInfo.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+  vk::CommandBufferBeginInfo beginInfo(
+      vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
 
   commandBuffers.front().begin(beginInfo);
   return commandBuffers.front();
@@ -203,17 +200,15 @@ void AllocationManager::endSingleTimeCommands(vk::CommandBuffer commandBuffer) {
 
 void AllocationManager::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size,
                                    VkDeviceSize srcOffset, VkDeviceSize dstOffset) {
-  vk::CommandBufferAllocateInfo allocInfo{};
-  allocInfo.level = vk::CommandBufferLevel::ePrimary;
-  allocInfo.commandPool = commandPool_;
-  allocInfo.commandBufferCount = 1;
+  vk::CommandBufferAllocateInfo allocInfo(
+      commandPool_, vk::CommandBufferLevel::ePrimary, 1);
 
   vk::Device device{device_};
   auto commandBuffers = device.allocateCommandBuffersUnique(allocInfo);
   auto& commandBuffer = commandBuffers.front();
 
-  vk::CommandBufferBeginInfo beginInfo{};
-  beginInfo.flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit;
+  vk::CommandBufferBeginInfo beginInfo(
+      vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
 
   commandBuffer->begin(beginInfo);
 
@@ -226,7 +221,7 @@ void AllocationManager::copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDev
   commandBuffer->end();
 
   vk::CommandBuffer commandBufferHandle = commandBuffer.get();
-  vk::SubmitInfo submitInfo{};
+  vk::SubmitInfo submitInfo;
   submitInfo.commandBufferCount = 1;
   submitInfo.pCommandBuffers = &commandBufferHandle;
 
@@ -239,18 +234,20 @@ void AllocationManager::transitionImageLayout(VkImage image, VkImageLayout oldLa
                                               VkImageLayout newLayout) {
   vk::CommandBuffer commandBuffer = beginSingleTimeCommands();
 
+  vk::ImageSubresourceRange subresourceRange{};
+  subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+  subresourceRange.baseMipLevel = 0;
+  subresourceRange.levelCount = 1;
+  subresourceRange.baseArrayLayer = 0;
+  subresourceRange.layerCount = 1;
+
   vk::ImageMemoryBarrier barrier{};
   barrier.oldLayout = static_cast<vk::ImageLayout>(oldLayout);
   barrier.newLayout = static_cast<vk::ImageLayout>(newLayout);
   barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.image = image;
-  barrier.subresourceRange = vk::ImageSubresourceRange{};
-  barrier.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-  barrier.subresourceRange.baseMipLevel = 0;
-  barrier.subresourceRange.levelCount = 1;
-  barrier.subresourceRange.baseArrayLayer = 0;
-  barrier.subresourceRange.layerCount = 1;
+  barrier.subresourceRange = subresourceRange;
 
   vk::PipelineStageFlags sourceStage;
   vk::PipelineStageFlags destinationStage;
@@ -283,15 +280,17 @@ void AllocationManager::copyBufferToImage(VkBuffer buffer, VkImage image, uint32
                                           uint32_t height) {
   vk::CommandBuffer commandBuffer = beginSingleTimeCommands();
 
+  vk::ImageSubresourceLayers subresource{};
+  subresource.aspectMask = vk::ImageAspectFlagBits::eColor;
+  subresource.mipLevel = 0;
+  subresource.baseArrayLayer = 0;
+  subresource.layerCount = 1;
+
   vk::BufferImageCopy region{};
   region.bufferOffset = 0;
   region.bufferRowLength = 0;
   region.bufferImageHeight = 0;
-  region.imageSubresource = vk::ImageSubresourceLayers{};
-  region.imageSubresource.aspectMask = vk::ImageAspectFlagBits::eColor;
-  region.imageSubresource.mipLevel = 0;
-  region.imageSubresource.baseArrayLayer = 0;
-  region.imageSubresource.layerCount = 1;
+  region.imageSubresource = subresource;
   region.imageOffset = vk::Offset3D{0, 0, 0};
   region.imageExtent = vk::Extent3D{width, height, 1};
 
@@ -303,16 +302,18 @@ void AllocationManager::copyBufferToImage(VkBuffer buffer, VkImage image, uint32
 }
 
 VkImageView AllocationManager::createImageView(VkImage image, VkFormat format) {
+  vk::ImageSubresourceRange subresourceRange{};
+  subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+  subresourceRange.baseMipLevel = 0;
+  subresourceRange.levelCount = 1;
+  subresourceRange.baseArrayLayer = 0;
+  subresourceRange.layerCount = 1;
+
   vk::ImageViewCreateInfo viewInfo{};
   viewInfo.image = image;
   viewInfo.viewType = vk::ImageViewType::e2D;
   viewInfo.format = static_cast<vk::Format>(format);
-  viewInfo.subresourceRange = vk::ImageSubresourceRange{};
-  viewInfo.subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
-  viewInfo.subresourceRange.baseMipLevel = 0;
-  viewInfo.subresourceRange.levelCount = 1;
-  viewInfo.subresourceRange.baseArrayLayer = 0;
-  viewInfo.subresourceRange.layerCount = 1;
+  viewInfo.subresourceRange = subresourceRange;
 
   VkImageView imageView{VK_NULL_HANDLE};
   vk::Device device{device_};
