@@ -1,5 +1,7 @@
 #include <Container/utility/AllocationManager.h>
 
+#include <vulkan/vulkan.hpp>
+
 #include <stb_image.h>
 
 #include <filesystem>

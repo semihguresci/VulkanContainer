@@ -5,6 +5,8 @@
 #include <Container/utility/MaterialManager.h>
 #include <Container/utility/VulkanMemoryManager.h>
 
+#include <vulkan/vulkan.hpp>
+
 #include <boost/core/span.hpp>
 #include <glm/glm.hpp>
 
