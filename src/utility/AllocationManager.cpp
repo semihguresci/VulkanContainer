@@ -302,23 +302,23 @@ void AllocationManager::copyBufferToImage(VkBuffer buffer, VkImage image, uint32
 }
 
 VkImageView AllocationManager::createImageView(VkImage image, VkFormat format) {
-  VkImageViewCreateInfo viewInfo{};
-  viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+  vk::ImageSubresourceRange subresourceRange{};
+  subresourceRange.aspectMask = vk::ImageAspectFlagBits::eColor;
+  subresourceRange.baseMipLevel = 0;
+  subresourceRange.levelCount = 1;
+  subresourceRange.baseArrayLayer = 0;
+  subresourceRange.layerCount = 1;
+
+  vk::ImageViewCreateInfo viewInfo{};
+  viewInfo.sType = vk::StructureType::eImageViewCreateInfo;
   viewInfo.image = image;
-  viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-  viewInfo.format = format;
-  viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  viewInfo.subresourceRange.baseMipLevel = 0;
-  viewInfo.subresourceRange.levelCount = 1;
-  viewInfo.subresourceRange.baseArrayLayer = 0;
-  viewInfo.subresourceRange.layerCount = 1;
+  viewInfo.viewType = vk::ImageViewType::e2D;
+  viewInfo.format = static_cast<vk::Format>(format);
+  viewInfo.subresourceRange = subresourceRange;
 
-  VkImageView imageView{VK_NULL_HANDLE};
-  if (vkCreateImageView(device_, &viewInfo, nullptr, &imageView) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create texture image view!");
-  }
-
-  return imageView;
+  vk::Device device{device_};
+  vk::ImageView imageView = device.createImageView(viewInfo);
+  return static_cast<VkImageView>(imageView);
 }
 
 }  // namespace utility::memory
