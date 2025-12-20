@@ -317,8 +317,12 @@ VkImageView AllocationManager::createImageView(VkImage image, VkFormat format) {
   viewInfo.subresourceRange = subresourceRange;
 
   vk::Device device{device_};
-  vk::ImageView imageView = device.createImageView(viewInfo);
-  return static_cast<VkImageView>(imageView);
+  vk::ResultValue<vk::ImageView> result = device.createImageViewUnique(viewInfo);
+  if (result.result != vk::Result::eSuccess || !result.value) {
+    throw std::runtime_error("failed to create texture image view!");
+  }
+
+  return result.value;
 }
 
 }  // namespace utility::memory
