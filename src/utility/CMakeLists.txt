@@ -2,8 +2,11 @@
 add_library(VulkanContainer_utility
     Logger.cpp
     VkResultToString.cpp
+    AllocationManager.cpp
+    GuiManager.cpp
     MaterialXIntegration.cpp
     MaterialManager.cpp
+    SceneManager.cpp
     PipelineManager.cpp
     SceneGraph.cpp
     VulkanMemoryManager.cpp

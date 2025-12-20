@@ -1,15 +1,19 @@
 #define GLFW_INCLUDE_VULKAN
 #include <Container/app/AppConfig.h>
+#include <Container/geometry/GltfModelLoader.h>
 #include <Container/geometry/Model.h>
-#include <Container/utility/FrameSyncManager.h>
+#include <Container/utility/AllocationManager.h>
 #include <Container/utility/Camera.h>
+#include <Container/utility/FrameSyncManager.h>
+#include <Container/utility/GuiManager.h>
 #include <Container/utility/InputManager.h>
 #include <Container/utility/Logger.h>
 #include <Container/utility/MaterialManager.h>
-#include <Container/geometry/GltfModelLoader.h>
 #include <Container/utility/MaterialXIntegration.h>
 #include <Container/utility/PipelineManager.h>
+#include <Container/utility/SceneData.h>
 #include <Container/utility/SceneGraph.h>
+#include <Container/utility/SceneManager.h>
 #include <Container/utility/SwapChainManager.h>
 #include <Container/utility/VulkanAlignment.h>
 #include <Container/utility/VulkanDevice.h>
@@ -40,9 +44,6 @@
 #include <stdexcept>
 #include <utility>
 #include <vector>
-#include <vk_mem_alloc.h>
-
-#include <stb_image.h>
 
 using utility::FrameSyncManager;
 using utility::QueueFamilyIndices;
@@ -74,32 +75,12 @@ void DestroyDebugUtilsMessengerEXT(VkInstance instance,
 }
 
 
-struct CameraData {
-  alignas(16) glm::mat4 viewProj{1.0f};
-};
-
-struct ObjectData {
-  alignas(16) glm::mat4 model{1.0f};
-  alignas(16) glm::vec4 color{1.0f};
-  alignas(16) glm::vec3 emissiveColor{0.0f, 0.0f, 0.0f};
-  alignas(4) float emissiveStrength{1.0f};
-  alignas(8) glm::vec2 metallicRoughness{1.0f, 1.0f};
-  alignas(4) uint32_t baseColorTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t normalTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t occlusionTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t emissiveTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t metallicRoughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t padding{0};
-};
-
-struct BindlessPushConstants {
-  uint32_t objectIndex{0};
-};
-
 class HelloTriangleApplication {
  public:
   explicit HelloTriangleApplication(app::AppConfig config)
-      : config_(std::move(config)) {}
+      : config_(std::move(config)) {
+    gltfPathInput = config_.modelPath;
+  }
 
   void run() {
     initWindow();
@@ -126,34 +107,19 @@ class HelloTriangleApplication {
   utility::vulkan::UniqueRenderPass renderPass;
   VkPipelineLayout pipelineLayout;
   VkPipeline graphicsPipeline;
-  VkDescriptorSetLayout descriptorSetLayout = VK_NULL_HANDLE;
-  VkDescriptorPool descriptorPool = VK_NULL_HANDLE;
-  VkDescriptorSet descriptorSet = VK_NULL_HANDLE;
-  VkSampler baseColorSampler = VK_NULL_HANDLE;
-
-  utility::materialx::SlangMaterialXBridge materialXBridge;
-  utility::material::TextureManager textureManager{};
-  utility::material::MaterialManager materialManager{};
-  std::vector<VmaAllocation> textureAllocations{};
-  std::vector<VkImage> textureImages{};
-  utility::scene::SceneGraph sceneGraph{};
-  std::vector<uint32_t> renderableNodes{};
-  uint32_t rootNode = utility::scene::SceneGraph::kInvalidNode;
-  uint32_t cubeNode = utility::scene::SceneGraph::kInvalidNode;
-  glm::vec4 materialBaseColor{1.0f};
-  uint32_t defaultMaterialIndex = std::numeric_limits<uint32_t>::max();
-  geometry::Model model{};
-  tinygltf::Model gltfModel{};
-  std::vector<geometry::Vertex> vertices{};
-  std::vector<uint32_t> indices{};
   VkIndexType indexType{VK_INDEX_TYPE_UINT32};
 
   utility::vulkan::UniqueCommandPool commandPool;
   std::vector<vk::UniqueCommandBuffer> commandBuffers;
 
-  std::unique_ptr<utility::memory::VulkanMemoryManager> memoryManager;
-  std::unique_ptr<utility::memory::BufferArena> vertexArena;
-  std::unique_ptr<utility::memory::BufferArena> indexArena;
+  std::unique_ptr<utility::memory::AllocationManager> allocationManager;
+  std::unique_ptr<utility::scene::SceneManager> sceneManager;
+  std::unique_ptr<utility::ui::GuiManager> guiManager;
+  utility::scene::SceneGraph sceneGraph{};
+  std::vector<uint32_t> renderableNodes{};
+  uint32_t rootNode = utility::scene::SceneGraph::kInvalidNode;
+  uint32_t cubeNode = utility::scene::SceneGraph::kInvalidNode;
+
   utility::memory::AllocatedBuffer cameraBuffer{};
   utility::memory::AllocatedBuffer objectBuffer{};
 
@@ -195,21 +161,29 @@ class HelloTriangleApplication {
         deviceWrapper->device(), surface);
     swapChainManager->initialize();
     createRenderPass();
-    createDescriptorSetLayout();
-    createSampler();
-    loadMaterialXMaterial();
+    createCommandPool();
+    allocationManager = std::make_unique<utility::memory::AllocationManager>();
+    allocationManager->initialize(instance, deviceWrapper->physicalDevice(),
+                                  deviceWrapper->device(), deviceWrapper->graphicsQueue(),
+                                  commandPool.get(), config_);
+    sceneManager = std::make_unique<utility::scene::SceneManager>(
+        *allocationManager, *pipelineManager, deviceWrapper, config_);
+    sceneManager->initialize(config_.modelPath);
+    indexType = sceneManager->indexType();
     createGraphicsPipeline();
     swapChainManager->createFramebuffers(renderPass.get());
-    createCommandPool();
-    createMemoryManager();
-    loadGltfAssets();
+    createCamera();
+    createSceneBuffers();
     createVertexBuffer();
     createIndexBuffer();
     buildSceneGraph();
-    createCamera();
-    createSceneBuffers();
-    createDescriptorPool();
-    allocateAndWriteDescriptorSet();
+    sceneManager->updateDescriptorSet(cameraBuffer, objectBuffer);
+    guiManager = std::make_unique<utility::ui::GuiManager>();
+    guiManager->initialize(instance, deviceWrapper->device(),
+                           deviceWrapper->physicalDevice(), deviceWrapper->graphicsQueue(),
+                           deviceWrapper->queueFamilyIndices().graphicsFamily.value(),
+                           renderPass.get(), swapChainManager->imageCount(),
+                           window->getNativeWindow(), config_.modelPath);
     createCommandBuffers();
     frameSyncManager = std::make_unique<FrameSyncManager>(
         vk::Device{deviceWrapper->device()}, config_.maxFramesInFlight);
@@ -242,49 +216,32 @@ class HelloTriangleApplication {
       swapChainManager->cleanup();
     }
 
-    if (pipelineManager) {
-      pipelineManager->destroyManagedResources();
-      graphicsPipeline = VK_NULL_HANDLE;
-      pipelineLayout = VK_NULL_HANDLE;
-      descriptorPool = VK_NULL_HANDLE;
-      descriptorSetLayout = VK_NULL_HANDLE;
-    }
-
-    if (baseColorSampler != VK_NULL_HANDLE) {
-      vkDestroySampler(deviceWrapper->device(), baseColorSampler, nullptr);
-      baseColorSampler = VK_NULL_HANDLE;
-    }
-
-    for (size_t i = 0; i < textureImages.size(); ++i) {
-      if (textureManager.getTexture(static_cast<uint32_t>(i)) != nullptr) {
-        vkDestroyImageView(deviceWrapper->device(),
-                          textureManager.getTexture(static_cast<uint32_t>(i))->imageView,
-                          nullptr);
-      }
-    }
-    for (auto image : textureImages) {
-      if (image != VK_NULL_HANDLE) {
-        vkDestroyImage(deviceWrapper->device(), image, nullptr);
-      }
-    }
-    for (auto allocation : textureAllocations) {
-      if (allocation != VK_NULL_HANDLE && memoryManager) {
-        vmaFreeMemory(memoryManager->allocator(), allocation);
-      }
+    if (guiManager) {
+      guiManager->shutdown(deviceWrapper->device());
+      guiManager.reset();
     }
 
     renderPass.reset();
 
-    if (memoryManager) {
+    if (sceneManager) {
+      sceneManager.reset();
+    }
+
+    if (allocationManager) {
       if (cameraBuffer.buffer != VK_NULL_HANDLE) {
-        memoryManager->destroyBuffer(cameraBuffer);
+        allocationManager->destroyBuffer(cameraBuffer);
       }
       if (objectBuffer.buffer != VK_NULL_HANDLE) {
-        memoryManager->destroyBuffer(objectBuffer);
+        allocationManager->destroyBuffer(objectBuffer);
       }
-      indexArena.reset();
-      vertexArena.reset();
-      memoryManager.reset();
+      allocationManager->cleanup();
+      allocationManager.reset();
+    }
+
+    if (pipelineManager) {
+      pipelineManager->destroyManagedResources();
+      graphicsPipeline = VK_NULL_HANDLE;
+      pipelineLayout = VK_NULL_HANDLE;
     }
 
     frameSyncManager.reset();
@@ -318,10 +275,14 @@ class HelloTriangleApplication {
     if (swapChainManager) {
       swapChainManager->recreate(renderPass.get());
       recreateCommandBuffers();
+      if (guiManager) {
+        guiManager->updateSwapchainImageCount(swapChainManager->imageCount());
+      }
       frameSyncManager->recreateRenderFinishedSemaphores(
           swapChainManager->imageCount());
       imagesInFlight.assign(swapChainManager->imageCount(), vk::Fence{});
       updateCameraBuffer();
+      updateObjectBuffer();
     }
   }
 
@@ -441,124 +402,38 @@ class HelloTriangleApplication {
     renderPass = device.createRenderPassUnique(renderPassInfo);
   }
 
-  void createDescriptorSetLayout() {
-    vk::DescriptorSetLayoutBinding cameraBinding{
-        .binding = 0,
-        .descriptorType = vk::DescriptorType::eUniformBuffer,
-        .descriptorCount = 1,
-        .stageFlags =
-            vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
-    };
-
-    vk::DescriptorSetLayoutBinding objectBinding{
-        .binding = 1,
-        .descriptorType = vk::DescriptorType::eStorageBuffer,
-        .descriptorCount = 1,
-        .stageFlags =
-            vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment,
-    };
-
-    vk::DescriptorSetLayoutBinding samplerBinding{
-        .binding = 2,
-        .descriptorType = vk::DescriptorType::eSampler,
-        .descriptorCount = 1,
-        .stageFlags = vk::ShaderStageFlagBits::eFragment,
-    };
-
-    vk::DescriptorSetLayoutBinding textureBinding{
-        .binding = 3,
-        .descriptorType = vk::DescriptorType::eSampledImage,
-        .descriptorCount = static_cast<uint32_t>(config_.maxSceneObjects),
-        .stageFlags = vk::ShaderStageFlagBits::eFragment,
-    };
-
-    std::array<vk::DescriptorSetLayoutBinding, 4> bindings = {
-        cameraBinding, objectBinding, samplerBinding, textureBinding};
-
-    std::array<vk::DescriptorBindingFlags, 4> bindingFlags = {
-        0u,
-        0u,
-        0u,
-        vk::DescriptorBindingFlagBits::ePartiallyBound |
-            vk::DescriptorBindingFlagBits::eVariableDescriptorCount};
-
-    std::vector<VkDescriptorSetLayoutBinding> rawBindings;
-    rawBindings.reserve(bindings.size());
-    std::transform(bindings.begin(), bindings.end(),
-                   std::back_inserter(rawBindings),
-                   [](const vk::DescriptorSetLayoutBinding& binding) {
-                     return static_cast<VkDescriptorSetLayoutBinding>(binding);
-                   });
-
-    std::vector<VkDescriptorBindingFlags> rawBindingFlags;
-    rawBindingFlags.reserve(bindingFlags.size());
-    std::transform(bindingFlags.begin(), bindingFlags.end(),
-                   std::back_inserter(rawBindingFlags),
-                   [](vk::DescriptorBindingFlags flags) {
-                     return static_cast<VkDescriptorBindingFlags>(flags);
-                   });
-
-    descriptorSetLayout = pipelineManager->createDescriptorSetLayout(
-        rawBindings, rawBindingFlags, 0);
-  }
-
-  void createSampler() {
-    VkPhysicalDeviceProperties properties{};
-    vkGetPhysicalDeviceProperties(deviceWrapper->physicalDevice(), &properties);
-
-    vk::SamplerCreateInfo samplerInfo{
-        .magFilter = vk::Filter::eLinear,
-        .minFilter = vk::Filter::eLinear,
-        .mipmapMode = vk::SamplerMipmapMode::eLinear,
-        .addressModeU = vk::SamplerAddressMode::eRepeat,
-        .addressModeV = vk::SamplerAddressMode::eRepeat,
-        .addressModeW = vk::SamplerAddressMode::eRepeat,
-        .mipLodBias = 0.0f,
-        .anisotropyEnable = vk::True,
-        .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
-        .compareEnable = vk::False,
-        .compareOp = vk::CompareOp::eAlways,
-        .minLod = 0.0f,
-        .maxLod = 0.0f,
-        .borderColor = vk::BorderColor::eIntOpaqueBlack,
-        .unnormalizedCoordinates = vk::False,
-    };
-
-    vk::Device device{deviceWrapper->device()};
-    if (device.createSampler(&samplerInfo, nullptr, &baseColorSampler) !=
-        vk::Result::eSuccess) {
-      throw std::runtime_error("failed to create texture sampler!");
-    }
-  }
-
-  void loadMaterialXMaterial() {
-    utility::material::Material material{};
-    try {
-      auto document = materialXBridge.loadDocument("materials/base.mtlx");
-      material.baseColor = materialXBridge.extractBaseColor(document);
-    } catch (const std::exception& exc) {
-      std::cerr << "MaterialX load failed: " << exc.what() << std::endl;
-      material.baseColor = glm::vec4(1.0f);
-    }
-
-    material.emissiveColor = glm::vec3(0.0f);
-    material.metallicFactor = 1.0f;
-    material.roughnessFactor = 1.0f;
-
-    materialBaseColor = material.baseColor;
-    if (defaultMaterialIndex == std::numeric_limits<uint32_t>::max()) {
-      defaultMaterialIndex = materialManager.createMaterial(material);
-    } else {
-      materialManager.updateMaterial(defaultMaterialIndex, material);
-    }
-  }
-
   void buildSceneGraph() {
-    rootNode = sceneGraph.createNode(glm::mat4(1.0f), defaultMaterialIndex, false);
-    cubeNode = sceneGraph.createNode(glm::mat4(1.0f), defaultMaterialIndex, true);
+    sceneGraph = utility::scene::SceneGraph{};
+    renderableNodes.clear();
+    rootNode =
+        sceneGraph.createNode(glm::mat4(1.0f), sceneManager->defaultMaterialIndex(), false);
+    cubeNode =
+        sceneGraph.createNode(glm::mat4(1.0f), sceneManager->defaultMaterialIndex(), true);
     sceneGraph.setParent(cubeNode, rootNode);
     sceneGraph.updateWorldTransforms();
     renderableNodes = sceneGraph.renderableNodes();
+  }
+
+  glm::mat4 defaultTransformForNewObject() const {
+    const float offset = static_cast<float>(sceneGraph.renderableNodes().size()) * 1.5f;
+    return glm::translate(glm::mat4(1.0f), glm::vec3(offset, 0.0f, 0.0f));
+  }
+
+  void addSceneObject(const glm::mat4& transform) {
+    if (sceneGraph.renderableNodes().size() >= config_.maxSceneObjects) {
+      if (guiManager) {
+        guiManager->setStatusMessage("Reached maximum scene object capacity");
+      }
+      return;
+    }
+    const uint32_t node =
+        sceneGraph.createNode(transform, sceneManager->defaultMaterialIndex(), true);
+    sceneGraph.setParent(node, rootNode);
+    sceneGraph.updateWorldTransforms();
+    updateObjectBuffer();
+    if (guiManager) {
+      guiManager->setStatusMessage("Added object to scene");
+    }
   }
 
   void createGraphicsPipeline() {
@@ -658,7 +533,7 @@ class HelloTriangleApplication {
     pushConstantRange.offset = 0;
     pushConstantRange.size = sizeof(BindlessPushConstants);
 
-    std::vector<VkDescriptorSetLayout> setLayouts = {descriptorSetLayout};
+    std::vector<VkDescriptorSetLayout> setLayouts = {sceneManager->descriptorSetLayout()};
     std::vector<VkPushConstantRange> pushConstants = {pushConstantRange};
     pipelineLayout = pipelineManager->createPipelineLayout(setLayouts,
                                                            pushConstants);
@@ -697,31 +572,14 @@ class HelloTriangleApplication {
     commandPool = device.createCommandPoolUnique(poolInfo);
   }
 
-  void createMemoryManager() {
-    memoryManager = std::make_unique<utility::memory::VulkanMemoryManager>(
-        instance, deviceWrapper->physicalDevice(), deviceWrapper->device());
-
-    vertexArena = std::make_unique<utility::memory::BufferArena>(
-        *memoryManager, config_.maxVertexArenaSize,
-        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-        VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-        VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
-
-    indexArena = std::make_unique<utility::memory::BufferArena>(
-        *memoryManager, config_.maxIndexArenaSize,
-        VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-        VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-        VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
-  }
-
   void createSceneBuffers() {
-    cameraBuffer = memoryManager->createBuffer(
+    cameraBuffer = allocationManager->createBuffer(
         sizeof(CameraData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VMA_MEMORY_USAGE_AUTO,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
             VMA_ALLOCATION_CREATE_MAPPED_BIT);
 
-    objectBuffer = memoryManager->createBuffer(
+    objectBuffer = allocationManager->createBuffer(
         sizeof(ObjectData) * config_.maxSceneObjects,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VMA_MEMORY_USAGE_AUTO,
@@ -745,6 +603,8 @@ class HelloTriangleApplication {
   void processInput(float deltaTime) {
     if (!camera) return;
 
+    if (guiManager && guiManager->isCapturingInput()) return;
+
     const bool cameraChanged = inputManager.update(deltaTime);
     if (cameraChanged) {
       updateCameraBuffer();
@@ -753,10 +613,12 @@ class HelloTriangleApplication {
 
   void writeToBuffer(const utility::memory::AllocatedBuffer& buffer,
                      const void* data, size_t size) {
+    if (!allocationManager) return;
     void* mapped = buffer.allocation_info.pMappedData;
     bool mappedHere = false;
     if (mapped == nullptr) {
-      if (vmaMapMemory(memoryManager->allocator(), buffer.allocation, &mapped) !=
+      if (vmaMapMemory(allocationManager->memoryManager()->allocator(), buffer.allocation,
+                       &mapped) !=
           VK_SUCCESS) {
         throw std::runtime_error("failed to map buffer for writing");
       }
@@ -766,7 +628,7 @@ class HelloTriangleApplication {
     std::memcpy(mapped, data, size);
 
     if (mappedHere) {
-      vmaUnmapMemory(memoryManager->allocator(), buffer.allocation);
+      vmaUnmapMemory(allocationManager->memoryManager()->allocator(), buffer.allocation);
     }
   }
 
@@ -782,62 +644,6 @@ class HelloTriangleApplication {
     }
   }
 
-  glm::vec4 resolveMaterialColor(uint32_t materialIndex) const {
-    if (const auto* material = materialManager.getMaterial(materialIndex)) {
-      return material->baseColor;
-    }
-    return currentMaterialBaseColor();
-  }
-
-  uint32_t resolveMaterialTextureIndex(uint32_t materialIndex) const {
-    if (const auto* material = materialManager.getMaterial(materialIndex)) {
-      return material->baseColorTextureIndex;
-    }
-    return std::numeric_limits<uint32_t>::max();
-  }
-
-  uint32_t resolveMaterialNormalTexture(uint32_t materialIndex) const {
-    if (const auto* material = materialManager.getMaterial(materialIndex)) {
-      return material->normalTextureIndex;
-    }
-    return std::numeric_limits<uint32_t>::max();
-  }
-
-  uint32_t resolveMaterialOcclusionTexture(uint32_t materialIndex) const {
-    if (const auto* material = materialManager.getMaterial(materialIndex)) {
-      return material->occlusionTextureIndex;
-    }
-    return std::numeric_limits<uint32_t>::max();
-  }
-
-  uint32_t resolveMaterialEmissiveTexture(uint32_t materialIndex) const {
-    if (const auto* material = materialManager.getMaterial(materialIndex)) {
-      return material->emissiveTextureIndex;
-    }
-    return std::numeric_limits<uint32_t>::max();
-  }
-
-  uint32_t resolveMaterialMetallicRoughnessTexture(uint32_t materialIndex) const {
-    if (const auto* material = materialManager.getMaterial(materialIndex)) {
-      return material->metallicRoughnessTextureIndex;
-    }
-    return std::numeric_limits<uint32_t>::max();
-  }
-
-  glm::vec2 resolveMaterialMetallicRoughnessFactors(uint32_t materialIndex) const {
-    if (const auto* material = materialManager.getMaterial(materialIndex)) {
-      return glm::vec2(material->metallicFactor, material->roughnessFactor);
-    }
-    return glm::vec2(1.0f, 1.0f);
-  }
-
-  glm::vec4 resolveMaterialEmissive(uint32_t materialIndex) const {
-    if (const auto* material = materialManager.getMaterial(materialIndex)) {
-      return glm::vec4(material->emissiveColor, 1.0f);
-    }
-    return glm::vec4(0.0f);
-  }
-
   void syncObjectDataFromSceneGraph() {
     sceneGraph.updateWorldTransforms();
     renderableNodes = sceneGraph.renderableNodes();
@@ -849,17 +655,23 @@ class HelloTriangleApplication {
       const uint32_t nodeIndex = renderableNodes[i];
       const auto* node = sceneGraph.getNode(nodeIndex);
       const glm::mat4 model = node ? node->worldTransform : glm::mat4(1.0f);
-      const uint32_t materialIndex = node ? node->materialIndex : defaultMaterialIndex;
+      const uint32_t materialIndex =
+          node ? node->materialIndex : sceneManager->defaultMaterialIndex();
       objectData[i].model = model;
-      objectData[i].color = resolveMaterialColor(materialIndex);
-      objectData[i].emissiveColor = resolveMaterialEmissive(materialIndex);
-      objectData[i].metallicRoughness = resolveMaterialMetallicRoughnessFactors(materialIndex);
-      objectData[i].baseColorTextureIndex = resolveMaterialTextureIndex(materialIndex);
-      objectData[i].normalTextureIndex = resolveMaterialNormalTexture(materialIndex);
-      objectData[i].occlusionTextureIndex = resolveMaterialOcclusionTexture(materialIndex);
-      objectData[i].emissiveTextureIndex = resolveMaterialEmissiveTexture(materialIndex);
+      objectData[i].color = sceneManager->resolveMaterialColor(materialIndex);
+      objectData[i].emissiveColor = sceneManager->resolveMaterialEmissive(materialIndex);
+      objectData[i].metallicRoughness =
+          sceneManager->resolveMaterialMetallicRoughnessFactors(materialIndex);
+      objectData[i].baseColorTextureIndex =
+          sceneManager->resolveMaterialTextureIndex(materialIndex);
+      objectData[i].normalTextureIndex =
+          sceneManager->resolveMaterialNormalTexture(materialIndex);
+      objectData[i].occlusionTextureIndex =
+          sceneManager->resolveMaterialOcclusionTexture(materialIndex);
+      objectData[i].emissiveTextureIndex =
+          sceneManager->resolveMaterialEmissiveTexture(materialIndex);
       objectData[i].metallicRoughnessTextureIndex =
-          resolveMaterialMetallicRoughnessTexture(materialIndex);
+          sceneManager->resolveMaterialMetallicRoughnessTexture(materialIndex);
     }
   }
 
@@ -871,433 +683,34 @@ class HelloTriangleApplication {
                   sizeof(ObjectData) * objectData.size());
   }
 
-  glm::vec4 currentMaterialBaseColor() const {
-    const auto* material = materialManager.getMaterial(defaultMaterialIndex);
-    if (material != nullptr) return material->baseColor;
-    return materialBaseColor;
-  }
-
-  void createDescriptorPool() {
-    VkDescriptorPoolSize uniformPool{};
-    uniformPool.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    uniformPool.descriptorCount = config_.maxSceneObjects + 1;
-
-    VkDescriptorPoolSize storagePool{};
-    storagePool.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    storagePool.descriptorCount = 1;
-
-    VkDescriptorPoolSize sampledImagePool{};
-    sampledImagePool.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    sampledImagePool.descriptorCount =
-        std::max<uint32_t>(config_.maxSceneObjects,
-                           static_cast<uint32_t>(textureManager.textureCount()));
-
-    VkDescriptorPoolSize samplerPool{};
-    samplerPool.type = VK_DESCRIPTOR_TYPE_SAMPLER;
-    samplerPool.descriptorCount = 1;
-
-    descriptorPool = pipelineManager->createDescriptorPool(
-        std::vector<VkDescriptorPoolSize>{uniformPool, storagePool, sampledImagePool,
-                                          samplerPool},
-        1, 0);
-  }
-
-  void allocateAndWriteDescriptorSet() {
-    const uint32_t textureDescriptorCount = std::min<uint32_t>(
-        config_.maxSceneObjects,
-        std::max<uint32_t>(1u, static_cast<uint32_t>(textureManager.textureCount())));
-
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool = descriptorPool;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts = &descriptorSetLayout;
-    uint32_t descriptorCount = textureDescriptorCount;
-    VkDescriptorSetVariableDescriptorCountAllocateInfo countInfo{};
-    countInfo.sType =
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
-    countInfo.descriptorSetCount = 1;
-    countInfo.pDescriptorCounts = &descriptorCount;
-    allocInfo.pNext = &countInfo;
-
-    if (vkAllocateDescriptorSets(deviceWrapper->device(), &allocInfo,
-                                 &descriptorSet) != VK_SUCCESS) {
-      throw std::runtime_error("failed to allocate descriptor set!");
+  bool reloadSceneModel(const std::string& path) {
+    if (!sceneManager) return false;
+    vkDeviceWaitIdle(deviceWrapper->device());
+    const bool result = sceneManager->reloadModel(path, cameraBuffer, objectBuffer);
+    indexType = sceneManager->indexType();
+    if (result) {
+      config_.modelPath = path;
     }
-
-    VkDescriptorBufferInfo cameraBufferInfo{};
-    cameraBufferInfo.buffer = cameraBuffer.buffer;
-    cameraBufferInfo.offset = 0;
-    cameraBufferInfo.range = sizeof(CameraData);
-
-    VkDescriptorBufferInfo objectBufferInfo{};
-    objectBufferInfo.buffer = objectBuffer.buffer;
-    objectBufferInfo.offset = 0;
-    objectBufferInfo.range = sizeof(ObjectData) * config_.maxSceneObjects;
-
-    std::vector<VkWriteDescriptorSet> descriptorWrites{};
-
-    VkWriteDescriptorSet cameraWrite{};
-    cameraWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    cameraWrite.dstSet = descriptorSet;
-    cameraWrite.dstBinding = 0;
-    cameraWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    cameraWrite.descriptorCount = 1;
-    cameraWrite.pBufferInfo = &cameraBufferInfo;
-    descriptorWrites.push_back(cameraWrite);
-
-    VkWriteDescriptorSet objectWrite{};
-    objectWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    objectWrite.dstSet = descriptorSet;
-    objectWrite.dstBinding = 1;
-    objectWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    objectWrite.descriptorCount = 1;
-    objectWrite.pBufferInfo = &objectBufferInfo;
-    descriptorWrites.push_back(objectWrite);
-
-    std::vector<VkDescriptorImageInfo> textureInfos{};
-    const size_t textureCount = textureManager.textureCount();
-    if (textureCount > 0) {
-      textureInfos.reserve(std::min<size_t>(textureCount, textureDescriptorCount));
-      const size_t maxTextures = std::min<size_t>(textureDescriptorCount, textureCount);
-      for (size_t i = 0; i < maxTextures; ++i) {
-        const auto* tex = textureManager.getTexture(static_cast<uint32_t>(i));
-        if (tex == nullptr) continue;
-        VkDescriptorImageInfo info{};
-        info.sampler = VK_NULL_HANDLE;
-        info.imageView = tex->imageView;
-        info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        textureInfos.push_back(info);
-      }
-
-      if (!textureInfos.empty()) {
-        VkWriteDescriptorSet textureWrite{};
-        textureWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-        textureWrite.dstSet = descriptorSet;
-        textureWrite.dstBinding = 3;
-        textureWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        textureWrite.descriptorCount =
-            static_cast<uint32_t>(textureInfos.size());
-        textureWrite.pImageInfo = textureInfos.data();
-        descriptorWrites.push_back(textureWrite);
-      }
+    createVertexBuffer();
+    createIndexBuffer();
+    buildSceneGraph();
+    updateObjectBuffer();
+    sceneManager->updateDescriptorSet(cameraBuffer, objectBuffer);
+    if (guiManager) {
+      guiManager->setStatusMessage(result ? "Loaded model: " + path
+                                          : "Failed to load model: " + path);
     }
-
-    VkDescriptorImageInfo samplerInfo{};
-    samplerInfo.sampler = baseColorSampler;
-
-    VkWriteDescriptorSet samplerWrite{};
-    samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    samplerWrite.dstSet = descriptorSet;
-    samplerWrite.dstBinding = 2;
-    samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    samplerWrite.descriptorCount = 1;
-    samplerWrite.pImageInfo = &samplerInfo;
-    descriptorWrites.push_back(samplerWrite);
-
-    vkUpdateDescriptorSets(deviceWrapper->device(),
-                           static_cast<uint32_t>(descriptorWrites.size()),
-                           descriptorWrites.data(), 0, nullptr);
-  }
-
-  void loadGltfAssets() {
-    model = geometry::Model::MakeCube();
-    gltfModel = tinygltf::Model{};
-
-    if (!config_.modelPath.empty()) {
-      try {
-        auto gltfResult = geometry::gltf::LoadModelWithSource(config_.modelPath);
-        gltfModel = std::move(gltfResult.gltfModel);
-        model = std::move(gltfResult.model);
-
-        const auto baseDir = std::filesystem::path(config_.modelPath).parent_path();
-        auto imageToTexture = materialXBridge.loadTexturesForGltf(
-            gltfModel, baseDir, textureManager,
-            [this](const std::string& path) { return createTextureFromFile(path); });
-        materialXBridge.loadMaterialsForGltf(gltfModel, imageToTexture,
-                                             materialManager, defaultMaterialIndex);
-      } catch (const std::exception& exc) {
-        std::cerr << "glTF load failed: " << exc.what()
-                  << "; falling back to cube model." << std::endl;
-      }
-    }
-
-    if (model.empty()) {
-      model = geometry::Model::MakeCube();
-    }
-
-    vertices = model.vertices();
-    indices = model.indices();
-    indexType = VK_INDEX_TYPE_UINT32;
+    return result;
   }
 
   void createVertexBuffer() {
-    vertexSlice = uploadBufferToArena(boost::span<const geometry::Vertex>(vertices),
-                                      *vertexArena, alignof(geometry::Vertex));
+    vertexSlice = allocationManager->uploadVertices(
+        boost::span<const geometry::Vertex>(sceneManager->vertices()));
   }
 
   void createIndexBuffer() {
-    constexpr VkDeviceSize indexAlignment =
-        std::max<VkDeviceSize>(sizeof(uint32_t), 4U);
-    indexSlice = uploadBufferToArena(boost::span<const uint32_t>(indices),
-                                     *indexArena, indexAlignment);
-  }
-
-  template <typename T>
-  utility::memory::BufferSlice uploadBufferToArena(
-      boost::span<const T> source, utility::memory::BufferArena& arena,
-      VkDeviceSize alignment) {
-    const VkDeviceSize bufferSize = sizeof(T) * source.size();
-    utility::memory::StagingBuffer stagingBuffer(*memoryManager, bufferSize);
-    stagingBuffer.upload(boost::span<const std::byte>(
-        reinterpret_cast<const std::byte*>(source.data()),
-        static_cast<std::size_t>(bufferSize)));
-
-    auto slice = arena.allocate(bufferSize, alignment);
-    copyBuffer(stagingBuffer.buffer().buffer, slice.buffer, bufferSize, 0,
-               slice.offset);
-    return slice;
-  }
-
-  vk::CommandBuffer beginSingleTimeCommands() {
-    vk::CommandBufferAllocateInfo allocInfo{
-        .level = vk::CommandBufferLevel::ePrimary,
-        .commandPool = commandPool.get(),
-        .commandBufferCount = 1,
-    };
-
-    vk::Device device{deviceWrapper->device()};
-    auto commandBuffers = device.allocateCommandBuffers(allocInfo);
-
-    vk::CommandBufferBeginInfo beginInfo{
-        .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
-    };
-
-    commandBuffers.front().begin(beginInfo);
-    return commandBuffers.front();
-  }
-
-  void endSingleTimeCommands(vk::CommandBuffer commandBuffer) {
-    commandBuffer.end();
-
-    vk::SubmitInfo submitInfo{
-        .commandBufferCount = 1,
-        .pCommandBuffers = &commandBuffer,
-    };
-
-    vk::Queue queue{deviceWrapper->graphicsQueue()};
-    queue.submit(1, &submitInfo, {});
-    queue.waitIdle();
-
-    vk::Device device{deviceWrapper->device()};
-    device.freeCommandBuffers(commandPool.get(), commandBuffer);
-  }
-
-  void transitionImageLayout(VkImage image, VkImageLayout oldLayout,
-                             VkImageLayout newLayout) {
-    vk::CommandBuffer commandBuffer = beginSingleTimeCommands();
-
-    vk::ImageMemoryBarrier barrier{
-        .oldLayout = static_cast<vk::ImageLayout>(oldLayout),
-        .newLayout = static_cast<vk::ImageLayout>(newLayout),
-        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-        .image = image,
-        .subresourceRange = vk::ImageSubresourceRange{
-            .aspectMask = vk::ImageAspectFlagBits::eColor,
-            .baseMipLevel = 0,
-            .levelCount = 1,
-            .baseArrayLayer = 0,
-            .layerCount = 1,
-        },
-    };
-
-    vk::PipelineStageFlags sourceStage;
-    vk::PipelineStageFlags destinationStage;
-
-    if (oldLayout == VK_IMAGE_LAYOUT_UNDEFINED &&
-        newLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
-      barrier.srcAccessMask = {};
-      barrier.dstAccessMask = vk::AccessFlagBits::eTransferWrite;
-
-      sourceStage = vk::PipelineStageFlagBits::eTopOfPipe;
-      destinationStage = vk::PipelineStageFlagBits::eTransfer;
-    } else if (oldLayout == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL &&
-               newLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
-      barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
-      barrier.dstAccessMask = vk::AccessFlagBits::eShaderRead;
-
-      sourceStage = vk::PipelineStageFlagBits::eTransfer;
-      destinationStage = vk::PipelineStageFlagBits::eFragmentShader;
-    } else {
-      throw std::invalid_argument("unsupported layout transition!");
-    }
-
-    commandBuffer.pipelineBarrier(sourceStage, destinationStage, {}, 0, nullptr, 0,
-                                  nullptr, 1, &barrier);
-
-    endSingleTimeCommands(commandBuffer);
-  }
-
-  void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width,
-                         uint32_t height) {
-    vk::CommandBuffer commandBuffer = beginSingleTimeCommands();
-
-    vk::BufferImageCopy region{
-        .bufferOffset = 0,
-        .bufferRowLength = 0,
-        .bufferImageHeight = 0,
-        .imageSubresource =
-            vk::ImageSubresourceLayers{
-                .aspectMask = vk::ImageAspectFlagBits::eColor,
-                .mipLevel = 0,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-        .imageOffset = {0, 0, 0},
-        .imageExtent = {width, height, 1},
-    };
-
-    commandBuffer.copyBufferToImage(buffer, image,
-                                    vk::ImageLayout::eTransferDstOptimal, 1,
-                                    &region);
-
-    endSingleTimeCommands(commandBuffer);
-  }
-
-  void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size,
-                  VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0) {
-    vk::CommandBufferAllocateInfo allocInfo{};
-    allocInfo.level = vk::CommandBufferLevel::ePrimary;
-    allocInfo.commandPool = commandPool.get();
-    allocInfo.commandBufferCount = 1;
-
-    vk::Device device{deviceWrapper->device()};
-    auto commandBuffers = device.allocateCommandBuffersUnique(allocInfo);
-    auto& commandBuffer = commandBuffers.front();
-
-    vk::CommandBufferBeginInfo beginInfo{
-        .flags = vk::CommandBufferUsageFlagBits::eOneTimeSubmit,
-    };
-
-    commandBuffer->begin(beginInfo);
-
-    vk::BufferCopy copyRegion{
-        .srcOffset = srcOffset,
-        .dstOffset = dstOffset,
-        .size = size,
-    };
-    commandBuffer->copyBuffer(srcBuffer, dstBuffer, 1, &copyRegion);
-
-    commandBuffer->end();
-
-    vk::CommandBuffer commandBufferHandle = commandBuffer.get();
-    vk::SubmitInfo submitInfo{
-        .commandBufferCount = 1,
-        .pCommandBuffers = &commandBufferHandle,
-    };
-
-    vk::Queue queue{deviceWrapper->graphicsQueue()};
-    queue.submit(1, &submitInfo, {});
-    queue.waitIdle();
-  }
-
-  VkImageView createImageView(VkImage image, VkFormat format) {
-    vk::ImageViewCreateInfo viewInfo{
-        .image = image,
-        .viewType = vk::ImageViewType::e2D,
-        .format = static_cast<vk::Format>(format),
-        .subresourceRange =
-            vk::ImageSubresourceRange{
-                .aspectMask = vk::ImageAspectFlagBits::eColor,
-                .baseMipLevel = 0,
-                .levelCount = 1,
-                .baseArrayLayer = 0,
-                .layerCount = 1,
-            },
-    };
-
-    VkImageView imageView;
-    vk::Device device{deviceWrapper->device()};
-    if (device.createImageView(&viewInfo, nullptr, &imageView) !=
-        vk::Result::eSuccess) {
-      throw std::runtime_error("failed to create texture image view!");
-    }
-
-    return imageView;
-  }
-
-  utility::material::TextureResource createTextureFromFile(
-      const std::string& texturePath) {
-    const auto normalizedPath =
-        std::filesystem::path(texturePath).lexically_normal().string();
-    if (const auto existingIndex =
-            textureManager.findTextureIndex(normalizedPath)) {
-      if (const auto* existing = textureManager.getTexture(*existingIndex)) {
-        return *existing;
-      }
-    }
-
-    int texWidth, texHeight, texChannels;
-    stbi_uc* pixels = stbi_load(texturePath.c_str(), &texWidth, &texHeight,
-                                &texChannels, STBI_rgb_alpha);
-    if (!pixels) {
-      throw std::runtime_error("failed to load texture image: " + texturePath);
-    }
-
-    VkDeviceSize imageSize = static_cast<VkDeviceSize>(texWidth) *
-                             static_cast<VkDeviceSize>(texHeight) * 4;
-    utility::memory::StagingBuffer stagingBuffer(*memoryManager, imageSize);
-    stagingBuffer.upload(
-        {reinterpret_cast<const std::byte*>(pixels), static_cast<size_t>(imageSize)});
-    stbi_image_free(pixels);
-
-    VkImage textureImage;
-    VmaAllocation textureAllocation;
-    vk::ImageCreateInfo imageInfo{
-        .imageType = vk::ImageType::e2D,
-        .extent = vk::Extent3D{static_cast<uint32_t>(texWidth),
-                                static_cast<uint32_t>(texHeight), 1},
-        .mipLevels = 1,
-        .arrayLayers = 1,
-        .format = vk::Format::eR8G8B8A8Srgb,
-        .tiling = vk::ImageTiling::eOptimal,
-        .initialLayout = vk::ImageLayout::eUndefined,
-        .usage = vk::ImageUsageFlagBits::eTransferDst |
-                 vk::ImageUsageFlagBits::eSampled,
-        .sharingMode = vk::SharingMode::eExclusive,
-        .samples = vk::SampleCountFlagBits::e1,
-    };
-
-    VmaAllocationCreateInfo allocInfo{};
-    allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
-
-    if (vmaCreateImage(memoryManager->allocator(),
-                       reinterpret_cast<const VkImageCreateInfo*>(&imageInfo),
-                       &allocInfo, &textureImage, &textureAllocation, nullptr) !=
-        VK_SUCCESS) {
-      throw std::runtime_error("failed to create texture image!");
-    }
-
-    transitionImageLayout(textureImage, VK_IMAGE_LAYOUT_UNDEFINED,
-                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    copyBufferToImage(stagingBuffer.buffer().buffer, textureImage,
-                      static_cast<uint32_t>(texWidth),
-                      static_cast<uint32_t>(texHeight));
-    transitionImageLayout(textureImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-
-    VkImageView imageView =
-        createImageView(textureImage, static_cast<VkFormat>(imageInfo.format));
-
-    textureImages.push_back(textureImage);
-    textureAllocations.push_back(textureAllocation);
-
-    utility::material::TextureResource resource{};
-    resource.image = textureImage;
-    resource.imageView = imageView;
-    resource.name = normalizedPath;
-    return resource;
+    indexSlice = allocationManager->uploadIndices(
+        boost::span<const uint32_t>(sceneManager->indices()));
   }
 
 
@@ -1341,12 +754,9 @@ class HelloTriangleApplication {
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       graphicsPipeline);
+    const VkDescriptorSet descriptorSet = sceneManager->descriptorSet();
     vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-    pushConstants.objectIndex = 0;
-    vkCmdPushConstants(commandBuffer, pipelineLayout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(BindlessPushConstants), &pushConstants);
 
     VkViewport viewport{};
     viewport.x = 0.0f;
@@ -1369,8 +779,20 @@ class HelloTriangleApplication {
     vkCmdBindIndexBuffer(commandBuffer, indexSlice.buffer, indexSlice.offset,
                          indexType);
 
-    vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indices.size()), 1, 0,
-                     0, 0);
+    const uint32_t drawCount =
+        static_cast<uint32_t>(std::min<size_t>(objectData.size(), config_.maxSceneObjects));
+    for (uint32_t i = 0; i < drawCount; ++i) {
+      pushConstants.objectIndex = i;
+      vkCmdPushConstants(commandBuffer, pipelineLayout,
+                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                         0, sizeof(BindlessPushConstants), &pushConstants);
+      vkCmdDrawIndexed(commandBuffer, static_cast<uint32_t>(indices.size()), 1, 0,
+                       0, 0);
+    }
+
+    if (guiManager) {
+      guiManager->render(commandBuffer);
+    }
 
     vkCmdEndRenderPass(commandBuffer);
 
@@ -1403,6 +825,17 @@ class HelloTriangleApplication {
 
     frameSyncManager->resetFence(currentFrame);
     imagesInFlight[imageIndex] = frameSyncManager->fence(currentFrame);
+
+    updateObjectBuffer();
+    if (guiManager) {
+      guiManager->startFrame();
+      guiManager->drawSceneControls(
+          sceneGraph, config_.maxSceneObjects,
+          [this](const glm::mat4& transform) { addSceneObject(transform); },
+          [this]() { addSceneObject(defaultTransformForNewObject()); },
+          [this](const std::string& modelPath) { return reloadSceneModel(modelPath); },
+          [this]() { return reloadSceneModel(app::DefaultAppConfig().modelPath); });
+    }
 
     vkResetCommandBuffer(commandBuffers[imageIndex].get(),
                          /*VkCommandBufferResetFlagBits*/ 0);
