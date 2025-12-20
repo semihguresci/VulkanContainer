@@ -57,7 +57,7 @@ bool SceneManager::reloadModel(const std::string& path,
     loadGltfAssets();
     writeDescriptorSetContents(cameraBuffer, objectBuffer);
     return true;
-  } catch (const std::exception& exc) {
+  } catch (const std::exception& /*unused*/) {
     materialManager_ = utility::material::MaterialManager{};
     textureManager_ = utility::material::TextureManager{};
     materialBaseColor_ = glm::vec4(1.0f);
