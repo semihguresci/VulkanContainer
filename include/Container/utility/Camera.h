@@ -1,9 +1,8 @@
 #pragma once
 
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
-#include <cmath>
+
+#include "Container/common/CommonMath.h"
 
 namespace utility::camera {
 

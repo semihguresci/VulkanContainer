@@ -1,4 +1,4 @@
-#include <Container/utility/PipelineManager.h>
+#include "Container/utility/PipelineManager.h"
 
 #include <stdexcept>
 
@@ -15,8 +15,7 @@ VkDescriptorSetLayout PipelineManager::createDescriptorSetLayout(
   VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};
   bindingFlagsInfo.sType =
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
-  bindingFlagsInfo.bindingCount =
-      static_cast<uint32_t>(bindingFlags.size());
+  bindingFlagsInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
   bindingFlagsInfo.pBindingFlags = bindingFlags.data();
 
   VkDescriptorSetLayoutCreateInfo layoutInfo{};
@@ -27,9 +26,11 @@ VkDescriptorSetLayout PipelineManager::createDescriptorSetLayout(
   layoutInfo.pNext = next ? next : &bindingFlagsInfo;
 
   VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
-  if (vkCreateDescriptorSetLayout(device_, &layoutInfo, nullptr, &setLayout) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("failed to create descriptor set layout");
+  VkResult res =
+      vkCreateDescriptorSetLayout(device_, &layoutInfo, nullptr, &setLayout);
+
+  if (res != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create descriptor set layout");
   }
 
   descriptorSetLayouts_.push_back(setLayout);
@@ -47,9 +48,10 @@ VkDescriptorPool PipelineManager::createDescriptorPool(
   poolInfo.flags = flags;
 
   VkDescriptorPool pool = VK_NULL_HANDLE;
-  if (vkCreateDescriptorPool(device_, &poolInfo, nullptr, &pool) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("failed to create descriptor pool");
+  VkResult res = vkCreateDescriptorPool(device_, &poolInfo, nullptr, &pool);
+
+  if (res != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create descriptor pool");
   }
 
   descriptorPools_.push_back(pool);
@@ -62,8 +64,7 @@ VkPipelineLayout PipelineManager::createPipelineLayout(
     const void* next) {
   VkPipelineLayoutCreateInfo pipelineLayoutInfo{};
   pipelineLayoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
-  pipelineLayoutInfo.setLayoutCount =
-      static_cast<uint32_t>(setLayouts.size());
+  pipelineLayoutInfo.setLayoutCount = static_cast<uint32_t>(setLayouts.size());
   pipelineLayoutInfo.pSetLayouts = setLayouts.data();
   pipelineLayoutInfo.pushConstantRangeCount =
       static_cast<uint32_t>(pushConstantRanges.size());
@@ -71,9 +72,11 @@ VkPipelineLayout PipelineManager::createPipelineLayout(
   pipelineLayoutInfo.pNext = next;
 
   VkPipelineLayout layout = VK_NULL_HANDLE;
-  if (vkCreatePipelineLayout(device_, &pipelineLayoutInfo, nullptr, &layout) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("failed to create pipeline layout");
+  VkResult res =
+      vkCreatePipelineLayout(device_, &pipelineLayoutInfo, nullptr, &layout);
+
+  if (res != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create pipeline layout");
   }
 
   pipelineLayouts_.push_back(layout);
@@ -87,20 +90,17 @@ VkPipelineCache PipelineManager::getOrCreatePipelineCache(
   }
 
   VkPipelineCacheCreateInfo cacheInfo{};
-  if (createInfo != nullptr) {
+  cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
+
+  if (createInfo) {
     cacheInfo = *createInfo;
-  } else {
-    cacheInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_CACHE_CREATE_INFO;
-    cacheInfo.pNext = nullptr;
-    cacheInfo.flags = 0;
-    cacheInfo.initialDataSize = 0;
-    cacheInfo.pInitialData = nullptr;
   }
 
   VkPipelineCache cache = VK_NULL_HANDLE;
-  if (vkCreatePipelineCache(device_, &cacheInfo, nullptr, &cache) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("failed to create pipeline cache");
+  VkResult res = vkCreatePipelineCache(device_, &cacheInfo, nullptr, &cache);
+
+  if (res != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create pipeline cache");
   }
 
   pipelineCaches_.emplace(cacheKey, cache);
@@ -110,12 +110,14 @@ VkPipelineCache PipelineManager::getOrCreatePipelineCache(
 VkPipeline PipelineManager::createGraphicsPipeline(
     const VkGraphicsPipelineCreateInfo& pipelineInfo,
     const std::string& cacheKey) {
-  VkGraphicsPipelineCreateInfo pipelineCreateInfo = pipelineInfo;
-  VkPipeline pipeline = VK_NULL_HANDLE;
   VkPipelineCache cache = getOrCreatePipelineCache(cacheKey, nullptr);
-  if (vkCreateGraphicsPipelines(device_, cache, 1, &pipelineCreateInfo, nullptr,
-                                &pipeline) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create graphics pipeline");
+
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  VkResult res = vkCreateGraphicsPipelines(device_, cache, 1, &pipelineInfo,
+                                           nullptr, &pipeline);
+
+  if (res != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create graphics pipeline");
   }
 
   pipelines_.push_back(pipeline);
@@ -150,4 +152,3 @@ void PipelineManager::destroyManagedResources() {
 }
 
 }  // namespace utility::pipeline
-

@@ -1,13 +1,11 @@
-#include <Container/utility/WindowManager.h>
-
-
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
+#include "Container/utility/WindowManager.h"
 
 #include <algorithm>
 #include <stdexcept>
 #include <string>
 #include <utility>
+
+#include "Container/common/CommonGLFW.h"
 
 namespace utility::window {
 
@@ -104,10 +102,14 @@ void Window::setUserPointer(void* userPointer) {
 
 VkSurfaceKHR Window::createSurface(VkInstance instance) const {
   VkSurfaceKHR surface = VK_NULL_HANDLE;
-  if (glfwCreateWindowSurface(instance, window_, nullptr, &surface) !=
-      VK_SUCCESS) {
+
+  VkResult result =
+      glfwCreateWindowSurface(instance, window_, nullptr, &surface);
+
+  if (result != VK_SUCCESS) {
     throw std::runtime_error("Failed to create window surface!");
   }
+
   return surface;
 }
 

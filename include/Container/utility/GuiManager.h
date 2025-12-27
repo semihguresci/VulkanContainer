@@ -1,14 +1,17 @@
 #pragma once
 
-#include <Container/app/AppConfig.h>
-#include <Container/utility/SceneManager.h>
-#include <Container/utility/SceneGraph.h>
-
-#include <GLFW/glfw3.h>
-#include <glm/glm.hpp>
-
 #include <functional>
 #include <string>
+#include <utility>
+
+#include "Container/app/AppConfig.h"
+
+#include "Container/common/CommonVulkan.h"
+#include "Container/common/CommonGLFW.h"
+#include "Container/common/CommonMath.h"
+
+#include "Container/utility/SceneGraph.h"
+#include "Container/utility/SceneManager.h"
 
 namespace utility::ui {
 
@@ -17,15 +20,18 @@ class GuiManager {
   GuiManager() = default;
   ~GuiManager();
 
-  void initialize(VkInstance instance, VkDevice device, VkPhysicalDevice physicalDevice,
-                  VkQueue graphicsQueue, uint32_t graphicsQueueFamily,
-                  VkRenderPass renderPass, uint32_t imageCount, GLFWwindow* window,
+  void initialize(VkInstance instance, VkDevice device,
+                  VkPhysicalDevice physicalDevice, VkQueue graphicsQueue,
+                  uint32_t graphicsQueueFamily, VkRenderPass renderPass,
+                  uint32_t imageCount, GLFWwindow* window,
                   const std::string& defaultModelPath);
+
   void shutdown(VkDevice device);
   void updateSwapchainImageCount(uint32_t imageCount);
 
   void startFrame();
   void render(VkCommandBuffer commandBuffer);
+
   void drawSceneControls(
       const utility::scene::SceneGraph& sceneGraph, uint32_t maxSceneObjects,
       const std::function<void(const glm::mat4&)>& addObject,
@@ -35,7 +41,9 @@ class GuiManager {
 
   bool isCapturingInput() const;
   const std::string& statusMessage() const { return statusMessage_; }
-  void setStatusMessage(std::string status) { statusMessage_ = std::move(status); }
+  void setStatusMessage(std::string status) {
+    statusMessage_ = std::move(status);
+  }
 
  private:
   void ensureInitialized() const;

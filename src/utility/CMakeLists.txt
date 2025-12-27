@@ -1,11 +1,11 @@
 # Utility component
 add_library(VulkanContainer_utility
     Logger.cpp
-    VkResultToString.cpp
     AllocationManager.cpp
     GuiManager.cpp
     MaterialXIntegration.cpp
     MaterialManager.cpp
+    TextureManager.cpp
     SceneManager.cpp
     PipelineManager.cpp
     SceneGraph.cpp
@@ -16,7 +16,7 @@ add_library(VulkanContainer_utility
     FrameSyncManager.cpp
     WindowManager.cpp
     InputManager.cpp
-)
+    )
 
 
 target_compile_features(VulkanContainer_utility PUBLIC cxx_std_23)

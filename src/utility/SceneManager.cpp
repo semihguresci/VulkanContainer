@@ -1,17 +1,19 @@
-#include <Container/utility/SceneManager.h>
-#include <Container/utility/SceneData.h>
-
 #include <algorithm>
 #include <array>
 #include <filesystem>
+#include <iostream>
 #include <stdexcept>
+
+#include "Container/utility/SceneData.h"
+#include "Container/utility/SceneManager.h"
 
 namespace utility::scene {
 
-SceneManager::SceneManager(utility::memory::AllocationManager& allocationManager,
-                           utility::pipeline::PipelineManager& pipelineManager,
-                           std::shared_ptr<utility::vulkan::VulkanDevice> deviceWrapper,
-                           const app::AppConfig& config)
+SceneManager::SceneManager(
+    utility::memory::AllocationManager& allocationManager,
+    utility::pipeline::PipelineManager& pipelineManager,
+    std::shared_ptr<utility::vulkan::VulkanDevice> deviceWrapper,
+    const app::AppConfig& config)
     : allocationManager_(&allocationManager),
       pipelineManager_(&pipelineManager),
       deviceWrapper_(std::move(deviceWrapper)),
@@ -19,16 +21,19 @@ SceneManager::SceneManager(utility::memory::AllocationManager& allocationManager
 
 SceneManager::~SceneManager() {
   resetLoadedAssets();
+
+  VkDevice device = deviceWrapper_->device();
+
   if (descriptorPool_ != VK_NULL_HANDLE) {
-    vkDestroyDescriptorPool(deviceWrapper_->device(), descriptorPool_, nullptr);
+    vkDestroyDescriptorPool(device, descriptorPool_, nullptr);
     descriptorPool_ = VK_NULL_HANDLE;
   }
   if (descriptorSetLayout_ != VK_NULL_HANDLE) {
-    vkDestroyDescriptorSetLayout(deviceWrapper_->device(), descriptorSetLayout_, nullptr);
+    vkDestroyDescriptorSetLayout(device, descriptorSetLayout_, nullptr);
     descriptorSetLayout_ = VK_NULL_HANDLE;
   }
   if (baseColorSampler_ != VK_NULL_HANDLE) {
-    vkDestroySampler(deviceWrapper_->device(), baseColorSampler_, nullptr);
+    vkDestroySampler(device, baseColorSampler_, nullptr);
     baseColorSampler_ = VK_NULL_HANDLE;
   }
 }
@@ -43,21 +48,24 @@ void SceneManager::initialize(const std::string& initialModelPath) {
   allocateDescriptorSet();
 }
 
-bool SceneManager::reloadModel(const std::string& path,
-                               const utility::memory::AllocatedBuffer& cameraBuffer,
-                               const utility::memory::AllocatedBuffer& objectBuffer) {
+bool SceneManager::reloadModel(
+    const std::string& path,
+    const utility::memory::AllocatedBuffer& cameraBuffer,
+    const utility::memory::AllocatedBuffer& objectBuffer) {
   resetLoadedAssets();
   loadMaterialXMaterial();
+
   config_.modelPath = path;
   vertices_.clear();
   indices_.clear();
   gltfModel_ = tinygltf::Model{};
   model_ = geometry::Model{};
+
   try {
     loadGltfAssets();
     writeDescriptorSetContents(cameraBuffer, objectBuffer);
     return true;
-  } catch (const std::exception& /*unused*/) {
+  } catch (...) {
     materialManager_ = utility::material::MaterialManager{};
     textureManager_ = utility::material::TextureManager{};
     materialBaseColor_ = glm::vec4(1.0f);
@@ -73,153 +81,128 @@ void SceneManager::updateDescriptorSet(
   writeDescriptorSetContents(cameraBuffer, objectBuffer);
 }
 
+/* ---------- Material resolution ---------- */
+
 glm::vec4 SceneManager::resolveMaterialColor(uint32_t materialIndex) const {
-  if (const auto* material = materialManager_.getMaterial(materialIndex)) {
-    return material->baseColor;
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->baseColor;
   }
   return materialBaseColor_;
 }
 
 glm::vec4 SceneManager::resolveMaterialEmissive(uint32_t materialIndex) const {
-  if (const auto* material = materialManager_.getMaterial(materialIndex)) {
-    return glm::vec4(material->emissiveColor, 1.0f);
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return glm::vec4(m->emissiveColor, 1.0f);
   }
   return glm::vec4(0.0f);
 }
 
 glm::vec2 SceneManager::resolveMaterialMetallicRoughnessFactors(
     uint32_t materialIndex) const {
-  if (const auto* material = materialManager_.getMaterial(materialIndex)) {
-    return glm::vec2(material->metallicFactor, material->roughnessFactor);
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return {m->metallicFactor, m->roughnessFactor};
   }
-  return glm::vec2(1.0f, 1.0f);
+  return {1.0f, 1.0f};
 }
 
-uint32_t SceneManager::resolveMaterialTextureIndex(uint32_t materialIndex) const {
-  if (const auto* material = materialManager_.getMaterial(materialIndex)) {
-    return material->baseColorTextureIndex;
-  }
-  return std::numeric_limits<uint32_t>::max();
-}
-
-uint32_t SceneManager::resolveMaterialNormalTexture(uint32_t materialIndex) const {
-  if (const auto* material = materialManager_.getMaterial(materialIndex)) {
-    return material->normalTextureIndex;
+uint32_t SceneManager::resolveMaterialTextureIndex(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->baseColorTextureIndex;
   }
   return std::numeric_limits<uint32_t>::max();
 }
 
-uint32_t SceneManager::resolveMaterialOcclusionTexture(uint32_t materialIndex) const {
-  if (const auto* material = materialManager_.getMaterial(materialIndex)) {
-    return material->occlusionTextureIndex;
+uint32_t SceneManager::resolveMaterialNormalTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->normalTextureIndex;
   }
   return std::numeric_limits<uint32_t>::max();
 }
 
-uint32_t SceneManager::resolveMaterialEmissiveTexture(uint32_t materialIndex) const {
-  if (const auto* material = materialManager_.getMaterial(materialIndex)) {
-    return material->emissiveTextureIndex;
+uint32_t SceneManager::resolveMaterialOcclusionTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->occlusionTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialEmissiveTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->emissiveTextureIndex;
   }
   return std::numeric_limits<uint32_t>::max();
 }
 
 uint32_t SceneManager::resolveMaterialMetallicRoughnessTexture(
     uint32_t materialIndex) const {
-  if (const auto* material = materialManager_.getMaterial(materialIndex)) {
-    return material->metallicRoughnessTextureIndex;
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->metallicRoughnessTextureIndex;
   }
   return std::numeric_limits<uint32_t>::max();
 }
 
+/* ---------- Vulkan setup ---------- */
+
 void SceneManager::createDescriptorSetLayout() {
-  vk::DescriptorSetLayoutBinding cameraBinding{};
-  cameraBinding.binding = 0;
-  cameraBinding.descriptorType = vk::DescriptorType::eUniformBuffer;
-  cameraBinding.descriptorCount = 1;
-  cameraBinding.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+  std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
 
-  vk::DescriptorSetLayoutBinding objectBinding{};
-  objectBinding.binding = 1;
-  objectBinding.descriptorType = vk::DescriptorType::eStorageBuffer;
-  objectBinding.descriptorCount = 1;
-  objectBinding.stageFlags = vk::ShaderStageFlagBits::eVertex | vk::ShaderStageFlagBits::eFragment;
+  bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                 nullptr};
 
-  vk::DescriptorSetLayoutBinding samplerBinding{};
-  samplerBinding.binding = 2;
-  samplerBinding.descriptorType = vk::DescriptorType::eSampler;
-  samplerBinding.descriptorCount = 1;
-  samplerBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
+  bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                 nullptr};
 
-  vk::DescriptorSetLayoutBinding textureBinding{};
-  textureBinding.binding = 3;
-  textureBinding.descriptorType = vk::DescriptorType::eSampledImage;
-  textureBinding.descriptorCount = static_cast<uint32_t>(config_.maxSceneObjects);
-  textureBinding.stageFlags = vk::ShaderStageFlagBits::eFragment;
+  bindings[2] = {2, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+                 nullptr};
 
-  std::array<vk::DescriptorSetLayoutBinding, 4> bindings = {
-      cameraBinding, objectBinding, samplerBinding, textureBinding};
+  bindings[3] = {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                 static_cast<uint32_t>(config_.maxSceneObjects),
+                 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 
-  std::array<vk::DescriptorBindingFlags, 4> bindingFlags = {
-      0u,
-      0u,
-      0u,
-      vk::DescriptorBindingFlagBits::ePartiallyBound |
-          vk::DescriptorBindingFlagBits::eVariableDescriptorCount};
-
-  std::vector<VkDescriptorSetLayoutBinding> rawBindings;
-  rawBindings.reserve(bindings.size());
-  std::transform(bindings.begin(), bindings.end(), std::back_inserter(rawBindings),
-                 [](const vk::DescriptorSetLayoutBinding& binding) {
-                   return static_cast<VkDescriptorSetLayoutBinding>(binding);
-                 });
-
-  std::vector<VkDescriptorBindingFlags> rawBindingFlags;
-  rawBindingFlags.reserve(bindingFlags.size());
-  std::transform(bindingFlags.begin(), bindingFlags.end(),
-                 std::back_inserter(rawBindingFlags),
-                 [](vk::DescriptorBindingFlags flags) {
-                   return static_cast<VkDescriptorBindingFlags>(flags);
-                 });
+  std::array<VkDescriptorBindingFlags, 4> bindingFlags{
+      0, 0, 0,
+      VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
+          VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT};
 
   descriptorSetLayout_ =
-      pipelineManager_->createDescriptorSetLayout(rawBindings, rawBindingFlags, 0);
+      pipelineManager_->createDescriptorSetLayout(bindings, bindingFlags, 0);
 }
 
 void SceneManager::createSampler() {
   VkPhysicalDeviceProperties properties{};
   vkGetPhysicalDeviceProperties(deviceWrapper_->physicalDevice(), &properties);
 
-  vk::SamplerCreateInfo samplerInfo{
-      .magFilter = vk::Filter::eLinear,
-      .minFilter = vk::Filter::eLinear,
-      .mipmapMode = vk::SamplerMipmapMode::eLinear,
-      .addressModeU = vk::SamplerAddressMode::eRepeat,
-      .addressModeV = vk::SamplerAddressMode::eRepeat,
-      .addressModeW = vk::SamplerAddressMode::eRepeat,
-      .mipLodBias = 0.0f,
-      .anisotropyEnable = vk::True,
-      .maxAnisotropy = properties.limits.maxSamplerAnisotropy,
-      .compareEnable = vk::False,
-      .compareOp = vk::CompareOp::eAlways,
-      .minLod = 0.0f,
-      .maxLod = 0.0f,
-      .borderColor = vk::BorderColor::eIntOpaqueBlack,
-      .unnormalizedCoordinates = vk::False,
-  };
+  VkSamplerCreateInfo info{};
+  info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+  info.magFilter = VK_FILTER_LINEAR;
+  info.minFilter = VK_FILTER_LINEAR;
+  info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+  info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  info.anisotropyEnable = VK_TRUE;
+  info.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+  info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
 
-  vk::Device device{deviceWrapper_->device()};
-  if (device.createSampler(&samplerInfo, nullptr, &baseColorSampler_) != vk::Result::eSuccess) {
-    throw std::runtime_error("failed to create texture sampler!");
-  }
+  vkCreateSampler(deviceWrapper_->device(), &info, nullptr, &baseColorSampler_);
 }
+
+/* ---------- Assets ---------- */
 
 void SceneManager::loadMaterialXMaterial() {
   utility::material::Material material{};
+
   try {
-    auto document = materialXBridge_.loadDocument("materials/base.mtlx");
-    material.baseColor = materialXBridge_.extractBaseColor(document);
-  } catch (const std::exception& exc) {
-    std::cerr << "MaterialX load failed: " << exc.what() << std::endl;
+    auto doc = materialXBridge_.loadDocument("materials/base.mtlx");
+    material.baseColor = materialXBridge_.extractBaseColor(doc);
+  } catch (const std::exception& e) {
+    std::cerr << "MaterialX load failed: " << e.what() << std::endl;
     material.baseColor = glm::vec4(1.0f);
   }
 
@@ -228,6 +211,7 @@ void SceneManager::loadMaterialXMaterial() {
   material.roughnessFactor = 1.0f;
 
   materialBaseColor_ = material.baseColor;
+
   if (defaultMaterialIndex_ == std::numeric_limits<uint32_t>::max()) {
     defaultMaterialIndex_ = materialManager_.createMaterial(material);
   } else {
@@ -241,19 +225,24 @@ void SceneManager::loadGltfAssets() {
 
   if (!config_.modelPath.empty()) {
     try {
-      auto gltfResult = geometry::gltf::LoadModelWithSource(config_.modelPath);
-      gltfModel_ = std::move(gltfResult.gltfModel);
-      model_ = std::move(gltfResult.model);
+      auto result = geometry::gltf::LoadModelWithSource(config_.modelPath);
+      gltfModel_ = std::move(result.gltfModel);
+      model_ = std::move(result.model);
 
-      const auto baseDir = std::filesystem::path(config_.modelPath).parent_path();
+      const auto baseDir =
+          std::filesystem::path(config_.modelPath).parent_path();
+
       auto imageToTexture = materialXBridge_.loadTexturesForGltf(
           gltfModel_, baseDir, textureManager_,
-          [this](const std::string& path) { return allocationManager_->createTextureFromFile(path); });
-      materialXBridge_.loadMaterialsForGltf(gltfModel_, imageToTexture, materialManager_,
-                                            defaultMaterialIndex_);
-    } catch (const std::exception& exc) {
-      std::cerr << "glTF load failed: " << exc.what()
-                << "; falling back to cube model." << std::endl;
+          [this](const std::string& path) {
+            return allocationManager_->createTextureFromFile(path);
+          });
+
+      materialXBridge_.loadMaterialsForGltf(
+          gltfModel_, imageToTexture, materialManager_, defaultMaterialIndex_);
+    } catch (const std::exception& e) {
+      std::cerr << "glTF load failed: " << e.what()
+                << "; falling back to cube.\n";
     }
   }
 
@@ -266,51 +255,41 @@ void SceneManager::loadGltfAssets() {
   indexType_ = VK_INDEX_TYPE_UINT32;
 }
 
+/* ---------- Descriptor sets ---------- */
+
 void SceneManager::allocateDescriptorSet() {
   const uint32_t textureDescriptorCount = std::min<uint32_t>(
       config_.maxSceneObjects,
-      std::max<uint32_t>(1u, static_cast<uint32_t>(textureManager_.textureCount())));
+      std::max<uint32_t>(
+          1u, static_cast<uint32_t>(textureManager_.textureCount())));
 
-  VkDescriptorPoolSize uniformPool{};
-  uniformPool.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  uniformPool.descriptorCount = config_.maxSceneObjects + 1;
+  std::vector<VkDescriptorPoolSize> poolSizes = {
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, config_.maxSceneObjects + 1},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+       std::max<uint32_t>(
+           config_.maxSceneObjects,
+           static_cast<uint32_t>(textureManager_.textureCount()))},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, 1},
+  };
 
-  VkDescriptorPoolSize storagePool{};
-  storagePool.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-  storagePool.descriptorCount = 1;
-
-  VkDescriptorPoolSize sampledImagePool{};
-  sampledImagePool.type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-  sampledImagePool.descriptorCount =
-      std::max<uint32_t>(config_.maxSceneObjects,
-                         static_cast<uint32_t>(textureManager_.textureCount()));
-
-  VkDescriptorPoolSize samplerPool{};
-  samplerPool.type = VK_DESCRIPTOR_TYPE_SAMPLER;
-  samplerPool.descriptorCount = 1;
-
-  descriptorPool_ = pipelineManager_->createDescriptorPool(
-      std::vector<VkDescriptorPoolSize>{uniformPool, storagePool, sampledImagePool,
-                                        samplerPool},
-      1, 0);
+  descriptorPool_ = pipelineManager_->createDescriptorPool(poolSizes, 1, 0);
 
   VkDescriptorSetAllocateInfo allocInfo{};
   allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   allocInfo.descriptorPool = descriptorPool_;
   allocInfo.descriptorSetCount = 1;
   allocInfo.pSetLayouts = &descriptorSetLayout_;
-  uint32_t descriptorCount = textureDescriptorCount;
+
   VkDescriptorSetVariableDescriptorCountAllocateInfo countInfo{};
   countInfo.sType =
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
   countInfo.descriptorSetCount = 1;
-  countInfo.pDescriptorCounts = &descriptorCount;
+  countInfo.pDescriptorCounts = &textureDescriptorCount;
   allocInfo.pNext = &countInfo;
 
-  if (vkAllocateDescriptorSets(deviceWrapper_->device(), &allocInfo, &descriptorSet_) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate descriptor set!");
-  }
+  vkAllocateDescriptorSets(deviceWrapper_->device(), &allocInfo,
+                           &descriptorSet_);
 }
 
 void SceneManager::writeDescriptorSetContents(
@@ -318,17 +297,11 @@ void SceneManager::writeDescriptorSetContents(
     const utility::memory::AllocatedBuffer& objectBuffer) {
   if (descriptorSet_ == VK_NULL_HANDLE) return;
 
-  VkDescriptorBufferInfo cameraBufferInfo{};
-  cameraBufferInfo.buffer = cameraBuffer.buffer;
-  cameraBufferInfo.offset = 0;
-  cameraBufferInfo.range = sizeof(CameraData);
+  VkDescriptorBufferInfo cameraInfo{cameraBuffer.buffer, 0, sizeof(CameraData)};
+  VkDescriptorBufferInfo objectInfo{
+      objectBuffer.buffer, 0, sizeof(ObjectData) * config_.maxSceneObjects};
 
-  VkDescriptorBufferInfo objectBufferInfo{};
-  objectBufferInfo.buffer = objectBuffer.buffer;
-  objectBufferInfo.offset = 0;
-  objectBufferInfo.range = sizeof(ObjectData) * config_.maxSceneObjects;
-
-  std::vector<VkWriteDescriptorSet> descriptorWrites{};
+  std::vector<VkWriteDescriptorSet> writes;
 
   VkWriteDescriptorSet cameraWrite{};
   cameraWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -336,8 +309,8 @@ void SceneManager::writeDescriptorSetContents(
   cameraWrite.dstBinding = 0;
   cameraWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   cameraWrite.descriptorCount = 1;
-  cameraWrite.pBufferInfo = &cameraBufferInfo;
-  descriptorWrites.push_back(cameraWrite);
+  cameraWrite.pBufferInfo = &cameraInfo;
+  writes.push_back(cameraWrite);
 
   VkWriteDescriptorSet objectWrite{};
   objectWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -345,43 +318,34 @@ void SceneManager::writeDescriptorSetContents(
   objectWrite.dstBinding = 1;
   objectWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   objectWrite.descriptorCount = 1;
-  objectWrite.pBufferInfo = &objectBufferInfo;
-  descriptorWrites.push_back(objectWrite);
+  objectWrite.pBufferInfo = &objectInfo;
+  writes.push_back(objectWrite);
 
-  const uint32_t textureDescriptorCount = std::min<uint32_t>(
-      config_.maxSceneObjects,
-      std::max<uint32_t>(1u, static_cast<uint32_t>(textureManager_.textureCount())));
+  std::vector<VkDescriptorImageInfo> imageInfos;
+  const size_t texCount = textureManager_.textureCount();
+  const size_t maxTextures =
+      std::min<size_t>(texCount, config_.maxSceneObjects);
 
-  std::vector<VkDescriptorImageInfo> textureInfos{};
-  const size_t textureCount = textureManager_.textureCount();
-  if (textureCount > 0) {
-    textureInfos.reserve(std::min<size_t>(textureCount, textureDescriptorCount));
-    const size_t maxTextures = std::min<size_t>(textureDescriptorCount, textureCount);
-    for (size_t i = 0; i < maxTextures; ++i) {
-      const auto* tex = textureManager_.getTexture(static_cast<uint32_t>(i));
-      if (tex == nullptr) continue;
-      VkDescriptorImageInfo info{};
-      info.sampler = VK_NULL_HANDLE;
-      info.imageView = tex->imageView;
-      info.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-      textureInfos.push_back(info);
-    }
-
-    if (!textureInfos.empty()) {
-      VkWriteDescriptorSet textureWrite{};
-      textureWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      textureWrite.dstSet = descriptorSet_;
-      textureWrite.dstBinding = 3;
-      textureWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-      textureWrite.descriptorCount =
-          static_cast<uint32_t>(textureInfos.size());
-      textureWrite.pImageInfo = textureInfos.data();
-      descriptorWrites.push_back(textureWrite);
-    }
+  for (size_t i = 0; i < maxTextures; ++i) {
+    const auto* tex = textureManager_.getTexture(static_cast<uint32_t>(i));
+    if (!tex) continue;
+    imageInfos.push_back({VK_NULL_HANDLE, tex->imageView,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
   }
 
-  VkDescriptorImageInfo samplerInfo{};
-  samplerInfo.sampler = baseColorSampler_;
+  if (!imageInfos.empty()) {
+    VkWriteDescriptorSet imageWrite{};
+    imageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    imageWrite.dstSet = descriptorSet_;
+    imageWrite.dstBinding = 3;
+    imageWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    imageWrite.descriptorCount = static_cast<uint32_t>(imageInfos.size());
+    imageWrite.pImageInfo = imageInfos.data();
+    writes.push_back(imageWrite);
+  }
+
+  VkDescriptorImageInfo samplerInfo{baseColorSampler_, VK_NULL_HANDLE,
+                                    VK_IMAGE_LAYOUT_UNDEFINED};
 
   VkWriteDescriptorSet samplerWrite{};
   samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -390,11 +354,11 @@ void SceneManager::writeDescriptorSetContents(
   samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
   samplerWrite.descriptorCount = 1;
   samplerWrite.pImageInfo = &samplerInfo;
-  descriptorWrites.push_back(samplerWrite);
+  writes.push_back(samplerWrite);
 
   vkUpdateDescriptorSets(deviceWrapper_->device(),
-                         static_cast<uint32_t>(descriptorWrites.size()),
-                         descriptorWrites.data(), 0, nullptr);
+                         static_cast<uint32_t>(writes.size()), writes.data(), 0,
+                         nullptr);
 }
 
 void SceneManager::resetLoadedAssets() {

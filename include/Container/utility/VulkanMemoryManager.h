@@ -1,22 +1,22 @@
 #ifndef UTILITY_VULKAN_MEMORY_MANAGER_H
 #define UTILITY_VULKAN_MEMORY_MANAGER_H
 
+#include <boost/core/span.hpp>
 #include <cstddef>
+#include <cstdint>
+#include <memory>
 #include <utility>
 
-#include <boost/core/span.hpp>
+#include "Container/common/CommonVMA.h"
+#include "Container/common/CommonVulkan.h"
 
-#include <vk_mem_alloc.h>
-#include <vulkan/vulkan.h>
-
-namespace utility {
-namespace memory {
+namespace utility::memory {
 
 class VulkanMemoryManager;
 
 struct AllocatedBuffer {
   VkBuffer buffer{VK_NULL_HANDLE};
-  VmaAllocation allocation{VK_NULL_HANDLE};
+  VmaAllocation allocation{nullptr};
   VmaAllocationInfo allocation_info{};
 };
 
@@ -39,15 +39,16 @@ class StagingBuffer {
   StagingBuffer(StagingBuffer&& other) noexcept;
   StagingBuffer& operator=(StagingBuffer&& other) noexcept;
 
-  [[nodiscard]] auto size() const -> VkDeviceSize { return size_; }
-  [[nodiscard]] auto buffer() const -> const AllocatedBuffer& { return buffer_; }
-  [[nodiscard]] auto data() -> void*;
+  [[nodiscard]] VkDeviceSize size() const { return size_; }
+  [[nodiscard]] const AllocatedBuffer& buffer() const { return buffer_; }
+
+  [[nodiscard]] void* data();
   void upload(boost::span<const std::byte> bytes);
 
  private:
-  VulkanMemoryManager* manager_;
+  VulkanMemoryManager* manager_{nullptr};
   AllocatedBuffer buffer_{};
-  VkDeviceSize size_{};
+  VkDeviceSize size_{0};
   void* mapped_data_{nullptr};
   bool mapped_here_{false};
 };
@@ -64,20 +65,19 @@ class VulkanMemoryManager {
   VulkanMemoryManager(VulkanMemoryManager&& other) noexcept;
   VulkanMemoryManager& operator=(VulkanMemoryManager&& other) noexcept;
 
-  [[nodiscard]] auto createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
-                                  VmaMemoryUsage memory_usage,
-                                  VmaAllocationCreateFlags allocation_flags = 0,
-                                  VkSharingMode sharing_mode =
-                                      VK_SHARING_MODE_EXCLUSIVE) -> AllocatedBuffer;
+  [[nodiscard]] AllocatedBuffer createBuffer(
+      VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memory_usage,
+      VmaAllocationCreateFlags allocation_flags = 0,
+      VkSharingMode sharing_mode = VK_SHARING_MODE_EXCLUSIVE);
 
   void destroyBuffer(AllocatedBuffer& buffer);
 
-  [[nodiscard]] auto allocator() const -> VmaAllocator { return allocator_; }
+  [[nodiscard]] VmaAllocator allocator() const { return allocator_; }
 
  private:
   void cleanup();
 
-  VmaAllocator allocator_{VK_NULL_HANDLE};
+  VmaAllocator allocator_{nullptr};
   VkDevice device_{VK_NULL_HANDLE};
 };
 
@@ -94,25 +94,22 @@ class BufferArena {
   BufferArena(BufferArena&& other) noexcept;
   BufferArena& operator=(BufferArena&& other) noexcept;
 
-  [[nodiscard]] auto allocate(VkDeviceSize size,
-                              VkDeviceSize alignment = 16) -> BufferSlice;
+  [[nodiscard]] BufferSlice allocate(VkDeviceSize size,
+                                     VkDeviceSize alignment = 16);
   void reset();
 
-  [[nodiscard]] auto backingBuffer() const -> const AllocatedBuffer& {
-    return buffer_;
-  }
-  [[nodiscard]] auto remainingSize() const -> VkDeviceSize {
+  [[nodiscard]] const AllocatedBuffer& backingBuffer() const { return buffer_; }
+  [[nodiscard]] VkDeviceSize remainingSize() const {
     return total_size_ - next_offset_;
   }
 
  private:
-  VulkanMemoryManager* manager_;
+  VulkanMemoryManager* manager_{nullptr};
   AllocatedBuffer buffer_{};
-  VkDeviceSize total_size_;
-  VkDeviceSize next_offset_ = 0;
+  VkDeviceSize total_size_{0};
+  VkDeviceSize next_offset_{0};
 };
 
-}  // namespace memory
-}  // namespace utility
+}  // namespace utility::memory
 
 #endif  // UTILITY_VULKAN_MEMORY_MANAGER_H

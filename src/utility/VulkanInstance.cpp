@@ -1,14 +1,16 @@
-#include <Container/utility/VulkanInstance.h>
+#include "Container/utility/VulkanInstance.h"
 
 #include <stdexcept>
+#include <string>
+#include <utility>
+#include <vector>
 
 namespace utility::vulkan {
 
 VulkanInstance::VulkanInstance(const InstanceCreateInfo& createInfo) {
   if (createInfo.enableValidationLayers &&
       !checkValidationLayerSupport(createInfo.validationLayers)) {
-    throw std::runtime_error(
-        "validation layers requested, but not available!");
+    throw std::runtime_error("validation layers requested, but not available!");
   }
 
   VkApplicationInfo appInfo{};
@@ -19,52 +21,75 @@ VulkanInstance::VulkanInstance(const InstanceCreateInfo& createInfo) {
   appInfo.engineVersion = createInfo.engineVersion;
   appInfo.apiVersion = createInfo.apiVersion;
 
+  const uint32_t enabledLayerCount =
+      createInfo.enableValidationLayers
+          ? static_cast<uint32_t>(createInfo.validationLayers.size())
+          : 0u;
+
+  const char* const* enabledLayerNames =
+      createInfo.enableValidationLayers ? createInfo.validationLayers.data()
+                                        : nullptr;
+
   VkInstanceCreateInfo instanceCreateInfo{};
   instanceCreateInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
   instanceCreateInfo.pApplicationInfo = &appInfo;
   instanceCreateInfo.pNext = createInfo.next;
-
+  instanceCreateInfo.enabledLayerCount = enabledLayerCount;
+  instanceCreateInfo.ppEnabledLayerNames = enabledLayerNames;
   instanceCreateInfo.enabledExtensionCount =
       static_cast<uint32_t>(createInfo.requiredExtensions.size());
   instanceCreateInfo.ppEnabledExtensionNames =
       createInfo.requiredExtensions.data();
 
-  if (createInfo.enableValidationLayers) {
-    instanceCreateInfo.enabledLayerCount =
-        static_cast<uint32_t>(createInfo.validationLayers.size());
-    instanceCreateInfo.ppEnabledLayerNames = createInfo.validationLayers.data();
-  } else {
-    instanceCreateInfo.enabledLayerCount = 0;
-  }
-
-  if (vkCreateInstance(&instanceCreateInfo, nullptr, &instance_) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create instance!");
+  VkResult res = vkCreateInstance(&instanceCreateInfo, nullptr, &instance_);
+  if (res != VK_SUCCESS) {
+    throw std::runtime_error("failed to create instance (vkCreateInstance)");
   }
 }
 
 VulkanInstance::~VulkanInstance() {
   if (instance_ != VK_NULL_HANDLE) {
     vkDestroyInstance(instance_, nullptr);
+    instance_ = VK_NULL_HANDLE;
   }
+}
+
+VulkanInstance::VulkanInstance(VulkanInstance&& other) noexcept
+    : instance_{std::exchange(other.instance_, VK_NULL_HANDLE)} {}
+
+VulkanInstance& VulkanInstance::operator=(VulkanInstance&& other) noexcept {
+  if (this != &other) {
+    if (instance_ != VK_NULL_HANDLE) {
+      vkDestroyInstance(instance_, nullptr);
+    }
+    instance_ = std::exchange(other.instance_, VK_NULL_HANDLE);
+  }
+  return *this;
 }
 
 bool VulkanInstance::checkValidationLayerSupport(
     const std::vector<const char*>& validationLayers) {
   uint32_t layerCount = 0;
-  vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+  VkResult res = vkEnumerateInstanceLayerProperties(&layerCount, nullptr);
+  if (res != VK_SUCCESS || layerCount == 0) {
+    return validationLayers.empty();  // no layers available
+  }
 
   std::vector<VkLayerProperties> availableLayers(layerCount);
-  vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+  res = vkEnumerateInstanceLayerProperties(&layerCount, availableLayers.data());
+  if (res != VK_SUCCESS) {
+    return false;
+  }
 
   for (const char* layerName : validationLayers) {
     bool layerFound = false;
     for (const auto& layerProperties : availableLayers) {
+      // layerName in VkLayerProperties is a null-terminated C string
       if (std::string(layerName) == std::string(layerProperties.layerName)) {
         layerFound = true;
         break;
       }
     }
-
     if (!layerFound) {
       return false;
     }
@@ -74,4 +99,3 @@ bool VulkanInstance::checkValidationLayerSupport(
 }
 
 }  // namespace utility::vulkan
-

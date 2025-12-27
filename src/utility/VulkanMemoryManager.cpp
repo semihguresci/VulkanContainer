@@ -1,34 +1,30 @@
-#define VMA_IMPLEMENTATION
 #include <Container/utility/VulkanMemoryManager.h>
-#include <Container/utility/VulkanAlignment.h>
 
 #include <cstring>
 #include <stdexcept>
 
-namespace utility {
-namespace memory {
+#include "Container/utility/VulkanAlignment.h"
+
+namespace utility::memory {
+
+/* ========================= StagingBuffer ========================= */
 
 StagingBuffer::StagingBuffer(VulkanMemoryManager& manager, VkDeviceSize size,
                              VmaAllocationCreateFlags allocation_flags)
     : manager_(&manager), size_(size) {
-  buffer_ = manager_->createBuffer(
-      size_, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
-      allocation_flags);
+  buffer_ = manager_->createBuffer(size_, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                   VMA_MEMORY_USAGE_AUTO, allocation_flags);
 
   mapped_data_ = buffer_.allocation_info.pMappedData;
 }
 
 StagingBuffer::~StagingBuffer() {
-  if (manager_ != nullptr && buffer_.allocation != VK_NULL_HANDLE) {
-    if (mapped_here_ && mapped_data_ != nullptr) {
+  if (manager_ && buffer_.allocation) {
+    if (mapped_here_ && mapped_data_) {
       vmaUnmapMemory(manager_->allocator(), buffer_.allocation);
     }
     manager_->destroyBuffer(buffer_);
   }
-  manager_ = nullptr;
-  mapped_data_ = nullptr;
-  size_ = 0;
-  mapped_here_ = false;
 }
 
 StagingBuffer::StagingBuffer(StagingBuffer&& other) noexcept
@@ -62,19 +58,15 @@ StagingBuffer& StagingBuffer::operator=(StagingBuffer&& other) noexcept {
   return *this;
 }
 
-auto StagingBuffer::data() -> void* {
-  if (mapped_data_ != nullptr) {
-    return mapped_data_;
+void* StagingBuffer::data() {
+  if (mapped_data_) return mapped_data_;
+
+  if (!manager_ || !buffer_.allocation) {
+    throw std::runtime_error("StagingBuffer not initialized");
   }
 
-  if (manager_ == nullptr || buffer_.allocation == VK_NULL_HANDLE) {
-    throw std::runtime_error("StagingBuffer is not properly initialized");
-  }
-
-  if (const auto result = vmaMapMemory(manager_->allocator(),
-                                       buffer_.allocation, &mapped_data_);
-      result != VK_SUCCESS) {
-    mapped_data_ = nullptr;
+  if (vmaMapMemory(manager_->allocator(), buffer_.allocation, &mapped_data_) !=
+      VK_SUCCESS) {
     throw std::runtime_error("Failed to map staging buffer");
   }
 
@@ -87,28 +79,25 @@ void StagingBuffer::upload(boost::span<const std::byte> bytes) {
     throw std::runtime_error("StagingBuffer upload exceeds buffer size");
   }
 
-  void* destination = data();
-  if (destination == nullptr) {
-    throw std::runtime_error("StagingBuffer mapping returned null pointer");
-  }
-
-  std::memcpy(destination, bytes.data(), bytes.size_bytes());
+  void* dst = data();
+  std::memcpy(dst, bytes.data(), bytes.size_bytes());
 }
+
+/* ===================== VulkanMemoryManager ====================== */
 
 VulkanMemoryManager::VulkanMemoryManager(VkInstance instance,
                                          VkPhysicalDevice physical_device,
                                          VkDevice device,
                                          uint32_t vulkan_api_version)
     : device_(device) {
-  VmaAllocatorCreateInfo allocator_info{};
-  allocator_info.physicalDevice = physical_device;
-  allocator_info.device = device;
-  allocator_info.instance = instance;
-  allocator_info.vulkanApiVersion = vulkan_api_version;
-  allocator_info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+  VmaAllocatorCreateInfo info{};
+  info.instance = instance;
+  info.physicalDevice = physical_device;
+  info.device = device;
+  info.vulkanApiVersion = vulkan_api_version;
+  info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 
-  if (const auto result = vmaCreateAllocator(&allocator_info, &allocator_);
-      result != VK_SUCCESS) {
+  if (vmaCreateAllocator(&info, &allocator_) != VK_SUCCESS) {
     throw std::runtime_error("Failed to create VMA allocator");
   }
 }
@@ -133,26 +122,24 @@ VulkanMemoryManager& VulkanMemoryManager::operator=(
   return *this;
 }
 
-auto VulkanMemoryManager::createBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
-                                       VmaMemoryUsage memory_usage,
-                                       VmaAllocationCreateFlags allocation_flags,
-                                       VkSharingMode sharing_mode)
-    -> AllocatedBuffer {
-  VkBufferCreateInfo buffer_info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
-  buffer_info.size = size;
-  buffer_info.usage = usage;
-  buffer_info.sharingMode = sharing_mode;
+AllocatedBuffer VulkanMemoryManager::createBuffer(
+    VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memory_usage,
+    VmaAllocationCreateFlags allocation_flags, VkSharingMode sharing_mode) {
+  VkBufferCreateInfo bufferInfo{};
+  bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+  bufferInfo.size = size;
+  bufferInfo.usage = usage;
+  bufferInfo.sharingMode = sharing_mode;
 
-  VmaAllocationCreateInfo allocation_info{};
-  allocation_info.usage = memory_usage;
-  allocation_info.flags = allocation_flags;
+  VmaAllocationCreateInfo allocInfo{};
+  allocInfo.usage = memory_usage;
+  allocInfo.flags = allocation_flags;
 
   AllocatedBuffer buffer{};
-  const auto result = vmaCreateBuffer(allocator_, &buffer_info, &allocation_info,
-                                      &buffer.buffer, &buffer.allocation,
-                                      &buffer.allocation_info);
 
-  if (result != VK_SUCCESS) {
+  if (vmaCreateBuffer(allocator_, &bufferInfo, &allocInfo, &buffer.buffer,
+                      &buffer.allocation,
+                      &buffer.allocation_info) != VK_SUCCESS) {
     throw std::runtime_error("Failed to allocate Vulkan buffer");
   }
 
@@ -160,23 +147,21 @@ auto VulkanMemoryManager::createBuffer(VkDeviceSize size, VkBufferUsageFlags usa
 }
 
 void VulkanMemoryManager::destroyBuffer(AllocatedBuffer& buffer) {
-  if (allocator_ != VK_NULL_HANDLE && buffer.buffer != VK_NULL_HANDLE &&
-      buffer.allocation != VK_NULL_HANDLE) {
+  if (allocator_ && buffer.buffer && buffer.allocation) {
     vmaDestroyBuffer(allocator_, buffer.buffer, buffer.allocation);
   }
-
-  buffer.buffer = VK_NULL_HANDLE;
-  buffer.allocation = VK_NULL_HANDLE;
-  buffer.allocation_info = {};
+  buffer = {};
 }
 
 void VulkanMemoryManager::cleanup() {
-  if (allocator_ != VK_NULL_HANDLE) {
+  if (allocator_) {
     vmaDestroyAllocator(allocator_);
     allocator_ = VK_NULL_HANDLE;
   }
   device_ = VK_NULL_HANDLE;
 }
+
+/* ========================= BufferArena ========================= */
 
 BufferArena::BufferArena(VulkanMemoryManager& manager, VkDeviceSize total_size,
                          VkBufferUsageFlags usage, VmaMemoryUsage memory_usage,
@@ -188,12 +173,9 @@ BufferArena::BufferArena(VulkanMemoryManager& manager, VkDeviceSize total_size,
 }
 
 BufferArena::~BufferArena() {
-  if (manager_ != nullptr && buffer_.buffer != VK_NULL_HANDLE) {
+  if (manager_ && buffer_.buffer) {
     manager_->destroyBuffer(buffer_);
   }
-  manager_ = nullptr;
-  total_size_ = 0;
-  next_offset_ = 0;
 }
 
 BufferArena::BufferArena(BufferArena&& other) noexcept
@@ -209,10 +191,9 @@ BufferArena::BufferArena(BufferArena&& other) noexcept
 
 BufferArena& BufferArena::operator=(BufferArena&& other) noexcept {
   if (this != &other) {
-    if (manager_ != nullptr && buffer_.buffer != VK_NULL_HANDLE) {
+    if (manager_ && buffer_.buffer) {
       manager_->destroyBuffer(buffer_);
     }
-
     manager_ = other.manager_;
     buffer_ = other.buffer_;
     total_size_ = other.total_size_;
@@ -226,25 +207,20 @@ BufferArena& BufferArena::operator=(BufferArena&& other) noexcept {
   return *this;
 }
 
-auto BufferArena::allocate(VkDeviceSize size, VkDeviceSize alignment)
-    -> BufferSlice {
-  if (alignment == 0) {
-    alignment = 1;
+BufferSlice BufferArena::allocate(VkDeviceSize size, VkDeviceSize alignment) {
+  if (alignment == 0) alignment = 1;
+
+  VkDeviceSize aligned = VulkanAlignment::alignUp(next_offset_, alignment);
+
+  if (aligned + size > total_size_) {
+    throw std::runtime_error("BufferArena out of space");
   }
 
-  const VkDeviceSize aligned_offset =
-      VulkanAlignment::alignUp(next_offset_, alignment);
-
-  if (aligned_offset > total_size_ || total_size_ - aligned_offset < size) {
-    throw std::runtime_error("BufferArena out of space for allocation");
-  }
-
-  BufferSlice slice{buffer_.buffer, aligned_offset, size};
-  next_offset_ = aligned_offset + size;
+  BufferSlice slice{buffer_.buffer, aligned, size};
+  next_offset_ = aligned + size;
   return slice;
 }
 
 void BufferArena::reset() { next_offset_ = 0; }
 
-}  // namespace memory
-}  // namespace utility
+}  // namespace utility::memory

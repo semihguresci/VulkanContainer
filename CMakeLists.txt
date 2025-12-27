@@ -13,7 +13,6 @@ include(cmake/Options.cmake)
 include(cmake/Dependencies.cmake)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
-find_package(Vulkan REQUIRED)
 
 add_subdirectory(src)
 

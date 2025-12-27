@@ -21,8 +21,7 @@ class PipelineManager {
   VkDescriptorSetLayout createDescriptorSetLayout(
       const std::vector<VkDescriptorSetLayoutBinding>& bindings,
       const std::vector<VkDescriptorBindingFlags>& bindingFlags,
-      VkDescriptorSetLayoutCreateFlags flags = 0,
-      const void* next = nullptr);
+      VkDescriptorSetLayoutCreateFlags flags = 0, const void* next = nullptr);
 
   VkDescriptorPool createDescriptorPool(
       const std::vector<VkDescriptorPoolSize>& poolSizes, uint32_t maxSets,
@@ -53,4 +52,3 @@ class PipelineManager {
 };
 
 }  // namespace utility::pipeline
-

@@ -1,19 +1,22 @@
 #pragma once
 
-#include <Container/app/AppConfig.h>
-#include <Container/geometry/Model.h>
-#include <Container/utility/AllocationManager.h>
-#include <Container/utility/MaterialManager.h>
-#include <Container/utility/MaterialXIntegration.h>
-#include <Container/utility/PipelineManager.h>
-#include <Container/utility/SceneData.h>
-#include <Container/utility/VulkanDevice.h>
-
-#include <glm/glm.hpp>
-
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <vector>
+
+#include "Container/app/AppConfig.h"
+#include "Container/common/CommonVulkan.h"
+#include "Container/common/CommonMath.h"
+#include "Container/geometry/Model.h"
+#include "Container/utility/AllocationManager.h"
+#include "Container/utility/MaterialManager.h"
+#include "Container/utility/MaterialXIntegration.h"
+#include "Container/utility/PipelineManager.h"
+#include "Container/utility/SceneData.h"
+#include "Container/utility/TextureManager.h"
+#include "Container/utility/TextureResource.h"
+#include "Container/utility/VulkanDevice.h"
 
 namespace utility::scene {
 
@@ -29,14 +32,18 @@ class SceneManager {
   SceneManager& operator=(const SceneManager&) = delete;
 
   void initialize(const std::string& initialModelPath);
+
   bool reloadModel(const std::string& path,
                    const utility::memory::AllocatedBuffer& cameraBuffer,
                    const utility::memory::AllocatedBuffer& objectBuffer);
 
-  void updateDescriptorSet(const utility::memory::AllocatedBuffer& cameraBuffer,
-                           const utility::memory::AllocatedBuffer& objectBuffer);
+  void updateDescriptorSet(
+      const utility::memory::AllocatedBuffer& cameraBuffer,
+      const utility::memory::AllocatedBuffer& objectBuffer);
 
-  VkDescriptorSetLayout descriptorSetLayout() const { return descriptorSetLayout_; }
+  VkDescriptorSetLayout descriptorSetLayout() const {
+    return descriptorSetLayout_;
+  }
   VkDescriptorSet descriptorSet() const { return descriptorSet_; }
 
   const std::vector<geometry::Vertex>& vertices() const { return vertices_; }
@@ -46,12 +53,14 @@ class SceneManager {
 
   glm::vec4 resolveMaterialColor(uint32_t materialIndex) const;
   glm::vec4 resolveMaterialEmissive(uint32_t materialIndex) const;
-  glm::vec2 resolveMaterialMetallicRoughnessFactors(uint32_t materialIndex) const;
+  glm::vec2 resolveMaterialMetallicRoughnessFactors(
+      uint32_t materialIndex) const;
   uint32_t resolveMaterialTextureIndex(uint32_t materialIndex) const;
   uint32_t resolveMaterialNormalTexture(uint32_t materialIndex) const;
   uint32_t resolveMaterialOcclusionTexture(uint32_t materialIndex) const;
   uint32_t resolveMaterialEmissiveTexture(uint32_t materialIndex) const;
-  uint32_t resolveMaterialMetallicRoughnessTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialMetallicRoughnessTexture(
+      uint32_t materialIndex) const;
 
  private:
   void createDescriptorSetLayout();
@@ -59,8 +68,9 @@ class SceneManager {
   void loadMaterialXMaterial();
   void loadGltfAssets();
   void allocateDescriptorSet();
-  void writeDescriptorSetContents(const utility::memory::AllocatedBuffer& cameraBuffer,
-                                  const utility::memory::AllocatedBuffer& objectBuffer);
+  void writeDescriptorSetContents(
+      const utility::memory::AllocatedBuffer& cameraBuffer,
+      const utility::memory::AllocatedBuffer& objectBuffer);
   void resetLoadedAssets();
 
   utility::memory::AllocationManager* allocationManager_{nullptr};
@@ -76,6 +86,7 @@ class SceneManager {
   tinygltf::Model gltfModel_{};
   std::vector<geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
+
   VkIndexType indexType_{VK_INDEX_TYPE_UINT32};
 
   glm::vec4 materialBaseColor_{1.0f};
