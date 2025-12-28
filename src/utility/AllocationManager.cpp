@@ -1,5 +1,10 @@
 #include "Container/utility/AllocationManager.h"
 
+#include <filesystem>
+
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb/stb_image.h>
+
 
 namespace utility::memory {
 

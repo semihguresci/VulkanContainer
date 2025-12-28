@@ -2,9 +2,10 @@
 
 #include "Container/app/AppConfig.h"
 #include "Container/common/CommonVulkan.h"
-#include "Container/common/CommonVMA.h
+#include "Container/common/CommonVMA.h"
 #include "Container/geometry/Vertex.h"
 #include "Container/utility/MaterialManager.h"
+#include "Container/utility/TextureResource.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
 #include <boost/core/span.hpp>
