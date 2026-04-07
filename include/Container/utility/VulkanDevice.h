@@ -26,13 +26,13 @@ class VulkanDevice {
   VulkanDevice(VulkanDevice&& other) = delete;
   VulkanDevice& operator=(VulkanDevice&& other) = delete;
 
-  [[nodiscard]] VkPhysicalDevice physicalDevice() const {
+  [[nodiscard]] VkPhysicalDevice physicalDevice() const noexcept {
     return physicalDevice_;
   }
-  [[nodiscard]] VkDevice device() const { return device_; }
-  [[nodiscard]] VkQueue graphicsQueue() const { return graphicsQueue_; }
-  [[nodiscard]] VkQueue presentQueue() const { return presentQueue_; }
-  [[nodiscard]] QueueFamilyIndices queueFamilyIndices() const {
+  [[nodiscard]] VkDevice device() const noexcept { return device_; }
+  [[nodiscard]] VkQueue graphicsQueue() const noexcept { return graphicsQueue_; }
+  [[nodiscard]] VkQueue presentQueue() const noexcept { return presentQueue_; }
+  [[nodiscard]] QueueFamilyIndices queueFamilyIndices() const noexcept {
     return queueFamilyIndices_;
   }
 

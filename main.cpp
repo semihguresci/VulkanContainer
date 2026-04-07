@@ -41,9 +41,9 @@
 #include <fstream>
 #include <initializer_list>
 
-#include <iostream>
 #include <limits>
 #include <memory>
+#include <print>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -1786,7 +1786,8 @@ class HelloTriangleApplication {
       }
       sceneGraph.updateWorldTransforms();
     }
-    renderableNodes = sceneGraph.renderableNodes();
+    renderableNodes.assign(sceneGraph.renderableNodes().begin(),
+                           sceneGraph.renderableNodes().end());
     if (renderableNodes.empty()) {
       selectedMeshNode = utility::scene::SceneGraph::kInvalidNode;
     } else if (std::find(renderableNodes.begin(), renderableNodes.end(),
@@ -1820,8 +1821,12 @@ class HelloTriangleApplication {
 
   void createGraphicsPipelines() {
     const auto loadModule = [this](const char* path) {
+      auto fileData = utility::file::readFile(path);
+      if (!fileData) {
+        throw std::runtime_error(fileData.error());
+      }
       return utility::vulkan::createShaderModule(deviceWrapper->device(),
-                                                 utility::file::readFile(path));
+                                                 std::move(fileData).value());
     };
     const auto makeShaderStage = [](VkShaderModule module,
                                     VkShaderStageFlagBits stage) {
@@ -2549,7 +2554,8 @@ class HelloTriangleApplication {
 
   void syncObjectDataFromSceneGraph() {
     sceneGraph.updateWorldTransforms();
-    renderableNodes = sceneGraph.renderableNodes();
+    renderableNodes.assign(sceneGraph.renderableNodes().begin(),
+                           sceneGraph.renderableNodes().end());
     objectData.clear();
     opaqueDrawCommands.clear();
     transparentDrawCommands.clear();
@@ -3172,7 +3178,7 @@ int main(int argc, char** argv) {
     HelloTriangleApplication app{std::move(config)};
     app.run();
   } catch (const std::exception& e) {
-    std::cerr << e.what() << std::endl;
+    std::println(stderr, "{}", e.what());
     return EXIT_FAILURE;
   }
   return EXIT_SUCCESS;

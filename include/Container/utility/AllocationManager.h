@@ -12,6 +12,7 @@
 #include <span>
 #include <glm/glm.hpp>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -36,7 +37,7 @@ class AllocationManager {
   BufferSlice uploadVertices(std::span<const geometry::Vertex> vertices);
   BufferSlice uploadIndices(std::span<const uint32_t> indices);
 
-  AllocatedBuffer createBuffer(
+  [[nodiscard]] AllocatedBuffer createBuffer(
       VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage,
       VmaAllocationCreateFlags allocationFlags = 0,
       VkSharingMode sharingMode = VK_SHARING_MODE_EXCLUSIVE);

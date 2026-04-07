@@ -2,7 +2,7 @@
 #include <array>
 #include <filesystem>
 #include <functional>
-#include <iostream>
+#include <print>
 #include <stdexcept>
 #include <utility>
 
@@ -404,7 +404,7 @@ void SceneManager::loadMaterialXMaterial() {
     auto doc = materialXBridge_.loadDocument("materials/base.mtlx");
     material.baseColor = materialXBridge_.extractBaseColor(doc);
   } catch (const std::exception& e) {
-    std::cerr << "MaterialX load failed: " << e.what() << std::endl;
+    std::println(stderr, "MaterialX load failed: {}", e.what());
     material.baseColor = glm::vec4(1.0f);
   }
 
@@ -447,8 +447,7 @@ void SceneManager::loadGltfAssets() {
           gltfModel_, imageToTexture, materialManager_, defaultMaterialIndex_);
       defaultMaterialIndex_ = fallbackMaterialIndex;
     } catch (const std::exception& e) {
-      std::cerr << "glTF load failed: " << e.what()
-                << "; falling back to cube.\n";
+      std::println(stderr, "glTF load failed: {}; falling back to cube.", e.what());
     }
   }
 

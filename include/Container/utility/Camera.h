@@ -11,18 +11,18 @@ class BaseCamera {
   virtual ~BaseCamera() = default;
 
   void setPosition(const glm::vec3& position) { position_ = position; }
-  [[nodiscard]] const glm::vec3& position() const { return position_; }
+  [[nodiscard]] const glm::vec3& position() const noexcept { return position_; }
   void setScale(const glm::vec3& scale) {
     scale_ = glm::max(scale, glm::vec3(0.001f));
   }
-  [[nodiscard]] const glm::vec3& scale() const { return scale_; }
+  [[nodiscard]] const glm::vec3& scale() const noexcept { return scale_; }
 
   void setYawPitch(float yawDegrees, float pitchDegrees) {
     yawDegrees_ = yawDegrees;
     pitchDegrees_ = clampPitch(pitchDegrees);
   }
-  [[nodiscard]] float yawDegrees() const { return yawDegrees_; }
-  [[nodiscard]] float pitchDegrees() const { return pitchDegrees_; }
+  [[nodiscard]] float yawDegrees() const noexcept { return yawDegrees_; }
+  [[nodiscard]] float pitchDegrees() const noexcept { return pitchDegrees_; }
 
   void addYawPitch(float yawOffset, float pitchOffset) {
     yawDegrees_ += yawOffset;
@@ -89,7 +89,7 @@ class PerspectiveCamera : public BaseCamera {
         glm::radians(fieldOfViewDegrees_), aspectRatio, nearPlane_, farPlane_);
   }
 
-  [[nodiscard]] float fieldOfViewDegrees() const { return fieldOfViewDegrees_; }
+  [[nodiscard]] float fieldOfViewDegrees() const noexcept { return fieldOfViewDegrees_; }
   void setFieldOfView(float fovDegrees) { fieldOfViewDegrees_ = fovDegrees; }
   void setNearFar(float nearPlane, float farPlane) {
     nearPlane_ = nearPlane;

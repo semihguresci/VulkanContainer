@@ -23,7 +23,7 @@ struct AppConfig {
       VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME};
 };
 
-inline AppConfig DefaultAppConfig() { return AppConfig{}; }
+[[nodiscard]] inline AppConfig DefaultAppConfig() { return AppConfig{}; }
 
 }  // namespace app
 
