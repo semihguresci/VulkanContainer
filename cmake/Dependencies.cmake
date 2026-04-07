@@ -122,7 +122,6 @@ set(REQUIRED_PACKAGES
     Eigen3
     VulkanUtilityLibraries
     libjpeg-turbo
-    Boost
 )
 
 
@@ -203,7 +202,6 @@ set(UTILITY_LIBS
     cxxopts::cxxopts
     EnTT::EnTT
     Eigen3::Eigen
-    Boost::boost
 )
 
 # Media libraries

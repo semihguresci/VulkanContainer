@@ -25,7 +25,6 @@
     "libzip",
     "libpng",
     "libjpeg-turbo",
-    "boost",
     "eigen3",
     "materialx"
   ]

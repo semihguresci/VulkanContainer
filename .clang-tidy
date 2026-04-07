@@ -10,7 +10,8 @@ Checks: >
   hicpp-*,
   concurrency-*,
   -modernize-use-trailing-return-type,
-  -cppcoreguidelines-avoid-magic-numbers
+  -cppcoreguidelines-avoid-magic-numbers,
+  -cppcoreguidelines-non-private-member-variables-in-classes
 
 WarningsAsErrors: '*'
 HeaderFilterRegex: '.*'
@@ -25,3 +26,11 @@ CheckOptions:
     value:           camelBack
   - key:             readability-identifier-naming.ClassCase
     value:           CamelCase
+  - key:             readability-use-anyofallof.UseAnyOfAllOf
+    value:           true
+  - key:             readability-redundant-smartptr-get.IgnoreMacros
+    value:           false
+  - key:             modernize-use-std-print.PrintfLikeFunctions
+    value:           'printf,fprintf,sprintf'
+  - key:             modernize-pass-by-value.IncludeStyle
+    value:           llvm

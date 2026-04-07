@@ -29,7 +29,7 @@ class VulkanInstance {
   VulkanInstance(VulkanInstance&& other) noexcept;
   VulkanInstance& operator=(VulkanInstance&& other) noexcept;
 
-  [[nodiscard]] VkInstance instance() const { return instance_; }
+  [[nodiscard]] VkInstance instance() const noexcept { return instance_; }
 
  private:
   static bool checkValidationLayerSupport(

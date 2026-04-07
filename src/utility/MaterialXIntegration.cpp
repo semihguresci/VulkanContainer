@@ -12,8 +12,8 @@
 #include <cctype>
 #include <filesystem>
 #include <functional>
-#include <iostream>
 #include <limits>
+#include <print>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -471,8 +471,7 @@ std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
       auto resource = textureLoader(fullPath);
       imageToTexture[i] = textureManager.registerTexture(resource);
     } catch (const std::exception& exc) {
-      std::cerr << "Texture load failed for " << fullPath << ": " << exc.what()
-                << std::endl;
+      std::println(stderr, "Texture load failed for {}: {}", fullPath, exc.what());
     }
   }
 

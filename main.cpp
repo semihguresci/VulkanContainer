@@ -31,7 +31,7 @@
 
 #include <algorithm>
 #include <array>
-#include <boost/core/span.hpp>
+#include <span>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -41,9 +41,9 @@
 #include <fstream>
 #include <initializer_list>
 
-#include <iostream>
 #include <limits>
 #include <memory>
+#include <print>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -1820,8 +1820,12 @@ class HelloTriangleApplication {
 
   void createGraphicsPipelines() {
     const auto loadModule = [this](const char* path) {
+      auto fileData = utility::file::readFile(path);
+      if (!fileData) {
+        throw std::runtime_error(fileData.error());
+      }
       return utility::vulkan::createShaderModule(deviceWrapper->device(),
-                                                 utility::file::readFile(path));
+                                                 std::move(fileData).value());
     };
     const auto makeShaderStage = [](VkShaderModule module,
                                     VkShaderStageFlagBits stage) {
@@ -2656,12 +2660,12 @@ class HelloTriangleApplication {
 
   void createVertexBuffer() {
     vertexSlice = allocationManager->uploadVertices(
-        boost::span<const geometry::Vertex>(sceneManager->vertices()));
+        std::span<const geometry::Vertex>(sceneManager->vertices()));
   }
 
   void createIndexBuffer() {
     indexSlice = allocationManager->uploadIndices(
-        boost::span<const uint32_t>(sceneManager->indices()));
+        std::span<const uint32_t>(sceneManager->indices()));
   }
 
   void createCommandBuffers() {
@@ -3172,7 +3176,7 @@ int main(int argc, char** argv) {
     HelloTriangleApplication app{std::move(config)};
     app.run();
   } catch (const std::exception& e) {
-    std::cerr << e.what() << std::endl;
+    std::println(stderr, "{}", e.what());
     return EXIT_FAILURE;
   }
   return EXIT_SUCCESS;

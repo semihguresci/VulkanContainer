@@ -1,10 +1,10 @@
 #ifndef UTILITY_VULKAN_MEMORY_MANAGER_H
 #define UTILITY_VULKAN_MEMORY_MANAGER_H
 
-#include <boost/core/span.hpp>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <utility>
 
 #include "Container/common/CommonVMA.h"
@@ -39,11 +39,11 @@ class StagingBuffer {
   StagingBuffer(StagingBuffer&& other) noexcept;
   StagingBuffer& operator=(StagingBuffer&& other) noexcept;
 
-  [[nodiscard]] VkDeviceSize size() const { return size_; }
-  [[nodiscard]] const AllocatedBuffer& buffer() const { return buffer_; }
+  [[nodiscard]] VkDeviceSize size() const noexcept { return size_; }
+  [[nodiscard]] const AllocatedBuffer& buffer() const noexcept { return buffer_; }
 
   [[nodiscard]] void* data();
-  void upload(boost::span<const std::byte> bytes);
+  void upload(std::span<const std::byte> bytes);
 
  private:
   VulkanMemoryManager* manager_{nullptr};
@@ -72,7 +72,7 @@ class VulkanMemoryManager {
 
   void destroyBuffer(AllocatedBuffer& buffer);
 
-  [[nodiscard]] VmaAllocator allocator() const { return allocator_; }
+  [[nodiscard]] VmaAllocator allocator() const noexcept { return allocator_; }
 
  private:
   void cleanup();
@@ -98,9 +98,9 @@ class BufferArena {
                                      VkDeviceSize alignment = 16);
   void reset();
 
-  [[nodiscard]] const AllocatedBuffer& backingBuffer() const { return buffer_; }
-  [[nodiscard]] VkDeviceSize totalSize() const { return total_size_; }
-  [[nodiscard]] VkDeviceSize remainingSize() const {
+  [[nodiscard]] const AllocatedBuffer& backingBuffer() const noexcept { return buffer_; }
+  [[nodiscard]] VkDeviceSize totalSize() const noexcept { return total_size_; }
+  [[nodiscard]] VkDeviceSize remainingSize() const noexcept {
     return total_size_ - next_offset_;
   }
 

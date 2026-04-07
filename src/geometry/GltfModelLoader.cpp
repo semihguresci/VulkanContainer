@@ -6,7 +6,6 @@
 #include <tiny_gltf.h>
 
 #include <cctype>
-#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <string_view>

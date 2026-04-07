@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
@@ -14,9 +15,9 @@ class TextureManager {
  public:
   uint32_t registerTexture(const TextureResource& resource);
   [[nodiscard]] std::optional<uint32_t> findTextureIndex(
-      const std::string& name) const;
+      std::string_view name) const;
   [[nodiscard]] const TextureResource* getTexture(uint32_t index) const;
-  [[nodiscard]] size_t textureCount() const { return textures_.size(); }
+  [[nodiscard]] size_t textureCount() const noexcept { return textures_.size(); }
 
  private:
   std::vector<TextureResource> textures_{};

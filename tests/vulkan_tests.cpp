@@ -36,9 +36,9 @@ class VulkanLoader {
   VulkanLoader(const VulkanLoader&) = delete;
   VulkanLoader& operator=(const VulkanLoader&) = delete;
 
-  bool loaded() const { return handle_ != nullptr; }
+  [[nodiscard]] bool loaded() const noexcept { return handle_ != nullptr; }
 
-  void* symbol(const char* name) const {
+  [[nodiscard]] void* symbol(const char* name) const {
     if (!loaded()) {
       return nullptr;
     }
