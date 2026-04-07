@@ -1,9 +1,8 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
-
 #include <string>
 #include <vector>
+#include "Container/common/CommonVulkan.h"
 
 namespace utility::vulkan {
 
@@ -27,8 +26,8 @@ class VulkanInstance {
 
   VulkanInstance(const VulkanInstance&) = delete;
   VulkanInstance& operator=(const VulkanInstance&) = delete;
-  VulkanInstance(VulkanInstance&& other) = delete;
-  VulkanInstance& operator=(VulkanInstance&& other) = delete;
+  VulkanInstance(VulkanInstance&& other) noexcept;
+  VulkanInstance& operator=(VulkanInstance&& other) noexcept;
 
   [[nodiscard]] VkInstance instance() const { return instance_; }
 
@@ -36,8 +35,7 @@ class VulkanInstance {
   static bool checkValidationLayerSupport(
       const std::vector<const char*>& validationLayers);
 
-  VkInstance instance_{VK_NULL_HANDLE};
+  VkInstance instance_{nullptr};
 };
 
 }  // namespace utility::vulkan
-

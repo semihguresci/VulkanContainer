@@ -1,8 +1,12 @@
-#include <Container/utility/MaterialXIntegration.h>
+
+#include "Container/utility/MaterialXIntegration.h"
+#include "Container/utility/Material.h"
+#include "Container/utility/TextureResource.h"
+#include "Container/utility/TextureManager.h"
+#include "Container/utility/MaterialManager.h"
 #include <MaterialXCore/Material.h>
 #include <MaterialXCore/Util.h>
 #include <MaterialXCore/Value.h>
-
 #include <tiny_gltf.h>
 
 #include <cctype>
@@ -203,9 +207,10 @@ MaterialX::Color3 SlangMaterialXBridge::toColor(
   return MaterialX::Color3(r, g, b);
 }
 
-std::string SlangMaterialXBridge::resolveTextureUri(const tinygltf::Model& model,
-                                                    int textureIndex) {
-  if (textureIndex < 0 || textureIndex >= static_cast<int>(model.textures.size())) {
+std::string SlangMaterialXBridge::resolveTextureUri(
+    const tinygltf::Model& model, int textureIndex) {
+  if (textureIndex < 0 ||
+      textureIndex >= static_cast<int>(model.textures.size())) {
     return {};
   }
 
@@ -233,8 +238,10 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
   const MaterialX::Color3 defaultColor(1.0f, 1.0f, 1.0f);
   const MaterialX::Color3 blackColor(0.0f, 0.0f, 0.0f);
 
-  std::string shaderName = materialName.empty() ? "gltf_shader" : materialName + "_shader";
-  auto shader = document->addNode("standard_surface", shaderName, "surfaceshader");
+  std::string shaderName =
+      materialName.empty() ? "gltf_shader" : materialName + "_shader";
+  auto shader =
+      document->addNode("standard_surface", shaderName, "surfaceshader");
 
   auto baseInput = shader->addInput("base", "float");
   baseInput->setValue(1.0f);
@@ -244,10 +251,11 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
 
   const auto baseColorTextureIndex = pbr.baseColorTexture.index;
   if (baseColorTextureIndex >= 0) {
-    auto imageNode = document->addNode("image",
-                                       (materialName.empty() ? "baseColor_tex"
-                                                            : materialName + "_baseColor_tex"),
-                                       "color3");
+    auto imageNode = document->addNode(
+        "image",
+        (materialName.empty() ? "baseColor_tex"
+                              : materialName + "_baseColor_tex"),
+        "color3");
     auto fileInput = imageNode->addInput("file", "filename");
     auto textureUri = resolveTextureUri(model, baseColorTextureIndex);
     if (!textureUri.empty()) {
@@ -266,7 +274,8 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
   if (metallicRoughnessTextureIndex >= 0) {
     auto imageNode = document->addNode(
         "image",
-        (materialName.empty() ? "metalRough_tex" : materialName + "_metalRough_tex"),
+        (materialName.empty() ? "metalRough_tex"
+                              : materialName + "_metalRough_tex"),
         "color3");
     auto fileInput = imageNode->addInput("file", "filename");
     auto textureUri = resolveTextureUri(model, metallicRoughnessTextureIndex);
@@ -311,7 +320,8 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
         "vector3");
     normalMap->addInput("in", "vector3")->setConnectedNode(normalImage);
     float normalScale = static_cast<float>(gltfMaterial.normalTexture.scale);
-    normalMap->addInput("scale", "float")->setValue(normalScale == 0.0f ? 1.0f : normalScale);
+    normalMap->addInput("scale", "float")
+        ->setValue(normalScale == 0.0f ? 1.0f : normalScale);
 
     auto normalInput = shader->addInput("normal", "vector3");
     normalInput->setConnectedNode(normalMap);
@@ -321,7 +331,8 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
   if (occlusionTextureIndex >= 0) {
     auto occlusionImage = document->addNode(
         "image",
-        (materialName.empty() ? "occlusion_tex" : materialName + "_occlusion_tex"),
+        (materialName.empty() ? "occlusion_tex"
+                              : materialName + "_occlusion_tex"),
         "color3");
     auto fileInput = occlusionImage->addInput("file", "filename");
     auto textureUri = resolveTextureUri(model, occlusionTextureIndex);
@@ -334,7 +345,8 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
         (materialName.empty() ? "occlusion_extract"
                               : materialName + "_occlusion_extract"),
         "float");
-    occlusionExtract->addInput("in", "color3")->setConnectedNode(occlusionImage);
+    occlusionExtract->addInput("in", "color3")
+        ->setConnectedNode(occlusionImage);
     occlusionExtract->addInput("index", "integer")->setValue(0);
 
     auto occlusionInput = shader->addInput("occlusion", "float");
@@ -347,7 +359,8 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
         (materialName.empty() ? "occlusion_strength"
                               : materialName + "_occlusion_strength"),
         "float");
-    strengthMultiply->addInput("in1", "float")->setConnectedNode(occlusionExtract);
+    strengthMultiply->addInput("in1", "float")
+        ->setConnectedNode(occlusionExtract);
     strengthMultiply->addInput("in2", "float")->setValue(strength);
     occlusionInput->setConnectedNode(strengthMultiply);
   }
@@ -360,7 +373,8 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
   if (emissiveTextureIndex >= 0) {
     auto emissiveImage = document->addNode(
         "image",
-        (materialName.empty() ? "emissive_tex" : materialName + "_emissive_tex"),
+        (materialName.empty() ? "emissive_tex"
+                              : materialName + "_emissive_tex"),
         "color3");
     auto fileInput = emissiveImage->addInput("file", "filename");
     auto textureUri = resolveTextureUri(model, emissiveTextureIndex);
@@ -370,9 +384,11 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
 
     auto emissiveMultiply = document->addNode(
         "multiply",
-        (materialName.empty() ? "emissive_mix" : materialName + "_emissive_mix"),
+        (materialName.empty() ? "emissive_mix"
+                              : materialName + "_emissive_mix"),
         "color3");
-    emissiveMultiply->addInput("in1", "color3")->setConnectedNode(emissiveImage);
+    emissiveMultiply->addInput("in1", "color3")
+        ->setConnectedNode(emissiveImage);
     emissiveMultiply->addInput("in2", "color3")->setValue(emissiveColor);
     emissionColorInput->setConnectedNode(emissiveMultiply);
   }
@@ -381,11 +397,11 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
       materialName.empty() ? "out" : materialName + "_out", "surfaceshader");
   shaderOutput->setConnectedNode(shader);
 
-  auto materialNode =
-      document->addNode("material",
-                        materialName.empty() ? "gltf_material" : materialName,
-                        "material");
-  auto surfaceShaderInput = materialNode->addInput("surfaceshader", "surfaceshader");
+  auto materialNode = document->addNode(
+      "material", materialName.empty() ? "gltf_material" : materialName,
+      "material");
+  auto surfaceShaderInput =
+      materialNode->addInput("surfaceshader", "surfaceshader");
   surfaceShaderInput->setConnectedNode(shader);
 
   return document;
@@ -425,7 +441,8 @@ std::vector<MaterialX::DocumentPtr> SlangMaterialXBridge::loadGltfMaterials(
     std::string name = gltfMaterial.name.empty()
                            ? "material_" + std::to_string(i)
                            : gltfMaterial.name;
-    documents.push_back(createDocumentFromGltfMaterial(model, gltfMaterial, name));
+    documents.push_back(
+        createDocumentFromGltfMaterial(model, gltfMaterial, name));
   }
 
   return documents;
@@ -434,8 +451,8 @@ std::vector<MaterialX::DocumentPtr> SlangMaterialXBridge::loadGltfMaterials(
 std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
     const tinygltf::Model& model, const std::filesystem::path& baseDir,
     utility::material::TextureManager& textureManager,
-    const std::function<utility::material::TextureResource(
-        const std::string&)>& textureLoader) const {
+    const std::function<utility::material::TextureResource(const std::string&)>&
+        textureLoader) const {
   std::vector<uint32_t> imageToTexture(model.images.size(),
                                        std::numeric_limits<uint32_t>::max());
 
@@ -454,8 +471,8 @@ std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
       auto resource = textureLoader(fullPath);
       imageToTexture[i] = textureManager.registerTexture(resource);
     } catch (const std::exception& exc) {
-      std::cerr << "Texture load failed for " << fullPath << ": "
-                << exc.what() << std::endl;
+      std::cerr << "Texture load failed for " << fullPath << ": " << exc.what()
+                << std::endl;
     }
   }
 
@@ -492,22 +509,31 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
     const auto& mat = model.materials[i];
     utility::material::Material material{};
     if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
-      material.baseColor =
-          glm::vec4(static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[0]),
-                    static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[1]),
-                    static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[2]),
-                    static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[3]));
+      material.baseColor = glm::vec4(
+          static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[0]),
+          static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[1]),
+          static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[2]),
+          static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[3]));
     }
 
     material.metallicFactor =
         static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
     material.roughnessFactor =
         static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
+    material.alphaCutoff = static_cast<float>(mat.alphaCutoff);
+    material.doubleSided = mat.doubleSided;
+    if (mat.alphaMode == "MASK") {
+      material.alphaMode = utility::material::AlphaMode::Mask;
+    } else if (mat.alphaMode == "BLEND") {
+      material.alphaMode = utility::material::AlphaMode::Blend;
+    } else {
+      material.alphaMode = utility::material::AlphaMode::Opaque;
+    }
     if (mat.emissiveFactor.size() == 3) {
-      material.emissiveColor = glm::vec3(
-          static_cast<float>(mat.emissiveFactor[0]),
-          static_cast<float>(mat.emissiveFactor[1]),
-          static_cast<float>(mat.emissiveFactor[2]));
+      material.emissiveColor =
+          glm::vec3(static_cast<float>(mat.emissiveFactor[0]),
+                    static_cast<float>(mat.emissiveFactor[1]),
+                    static_cast<float>(mat.emissiveFactor[2]));
     }
 
     MaterialX::DocumentPtr materialDoc =
@@ -515,12 +541,12 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
 
     if (materialDoc) {
       material.baseColor = extractBaseColor(materialDoc);
-      material.emissiveColor =
-          extractColorInput(materialDoc, "emission_color", material.emissiveColor);
+      material.emissiveColor = extractColorInput(materialDoc, "emission_color",
+                                                 material.emissiveColor);
       material.metallicFactor =
           extractFloatInput(materialDoc, "metalness", material.metallicFactor);
-      material.roughnessFactor = extractFloatInput(materialDoc, "specular_roughness",
-                                                  material.roughnessFactor);
+      material.roughnessFactor = extractFloatInput(
+          materialDoc, "specular_roughness", material.roughnessFactor);
 
       auto applyTextureFromDoc = [&](const std::string& inputName,
                                      uint32_t& destination) {
@@ -549,49 +575,60 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
     }
 
     const auto baseIndex = mat.pbrMetallicRoughness.baseColorTexture.index;
-    if (material.baseColorTextureIndex == std::numeric_limits<uint32_t>::max() &&
+    if (material.baseColorTextureIndex ==
+            std::numeric_limits<uint32_t>::max() &&
         baseIndex >= 0 &&
         static_cast<size_t>(baseIndex) < model.textures.size()) {
       const auto& tex = model.textures[baseIndex];
-      if (tex.source >= 0 && static_cast<size_t>(tex.source) < imageToTexture.size()) {
+      if (tex.source >= 0 &&
+          static_cast<size_t>(tex.source) < imageToTexture.size()) {
         material.baseColorTextureIndex = imageToTexture[tex.source];
       }
     }
 
-    const auto metallicIndex = mat.pbrMetallicRoughness.metallicRoughnessTexture.index;
+    const auto metallicIndex =
+        mat.pbrMetallicRoughness.metallicRoughnessTexture.index;
     if (material.metallicRoughnessTextureIndex ==
             std::numeric_limits<uint32_t>::max() &&
-        metallicIndex >= 0 && static_cast<size_t>(metallicIndex) < model.textures.size()) {
+        metallicIndex >= 0 &&
+        static_cast<size_t>(metallicIndex) < model.textures.size()) {
       const auto& tex = model.textures[metallicIndex];
-      if (tex.source >= 0 && static_cast<size_t>(tex.source) < imageToTexture.size()) {
+      if (tex.source >= 0 &&
+          static_cast<size_t>(tex.source) < imageToTexture.size()) {
         material.metallicRoughnessTextureIndex = imageToTexture[tex.source];
       }
     }
 
     const auto normalIndex = mat.normalTexture.index;
     if (material.normalTextureIndex == std::numeric_limits<uint32_t>::max() &&
-        normalIndex >= 0 && static_cast<size_t>(normalIndex) < model.textures.size()) {
+        normalIndex >= 0 &&
+        static_cast<size_t>(normalIndex) < model.textures.size()) {
       const auto& tex = model.textures[normalIndex];
-      if (tex.source >= 0 && static_cast<size_t>(tex.source) < imageToTexture.size()) {
+      if (tex.source >= 0 &&
+          static_cast<size_t>(tex.source) < imageToTexture.size()) {
         material.normalTextureIndex = imageToTexture[tex.source];
       }
     }
 
     const auto occlusionIndex = mat.occlusionTexture.index;
-    if (material.occlusionTextureIndex == std::numeric_limits<uint32_t>::max() &&
+    if (material.occlusionTextureIndex ==
+            std::numeric_limits<uint32_t>::max() &&
         occlusionIndex >= 0 &&
         static_cast<size_t>(occlusionIndex) < model.textures.size()) {
       const auto& tex = model.textures[occlusionIndex];
-      if (tex.source >= 0 && static_cast<size_t>(tex.source) < imageToTexture.size()) {
+      if (tex.source >= 0 &&
+          static_cast<size_t>(tex.source) < imageToTexture.size()) {
         material.occlusionTextureIndex = imageToTexture[tex.source];
       }
     }
 
     const auto emissiveIndex = mat.emissiveTexture.index;
     if (material.emissiveTextureIndex == std::numeric_limits<uint32_t>::max() &&
-        emissiveIndex >= 0 && static_cast<size_t>(emissiveIndex) < model.textures.size()) {
+        emissiveIndex >= 0 &&
+        static_cast<size_t>(emissiveIndex) < model.textures.size()) {
       const auto& tex = model.textures[emissiveIndex];
-      if (tex.source >= 0 && static_cast<size_t>(tex.source) < imageToTexture.size()) {
+      if (tex.source >= 0 &&
+          static_cast<size_t>(tex.source) < imageToTexture.size()) {
         material.emissiveTextureIndex = imageToTexture[tex.source];
       }
     }

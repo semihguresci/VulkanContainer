@@ -1,21 +1,26 @@
 struct CameraBuffer
 {
     float4x4 viewProj;
+    float4x4 inverseViewProj;
+    float4 cameraWorldPosition;
 };
 
 struct ObjectBuffer
 {
     float4x4 model;
+    float4x4 normalMatrix;
     float4 color;
     float3 emissiveColor;
     float emissiveStrength;
     float2 metallicRoughness;
+    float alphaCutoff;
     uint baseColorTextureIndex;
     uint normalTextureIndex;
     uint occlusionTextureIndex;
     uint emissiveTextureIndex;
     uint metallicRoughnessTextureIndex;
-    uint padding;
+    uint flags;
+    float2 padding;
 };
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
@@ -36,12 +41,14 @@ struct VSInput
     [[vk::location(0)]] float3 inPosition;
     [[vk::location(1)]] float3 inColor;
     [[vk::location(2)]] float2 inTexCoord;
+    [[vk::location(3)]] float3 inNormal;
+    [[vk::location(4)]] float4 inTangent;
 };
 
 struct VSOutput
 {
     float4 pos : SV_Position;
-    [[vk::location(0)]] float3 baseColor;
+    [[vk::location(0)]] float4 baseColor;
     [[vk::location(1)]] float2 texCoord;
     [[vk::location(2)]] uint baseColorTextureIndex;
     [[vk::location(3)]] uint normalTextureIndex;
@@ -52,7 +59,25 @@ struct VSOutput
     [[vk::location(8)]] float emissiveStrength;
     [[vk::location(9)]] float2 metallicRoughness;
     [[vk::location(10)]] float3 worldPos;
+    [[vk::location(11)]] float3 worldNormal;
+    [[vk::location(12)]] float4 worldTangent;
 };
+
+float3 fallbackTangent(float3 normal)
+{
+    float3 axis = abs(normal.y) < 0.999 ? float3(0.0, 1.0, 0.0)
+                                        : float3(1.0, 0.0, 0.0);
+    float3 tangent = cross(axis, normal);
+    if (length(tangent) < 1e-4)
+    {
+        tangent = cross(float3(0.0, 0.0, 1.0), normal);
+    }
+    if (length(tangent) < 1e-4)
+    {
+        tangent = float3(1.0, 0.0, 0.0);
+    }
+    return normalize(tangent);
+}
 
 [shader("vertex")]
 VSOutput vertMain(VSInput input)
@@ -61,8 +86,30 @@ VSOutput vertMain(VSInput input)
     ObjectBuffer obj = uObjects[pc.objectIndex];
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
+    float3x3 modelMatrix = (float3x3)obj.model;
+    float3 worldNormal = mul((float3x3)obj.normalMatrix, input.inNormal);
+    if (!all(isfinite(worldNormal)) || length(worldNormal) < 1e-4)
+    {
+        worldNormal = float3(0.0, 1.0, 0.0);
+    }
+    else
+    {
+        worldNormal = normalize(worldNormal);
+    }
+
+    float3 worldTangent = mul(modelMatrix, input.inTangent.xyz);
+    worldTangent = worldTangent - worldNormal * dot(worldNormal, worldTangent);
+    if (!all(isfinite(worldTangent)) || length(worldTangent) < 1e-4)
+    {
+        worldTangent = fallbackTangent(worldNormal);
+    }
+    else
+    {
+        worldTangent = normalize(worldTangent);
+    }
+
     output.pos = mul(uCamera.viewProj, worldPos);
-    output.baseColor = obj.color.rgb;
+    output.baseColor = obj.color;
     output.texCoord = input.inTexCoord;
     output.baseColorTextureIndex = obj.baseColorTextureIndex;
     output.normalTextureIndex = obj.normalTextureIndex;
@@ -73,21 +120,23 @@ VSOutput vertMain(VSInput input)
     output.emissiveStrength = obj.emissiveStrength;
     output.metallicRoughness = obj.metallicRoughness;
     output.worldPos = worldPos.xyz;
+    output.worldNormal = worldNormal;
+    output.worldTangent = float4(worldTangent, input.inTangent.w);
     return output;
 }
 
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn) : SV_Target0
 {
-    float3 baseColor = vertIn.baseColor;
-    float baseAlpha = 1.0;
+    float3 baseColor = vertIn.baseColor.rgb;
+    float baseAlpha = vertIn.baseColor.a;
 
     if (vertIn.baseColorTextureIndex != 0xffffffff)
     {
         uint texIndex = NonUniformResourceIndex(vertIn.baseColorTextureIndex);
         float4 texColor = materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord);
         baseColor *= texColor.rgb;
-        baseAlpha = texColor.a;
+        baseAlpha *= texColor.a;
     }
 
     if (vertIn.occlusionTextureIndex != 0xffffffff)
@@ -109,24 +158,39 @@ float4 fragMain(VSOutput vertIn) : SV_Target0
 
     float3 dpdx = ddx(vertIn.worldPos);
     float3 dpdy = ddy(vertIn.worldPos);
-    float2 duvdx = ddx(vertIn.texCoord);
-    float2 duvdy = ddy(vertIn.texCoord);
+    float3 faceNormal = normalize(cross(dpdx, dpdy));
+    if (!all(isfinite(faceNormal)) || length(faceNormal) < 1e-4)
+    {
+        faceNormal = float3(0.0, 1.0, 0.0);
+    }
 
-    float3 geomNormal = normalize(cross(dpdx, dpdy));
+    float3 geomNormal = vertIn.worldNormal;
     if (!all(isfinite(geomNormal)) || length(geomNormal) < 1e-4)
     {
-        geomNormal = float3(0.0, 0.0, 1.0);
+        geomNormal = faceNormal;
+    }
+    else
+    {
+        geomNormal = normalize(geomNormal);
     }
 
-    float3 tangent = dpdx * duvdy.y - dpdy * duvdx.y;
-    float3 bitangent = -dpdx * duvdy.x + dpdy * duvdx.x;
-    if (length(tangent) < 1e-4 || length(bitangent) < 1e-4)
+    float3 tangent = vertIn.worldTangent.xyz;
+    tangent = tangent - geomNormal * dot(geomNormal, tangent);
+    if (!all(isfinite(tangent)) || length(tangent) < 1e-4)
     {
-        tangent = float3(1.0, 0.0, 0.0);
-        bitangent = float3(0.0, 1.0, 0.0);
+        tangent = fallbackTangent(geomNormal);
     }
-    tangent = normalize(tangent);
-    bitangent = normalize(bitangent);
+    else
+    {
+        tangent = normalize(tangent);
+    }
+
+    float tangentSign = abs(vertIn.worldTangent.w) > 0.5 ? vertIn.worldTangent.w : 1.0;
+    float3 bitangent = normalize(cross(geomNormal, tangent)) * tangentSign;
+    if (!all(isfinite(bitangent)) || length(bitangent) < 1e-4)
+    {
+        bitangent = normalize(cross(geomNormal, fallbackTangent(geomNormal)));
+    }
 
     float3 shadingNormal = geomNormal;
     if (vertIn.normalTextureIndex != 0xffffffff)
@@ -135,11 +199,13 @@ float4 fragMain(VSOutput vertIn) : SV_Target0
         float3 normalSample = materialTextures[texIndex]
                                   .Sample(baseSampler, vertIn.texCoord)
                                   .xyz * 2.0 - 1.0;
-        float3x3 tbn = float3x3(tangent, bitangent, geomNormal);
-        shadingNormal = normalize(mul(normalSample, tbn));
+        shadingNormal = normalize(
+            tangent * normalSample.x +
+            bitangent * normalSample.y +
+            geomNormal * normalSample.z);
     }
 
-    float3 lightDir = normalize(float3(0.5, 0.75, 1.0));
+    float3 lightDir = normalize(float3(0.5, 0.75, -1.0));
     float lighting = saturate(dot(shadingNormal, lightDir));
     baseColor *= 0.2 + 0.8 * lighting;
 

@@ -1,11 +1,10 @@
 #pragma once
 
-#include <Container/utility/MaterialManager.h>
-
-#include <glm/vec3.hpp>
-#include <glm/vec4.hpp>
-
-#include <tiny_gltf.h>
+#include "Container/common/CommonMath.h"
+#include "Container/utility/MaterialManager.h"
+#include "Container/utility/TextureManager.h"
+#include "Container/utility/TextureResource.h"
+#include "tiny_gltf.h"
 
 #include <MaterialXCore/Document.h>
 #include <MaterialXFormat/XmlIo.h>
@@ -18,7 +17,7 @@
 namespace utility::materialx {
 
 class SlangMaterialXBridge {
-public:
+ public:
     SlangMaterialXBridge();
 
     MaterialX::DocumentPtr loadDocument(const std::string& filename);

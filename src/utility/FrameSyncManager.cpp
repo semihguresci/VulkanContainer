@@ -1,83 +1,133 @@
-#include <Container/utility/FrameSyncManager.h>
-
+#include <limits>
 #include <stdexcept>
+
+#include "Container/utility/FrameSyncManager.h"
 
 namespace utility {
 
-FrameSyncManager::FrameSyncManager(vk::Device device, size_t framesInFlight)
+FrameSyncManager::FrameSyncManager(VkDevice device, size_t framesInFlight)
     : device_(device), framesInFlight_(framesInFlight) {}
 
 FrameSyncManager::~FrameSyncManager() { cleanup(); }
 
 void FrameSyncManager::initialize(size_t swapChainImageCount) {
-    swapChainImageCount_ = swapChainImageCount;
-    imageAvailableSemaphores_.resize(framesInFlight_);
-    renderFinishedSemaphores_.resize(swapChainImageCount_);
-    inFlightFences_.resize(framesInFlight_);
+  // If someone calls initialize twice, don't accumulate resources.
+  cleanup();
 
-    const vk::SemaphoreCreateInfo semaphoreInfo{};
-    const vk::FenceCreateInfo fenceInfo{vk::FenceCreateFlagBits::eSignaled};
+  swapChainImageCount_ = swapChainImageCount;
 
-    for (size_t i = 0; i < framesInFlight_; i++) {
-        imageAvailableSemaphores_[i] = device_.createSemaphoreUnique(semaphoreInfo);
-        inFlightFences_[i] = device_.createFenceUnique(fenceInfo);
+  VkSemaphoreCreateInfo semaphoreInfo{};
+  semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+  VkFenceCreateInfo fenceInfo{};
+  fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+  imageAvailableSemaphores_.resize(framesInFlight_);
+  for (size_t i = 0; i < framesInFlight_; ++i) {
+    VkResult res = vkCreateSemaphore(device_, &semaphoreInfo, nullptr,
+                                     &imageAvailableSemaphores_[i]);
+    if (res != VK_SUCCESS) {
+      throw std::runtime_error("Failed to create imageAvailable semaphore!");
     }
+  }
 
-    for (size_t i = 0; i < swapChainImageCount_; i++) {
-        renderFinishedSemaphores_[i] =
-            device_.createSemaphoreUnique(semaphoreInfo);
+  renderFinishedSemaphores_.resize(swapChainImageCount_);
+  for (size_t i = 0; i < swapChainImageCount_; ++i) {
+    VkResult res = vkCreateSemaphore(device_, &semaphoreInfo, nullptr,
+                                     &renderFinishedSemaphores_[i]);
+    if (res != VK_SUCCESS) {
+      throw std::runtime_error("Failed to create renderFinished semaphore!");
     }
+  }
+
+  inFlightFences_.resize(framesInFlight_);
+  for (size_t i = 0; i < framesInFlight_; ++i) {
+    VkResult res =
+        vkCreateFence(device_, &fenceInfo, nullptr, &inFlightFences_[i]);
+    if (res != VK_SUCCESS) {
+      throw std::runtime_error("Failed to create inFlight fence!");
+    }
+  }
 }
 
 void FrameSyncManager::cleanup() {
-    destroyRenderFinishedSemaphores();
+  destroyRenderFinishedSemaphores();
 
-    imageAvailableSemaphores_.clear();
-    inFlightFences_.clear();
+  for (VkSemaphore sem : imageAvailableSemaphores_) {
+    if (sem != VK_NULL_HANDLE) {
+      vkDestroySemaphore(device_, sem, nullptr);
+    }
+  }
+  imageAvailableSemaphores_.clear();
 
-    device_.waitIdle();
+  for (VkFence f : inFlightFences_) {
+    if (f != VK_NULL_HANDLE) {
+      vkDestroyFence(device_, f, nullptr);
+    }
+  }
+  inFlightFences_.clear();
+
+  swapChainImageCount_ = 0;
 }
 
-vk::Semaphore FrameSyncManager::imageAvailable(size_t frameIndex) const {
-    return imageAvailableSemaphores_.at(frameIndex).get();
+VkSemaphore FrameSyncManager::imageAvailable(size_t frameIndex) const {
+  return imageAvailableSemaphores_.at(frameIndex);
 }
 
-vk::Semaphore FrameSyncManager::renderFinishedForImage(
-    size_t imageIndex) const {
-    return renderFinishedSemaphores_.at(imageIndex).get();
+VkSemaphore FrameSyncManager::renderFinishedForImage(size_t imageIndex) const {
+  return renderFinishedSemaphores_.at(imageIndex);
 }
 
-vk::Fence FrameSyncManager::fence(size_t frameIndex) const {
-    return inFlightFences_.at(frameIndex).get();
+VkFence FrameSyncManager::fence(size_t frameIndex) const {
+  return inFlightFences_.at(frameIndex);
 }
 
 void FrameSyncManager::waitForFrame(size_t frameIndex) const {
-    device_.waitForFences(inFlightFences_.at(frameIndex).get(), VK_TRUE,
-                          UINT64_MAX);
+  VkFence f = inFlightFences_.at(frameIndex);
+
+  VkResult res = vkWaitForFences(device_, 1, &f, VK_TRUE,
+                                 std::numeric_limits<uint64_t>::max());
+
+  if (res != VK_SUCCESS) {
+    throw std::runtime_error("Failed to wait for fence!");
+  }
 }
 
 void FrameSyncManager::resetFence(size_t frameIndex) const {
-    device_.resetFences(inFlightFences_.at(frameIndex).get());
+  VkFence f = inFlightFences_.at(frameIndex);
+  VkResult res = vkResetFences(device_, 1, &f);
+  if (res != VK_SUCCESS) {
+    throw std::runtime_error("Failed to reset fence!");
+  }
 }
 
 void FrameSyncManager::recreateRenderFinishedSemaphores(
     size_t swapChainImageCount) {
-    destroyRenderFinishedSemaphores();
+  destroyRenderFinishedSemaphores();
 
-    swapChainImageCount_ = swapChainImageCount;
-    renderFinishedSemaphores_.resize(swapChainImageCount_);
+  swapChainImageCount_ = swapChainImageCount;
 
-    const vk::SemaphoreCreateInfo semaphoreInfo{};
+  VkSemaphoreCreateInfo semaphoreInfo{};
+  semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
 
-    for (size_t i = 0; i < swapChainImageCount_; i++) {
-        renderFinishedSemaphores_[i] =
-            device_.createSemaphoreUnique(semaphoreInfo);
+  renderFinishedSemaphores_.resize(swapChainImageCount_);
+  for (size_t i = 0; i < swapChainImageCount_; ++i) {
+    VkResult res = vkCreateSemaphore(device_, &semaphoreInfo, nullptr,
+                                     &renderFinishedSemaphores_[i]);
+    if (res != VK_SUCCESS) {
+      throw std::runtime_error("Failed to recreate renderFinished semaphore!");
     }
+  }
 }
 
 void FrameSyncManager::destroyRenderFinishedSemaphores() {
-    renderFinishedSemaphores_.clear();
+  for (VkSemaphore sem : renderFinishedSemaphores_) {
+    if (sem != VK_NULL_HANDLE) {
+      vkDestroySemaphore(device_, sem, nullptr);
+    }
+  }
+  renderFinishedSemaphores_.clear();
 }
 
 }  // namespace utility
-

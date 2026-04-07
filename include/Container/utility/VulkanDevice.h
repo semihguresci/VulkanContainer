@@ -1,8 +1,7 @@
 #pragma once
 
+#include "Container/common/CommonVulkan.h"
 #include <Container/utility/SwapChainManager.h>
-
-#include <vulkan/vulkan.h>
 
 #include <vector>
 
@@ -12,7 +11,7 @@ struct DeviceCreateInfo {
   std::vector<const char*> requiredExtensions{};
   std::vector<const char*> validationLayers{};
   bool enableValidationLayers{false};
-  VkPhysicalDeviceFeatures enabledFeatures{};
+  VkPhysicalDeviceFeatures enabledFeatures{};  // C Vulkan features struct
   const void* next{nullptr};
 };
 
@@ -57,4 +56,3 @@ class VulkanDevice {
 };
 
 }  // namespace utility::vulkan
-

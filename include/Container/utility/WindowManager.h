@@ -6,11 +6,12 @@
 #include <string_view>
 #include <vector>
 
+#include "Container/common/CommonGLFW.h"
+#include "Container/common/CommonVulkan.h"
+
 // Forward declarations
 struct GLFWwindow;
 struct GLFWmonitor;
-typedef struct VkInstance_T* VkInstance;
-typedef struct VkSurfaceKHR_T* VkSurfaceKHR;
 
 namespace utility::window {
 
@@ -21,11 +22,9 @@ class Window {
   explicit Window(GLFWwindow* window);
   ~Window();
 
-  // Disable copying
   Window(const Window&) = delete;
   Window& operator=(const Window&) = delete;
 
-  // Enable moving
   Window(Window&& other) noexcept;
   Window& operator=(Window&& other) noexcept;
 
@@ -55,7 +54,7 @@ class Window {
   // Callback setters
   void setFramebufferResizeCallback(ResizeCallback callback);
 
-  // Vulkan-specific
+  // Vulkan-specific (C Vulkan)
   void setUserPointer(void* userPointer);
   VkSurfaceKHR createSurface(VkInstance instance) const;
 
@@ -84,8 +83,8 @@ class WindowManager {
     bool transparentFramebuffer = false;
     bool floating = false;
     bool focusOnShow = true;
-    int samples = 0;      // MSAA samples
-    int refreshRate = 0;  // 0 for default
+    int samples = 0;
+    int refreshRate = 0;
   };
 
   struct MonitorInfo {
@@ -98,26 +97,21 @@ class WindowManager {
   WindowManager();
   ~WindowManager();
 
-  // Disable copying
   WindowManager(const WindowManager&) = delete;
   WindowManager& operator=(const WindowManager&) = delete;
 
-  // Window creation
   std::unique_ptr<Window> createWindow(uint32_t width, uint32_t height,
                                        std::string_view title) const;
   std::unique_ptr<Window> createWindow(const WindowConfig& config) const;
 
-  // Event handling
   void pollEvents() const;
   void waitEvents() const;
   void waitEventsTimeout(double timeout) const;
   void postEmptyEvent() const;
 
-  // Time management
   double getTime() const;
   void setTime(double time);
 
-  // Monitor information
   std::vector<MonitorInfo> getMonitors() const;
   MonitorInfo getPrimaryMonitor() const;
 
@@ -125,7 +119,6 @@ class WindowManager {
   bool isVulkanSupported() const;
   std::vector<const char*> getRequiredInstanceExtensions() const;
 
-  // Manager state
   bool isInitialized() const { return initialized_; }
 
  private:
@@ -133,4 +126,3 @@ class WindowManager {
 };
 
 }  // namespace utility::window
-

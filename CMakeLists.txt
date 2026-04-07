@@ -13,7 +13,6 @@ include(cmake/Options.cmake)
 include(cmake/Dependencies.cmake)
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
-find_package(Vulkan REQUIRED)
 
 add_subdirectory(src)
 
@@ -34,7 +33,7 @@ find_program(SLANGC_EXECUTABLE slangc)
 if(NOT SLANGC_EXECUTABLE)
     message(WARNING "slangc not found. Precompiled Slang shaders must exist in ${COMPILED_SHADERS_DIR}.")
 else()
-    file(GLOB SLANG_SOURCES
+    file(GLOB SLANG_SOURCES CONFIGURE_DEPENDS
         "${SHADERS_DIR}/*.slang"
     )
 

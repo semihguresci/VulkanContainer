@@ -1,46 +1,43 @@
 #pragma once
 
+#include <cstddef>
 #include <vector>
 
-#include <vulkan/vulkan.hpp>
+#include "Container/common/CommonVulkan.h"
 
 namespace utility {
 
-// Manages per-frame synchronization objects for swap chain image acquisition
-// and rendering completion.
 class FrameSyncManager {
-public:
-    FrameSyncManager(vk::Device device, size_t framesInFlight);
-    ~FrameSyncManager();
+ public:
+  FrameSyncManager(VkDevice device, size_t framesInFlight);
+  ~FrameSyncManager();
 
-    FrameSyncManager(const FrameSyncManager&) = delete;
-    FrameSyncManager& operator=(const FrameSyncManager&) = delete;
+  void initialize(size_t swapChainImageCount);
+  void cleanup();
 
-    void initialize(size_t swapChainImageCount);
-    void cleanup();
+  [[nodiscard]] VkSemaphore imageAvailable(size_t frameIndex) const;
+  [[nodiscard]] VkSemaphore renderFinishedForImage(size_t imageIndex) const;
+  [[nodiscard]] VkFence fence(size_t frameIndex) const;
 
-    [[nodiscard]] vk::Semaphore imageAvailable(size_t frameIndex) const;
-    [[nodiscard]] vk::Semaphore renderFinishedForImage(size_t imageIndex) const;
-    [[nodiscard]] vk::Fence fence(size_t frameIndex) const;
+  void waitForFrame(size_t frameIndex) const;
+  void resetFence(size_t frameIndex) const;
 
-    void waitForFrame(size_t frameIndex) const;
-    void resetFence(size_t frameIndex) const;
+  void recreateRenderFinishedSemaphores(size_t swapChainImageCount);
 
-    void recreateRenderFinishedSemaphores(size_t swapChainImageCount);
+  [[nodiscard]] size_t framesInFlight() const noexcept {
+    return framesInFlight_;
+  }
 
-    [[nodiscard]] size_t framesInFlight() const { return framesInFlight_; }
+ private:
+  void destroyRenderFinishedSemaphores();
 
-private:
-    void destroyRenderFinishedSemaphores();
+  VkDevice device_{VK_NULL_HANDLE};
+  size_t framesInFlight_{0};
+  size_t swapChainImageCount_{0};
 
-    vk::Device device_{};
-    size_t framesInFlight_{};
-    size_t swapChainImageCount_{0};
-
-    std::vector<vk::UniqueSemaphore> imageAvailableSemaphores_;
-    std::vector<vk::UniqueSemaphore> renderFinishedSemaphores_;
-    std::vector<vk::UniqueFence> inFlightFences_;
+  std::vector<VkSemaphore> imageAvailableSemaphores_;
+  std::vector<VkSemaphore> renderFinishedSemaphores_;  // per swapchain image
+  std::vector<VkFence> inFlightFences_;
 };
 
 }  // namespace utility
-

@@ -43,12 +43,18 @@ Model::Model(std::vector<Mesh> meshes) : meshes_(std::move(meshes)) { flattenMes
 void Model::flattenMeshes() {
   vertices_.clear();
   indices_.clear();
+  primitiveRanges_.clear();
 
   vertices_.reserve(countVertices(meshes_));
   indices_.reserve(countIndices(meshes_));
+  primitiveRanges_.reserve(meshes_.size());
 
   for (const auto& mesh : meshes_) {
+    const uint32_t firstIndex = static_cast<uint32_t>(indices_.size());
     appendFlattenedMesh(mesh, vertices_, indices_);
+    primitiveRanges_.push_back(
+        {firstIndex, static_cast<uint32_t>(mesh.indices().size()),
+         mesh.materialIndex()});
   }
 }
 

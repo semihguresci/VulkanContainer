@@ -1,9 +1,8 @@
 #pragma once
 
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
 #include <algorithm>
-#include <cmath>
+
+#include "Container/common/CommonMath.h"
 
 namespace utility::camera {
 
@@ -13,11 +12,17 @@ class BaseCamera {
 
   void setPosition(const glm::vec3& position) { position_ = position; }
   [[nodiscard]] const glm::vec3& position() const { return position_; }
+  void setScale(const glm::vec3& scale) {
+    scale_ = glm::max(scale, glm::vec3(0.001f));
+  }
+  [[nodiscard]] const glm::vec3& scale() const { return scale_; }
 
   void setYawPitch(float yawDegrees, float pitchDegrees) {
     yawDegrees_ = yawDegrees;
     pitchDegrees_ = clampPitch(pitchDegrees);
   }
+  [[nodiscard]] float yawDegrees() const { return yawDegrees_; }
+  [[nodiscard]] float pitchDegrees() const { return pitchDegrees_; }
 
   void addYawPitch(float yawOffset, float pitchOffset) {
     yawDegrees_ += yawOffset;
@@ -32,26 +37,28 @@ class BaseCamera {
     glm::vec3 front{};
     front.x = std::cos(glm::radians(yawDegrees_)) *
               std::cos(glm::radians(pitchDegrees_));
-    front.y = std::sin(glm::radians(yawDegrees_)) *
+    front.y = std::sin(glm::radians(pitchDegrees_));
+    front.z = std::sin(glm::radians(yawDegrees_)) *
               std::cos(glm::radians(pitchDegrees_));
-    front.z = std::sin(glm::radians(pitchDegrees_));
     return glm::normalize(front);
   }
 
   [[nodiscard]] glm::vec3 upVector(const glm::vec3& front) const {
-    const glm::vec3 right = glm::normalize(glm::cross(front, worldUp_));
-    return glm::normalize(glm::cross(right, front));
+    const glm::vec3 right = glm::normalize(glm::cross(worldUp_, front));
+    return glm::normalize(glm::cross(front, right));
   }
 
   [[nodiscard]] glm::vec3 rightVector(const glm::vec3& front,
                                       const glm::vec3& up) const {
-    return glm::normalize(glm::cross(front, up));
+    return glm::normalize(glm::cross(up, front));
   }
 
   [[nodiscard]] glm::mat4 viewMatrix() const {
     const glm::vec3 front = frontVector();
     const glm::vec3 up = upVector(front);
-    return glm::lookAt(position_, position_ + front, up);
+    const glm::mat4 view =
+        common::math::lookAtLeftHanded(position_, position_ + front, up);
+    return glm::scale(glm::mat4(1.0f), 1.0f / scale_) * view;
   }
 
   [[nodiscard]] glm::mat4 viewProjection(float aspectRatio) const {
@@ -64,7 +71,8 @@ class BaseCamera {
 
  protected:
   glm::vec3 position_{0.0f, 0.0f, 0.0f};
-  glm::vec3 worldUp_{0.0f, 0.0f, 1.0f};
+  glm::vec3 scale_{1.0f, 1.0f, 1.0f};
+  glm::vec3 worldUp_{0.0f, 1.0f, 0.0f};
   float yawDegrees_{-135.0f};
   float pitchDegrees_{-35.0f};
 
@@ -77,10 +85,11 @@ class BaseCamera {
 class PerspectiveCamera : public BaseCamera {
  public:
   glm::mat4 projectionMatrix(float aspectRatio) const override {
-    return glm::perspective(glm::radians(fieldOfViewDegrees_), aspectRatio,
-                            nearPlane_, farPlane_);
+    return common::math::perspectiveLeftHandedZo(
+        glm::radians(fieldOfViewDegrees_), aspectRatio, nearPlane_, farPlane_);
   }
 
+  [[nodiscard]] float fieldOfViewDegrees() const { return fieldOfViewDegrees_; }
   void setFieldOfView(float fovDegrees) { fieldOfViewDegrees_ = fovDegrees; }
   void setNearFar(float nearPlane, float farPlane) {
     nearPlane_ = nearPlane;
@@ -98,8 +107,8 @@ class OrthographicCamera : public BaseCamera {
   glm::mat4 projectionMatrix(float aspectRatio) const override {
     const float halfHeight = 0.5f * viewHeight_;
     const float halfWidth = halfHeight * aspectRatio;
-    return glm::ortho(-halfWidth, halfWidth, -halfHeight, halfHeight,
-                      nearPlane_, farPlane_);
+    return common::math::orthoLeftHandedZo(-halfWidth, halfWidth, -halfHeight,
+                                           halfHeight, nearPlane_, farPlane_);
   }
 
   void setViewHeight(float height) { viewHeight_ = height; }

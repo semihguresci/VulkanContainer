@@ -1,17 +1,18 @@
 #ifndef UTILITY_LOGGER_H
 #define UTILITY_LOGGER_H
 
+#include <spdlog/sinks/basic_file_sink.h>
+#include <spdlog/sinks/rotating_file_sink.h>
+#include <spdlog/sinks/stdout_color_sinks.h>
+#include <spdlog/spdlog.h>
+
 #include <memory>
 #include <source_location>
 #include <string>
 #include <string_view>
 #include <utility>
 
-#include <vulkan/vulkan.h>
-#include <spdlog/sinks/basic_file_sink.h>
-#include <spdlog/sinks/rotating_file_sink.h>
-#include <spdlog/sinks/stdout_color_sinks.h>
-#include <spdlog/spdlog.h>
+#include "Container/common/CommonVulkan.h"  
 
 namespace utility {
 namespace logger {
@@ -21,7 +22,6 @@ using SpdSink = std::shared_ptr<spdlog::sinks::sink>;
 
 class ContainerLogger {
  public:
-  // Delete copy/move operations for singleton
   ContainerLogger(const ContainerLogger&) = delete;
   ContainerLogger(ContainerLogger&&) = delete;
   ContainerLogger& operator=(const ContainerLogger&) = delete;
@@ -29,11 +29,10 @@ class ContainerLogger {
 
   static ContainerLogger& instance();
 
-  // Logger accessors
   SpdLogger& renderer();
   SpdLogger& vulkan();
 
-  // Vulkan result logging with source location
+  // Vulkan result logging with source location (C Vulkan)
   void log_vk_result(
       VkResult result, std::string_view operation,
       const std::source_location& location = std::source_location::current());
@@ -57,4 +56,3 @@ inline void check_vk_result(
 }  // namespace utility
 
 #endif  // UTILITY_LOGGER_H
-

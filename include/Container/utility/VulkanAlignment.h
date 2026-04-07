@@ -1,6 +1,6 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
+#include "Container/common/CommonVulkan.h"
 
 namespace utility {
 namespace memory {
@@ -31,4 +31,3 @@ class VulkanAlignment {
 
 }  // namespace memory
 }  // namespace utility
-

@@ -9,6 +9,12 @@ namespace geometry {
 
 struct GltfLoadResult;
 
+struct PrimitiveRange {
+  uint32_t firstIndex{0};
+  uint32_t indexCount{0};
+  int32_t materialIndex{-1};
+};
+
 class Model;
 
 namespace gltf {
@@ -30,6 +36,9 @@ class Model {
   const std::vector<Mesh>& meshes() const { return meshes_; }
   const std::vector<Vertex>& vertices() const { return vertices_; }
   const std::vector<uint32_t>& indices() const { return indices_; }
+  const std::vector<PrimitiveRange>& primitiveRanges() const {
+    return primitiveRanges_;
+  }
   bool empty() const { return vertices_.empty() || indices_.empty(); }
 
  private:
@@ -42,6 +51,7 @@ class Model {
   std::vector<Mesh> meshes_{};
   std::vector<Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
+  std::vector<PrimitiveRange> primitiveRanges_{};
 };
 
 }  // namespace geometry

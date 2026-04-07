@@ -1,5 +1,9 @@
 ﻿# cmake/Dependencies.cmake
 
+add_library(VulkanDependencies INTERFACE)
+
+find_package(Vulkan REQUIRED)
+
 # Set up external directory
 if(NOT DEFINED EXTERNAL_DIR)
     set(EXTERNAL_DIR "${CMAKE_SOURCE_DIR}/external" CACHE PATH "Directory for external dependencies")
@@ -9,7 +13,6 @@ include(cmake/DependenciesSettings.cmake)
 
 # Find Vulkan with custom module
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
-find_package(Vulkan REQUIRED)
 
 if(Vulkan_FOUND)
     message(STATUS "✅ Vulkan found - Version: ${Vulkan_VERSION}")
@@ -17,12 +20,89 @@ else()
     message(FATAL_ERROR "❌ Vulkan not found - Please install Vulkan SDK and set VULKAN_SDK")
 endif()
 
-# Create consolidated dependencies target
-add_library(VulkanDependencies INTERFACE)
+find_package(VulkanMemoryAllocator CONFIG REQUIRED)
+
+message(STATUS "---- VMA targets check ----")
+if(TARGET GPUOpen::VulkanMemoryAllocator)
+  message(STATUS "Found target: GPUOpen::VulkanMemoryAllocator")
+endif()
+if(TARGET VulkanMemoryAllocator::VulkanMemoryAllocator)
+  message(STATUS "Found target: VulkanMemoryAllocator::VulkanMemoryAllocator")
+endif()
+if(TARGET VulkanMemoryAllocator)
+  message(STATUS "Found target: VulkanMemoryAllocator")
+endif()
+message(STATUS "---------------------------")
+
+set(VMA_TARGET "")
+if(TARGET GPUOpen::VulkanMemoryAllocator)
+  set(VMA_TARGET GPUOpen::VulkanMemoryAllocator)
+elseif(TARGET VulkanMemoryAllocator::VulkanMemoryAllocator)
+  set(VMA_TARGET VulkanMemoryAllocator::VulkanMemoryAllocator)
+elseif(TARGET VulkanMemoryAllocator)
+  set(VMA_TARGET VulkanMemoryAllocator)
+else()
+  message(FATAL_ERROR "VMA found but no known imported target name is available.")
+endif()
+get_target_property(_vma_includes ${VMA_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
+message(STATUS "VMA include dirs: ${_vma_includes}")
+target_include_directories(VulkanDependencies INTERFACE
+    ${Vulkan_INCLUDE_DIRS}
+)
+
+
+option(ENABLE_VULKAN_VALIDATION_LAYERS "Enable Vulkan validation layers" ON)
+
+if(ENABLE_VULKAN_VALIDATION_LAYERS)
+  # Try to locate the Khronos validation layer manifest
+  set(_vulkan_sdk $ENV{VULKAN_SDK})
+
+  set(_candidate_layer_dirs "")
+  if(_vulkan_sdk)
+    if(WIN32)
+      list(APPEND _candidate_layer_dirs
+        "${_vulkan_sdk}/Bin"
+        "${_vulkan_sdk}/bin"
+      )
+    else()
+      list(APPEND _candidate_layer_dirs
+        "${_vulkan_sdk}/share/vulkan/explicit_layer.d"
+        "${_vulkan_sdk}/etc/vulkan/explicit_layer.d"
+        "${_vulkan_sdk}/lib/vulkan/layers"
+      )
+    endif()
+  endif()
+
+  # Also allow user override
+  if(DEFINED Vulkan_LAYER_DIR)
+    list(APPEND _candidate_layer_dirs "${Vulkan_LAYER_DIR}")
+  endif()
+
+  # Search for the JSON
+  find_file(VK_KHRONOS_VALIDATION_JSON
+    NAMES VkLayer_khronos_validation.json
+    HINTS ${_candidate_layer_dirs}
+    NO_DEFAULT_PATH
+  )
+
+  if(VK_KHRONOS_VALIDATION_JSON)
+    get_filename_component(VK_LAYER_PATH_DIR "${VK_KHRONOS_VALIDATION_JSON}" DIRECTORY)
+    message(STATUS "✅ Found validation layer manifest: ${VK_KHRONOS_VALIDATION_JSON}")
+    message(STATUS "   Suggested VK_LAYER_PATH: ${VK_LAYER_PATH_DIR}")
+
+    set(ENV{VK_LAYER_PATH} "${VK_LAYER_PATH_DIR}:$ENV{VK_LAYER_PATH}")
+  else()
+    message(WARNING
+      "⚠️ ENABLE_VULKAN_VALIDATION_LAYERS=ON but VkLayer_khronos_validation.json was not found.\n"
+      "   Install Vulkan SDK (LunarG) or your distro's vulkan-validation-layers package.\n"
+      "   If installed, set VK_LAYER_PATH to the directory containing VkLayer_khronos_validation.json."
+    )
+  endif()
+endif()
+
 
 # Define all required packages
 set(REQUIRED_PACKAGES
-    volk
     VulkanMemoryAllocator
     MaterialX
     glm
@@ -45,6 +125,8 @@ set(REQUIRED_PACKAGES
     Boost
 )
 
+
+
 # Find all packages
 foreach(pkg IN LISTS REQUIRED_PACKAGES)
     find_package(${pkg} CONFIG REQUIRED)
@@ -64,14 +146,14 @@ if(NOT tinygltf_FOUND)
     endif()
 endif()
 
-find_path(STB_INCLUDE_DIRS "stb_image.h" PATH_SUFFIXES stb)
-if (STB_INCLUDE_DIRS)
+find_path(STB_INCLUDE_DIRS stb_image.h PATH_SUFFIXES stb)
+if(STB_INCLUDE_DIRS)
     add_library(stb INTERFACE)
-    target_include_directories(stb INTERFACE ${STB_INCLUDE_DIRS})
+    target_include_directories(stb INTERFACE "${STB_INCLUDE_DIRS}")
     add_library(stb::stb ALIAS stb)
-    message(STATUS "✅ STB found (manual)")
+    message(STATUS "✅ STB found (manual): ${STB_INCLUDE_DIRS}")
 else()
-  message(WARNING "⚠️ STB not found - some features may be disabled")
+    message(WARNING "⚠️ STB not found - some features may be disabled")
 endif()
 
 
@@ -79,8 +161,6 @@ endif()
 
 # Include directories
 target_include_directories(VulkanDependencies INTERFACE
-    ${Vulkan_INCLUDE_DIRS}
-    ${Stb_INCLUDE_DIR}
     $<IF:$<TARGET_EXISTS:tinygltf::tinygltf>,${TINYGLTF_INCLUDE_DIRS},"">
     $<IF:$<TARGET_EXISTS:stb::stb>,${STB_INCLUDE_DIRS},"">
 )
@@ -88,14 +168,14 @@ target_include_directories(VulkanDependencies INTERFACE
 # Vulkan-related libraries
 set(VULKAN_LIBS
     Vulkan::Vulkan
-    volk::volk
-    volk::volk_headers
-    GPUOpen::VulkanMemoryAllocator
     Vulkan::SafeStruct
     Vulkan::LayerSettings
     Vulkan::UtilityHeaders
     Vulkan::CompilerConfiguration
+    $<IF:$<TARGET_EXISTS:Vulkan::Headers>,Vulkan::Headers,>
 )
+
+list(APPEND VULKAN_LIBS ${VMA_TARGET})
 
  set(SHADER_LIBS
       slang::slang 
@@ -145,16 +225,6 @@ target_link_libraries(VulkanDependencies INTERFACE
     ${MEDIA_LIBS}
     ${MATERIALX_LIBS}
 )
-
-# Optional: Check presence of validation layer JSON
-if(ENABLE_VULKAN_VALIDATION_LAYERS)
-    if(EXISTS "${Vulkan_LAYER_DIR}/VkLayer_khronos_validation.json")
-        message(STATUS "✅ Vulkan validation layers available at: ${Vulkan_LAYER_DIR}")
-        set(ENV{VK_LAYER_PATH} "${Vulkan_LAYER_DIR}")
-    else()
-        message(WARNING "⚠️ Vulkan validation layers requested but not found in: ${Vulkan_LAYER_DIR}")
-    endif()
-endif()
 
 # Print summary
 message(STATUS "--------------------------------------------------")

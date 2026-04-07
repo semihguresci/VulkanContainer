@@ -14,6 +14,7 @@ struct SceneNode {
   glm::mat4 worldTransform{1.0f};
   uint32_t parent = std::numeric_limits<uint32_t>::max();
   uint32_t materialIndex = 0;
+  uint32_t primitiveIndex = std::numeric_limits<uint32_t>::max();
   bool renderable = false;
   std::vector<uint32_t> children{};
 };
@@ -24,7 +25,8 @@ class SceneGraph {
       std::numeric_limits<uint32_t>::max();
 
   uint32_t createNode(const glm::mat4& localTransform, uint32_t materialIndex,
-                      bool renderable = false);
+                      bool renderable = false,
+                      uint32_t primitiveIndex = kInvalidNode);
   void setParent(uint32_t child, std::optional<uint32_t> parentIndex);
   void setLocalTransform(uint32_t nodeIndex, const glm::mat4& localTransform);
   void setRenderable(uint32_t nodeIndex, bool renderable);
