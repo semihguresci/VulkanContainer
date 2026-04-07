@@ -2,7 +2,6 @@
 #include <array>
 #include <stdexcept>
 #include <string>
-#include <utility>
 
 #include "Container/utility/GuiManager.h"
 
@@ -178,7 +177,7 @@ void GuiManager::drawSceneControls(
   }
 
   ImGui::Separator();
-  int gBufferView = static_cast<int>(std::to_underlying(gBufferViewMode_));
+  int gBufferView = static_cast<int>(gBufferViewMode_);
   if (ImGui::Combo("Display", &gBufferView, kGBufferViewLabels,
                    IM_ARRAYSIZE(kGBufferViewLabels))) {
     gBufferViewMode_ = static_cast<GBufferViewMode>(gBufferView);
