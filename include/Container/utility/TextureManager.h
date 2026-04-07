@@ -11,6 +11,14 @@
 
 namespace utility::material {
 
+/// Transparent hash for heterogeneous lookup on std::unordered_map<std::string, ...>
+struct StringHash {
+  using is_transparent = void;
+  std::size_t operator()(std::string_view sv) const noexcept {
+    return std::hash<std::string_view>{}(sv);
+  }
+};
+
 class TextureManager {
  public:
   uint32_t registerTexture(const TextureResource& resource);
@@ -21,7 +29,8 @@ class TextureManager {
 
  private:
   std::vector<TextureResource> textures_{};
-  std::unordered_map<std::string, uint32_t> textureNameToIndex_{};
+  std::unordered_map<std::string, uint32_t, StringHash, std::equal_to<>>
+      textureNameToIndex_{};
 };
 
 }  // namespace utility::material

@@ -1786,7 +1786,8 @@ class HelloTriangleApplication {
       }
       sceneGraph.updateWorldTransforms();
     }
-    renderableNodes = sceneGraph.renderableNodes();
+    renderableNodes.assign(sceneGraph.renderableNodes().begin(),
+                           sceneGraph.renderableNodes().end());
     if (renderableNodes.empty()) {
       selectedMeshNode = utility::scene::SceneGraph::kInvalidNode;
     } else if (std::find(renderableNodes.begin(), renderableNodes.end(),
@@ -2553,7 +2554,8 @@ class HelloTriangleApplication {
 
   void syncObjectDataFromSceneGraph() {
     sceneGraph.updateWorldTransforms();
-    renderableNodes = sceneGraph.renderableNodes();
+    renderableNodes.assign(sceneGraph.renderableNodes().begin(),
+                           sceneGraph.renderableNodes().end());
     objectData.clear();
     opaqueDrawCommands.clear();
     transparentDrawCommands.clear();

@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <limits>
 #include <optional>
+#include <span>
 #include <vector>
 
 namespace utility::scene {
@@ -32,7 +33,7 @@ class SceneGraph {
   void setRenderable(uint32_t nodeIndex, bool renderable);
   void updateWorldTransforms();
 
-  [[nodiscard]] const std::vector<uint32_t>& renderableNodes() const noexcept { return renderableNodes_; }
+  [[nodiscard]] std::span<const uint32_t> renderableNodes() const noexcept { return renderableNodes_; }
   [[nodiscard]] const SceneNode* getNode(uint32_t nodeIndex) const;
   [[nodiscard]] SceneNode* getNode(uint32_t nodeIndex);
   [[nodiscard]] size_t nodeCount() const noexcept { return nodes_.size(); }

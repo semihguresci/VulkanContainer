@@ -23,7 +23,7 @@ uint32_t TextureManager::registerTexture(const TextureResource& resource) {
 std::optional<uint32_t> TextureManager::findTextureIndex(
     std::string_view name) const {
   if (name.empty()) return std::nullopt;
-  if (const auto it = textureNameToIndex_.find(std::string(name));
+  if (const auto it = textureNameToIndex_.find(name);
       it != textureNameToIndex_.end()) {
     return it->second;
   }

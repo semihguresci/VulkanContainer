@@ -1,10 +1,11 @@
 #pragma once
 
 #include <expected>
+#include <filesystem>
+#include <format>
 #include <fstream>
 #include <ios>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace utility::file {
@@ -12,22 +13,24 @@ namespace utility::file {
 /**
  * @brief Read a file fully into a byte buffer.
  *
- * @param filename Path to file
+ * @param path Path to file (accepts std::string, std::string_view, const
+ *             char*, or std::filesystem::path)
  * @return std::expected<std::vector<char>, std::string> File contents on
  *         success, or an error message on failure.
  */
 [[nodiscard]] inline std::expected<std::vector<char>, std::string> readFile(
-    std::string_view filename) {
-  std::ifstream file(std::string(filename), std::ios::ate | std::ios::binary);
+    const std::filesystem::path& path) {
+  std::ifstream file{path, std::ios::ate | std::ios::binary};
 
   if (!file.is_open()) {
-    return std::unexpected("Failed to open file: " + std::string(filename));
+    return std::unexpected(
+        std::format("Failed to open file: {}", path.string()));
   }
 
   const std::streamsize fileSize = file.tellg();
   if (fileSize <= 0) {
-    return std::unexpected("File is empty or unreadable: " +
-                           std::string(filename));
+    return std::unexpected(
+        std::format("File is empty or unreadable: {}", path.string()));
   }
 
   std::vector<char> buffer(static_cast<size_t>(fileSize));
@@ -36,7 +39,8 @@ namespace utility::file {
   file.read(buffer.data(), fileSize);
 
   if (!file) {
-    return std::unexpected("Failed to read file: " + std::string(filename));
+    return std::unexpected(
+        std::format("Failed to read file: {}", path.string()));
   }
 
   return buffer;
