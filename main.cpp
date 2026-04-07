@@ -31,7 +31,7 @@
 
 #include <algorithm>
 #include <array>
-#include <boost/core/span.hpp>
+#include <span>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -2656,12 +2656,12 @@ class HelloTriangleApplication {
 
   void createVertexBuffer() {
     vertexSlice = allocationManager->uploadVertices(
-        boost::span<const geometry::Vertex>(sceneManager->vertices()));
+        std::span<const geometry::Vertex>(sceneManager->vertices()));
   }
 
   void createIndexBuffer() {
     indexSlice = allocationManager->uploadIndices(
-        boost::span<const uint32_t>(sceneManager->indices()));
+        std::span<const uint32_t>(sceneManager->indices()));
   }
 
   void createCommandBuffers() {

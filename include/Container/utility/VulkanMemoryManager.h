@@ -1,8 +1,8 @@
 #ifndef UTILITY_VULKAN_MEMORY_MANAGER_H
 #define UTILITY_VULKAN_MEMORY_MANAGER_H
 
-#include <boost/core/span.hpp>
 #include <cstddef>
+#include <span>
 #include <cstdint>
 #include <memory>
 #include <utility>
@@ -43,7 +43,7 @@ class StagingBuffer {
   [[nodiscard]] const AllocatedBuffer& buffer() const { return buffer_; }
 
   [[nodiscard]] void* data();
-  void upload(boost::span<const std::byte> bytes);
+  void upload(std::span<const std::byte> bytes);
 
  private:
   VulkanMemoryManager* manager_{nullptr};

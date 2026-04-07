@@ -74,7 +74,7 @@ void* StagingBuffer::data() {
   return mapped_data_;
 }
 
-void StagingBuffer::upload(boost::span<const std::byte> bytes) {
+void StagingBuffer::upload(std::span<const std::byte> bytes) {
   if (bytes.size_bytes() > size_) {
     throw std::runtime_error("StagingBuffer upload exceeds buffer size");
   }

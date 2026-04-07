@@ -32,10 +32,10 @@ class SceneGraph {
   void setRenderable(uint32_t nodeIndex, bool renderable);
   void updateWorldTransforms();
 
-  const std::vector<uint32_t>& renderableNodes() const { return renderableNodes_; }
-  const SceneNode* getNode(uint32_t nodeIndex) const;
-  SceneNode* getNode(uint32_t nodeIndex);
-  size_t nodeCount() const { return nodes_.size(); }
+  [[nodiscard]] const std::vector<uint32_t>& renderableNodes() const { return renderableNodes_; }
+  [[nodiscard]] const SceneNode* getNode(uint32_t nodeIndex) const;
+  [[nodiscard]] SceneNode* getNode(uint32_t nodeIndex);
+  [[nodiscard]] size_t nodeCount() const { return nodes_.size(); }
 
  private:
   void updateWorldRecursive(uint32_t nodeIndex, const glm::mat4& parentTransform);

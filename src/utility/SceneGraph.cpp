@@ -23,10 +23,9 @@ void SceneGraph::setParent(uint32_t child, std::optional<uint32_t> parentIndex) 
   SceneNode& childNode = nodes_[child];
   if (childNode.parent != kInvalidNode) {
     auto& siblings = nodes_[childNode.parent].children;
-    siblings.erase(std::remove(siblings.begin(), siblings.end(), child),
-                   siblings.end());
+    std::erase(siblings, child);
   } else {
-    roots_.erase(std::remove(roots_.begin(), roots_.end(), child), roots_.end());
+    std::erase(roots_, child);
   }
 
   if (parentIndex.has_value() && parentIndex.value() < nodes_.size()) {
@@ -80,17 +79,14 @@ void SceneGraph::updateWorldRecursive(uint32_t nodeIndex,
 }
 
 void SceneGraph::registerRenderable(uint32_t nodeIndex) {
-  if (std::find(renderableNodes_.begin(), renderableNodes_.end(), nodeIndex) !=
-      renderableNodes_.end()) {
+  if (std::ranges::contains(renderableNodes_, nodeIndex)) {
     return;
   }
   renderableNodes_.push_back(nodeIndex);
 }
 
 void SceneGraph::unregisterRenderable(uint32_t nodeIndex) {
-  renderableNodes_.erase(
-      std::remove(renderableNodes_.begin(), renderableNodes_.end(), nodeIndex),
-      renderableNodes_.end());
+  std::erase(renderableNodes_, nodeIndex);
 }
 
 }  // namespace utility::scene
