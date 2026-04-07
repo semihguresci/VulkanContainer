@@ -10,34 +10,34 @@
 
 namespace common::math {
 
-inline glm::mat4 leftHandedBasisFlip() {
+[[nodiscard]] inline glm::mat4 leftHandedBasisFlip() {
   glm::mat4 flip(1.0f);
   flip[2][2] = -1.0f;
   return flip;
 }
 
-inline glm::vec3 toLeftHandedPosition(glm::vec3 value) {
+[[nodiscard]] inline glm::vec3 toLeftHandedPosition(glm::vec3 value) {
   value.z = -value.z;
   return value;
 }
 
-inline glm::vec3 toLeftHandedDirection(glm::vec3 value) {
+[[nodiscard]] inline glm::vec3 toLeftHandedDirection(glm::vec3 value) {
   value.z = -value.z;
   return value;
 }
 
-inline glm::vec4 toLeftHandedTangent(glm::vec4 value) {
+[[nodiscard]] inline glm::vec4 toLeftHandedTangent(glm::vec4 value) {
   value.z = -value.z;
   value.w = -value.w;
   return value;
 }
 
-inline glm::mat4 toLeftHandedTransform(const glm::mat4& transform) {
+[[nodiscard]] inline glm::mat4 toLeftHandedTransform(const glm::mat4& transform) {
   const glm::mat4 flip = leftHandedBasisFlip();
   return flip * transform * flip;
 }
 
-inline glm::mat4 lookAtLeftHanded(const glm::vec3& eye, const glm::vec3& center,
+[[nodiscard]] inline glm::mat4 lookAtLeftHanded(const glm::vec3& eye, const glm::vec3& center,
                                   const glm::vec3& up) {
   const glm::vec3 forward = glm::normalize(center - eye);
   const glm::vec3 right = glm::normalize(glm::cross(up, forward));
@@ -53,7 +53,7 @@ inline glm::mat4 lookAtLeftHanded(const glm::vec3& eye, const glm::vec3& center,
   return view;
 }
 
-inline glm::mat4 perspectiveLeftHandedZo(float fovRadians, float aspectRatio,
+[[nodiscard]] inline glm::mat4 perspectiveLeftHandedZo(float fovRadians, float aspectRatio,
                                          float nearPlane, float farPlane) {
   const float tanHalfFov = std::tan(fovRadians * 0.5f);
 
@@ -66,7 +66,7 @@ inline glm::mat4 perspectiveLeftHandedZo(float fovRadians, float aspectRatio,
   return projection;
 }
 
-inline glm::mat4 orthoLeftHandedZo(float left, float right, float bottom,
+[[nodiscard]] inline glm::mat4 orthoLeftHandedZo(float left, float right, float bottom,
                                    float top, float nearPlane,
                                    float farPlane) {
   glm::mat4 projection(1.0f);

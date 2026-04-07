@@ -201,8 +201,7 @@ void GuiManager::drawSceneControls(
   const auto& renderableNodes = sceneGraph.renderableNodes();
   if (!renderableNodes.empty()) {
     uint32_t activeMeshNode = selectedMeshNode;
-    if (std::find(renderableNodes.begin(), renderableNodes.end(),
-                  activeMeshNode) == renderableNodes.end()) {
+    if (!std::ranges::contains(renderableNodes, activeMeshNode)) {
       activeMeshNode = renderableNodes.front();
       selectMeshNode(activeMeshNode);
     }

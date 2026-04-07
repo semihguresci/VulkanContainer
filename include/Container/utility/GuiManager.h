@@ -64,11 +64,11 @@ class GuiManager {
       const std::function<void(uint32_t, const TransformControls&)>&
           applyMeshTransform);
 
-  bool isCapturingInput() const;
-  bool showGeometryOverlay() const { return showGeometryOverlay_; }
-  bool showLightGizmos() const { return showLightGizmos_; }
-  GBufferViewMode gBufferViewMode() const { return gBufferViewMode_; }
-  const std::string& statusMessage() const { return statusMessage_; }
+  [[nodiscard]] bool isCapturingInput() const;
+  [[nodiscard]] bool showGeometryOverlay() const { return showGeometryOverlay_; }
+  [[nodiscard]] bool showLightGizmos() const { return showLightGizmos_; }
+  [[nodiscard]] GBufferViewMode gBufferViewMode() const { return gBufferViewMode_; }
+  [[nodiscard]] const std::string& statusMessage() const { return statusMessage_; }
   void setStatusMessage(std::string status) {
     statusMessage_ = std::move(status);
   }

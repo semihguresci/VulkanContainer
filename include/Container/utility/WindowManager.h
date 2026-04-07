@@ -29,7 +29,7 @@ class Window {
   Window& operator=(Window&& other) noexcept;
 
   // Window state queries
-  bool shouldClose() const;
+  [[nodiscard]] bool shouldClose() const;
   void setShouldClose(bool value);
   void pollEvents() const;
   void waitForEvents() const;
@@ -59,7 +59,7 @@ class Window {
   VkSurfaceKHR createSurface(VkInstance instance) const;
 
   // Raw window handle access
-  GLFWwindow* getNativeWindow() const { return window_; }
+  [[nodiscard]] GLFWwindow* getNativeWindow() const { return window_; }
 
  private:
   GLFWwindow* window_ = nullptr;
@@ -109,17 +109,17 @@ class WindowManager {
   void waitEventsTimeout(double timeout) const;
   void postEmptyEvent() const;
 
-  double getTime() const;
+  [[nodiscard]] double getTime() const;
   void setTime(double time);
 
-  std::vector<MonitorInfo> getMonitors() const;
-  MonitorInfo getPrimaryMonitor() const;
+  [[nodiscard]] std::vector<MonitorInfo> getMonitors() const;
+  [[nodiscard]] MonitorInfo getPrimaryMonitor() const;
 
   // Vulkan support
-  bool isVulkanSupported() const;
-  std::vector<const char*> getRequiredInstanceExtensions() const;
+  [[nodiscard]] bool isVulkanSupported() const;
+  [[nodiscard]] std::vector<const char*> getRequiredInstanceExtensions() const;
 
-  bool isInitialized() const { return initialized_; }
+  [[nodiscard]] bool isInitialized() const { return initialized_; }
 
  private:
   bool initialized_ = false;

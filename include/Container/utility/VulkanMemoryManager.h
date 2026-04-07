@@ -2,6 +2,7 @@
 #define UTILITY_VULKAN_MEMORY_MANAGER_H
 
 #include <cstddef>
+#include <span>
 #include <cstdint>
 #include <memory>
 #include <span>

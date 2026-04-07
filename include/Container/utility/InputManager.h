@@ -22,7 +22,7 @@ class InputManager {
   void setCamera(utility::camera::BaseCamera* camera) { camera_ = camera; }
   void setWindow(GLFWwindow* window);
 
-  bool isLooking() const { return lookModeActive_; }
+  [[nodiscard]] bool isLooking() const { return lookModeActive_; }
 
   bool update(float deltaTime);
 

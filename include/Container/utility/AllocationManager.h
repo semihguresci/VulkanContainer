@@ -9,6 +9,7 @@
 #include "Container/utility/VulkanMemoryManager.h"
 
 #include <cstdint>
+#include <span>
 #include <glm/glm.hpp>
 #include <memory>
 #include <span>
@@ -33,8 +34,8 @@ class AllocationManager {
 
   void cleanup();
 
-  [[nodiscard]] BufferSlice uploadVertices(std::span<const geometry::Vertex> vertices);
-  [[nodiscard]] BufferSlice uploadIndices(std::span<const uint32_t> indices);
+  BufferSlice uploadVertices(std::span<const geometry::Vertex> vertices);
+  BufferSlice uploadIndices(std::span<const uint32_t> indices);
 
   [[nodiscard]] AllocatedBuffer createBuffer(
       VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage,
@@ -48,7 +49,7 @@ class AllocationManager {
 
   void resetTextureAllocations();
 
-  [[nodiscard]] VulkanMemoryManager* memoryManager() const noexcept { return memoryManager_.get(); }
+  [[nodiscard]] VulkanMemoryManager* memoryManager() const { return memoryManager_.get(); }
 
  private:
   VkCommandBuffer beginSingleTimeCommands();
