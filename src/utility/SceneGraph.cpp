@@ -5,10 +5,11 @@
 namespace utility::scene {
 
 uint32_t SceneGraph::createNode(const glm::mat4& localTransform,
-                                uint32_t materialIndex, bool renderable) {
+                                uint32_t materialIndex, bool renderable,
+                                uint32_t primitiveIndex) {
   const uint32_t nodeIndex = static_cast<uint32_t>(nodes_.size());
   nodes_.push_back({localTransform, localTransform, kInvalidNode, materialIndex,
-                    renderable, {}});
+                    primitiveIndex, renderable, {}});
   roots_.push_back(nodeIndex);
   if (renderable) {
     renderableNodes_.push_back(nodeIndex);

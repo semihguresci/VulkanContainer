@@ -1,11 +1,13 @@
+#include <algorithm>
 #include <array>
 #include <stdexcept>
+#include <string>
 
 #include "Container/utility/GuiManager.h"
 
-#include <backends/imgui_impl_glfw.h>
-#include <backends/imgui_impl_vulkan.h>
 #include <imgui.h>
+#include <imgui_impl_glfw.h>
+#include <imgui_impl_vulkan.h>
 #include <imgui_stdlib.h>
 
 
@@ -20,6 +22,21 @@ void CheckVkResult(VkResult result) {
   if (result != VK_SUCCESS) {
     throw std::runtime_error("ImGui Vulkan backend error");
   }
+}
+
+bool DrawTransformControls(const char* label,
+                           TransformControls& transform,
+                           float dragSpeed = 0.05f) {
+  bool changed = false;
+  if (ImGui::TreeNode(label)) {
+    changed |= ImGui::DragFloat3("Position", &transform.position.x, dragSpeed);
+    changed |=
+        ImGui::DragFloat3("Rotation", &transform.rotationDegrees.x, 0.5f);
+    changed |= ImGui::DragFloat3("Scale", &transform.scale.x, dragSpeed, 0.001f,
+                                 1000.0f);
+    ImGui::TreePop();
+  }
+  return changed;
 }
 
 }  // namespace
@@ -73,54 +90,15 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
   initInfo.QueueFamily = graphicsQueueFamily;
   initInfo.Queue = graphicsQueue;
   initInfo.DescriptorPool = descriptorPool_;
+  initInfo.RenderPass = renderPass;
   initInfo.Subpass = 0;
   initInfo.MinImageCount = imageCount;
   initInfo.ImageCount = imageCount;
   initInfo.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
   initInfo.CheckVkResultFn = CheckVkResult;
 
-  ImGui_ImplVulkan_Init(&initInfo, renderPass);
-
-  // Upload fonts
-  {
-    VkCommandPoolCreateInfo poolCreateInfo{};
-    poolCreateInfo.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    poolCreateInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
-    poolCreateInfo.queueFamilyIndex = graphicsQueueFamily;
-
-    VkCommandPool uploadCommandPool;
-    vkCreateCommandPool(device, &poolCreateInfo, nullptr, &uploadCommandPool);
-
-    VkCommandBufferAllocateInfo allocInfo{};
-    allocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    allocInfo.commandPool = uploadCommandPool;
-    allocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer commandBuffer;
-    vkAllocateCommandBuffers(device, &allocInfo, &commandBuffer);
-
-    VkCommandBufferBeginInfo beginInfo{};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-    beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-
-    vkBeginCommandBuffer(commandBuffer, &beginInfo);
-    ImGui_ImplVulkan_CreateFontsTexture(commandBuffer);
-    vkEndCommandBuffer(commandBuffer);
-
-    VkSubmitInfo submitInfo{};
-    submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
-    submitInfo.commandBufferCount = 1;
-    submitInfo.pCommandBuffers = &commandBuffer;
-
-    vkQueueSubmit(graphicsQueue, 1, &submitInfo, VK_NULL_HANDLE);
-    vkQueueWaitIdle(graphicsQueue);
-
-    ImGui_ImplVulkan_DestroyFontUploadObjects();
-
-    vkFreeCommandBuffers(device, uploadCommandPool, 1, &commandBuffer);
-    vkDestroyCommandPool(device, uploadCommandPool, nullptr);
-  }
+  ImGui_ImplVulkan_Init(&initInfo);
+  ImGui_ImplVulkan_CreateFontsTexture();
 
   defaultModelPath_ = defaultModelPath;
   gltfPathInput_ = defaultModelPath;
@@ -161,12 +139,24 @@ void GuiManager::render(VkCommandBuffer commandBuffer) {
 }
 
 void GuiManager::drawSceneControls(
-    const utility::scene::SceneGraph& sceneGraph, uint32_t maxSceneObjects,
-    const std::function<void(const glm::mat4&)>& addObject,
-    const std::function<void()>& addAutoOffsetObject,
+    const utility::scene::SceneGraph& sceneGraph,
     const std::function<bool(const std::string&)>& reloadModel,
-    const std::function<bool()>& reloadDefault) {
+    const std::function<bool()>& reloadDefault,
+    const TransformControls& cameraTransform,
+    const std::function<void(const TransformControls&)>& applyCameraTransform,
+    const TransformControls& sceneTransform,
+    const std::function<void(const TransformControls&)>& applySceneTransform,
+    uint32_t selectedMeshNode,
+    const std::function<void(uint32_t)>& selectMeshNode,
+    const TransformControls& meshTransform,
+    const std::function<void(uint32_t, const TransformControls&)>&
+        applyMeshTransform) {
   if (!initialized_) return;
+
+  static constexpr const char* kGBufferViewLabels[] = {
+      "Lit",       "Albedo",      "Normals", "Material",
+      "Depth",     "Emissive",    "Transparency",
+      "Revealage"};
 
   ImGui::Begin("Scene Controls");
   ImGui::InputText("glTF path", &gltfPathInput_);
@@ -187,28 +177,68 @@ void GuiManager::drawSceneControls(
   }
 
   ImGui::Separator();
-  ImGui::InputFloat3("New object offset", &newObjectTranslation_.x);
+  int gBufferView = static_cast<int>(gBufferViewMode_);
+  if (ImGui::Combo("Display", &gBufferView, kGBufferViewLabels,
+                   IM_ARRAYSIZE(kGBufferViewLabels))) {
+    gBufferViewMode_ = static_cast<GBufferViewMode>(gBufferView);
+  }
+  ImGui::Checkbox("Overlay vertices", &showGeometryOverlay_);
+  ImGui::Checkbox("Overlay lights", &showLightGizmos_);
+  ImGui::Text("Scene nodes: %zu", sceneGraph.nodeCount());
+  ImGui::Text("Renderable primitives: %zu",
+              sceneGraph.renderableNodes().size());
 
-  const bool canAddObject = sceneGraph.renderableNodes().size() <
-                            static_cast<size_t>(maxSceneObjects);
-
-  if (!canAddObject) ImGui::BeginDisabled();
-
-  if (ImGui::Button("Add Object")) {
-    addObject(glm::translate(glm::mat4(1.0f), newObjectTranslation_));
+  TransformControls editableCameraTransform = cameraTransform;
+  if (DrawTransformControls("Camera", editableCameraTransform)) {
+    applyCameraTransform(editableCameraTransform);
   }
 
-  ImGui::SameLine();
-
-  if (ImGui::Button("Add Offset Object")) {
-    addAutoOffsetObject();
+  TransformControls editableSceneTransform = sceneTransform;
+  if (DrawTransformControls("Scene", editableSceneTransform)) {
+    applySceneTransform(editableSceneTransform);
   }
 
-  if (!canAddObject) ImGui::EndDisabled();
+  const auto& renderableNodes = sceneGraph.renderableNodes();
+  if (!renderableNodes.empty()) {
+    uint32_t activeMeshNode = selectedMeshNode;
+    if (std::find(renderableNodes.begin(), renderableNodes.end(),
+                  activeMeshNode) == renderableNodes.end()) {
+      activeMeshNode = renderableNodes.front();
+      selectMeshNode(activeMeshNode);
+    }
 
-  ImGui::Separator();
-  ImGui::Text("Renderable objects: %zu / %u",
-              sceneGraph.renderableNodes().size(), maxSceneObjects);
+    std::string selectedLabel = "Node " + std::to_string(activeMeshNode);
+    if (const auto* node = sceneGraph.getNode(activeMeshNode);
+        node != nullptr &&
+        node->primitiveIndex != utility::scene::SceneGraph::kInvalidNode) {
+      selectedLabel += " / Primitive " + std::to_string(node->primitiveIndex);
+    }
+
+    if (ImGui::BeginCombo("Mesh", selectedLabel.c_str())) {
+      for (uint32_t nodeIndex : renderableNodes) {
+        std::string label = "Node " + std::to_string(nodeIndex);
+        if (const auto* node = sceneGraph.getNode(nodeIndex);
+            node != nullptr &&
+            node->primitiveIndex != utility::scene::SceneGraph::kInvalidNode) {
+          label += " / Primitive " + std::to_string(node->primitiveIndex);
+        }
+        const bool selected = nodeIndex == activeMeshNode;
+        if (ImGui::Selectable(label.c_str(), selected)) {
+          activeMeshNode = nodeIndex;
+          selectMeshNode(nodeIndex);
+        }
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
+      }
+      ImGui::EndCombo();
+    }
+
+    TransformControls editableMeshTransform = meshTransform;
+    if (DrawTransformControls("Mesh Transform", editableMeshTransform)) {
+      applyMeshTransform(activeMeshNode, editableMeshTransform);
+    }
+  }
 
   if (!statusMessage_.empty()) {
     ImGui::TextWrapped("%s", statusMessage_.c_str());

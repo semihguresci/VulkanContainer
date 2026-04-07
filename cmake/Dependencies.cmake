@@ -103,7 +103,6 @@ endif()
 
 # Define all required packages
 set(REQUIRED_PACKAGES
-    volk
     VulkanMemoryAllocator
     MaterialX
     glm
@@ -147,14 +146,14 @@ if(NOT tinygltf_FOUND)
     endif()
 endif()
 
-find_path(STB_INCLUDE_DIRS "stb_image.h" PATH_SUFFIXES stb)
-if (STB_INCLUDE_DIRS)
+find_path(STB_INCLUDE_DIRS stb_image.h PATH_SUFFIXES stb)
+if(STB_INCLUDE_DIRS)
     add_library(stb INTERFACE)
-    target_include_directories(stb INTERFACE ${STB_INCLUDE_DIRS})
+    target_include_directories(stb INTERFACE "${STB_INCLUDE_DIRS}")
     add_library(stb::stb ALIAS stb)
-    message(STATUS "✅ STB found (manual)")
+    message(STATUS "✅ STB found (manual): ${STB_INCLUDE_DIRS}")
 else()
-  message(WARNING "⚠️ STB not found - some features may be disabled")
+    message(WARNING "⚠️ STB not found - some features may be disabled")
 endif()
 
 
@@ -169,8 +168,6 @@ target_include_directories(VulkanDependencies INTERFACE
 # Vulkan-related libraries
 set(VULKAN_LIBS
     Vulkan::Vulkan
-    volk::volk
-    volk::volk_headers
     Vulkan::SafeStruct
     Vulkan::LayerSettings
     Vulkan::UtilityHeaders

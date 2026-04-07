@@ -59,8 +59,19 @@ struct VSOutput
     [[vk::location(8)]] float emissiveStrength;
     [[vk::location(9)]] float2 metallicRoughness;
     [[vk::location(10)]] float3 worldPos;
-    [[vk::location(11)]] float3 worldNormal;
-    [[vk::location(12)]] float4 worldTangent;
+    [[vk::location(11)]] float alphaCutoff;
+    [[vk::location(12)]] uint flags;
+    [[vk::location(13)]] float3 worldNormal;
+    [[vk::location(14)]] float4 worldTangent;
+};
+
+struct PSOutput
+{
+    float4 albedo : SV_Target0;
+    float4 normal : SV_Target1;
+    float4 material : SV_Target2;
+    float4 emissive : SV_Target3;
+    float4 position : SV_Target4;
 };
 
 float3 fallbackTangent(float3 normal)
@@ -120,14 +131,21 @@ VSOutput vertMain(VSInput input)
     output.emissiveStrength = obj.emissiveStrength;
     output.metallicRoughness = obj.metallicRoughness;
     output.worldPos = worldPos.xyz;
+    output.alphaCutoff = obj.alphaCutoff;
+    output.flags = obj.flags;
     output.worldNormal = worldNormal;
     output.worldTangent = float4(worldTangent, input.inTangent.w);
     return output;
 }
 
 [shader("fragment")]
-float4 fragMain(VSOutput vertIn) : SV_Target0
+PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
 {
+    if ((vertIn.flags & 0x2u) != 0u)
+    {
+        discard;
+    }
+
     float3 baseColor = vertIn.baseColor.rgb;
     float baseAlpha = vertIn.baseColor.a;
 
@@ -139,11 +157,9 @@ float4 fragMain(VSOutput vertIn) : SV_Target0
         baseAlpha *= texColor.a;
     }
 
-    if (vertIn.occlusionTextureIndex != 0xffffffff)
+    if ((vertIn.flags & 0x1u) != 0u && baseAlpha < vertIn.alphaCutoff)
     {
-        uint texIndex = NonUniformResourceIndex(vertIn.occlusionTextureIndex);
-        float occlusion = materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).r;
-        baseColor *= occlusion;
+        discard;
     }
 
     float sampledMetallic = vertIn.metallicRoughness.x;
@@ -205,20 +221,33 @@ float4 fragMain(VSOutput vertIn) : SV_Target0
             geomNormal * normalSample.z);
     }
 
-    float3 lightDir = normalize(float3(0.5, 0.75, -1.0));
-    float lighting = saturate(dot(shadingNormal, lightDir));
-    baseColor *= 0.2 + 0.8 * lighting;
+    if (!isFrontFace && (vertIn.flags & 0x4u) != 0u)
+    {
+        shadingNormal = -shadingNormal;
+    }
 
+    float occlusion = 1.0;
+    if (vertIn.occlusionTextureIndex != 0xffffffff)
+    {
+        uint texIndex = NonUniformResourceIndex(vertIn.occlusionTextureIndex);
+        occlusion = materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).r;
+    }
+
+    float3 emissive = vertIn.emissiveColor * vertIn.emissiveStrength;
     if (vertIn.emissiveTextureIndex != 0xffffffff)
     {
         uint texIndex = NonUniformResourceIndex(vertIn.emissiveTextureIndex);
-        float3 emissive = materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).rgb;
-        baseColor += emissive * vertIn.emissiveStrength;
+        emissive += materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).rgb
+                    * vertIn.emissiveStrength;
     }
 
-    baseColor = lerp(baseColor, baseColor * (1.0 - sampledRoughness * 0.5), 0.5);
-    baseColor = lerp(baseColor, baseColor * (1.0 - sampledMetallic * 0.35), 0.35);
-    baseColor += vertIn.emissiveColor * vertIn.emissiveStrength;
+    float linearDepth = length(vertIn.worldPos - uCamera.cameraWorldPosition.xyz);
 
-    return float4(baseColor, baseAlpha);
+    PSOutput output;
+    output.albedo = float4(baseColor, baseAlpha);
+    output.normal = float4(normalize(shadingNormal) * 0.5 + 0.5, 1.0);
+    output.material = float4(sampledMetallic, sampledRoughness, occlusion, baseAlpha);
+    output.emissive = float4(emissive, 1.0);
+    output.position = float4(vertIn.worldPos, linearDepth);
+    return output;
 }

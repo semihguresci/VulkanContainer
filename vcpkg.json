@@ -5,10 +5,15 @@
     "nlohmann-json",
     "glm",
     "glfw3",
-    "imgui",
+    {
+      "name": "imgui",
+      "features": [
+        "glfw-binding",
+        "vulkan-binding"
+      ]
+    },
     "vulkan-utility-libraries",
     "vulkan-memory-allocator",
-    "volk",
     "shader-slang",
     "tinygltf",
     "stb",

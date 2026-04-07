@@ -90,12 +90,17 @@ VulkanMemoryManager::VulkanMemoryManager(VkInstance instance,
                                          VkDevice device,
                                          uint32_t vulkan_api_version)
     : device_(device) {
+  VmaVulkanFunctions vulkanFunctions{};
+  vulkanFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
+  vulkanFunctions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
+
   VmaAllocatorCreateInfo info{};
   info.instance = instance;
   info.physicalDevice = physical_device;
   info.device = device;
   info.vulkanApiVersion = vulkan_api_version;
   info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
+  info.pVulkanFunctions = &vulkanFunctions;
 
   if (vmaCreateAllocator(&info, &allocator_) != VK_SUCCESS) {
     throw std::runtime_error("Failed to create VMA allocator");

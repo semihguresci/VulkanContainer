@@ -1,7 +1,7 @@
 #pragma once
 
+#include "Container/common/CommonVulkan.h"
 #include <Container/utility/SwapChainManager.h>
-#include <vulkan/vulkan.h>
 
 #include <vector>
 

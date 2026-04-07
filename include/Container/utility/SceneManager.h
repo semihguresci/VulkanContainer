@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 
+#include "tiny_gltf.h"
+
 #include "Container/app/AppConfig.h"
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonMath.h"
@@ -14,11 +16,21 @@
 #include "Container/utility/MaterialXIntegration.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/SceneData.h"
+#include "Container/utility/SceneGraph.h"
 #include "Container/utility/TextureManager.h"
 #include "Container/utility/TextureResource.h"
 #include "Container/utility/VulkanDevice.h"
 
 namespace utility::scene {
+
+struct ModelBounds {
+  glm::vec3 min{0.0f};
+  glm::vec3 max{0.0f};
+  glm::vec3 center{0.0f};
+  glm::vec3 size{0.0f};
+  float radius{0.0f};
+  bool valid{false};
+};
 
 class SceneManager {
  public:
@@ -48,8 +60,14 @@ class SceneManager {
 
   const std::vector<geometry::Vertex>& vertices() const { return vertices_; }
   const std::vector<uint32_t>& indices() const { return indices_; }
+  const std::vector<geometry::PrimitiveRange>& primitiveRanges() const {
+    return model_.primitiveRanges();
+  }
+  const geometry::Model& model() const { return model_; }
   VkIndexType indexType() const { return indexType_; }
   uint32_t defaultMaterialIndex() const { return defaultMaterialIndex_; }
+  const ModelBounds& modelBounds() const { return modelBounds_; }
+  void populateSceneGraph(SceneGraph& sceneGraph) const;
 
   glm::vec4 resolveMaterialColor(uint32_t materialIndex) const;
   glm::vec4 resolveMaterialEmissive(uint32_t materialIndex) const;
@@ -61,12 +79,19 @@ class SceneManager {
   uint32_t resolveMaterialEmissiveTexture(uint32_t materialIndex) const;
   uint32_t resolveMaterialMetallicRoughnessTexture(
       uint32_t materialIndex) const;
+  float resolveMaterialAlphaCutoff(uint32_t materialIndex) const;
+  bool isMaterialTransparent(uint32_t materialIndex) const;
+  bool isMaterialAlphaMasked(uint32_t materialIndex) const;
+  bool isMaterialDoubleSided(uint32_t materialIndex) const;
 
  private:
+  uint32_t queryTextureDescriptorCapacity() const;
+  uint32_t resolveLoadedMaterialIndex(int32_t materialIndex) const;
   void createDescriptorSetLayout();
   void createSampler();
   void loadMaterialXMaterial();
   void loadGltfAssets();
+  void updateModelBounds();
   void allocateDescriptorSet();
   void writeDescriptorSetContents(
       const utility::memory::AllocatedBuffer& cameraBuffer,
@@ -86,16 +111,19 @@ class SceneManager {
   tinygltf::Model gltfModel_{};
   std::vector<geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
+  ModelBounds modelBounds_{};
 
   VkIndexType indexType_{VK_INDEX_TYPE_UINT32};
 
   glm::vec4 materialBaseColor_{1.0f};
   uint32_t defaultMaterialIndex_{std::numeric_limits<uint32_t>::max()};
+  uint32_t gltfMaterialBaseIndex_{0};
 
   VkSampler baseColorSampler_{VK_NULL_HANDLE};
   VkDescriptorSetLayout descriptorSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};
   VkDescriptorSet descriptorSet_{VK_NULL_HANDLE};
+  uint32_t textureDescriptorCapacity_{1};
 };
 
 }  // namespace utility::scene

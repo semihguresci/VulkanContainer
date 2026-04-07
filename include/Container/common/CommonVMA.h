@@ -1,6 +1,6 @@
 #pragma once
 
-#include <vulkan/vulkan.h>
+#include "Container/common/CommonVulkan.h"
 
 #ifndef VMA_VULKAN_HPP
 #define VMA_VULKAN_HPP 1

@@ -1,8 +1,10 @@
 #pragma once
 
+#include "Container/common/CommonVulkan.h"
+
 #include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
-#include <vulkan/vulkan.h>
+#include <glm/vec4.hpp>
 
 #include <array>
 #include <cstddef>
@@ -13,6 +15,8 @@ struct Vertex {
   glm::vec3 position{};
   glm::vec3 color{1.0f, 1.0f, 1.0f};
   glm::vec2 texCoord{0.0f, 0.0f};
+  glm::vec3 normal{0.0f, 1.0f, 0.0f};
+  glm::vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f};
 
   static VkVertexInputBindingDescription bindingDescription() {
     VkVertexInputBindingDescription bindingDescription{};
@@ -22,9 +26,9 @@ struct Vertex {
     return bindingDescription;
   }
 
-  static std::array<VkVertexInputAttributeDescription, 3>
+  static std::array<VkVertexInputAttributeDescription, 5>
   attributeDescriptions() {
-    std::array<VkVertexInputAttributeDescription, 3> attributeDescriptions{};
+    std::array<VkVertexInputAttributeDescription, 5> attributeDescriptions{};
 
     attributeDescriptions[0].binding = 0;
     attributeDescriptions[0].location = 0;
@@ -40,6 +44,16 @@ struct Vertex {
     attributeDescriptions[2].location = 2;
     attributeDescriptions[2].format = VK_FORMAT_R32G32_SFLOAT;
     attributeDescriptions[2].offset = offsetof(Vertex, texCoord);
+
+    attributeDescriptions[3].binding = 0;
+    attributeDescriptions[3].location = 3;
+    attributeDescriptions[3].format = VK_FORMAT_R32G32B32_SFLOAT;
+    attributeDescriptions[3].offset = offsetof(Vertex, normal);
+
+    attributeDescriptions[4].binding = 0;
+    attributeDescriptions[4].location = 4;
+    attributeDescriptions[4].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    attributeDescriptions[4].offset = offsetof(Vertex, tangent);
 
     return attributeDescriptions;
   }

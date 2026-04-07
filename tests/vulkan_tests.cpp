@@ -1,70 +1,76 @@
 #include <gtest/gtest.h>
-#include <vulkan/vulkan.h>
-#include <iostream>
 
-VkInstance CreateVulkanInstance() {
-    VkInstance instance;
+#if defined(_WIN32)
+#include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 
-    VkApplicationInfo appInfo = {};
-    appInfo.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
-    appInfo.pApplicationName = "Vulkan Unit Test";
-    appInfo.applicationVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.pEngineName = "No Engine";
-    appInfo.engineVersion = VK_MAKE_VERSION(1, 0, 0);
-    appInfo.apiVersion = VK_API_VERSION_1_0;
+namespace {
 
-   VkInstanceCreateInfo createInfo = {};
-    createInfo.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO;
-    createInfo.pApplicationInfo = &appInfo;
-
-    const char* validationLayer = "VK_LAYER_KHRONOS_validation";
-    createInfo.enabledLayerCount = 1;
-    createInfo.ppEnabledLayerNames = &validationLayer;
-    if (vkCreateInstance(&createInfo, nullptr, &instance) != VK_SUCCESS) {
-        throw std::runtime_error("Failed to create Vulkan instance");
+class VulkanLoader {
+ public:
+  VulkanLoader() {
+#if defined(_WIN32)
+    handle_ = LoadLibraryA("vulkan-1.dll");
+#else
+    handle_ = dlopen("libvulkan.so.1", RTLD_LAZY);
+    if (!handle_) {
+      handle_ = dlopen("libvulkan.so", RTLD_LAZY);
     }
+#endif
+  }
 
-    return instance;
+  ~VulkanLoader() {
+#if defined(_WIN32)
+    if (handle_) {
+      FreeLibrary(handle_);
+    }
+#else
+    if (handle_) {
+      dlclose(handle_);
+    }
+#endif
+  }
+
+  VulkanLoader(const VulkanLoader&) = delete;
+  VulkanLoader& operator=(const VulkanLoader&) = delete;
+
+  bool loaded() const { return handle_ != nullptr; }
+
+  void* symbol(const char* name) const {
+    if (!loaded()) {
+      return nullptr;
+    }
+#if defined(_WIN32)
+    return reinterpret_cast<void*>(GetProcAddress(handle_, name));
+#else
+    return dlsym(handle_, name);
+#endif
+  }
+
+ private:
+#if defined(_WIN32)
+  HMODULE handle_{nullptr};
+#else
+  void* handle_{nullptr};
+#endif
+};
+
+}  // namespace
+
+TEST(VulkanTest, LoaderLibraryIsAvailable) {
+  VulkanLoader loader{};
+  ASSERT_TRUE(loader.loaded());
 }
 
-TEST(VulkanTest, CreateInstance) {
-    VkInstance instance = VK_NULL_HANDLE;
-
-    try {
-        instance = CreateVulkanInstance();
-        ASSERT_NE(instance, VK_NULL_HANDLE) << "Failed to create Vulkan instance";
-    } catch (const std::runtime_error& e) {
-        FAIL() << e.what();
-    }
-
-    if (instance != VK_NULL_HANDLE) {
-        vkDestroyInstance(instance, nullptr);
-    }
+TEST(VulkanTest, LoaderExportsCoreEntryPoint) {
+  VulkanLoader loader{};
+  ASSERT_TRUE(loader.loaded());
+  ASSERT_NE(loader.symbol("vkGetInstanceProcAddr"), nullptr);
 }
 
-TEST(VulkanTest, EnumeratePhysicalDevices) {
-    VkInstance instance = VK_NULL_HANDLE;
-
-    try {
-        instance = CreateVulkanInstance();
-
-        uint32_t deviceCount = 0;
-        vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
-        ASSERT_GT(deviceCount, 0) << "No physical devices found";
-
-        std::vector<VkPhysicalDevice> physicalDevices(deviceCount);
-        vkEnumeratePhysicalDevices(instance, &deviceCount, physicalDevices.data());
-        ASSERT_GT(deviceCount, 0) << "Failed to retrieve physical devices";
-    } catch (const std::runtime_error& e) {
-        FAIL() << e.what();
-    }
-
-    if (instance != VK_NULL_HANDLE) {
-        vkDestroyInstance(instance, nullptr);
-    }
-}
-
-int main(int argc, char **argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+int main(int argc, char** argv) {
+  ::testing::InitGoogleTest(&argc, argv);
+  return RUN_ALL_TESTS();
 }

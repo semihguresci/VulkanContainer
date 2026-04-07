@@ -1,7 +1,10 @@
 #pragma once
 
 #include "Container/common/CommonMath.h"
-
+#include "Container/utility/MaterialManager.h"
+#include "Container/utility/TextureManager.h"
+#include "Container/utility/TextureResource.h"
+#include "tiny_gltf.h"
 
 #include <MaterialXCore/Document.h>
 #include <MaterialXFormat/XmlIo.h>
@@ -12,9 +15,6 @@
 #include <vector>
 
 namespace utility::materialx {
-class Material;
-class TextureManager;
-class MaterialManager;
 
 class SlangMaterialXBridge {
  public:

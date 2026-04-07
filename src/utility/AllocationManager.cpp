@@ -1,12 +1,36 @@
 #include "Container/utility/AllocationManager.h"
 
+#include <algorithm>
 #include <filesystem>
+#include <stdexcept>
 
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb/stb_image.h>
-
+#include "stb_image.h"
 
 namespace utility::memory {
+
+namespace {
+
+void EnsureArenaCapacity(std::unique_ptr<BufferArena>& arena,
+                         VulkanMemoryManager& memoryManager,
+                         VkDeviceSize requiredSize,
+                         VkBufferUsageFlags usage,
+                         VmaMemoryUsage memoryUsage,
+                         VmaAllocationCreateFlags allocationFlags) {
+  const VkDeviceSize safeRequiredSize = std::max<VkDeviceSize>(1, requiredSize);
+
+  if (!arena || arena->totalSize() < safeRequiredSize) {
+    VkDeviceSize requestedSize = safeRequiredSize;
+    if (arena) {
+      requestedSize = std::max(safeRequiredSize, arena->totalSize() * 2);
+    }
+    arena = std::make_unique<BufferArena>(memoryManager, requestedSize, usage,
+                                          memoryUsage, allocationFlags);
+  }
+
+  arena->reset();
+}
+
+}  // namespace
 
 AllocationManager::~AllocationManager() { cleanup(); }
 
@@ -24,18 +48,6 @@ void AllocationManager::initialize(VkInstance instance,
 
   memoryManager_ = std::make_unique<VulkanMemoryManager>(
       instance_, physicalDevice_, device_);
-
-  vertexArena_ = std::make_unique<BufferArena>(
-      *memoryManager_, config_.maxVertexArenaSize,
-      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-      VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
-
-  indexArena_ = std::make_unique<BufferArena>(
-      *memoryManager_, config_.maxIndexArenaSize,
-      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-      VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
 }
 
 void AllocationManager::cleanup() {
@@ -55,6 +67,12 @@ BufferSlice AllocationManager::uploadVertices(
     boost::span<const geometry::Vertex> vertices) {
   VkDeviceSize bufferSize = sizeof(geometry::Vertex) * vertices.size();
 
+  EnsureArenaCapacity(
+      vertexArena_, *memoryManager_, bufferSize,
+      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+      VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
+
   StagingBuffer stagingBuffer(*memoryManager_, bufferSize);
   stagingBuffer.upload({reinterpret_cast<const std::byte*>(vertices.data()),
                         static_cast<size_t>(bufferSize)});
@@ -71,6 +89,12 @@ BufferSlice AllocationManager::uploadVertices(
 BufferSlice AllocationManager::uploadIndices(
     boost::span<const uint32_t> indices) {
   VkDeviceSize bufferSize = sizeof(uint32_t) * indices.size();
+
+  EnsureArenaCapacity(
+      indexArena_, *memoryManager_, bufferSize,
+      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+      VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
 
   StagingBuffer stagingBuffer(*memoryManager_, bufferSize);
   stagingBuffer.upload({reinterpret_cast<const std::byte*>(indices.data()),

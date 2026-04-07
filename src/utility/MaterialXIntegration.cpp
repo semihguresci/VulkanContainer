@@ -520,6 +520,15 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
         static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
     material.roughnessFactor =
         static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
+    material.alphaCutoff = static_cast<float>(mat.alphaCutoff);
+    material.doubleSided = mat.doubleSided;
+    if (mat.alphaMode == "MASK") {
+      material.alphaMode = utility::material::AlphaMode::Mask;
+    } else if (mat.alphaMode == "BLEND") {
+      material.alphaMode = utility::material::AlphaMode::Blend;
+    } else {
+      material.alphaMode = utility::material::AlphaMode::Opaque;
+    }
     if (mat.emissiveFactor.size() == 3) {
       material.emissiveColor =
           glm::vec3(static_cast<float>(mat.emissiveFactor[0]),

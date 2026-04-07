@@ -1,6 +1,6 @@
 #pragma once
 
-#include <vulkan/vulkan.hpp>
+#include "Container/common/CommonVulkan.h"
 
 #include <cstdint>
 #include <string>
@@ -13,10 +13,9 @@ struct AppConfig {
   uint32_t windowHeight{600};
   uint32_t maxFramesInFlight{2};
   uint32_t maxSceneObjects{16};
-  vk::DeviceSize maxVertexArenaSize{4 * 1024 * 1024};
-  vk::DeviceSize maxIndexArenaSize{2 * 1024 * 1024};
   bool enableValidationLayers{true};
-  std::string modelPath{"models/glTF-Sample-Models/2.0/Avocado/glTF/Avocado.gltf"};
+  std::string modelPath{
+      "F:\\Projects\\Container\\out\\build\\windows-debug\\models\\glTF-Sample-Models\\2.0\\Sponza\\glTF\\Sponza.gltf"};
   std::vector<const char*> validationLayers{"VK_LAYER_KHRONOS_validation"};
   std::vector<const char*> deviceExtensions{
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,

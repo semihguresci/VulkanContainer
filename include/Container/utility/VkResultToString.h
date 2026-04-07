@@ -1,7 +1,7 @@
 #ifndef UTILITY_VK_RESULT_TO_STRING_H
 #define UTILITY_VK_RESULT_TO_STRING_H
 
-#include <vulkan/vulkan.h>
+#include "Container/common/CommonVulkan.h"
 
 #include <string>
 

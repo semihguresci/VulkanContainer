@@ -99,6 +99,7 @@ class BufferArena {
   void reset();
 
   [[nodiscard]] const AllocatedBuffer& backingBuffer() const { return buffer_; }
+  [[nodiscard]] VkDeviceSize totalSize() const { return total_size_; }
   [[nodiscard]] VkDeviceSize remainingSize() const {
     return total_size_ - next_offset_;
   }

@@ -1,17 +1,11 @@
 #pragma once
 
 #include <cstdint>
-#include <glm/glm.hpp>
-#include <limits>
-#include <optional>
-#include <string>
-#include <unordered_map>
 #include <vector>
-#include "Container/common/CommonVulkan.h"
+
+#include "Container/utility/Material.h"
 
 namespace utility::material {
-struct TextureResource;
-struct Material;
 
 class MaterialManager {
  public:

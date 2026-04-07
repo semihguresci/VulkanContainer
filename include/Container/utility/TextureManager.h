@@ -1,18 +1,15 @@
 #pragma once
 
 #include <cstdint>
-#include <limits>
 #include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-#include "Container/common/CommonMath.h"
-#include "Container/common/CommonVulkan.h"
+#include "Container/utility/TextureResource.h"
 
 namespace utility::material {
-struct TextureResource;
-struct Material;
+
 class TextureManager {
  public:
   uint32_t registerTexture(const TextureResource& resource);
