@@ -1,6 +1,6 @@
 #pragma once
 
-#include <iostream>
+#include <print>
 
 #include "Container/common/CommonVulkan.h"
 
@@ -31,7 +31,7 @@ static inline VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
     [[maybe_unused]] VkDebugUtilsMessageTypeFlagsEXT messageType,
     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
     [[maybe_unused]] void* pUserData) {
-  std::cerr << "validation layer: " << pCallbackData->pMessage << std::endl;
+  std::println(stderr, "validation layer: {}", pCallbackData->pMessage);
 
   return VK_FALSE;
 }

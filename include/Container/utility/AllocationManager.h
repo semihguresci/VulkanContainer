@@ -8,8 +8,8 @@
 #include "Container/utility/TextureResource.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
-#include <boost/core/span.hpp>
 #include <cstdint>
+#include <span>
 #include <glm/glm.hpp>
 #include <memory>
 #include <string>
@@ -33,8 +33,8 @@ class AllocationManager {
 
   void cleanup();
 
-  BufferSlice uploadVertices(boost::span<const geometry::Vertex> vertices);
-  BufferSlice uploadIndices(boost::span<const uint32_t> indices);
+  BufferSlice uploadVertices(std::span<const geometry::Vertex> vertices);
+  BufferSlice uploadIndices(std::span<const uint32_t> indices);
 
   AllocatedBuffer createBuffer(
       VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage,
@@ -48,7 +48,7 @@ class AllocationManager {
 
   void resetTextureAllocations();
 
-  VulkanMemoryManager* memoryManager() const { return memoryManager_.get(); }
+  [[nodiscard]] VulkanMemoryManager* memoryManager() const { return memoryManager_.get(); }
 
  private:
   VkCommandBuffer beginSingleTimeCommands();

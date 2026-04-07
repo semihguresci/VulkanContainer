@@ -17,7 +17,7 @@ namespace utility::vulkan {
  *
  * @throws std::runtime_error on failure
  */
-inline VkShaderModule createShaderModule(VkDevice device,
+[[nodiscard]] inline VkShaderModule createShaderModule(VkDevice device,
                                          const std::vector<char>& code) {
   if (code.empty()) {
     throw std::runtime_error("Shader code is empty");

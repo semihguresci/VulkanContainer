@@ -13,7 +13,7 @@ class VulkanAlignment {
   static constexpr VkDeviceSize VERTEX_BUFFER_ALIGNMENT = 4;
   static constexpr VkDeviceSize INDEX_BUFFER_ALIGNMENT = 4;
 
-  static constexpr VkDeviceSize alignUp(VkDeviceSize value,
+  [[nodiscard]] static constexpr VkDeviceSize alignUp(VkDeviceSize value,
                                         VkDeviceSize alignment) {
     if (alignment <= 1) {
       return value;
