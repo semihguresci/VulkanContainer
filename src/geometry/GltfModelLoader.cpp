@@ -1,11 +1,14 @@
 #include <Container/geometry/GltfModelLoader.h>
 
-#include <Container/common/CommonMath.h>
 #include <Container/geometry/Mesh.h>
 
 #include <tiny_gltf.h>
 
+#include <glm/geometric.hpp>
+
 #include <cctype>
+#include <cmath>
+#include <iostream>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -64,14 +67,9 @@ glm::vec3 fallbackTangentForNormal(const glm::vec3& normal) {
   return glm::normalize(tangent);
 }
 
-void flipTriangleWinding(std::vector<uint32_t>& indices) {
-  if (indices.size() % 3 != 0) {
-    throw std::runtime_error("glTF primitive must use triangle indices");
-  }
-
-  for (size_t i = 0; i < indices.size(); i += 3) {
-    std::swap(indices[i + 1], indices[i + 2]);
-  }
+bool isFiniteVec3(const glm::vec3& value) {
+  return std::isfinite(value.x) && std::isfinite(value.y) &&
+         std::isfinite(value.z);
 }
 
 void generateMissingNormals(std::vector<Vertex>& vertices,
@@ -106,6 +104,81 @@ void generateMissingNormals(std::vector<Vertex>& vertices,
       continue;
     }
     vertex.normal = glm::normalize(vertex.normal);
+  }
+}
+
+void normalizeLoadedNormals(std::vector<Vertex>& vertices) {
+  for (auto& vertex : vertices) {
+    if (glm::dot(vertex.normal, vertex.normal) < 1e-8f ||
+        !isFiniteVec3(vertex.normal)) {
+      vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
+      continue;
+    }
+    vertex.normal = glm::normalize(vertex.normal);
+  }
+}
+
+void sanitizeTangents(std::vector<Vertex>& vertices) {
+  for (auto& vertex : vertices) {
+    glm::vec3 tangent(vertex.tangent);
+    if (!isFiniteVec3(tangent) ||
+        glm::dot(tangent, tangent) < 1e-8f) {
+      tangent = fallbackTangentForNormal(vertex.normal);
+    } else {
+      tangent = glm::normalize(tangent);
+    }
+
+    float handedness = std::isfinite(vertex.tangent.w) ? vertex.tangent.w : 1.0f;
+    handedness = handedness < 0.0f ? -1.0f : 1.0f;
+    vertex.tangent = glm::vec4(tangent, handedness);
+  }
+}
+
+void alignNormalsAndTangentsToWinding(std::vector<Vertex>& vertices,
+                                      const std::vector<uint32_t>& indices) {
+  std::vector<glm::vec3> windingSums(vertices.size(), glm::vec3(0.0f));
+
+  for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+    const uint32_t i0 = indices[i];
+    const uint32_t i1 = indices[i + 1];
+    const uint32_t i2 = indices[i + 2];
+    if (i0 >= vertices.size() || i1 >= vertices.size() || i2 >= vertices.size()) {
+      continue;
+    }
+
+    const glm::vec3 edge01 = vertices[i1].position - vertices[i0].position;
+    const glm::vec3 edge02 = vertices[i2].position - vertices[i0].position;
+    const glm::vec3 faceNormal = glm::cross(edge01, edge02);
+    if (!isFiniteVec3(faceNormal) ||
+        glm::dot(faceNormal, faceNormal) < 1e-8f) {
+      continue;
+    }
+
+    windingSums[i0] += faceNormal;
+    windingSums[i1] += faceNormal;
+    windingSums[i2] += faceNormal;
+  }
+
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    const glm::vec3 reference = windingSums[i];
+    if (!isFiniteVec3(reference) ||
+        glm::dot(reference, reference) < 1e-8f) {
+      continue;
+    }
+
+    glm::vec3 normal = vertices[i].normal;
+    if (!isFiniteVec3(normal) || glm::dot(normal, normal) < 1e-8f) {
+      vertices[i].normal = glm::normalize(reference);
+      continue;
+    }
+
+    normal = glm::normalize(normal);
+    if (glm::dot(normal, reference) < 0.0f) {
+      vertices[i].normal = -normal;
+      vertices[i].tangent.w = -vertices[i].tangent.w;
+    } else {
+      vertices[i].normal = normal;
+    }
   }
 }
 
@@ -201,7 +274,6 @@ std::vector<uint32_t> readIndices(const tinygltf::Model& model,
     for (size_t i = 0; i < vertexCount; ++i) {
       sequential[i] = static_cast<uint32_t>(i);
     }
-    flipTriangleWinding(sequential);
     return sequential;
   }
 
@@ -241,7 +313,6 @@ std::vector<uint32_t> readIndices(const tinygltf::Model& model,
         throw std::runtime_error("Unsupported glTF index component type");
     }
   }
-  flipTriangleWinding(indices);
   return indices;
 }
 
@@ -271,8 +342,8 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
   PrimitiveVertexData primitiveData{};
   primitiveData.vertices.resize(positionAccessor.count);
   for (size_t i = 0; i < positionAccessor.count; ++i) {
-    primitiveData.vertices[i].position = common::math::toLeftHandedPosition(
-        readVec3(positionAccessor, positionView, positionBuffer, i));
+    primitiveData.vertices[i].position =
+        readVec3(positionAccessor, positionView, positionBuffer, i);
   }
 
   auto colorIt = primitive.attributes.find("COLOR_0");
@@ -394,14 +465,8 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
 
     primitiveData.hasNormals = true;
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
-      glm::vec3 normal = common::math::toLeftHandedDirection(
-          readVec3(normalAccessor, normalView, normalBuffer, i));
-      if (glm::dot(normal, normal) < 1e-8f) {
-        normal = glm::vec3(0.0f, 1.0f, 0.0f);
-      } else {
-        normal = glm::normalize(normal);
-      }
-      primitiveData.vertices[i].normal = normal;
+      primitiveData.vertices[i].normal =
+          readVec3(normalAccessor, normalView, normalBuffer, i);
     }
   }
 
@@ -427,16 +492,8 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
 
     primitiveData.hasTangents = true;
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
-      glm::vec4 tangent = common::math::toLeftHandedTangent(
-          readVec4(tangentAccessor, tangentView, tangentBuffer, i));
-      glm::vec3 tangentDirection(tangent);
-      if (glm::dot(tangentDirection, tangentDirection) < 1e-8f) {
-        tangentDirection = glm::vec3(1.0f, 0.0f, 0.0f);
-      } else {
-        tangentDirection = glm::normalize(tangentDirection);
-      }
       primitiveData.vertices[i].tangent =
-          glm::vec4(tangentDirection, tangent.w < 0.0f ? -1.0f : 1.0f);
+          readVec4(tangentAccessor, tangentView, tangentBuffer, i);
     }
   }
 
@@ -451,10 +508,14 @@ std::vector<Mesh> parseMeshes(const tinygltf::Model& model) {
       auto indices = readIndices(model, primitive, primitiveData.vertices.size());
       if (!primitiveData.hasNormals) {
         generateMissingNormals(primitiveData.vertices, indices);
+      } else {
+        normalizeLoadedNormals(primitiveData.vertices);
       }
       if (!primitiveData.hasTangents) {
         generateMissingTangents(primitiveData.vertices, indices);
       }
+      sanitizeTangents(primitiveData.vertices);
+      alignNormalsAndTangentsToWinding(primitiveData.vertices, indices);
       meshes.emplace_back(std::move(primitiveData.vertices), std::move(indices),
                           primitive.material);
     }
@@ -510,4 +571,3 @@ GltfLoadResult LoadModelWithSource(const std::string& path) {
 
 }  // namespace gltf
 }  // namespace geometry
-

@@ -109,15 +109,22 @@ VSOutput vertMain(VSInput input)
     }
 
     float3 worldTangent = mul(modelMatrix, input.inTangent.xyz);
-    worldTangent = worldTangent - worldNormal * dot(worldNormal, worldTangent);
-    if (!all(isfinite(worldTangent)) || length(worldTangent) < 1e-4)
+    // Gram-Schmidt orthogonalize against the world normal once, here in the vertex shader.
+    float3 worldTangentOrtho = worldTangent - worldNormal * dot(worldNormal, worldTangent);
+    if (!all(isfinite(worldTangentOrtho)) || length(worldTangentOrtho) < 1e-4)
     {
-        worldTangent = fallbackTangent(worldNormal);
+        worldTangentOrtho = fallbackTangent(worldNormal);
     }
     else
     {
-        worldTangent = normalize(worldTangent);
+        worldTangentOrtho = normalize(worldTangentOrtho);
     }
+
+    // Tangent handedness: glTF stores it in inTangent.w (+1 or -1).
+    // Flip when the model matrix has a negative determinant (mirror transform).
+    float modelHandednessSign = determinant(modelMatrix) < 0.0 ? -1.0 : 1.0;
+    float tangentHandedness = input.inTangent.w * modelHandednessSign;
+    tangentHandedness = tangentHandedness < 0.0 ? -1.0 : 1.0;
 
     output.pos = mul(uCamera.viewProj, worldPos);
     output.baseColor = obj.color;
@@ -134,7 +141,7 @@ VSOutput vertMain(VSInput input)
     output.alphaCutoff = obj.alphaCutoff;
     output.flags = obj.flags;
     output.worldNormal = worldNormal;
-    output.worldTangent = float4(worldTangent, input.inTangent.w);
+    output.worldTangent = float4(worldTangentOrtho, tangentHandedness);
     return output;
 }
 
@@ -179,19 +186,28 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
     {
         faceNormal = float3(0.0, 1.0, 0.0);
     }
+    if (!isFrontFace)
+    {
+        faceNormal = -faceNormal;
+    }
 
     float3 geomNormal = vertIn.worldNormal;
-    if (!all(isfinite(geomNormal)) || length(geomNormal) < 1e-4)
+    bool hasGeomNormal = all(isfinite(geomNormal)) && length(geomNormal) >= 1e-4;
+    if (!hasGeomNormal)
     {
         geomNormal = faceNormal;
     }
     else
     {
         geomNormal = normalize(geomNormal);
+        // Trust rasterized face orientation: force interpolated normal to same hemisphere.
+        if (dot(geomNormal, faceNormal) < 0.0)
+        {
+            geomNormal = -geomNormal;
+        }
     }
 
     float3 tangent = vertIn.worldTangent.xyz;
-    tangent = tangent - geomNormal * dot(geomNormal, tangent);
     if (!all(isfinite(tangent)) || length(tangent) < 1e-4)
     {
         tangent = fallbackTangent(geomNormal);
@@ -202,10 +218,11 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
     }
 
     float tangentSign = abs(vertIn.worldTangent.w) > 0.5 ? vertIn.worldTangent.w : 1.0;
+    // RH world space: cross(geomNormal, tangent) gives the standard bitangent.
     float3 bitangent = normalize(cross(geomNormal, tangent)) * tangentSign;
     if (!all(isfinite(bitangent)) || length(bitangent) < 1e-4)
     {
-        bitangent = normalize(cross(geomNormal, fallbackTangent(geomNormal)));
+        bitangent = normalize(cross(geomNormal, fallbackTangent(geomNormal))) * tangentSign;
     }
 
     float3 shadingNormal = geomNormal;
@@ -221,7 +238,8 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
             geomNormal * normalSample.z);
     }
 
-    if (!isFrontFace && (vertIn.flags & 0x4u) != 0u)
+    // Keep shading normal on the same hemisphere as the rasterized face.
+    if (dot(shadingNormal, faceNormal) < 0.0)
     {
         shadingNormal = -shadingNormal;
     }

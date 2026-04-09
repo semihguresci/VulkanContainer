@@ -65,6 +65,7 @@ void AllocationManager::cleanup() {
 
 BufferSlice AllocationManager::uploadVertices(
     std::span<const geometry::Vertex> vertices) {
+  if (vertices.empty()) return {};
   VkDeviceSize bufferSize = sizeof(geometry::Vertex) * vertices.size();
 
   EnsureArenaCapacity(
@@ -88,6 +89,7 @@ BufferSlice AllocationManager::uploadVertices(
 
 BufferSlice AllocationManager::uploadIndices(
     std::span<const uint32_t> indices) {
+  if (indices.empty()) return {};
   VkDeviceSize bufferSize = sizeof(uint32_t) * indices.size();
 
   EnsureArenaCapacity(

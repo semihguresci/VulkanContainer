@@ -162,6 +162,16 @@ glm::mat4 composeTransform(const utility::ui::TransformControls& controls) {
   return transform;
 }
 
+glm::mat4 toShaderMatrix(const glm::mat4& columnVectorMatrix) {
+  return glm::transpose(columnVectorMatrix);
+}
+
+glm::mat4 toShaderNormalMatrix(const glm::mat4& columnVectorModelMatrix) {
+  // For CPU column-vector math the normal matrix is transpose(inverse(model)).
+  // The shader upload path is transposed, so this becomes inverse(model).
+  return glm::inverse(columnVectorModelMatrix);
+}
+
 }  // namespace
 
 
@@ -176,6 +186,14 @@ class HelloTriangleApplication {
     initVulkan();
     mainLoop();
     cleanup();
+  }
+
+  ~HelloTriangleApplication() {
+    // Ensure cleanup runs even if an exception escapes run().
+    // cleanup() is idempotent (all handles are nulled after first call).
+    if (deviceWrapper) {
+      try { cleanup(); } catch (...) {}
+    }
   }
 
  private:
@@ -221,10 +239,13 @@ class HelloTriangleApplication {
   VkPipeline gBufferPipeline{VK_NULL_HANDLE};
   VkPipeline directionalLightPipeline{VK_NULL_HANDLE};
   VkPipeline stencilVolumePipeline{VK_NULL_HANDLE};
+  VkPipeline stencilVolumePipelineFlipped{VK_NULL_HANDLE};
   VkPipeline pointLightPipeline{VK_NULL_HANDLE};
+  VkPipeline pointLightStencilDebugPipeline{VK_NULL_HANDLE};
   VkPipeline transparentPipeline{VK_NULL_HANDLE};
   VkPipeline postProcessPipeline{VK_NULL_HANDLE};
   VkPipeline geometryDebugPipeline{VK_NULL_HANDLE};
+  VkPipeline surfaceNormalLinePipeline{VK_NULL_HANDLE};
   VkPipeline lightGizmoPipeline{VK_NULL_HANDLE};
   VkFormat sceneColorFormat{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat gBufferAlbedoFormat{VK_FORMAT_R8G8B8A8_UNORM};
@@ -254,6 +275,12 @@ class HelloTriangleApplication {
   utility::memory::AllocatedBuffer lightingBuffer{};
   size_t objectBufferCapacity{0};
 
+  // Diagnostic cube: slices into the shared vertex/index arena.
+  utility::memory::BufferSlice diagCubeVertexSlice{};
+  utility::memory::BufferSlice diagCubeIndexSlice{};
+  uint32_t diagCubeIndexCount{0};
+  uint32_t diagCubeObjectIndex{std::numeric_limits<uint32_t>::max()};
+
   CameraData cameraData{};
   LightingData lightingData{};
   std::vector<ObjectData> objectData;
@@ -279,6 +306,12 @@ class HelloTriangleApplication {
   uint32_t exactOitNodeCapacityFloor{0};
 
   bool framebufferResized = false;
+  bool debugDirectionalOnly = false;
+  bool debugVisualizePointLightStencil = false;
+  bool debugFlipPointLightFrontFace = false;
+  bool debugDirectionalOnlyKeyDown = false;
+  bool debugVisualizePointLightStencilKeyDown = false;
+  bool debugFlipPointLightFrontFaceKeyDown = false;
 
   void initWindow() {
     windowManager = std::make_unique<window::WindowManager>();
@@ -372,8 +405,7 @@ class HelloTriangleApplication {
     updateLightingData();
     createLightVolumeGeometry();
     createFrameResources();
-    createVertexBuffer();
-    createIndexBuffer();
+    createGeometryBuffers();
     sceneManager->updateDescriptorSet(cameraBuffer, objectBuffer);
     guiManager = std::make_unique<utility::ui::GuiManager>();
     guiManager->initialize(
@@ -474,10 +506,13 @@ class HelloTriangleApplication {
       gBufferPipeline = VK_NULL_HANDLE;
       directionalLightPipeline = VK_NULL_HANDLE;
       stencilVolumePipeline = VK_NULL_HANDLE;
+      stencilVolumePipelineFlipped = VK_NULL_HANDLE;
       pointLightPipeline = VK_NULL_HANDLE;
+      pointLightStencilDebugPipeline = VK_NULL_HANDLE;
       transparentPipeline = VK_NULL_HANDLE;
       postProcessPipeline = VK_NULL_HANDLE;
       geometryDebugPipeline = VK_NULL_HANDLE;
+      surfaceNormalLinePipeline = VK_NULL_HANDLE;
       lightGizmoPipeline = VK_NULL_HANDLE;
       scenePipelineLayout = VK_NULL_HANDLE;
       transparentPipelineLayout = VK_NULL_HANDLE;
@@ -597,6 +632,7 @@ class HelloTriangleApplication {
     createInfo.enableValidationLayers = config_.enableValidationLayers;
     createInfo.enabledFeatures.samplerAnisotropy = VK_TRUE;
     createInfo.enabledFeatures.fragmentStoresAndAtomics = VK_TRUE;
+    createInfo.enabledFeatures.geometryShader = VK_TRUE;
 
     VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{};
     descriptorIndexingFeatures.sType =
@@ -612,6 +648,12 @@ class HelloTriangleApplication {
     bufferDeviceAddressFeatures.sType =
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
     bufferDeviceAddressFeatures.bufferDeviceAddress = VK_TRUE;
+
+    VkPhysicalDeviceVulkan11Features vulkan11Features{};
+    vulkan11Features.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    vulkan11Features.shaderDrawParameters = VK_TRUE;
+
+    bufferDeviceAddressFeatures.pNext = &vulkan11Features;
     descriptorIndexingFeatures.pNext = &bufferDeviceAddressFeatures;
     createInfo.next = &descriptorIndexingFeatures;
 
@@ -1821,12 +1863,9 @@ class HelloTriangleApplication {
 
   void createGraphicsPipelines() {
     const auto loadModule = [this](const char* path) {
-      auto fileData = utility::file::readFile(path);
-      if (!fileData) {
-        throw std::runtime_error(fileData.error());
-      }
+      const auto fileData = utility::file::readFile(path);
       return utility::vulkan::createShaderModule(deviceWrapper->device(),
-                                                 std::move(fileData).value());
+                                                 fileData);
     };
     const auto makeShaderStage = [](VkShaderModule module,
                                     VkShaderStageFlagBits stage) {
@@ -1834,7 +1873,20 @@ class HelloTriangleApplication {
       info.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
       info.stage = stage;
       info.module = module;
-      info.pName = "main";
+      switch (stage) {
+        case VK_SHADER_STAGE_VERTEX_BIT:
+          info.pName = "vertMain";
+          break;
+        case VK_SHADER_STAGE_FRAGMENT_BIT:
+          info.pName = "fragMain";
+          break;
+        case VK_SHADER_STAGE_GEOMETRY_BIT:
+          info.pName = "geomMain";
+          break;
+        default:
+          info.pName = "main";
+          break;
+      }
       return info;
     };
 
@@ -1858,6 +1910,10 @@ class HelloTriangleApplication {
         loadModule("spv_shaders/point_light.vert.spv");
     VkShaderModule pointFragShaderModule =
         loadModule("spv_shaders/point_light.frag.spv");
+    VkShaderModule pointDebugVertShaderModule =
+        loadModule("spv_shaders/point_light_stencil_debug.vert.spv");
+    VkShaderModule pointDebugFragShaderModule =
+        loadModule("spv_shaders/point_light_stencil_debug.frag.spv");
     VkShaderModule transparentVertShaderModule =
         loadModule("spv_shaders/forward_transparent.vert.spv");
     VkShaderModule transparentFragShaderModule =
@@ -1870,6 +1926,12 @@ class HelloTriangleApplication {
         loadModule("spv_shaders/geometry_debug.vert.spv");
     VkShaderModule debugFragShaderModule =
         loadModule("spv_shaders/geometry_debug.frag.spv");
+    VkShaderModule surfaceNormalsVertShaderModule =
+        loadModule("spv_shaders/surface_normals.vert.spv");
+    VkShaderModule surfaceNormalsGeomShaderModule =
+        loadModule("spv_shaders/surface_normals.geom.spv");
+    VkShaderModule surfaceNormalsFragShaderModule =
+        loadModule("spv_shaders/surface_normals.frag.spv");
     VkShaderModule lightGizmoVertShaderModule =
         loadModule("spv_shaders/light_gizmo.vert.spv");
     VkShaderModule lightGizmoFragShaderModule =
@@ -1892,6 +1954,10 @@ class HelloTriangleApplication {
     std::array<VkPipelineShaderStageCreateInfo, 2> pointShaderStages = {
         makeShaderStage(pointVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
         makeShaderStage(pointFragShaderModule, VK_SHADER_STAGE_FRAGMENT_BIT)};
+    std::array<VkPipelineShaderStageCreateInfo, 2> pointDebugShaderStages = {
+        makeShaderStage(pointDebugVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
+        makeShaderStage(pointDebugFragShaderModule,
+                        VK_SHADER_STAGE_FRAGMENT_BIT)};
     std::array<VkPipelineShaderStageCreateInfo, 2> transparentShaderStages = {
         makeShaderStage(transparentVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
         makeShaderStage(transparentFragShaderModule,
@@ -1904,6 +1970,14 @@ class HelloTriangleApplication {
     std::array<VkPipelineShaderStageCreateInfo, 2> debugShaderStages = {
         makeShaderStage(debugVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
         makeShaderStage(debugFragShaderModule, VK_SHADER_STAGE_FRAGMENT_BIT)};
+    std::array<VkPipelineShaderStageCreateInfo, 3>
+        surfaceNormalShaderStages = {
+            makeShaderStage(surfaceNormalsVertShaderModule,
+                            VK_SHADER_STAGE_VERTEX_BIT),
+            makeShaderStage(surfaceNormalsGeomShaderModule,
+                            VK_SHADER_STAGE_GEOMETRY_BIT),
+            makeShaderStage(surfaceNormalsFragShaderModule,
+                            VK_SHADER_STAGE_FRAGMENT_BIT)};
     std::array<VkPipelineShaderStageCreateInfo, 2> lightGizmoShaderStages = {
         makeShaderStage(lightGizmoVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
         makeShaderStage(lightGizmoFragShaderModule,
@@ -1948,12 +2022,16 @@ class HelloTriangleApplication {
         VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
     sceneRasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     sceneRasterizer.lineWidth = 1.0f;
-    sceneRasterizer.cullMode = VK_CULL_MODE_NONE;
-    sceneRasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    sceneRasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
+    sceneRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     sceneRasterizer.depthBiasEnable = VK_FALSE;
 
     VkPipelineRasterizationStateCreateInfo fullscreenRasterizer =
         sceneRasterizer;
+    fullscreenRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    VkPipelineRasterizationStateCreateInfo fullscreenRasterizerFlipped =
+        fullscreenRasterizer;
+    fullscreenRasterizerFlipped.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sType =
@@ -2042,7 +2120,7 @@ class HelloTriangleApplication {
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
     depthPrepassDepthStencil.depthTestEnable = VK_TRUE;
     depthPrepassDepthStencil.depthWriteEnable = VK_TRUE;
-    depthPrepassDepthStencil.depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
+    depthPrepassDepthStencil.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
 
     VkPipelineDepthStencilStateCreateInfo gBufferDepthStencil =
         depthPrepassDepthStencil;
@@ -2052,6 +2130,12 @@ class HelloTriangleApplication {
     VkPipelineDepthStencilStateCreateInfo disabledDepthStencil{};
     disabledDepthStencil.sType =
         VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;
+
+    // Surface normal lines: depth test enabled (GREATER_OR_EQUAL for reverse-Z),
+    // no depth write so lines don't occlude subsequent draws.
+    VkPipelineDepthStencilStateCreateInfo normalLineDepthStencil =
+        depthPrepassDepthStencil;
+    normalLineDepthStencil.depthWriteEnable = VK_FALSE;
 
     VkPipelineDepthStencilStateCreateInfo stencilDepthStencil =
         depthPrepassDepthStencil;
@@ -2163,6 +2247,13 @@ class HelloTriangleApplication {
     stencilVolumePipeline = pipelineManager->createGraphicsPipeline(
         stencilPipelineInfo, "stencil_volume_pipeline");
 
+    VkGraphicsPipelineCreateInfo stencilPipelineInfoFlipped =
+        stencilPipelineInfo;
+    stencilPipelineInfoFlipped.pRasterizationState =
+        &fullscreenRasterizerFlipped;
+    stencilVolumePipelineFlipped = pipelineManager->createGraphicsPipeline(
+        stencilPipelineInfoFlipped, "stencil_volume_pipeline_flipped");
+
     VkGraphicsPipelineCreateInfo pointPipelineInfo = fullscreenPipelineInfo;
     pointPipelineInfo.stageCount =
         static_cast<uint32_t>(pointShaderStages.size());
@@ -2171,6 +2262,14 @@ class HelloTriangleApplication {
     pointPipelineInfo.pColorBlendState = &additiveColorBlending;
     pointLightPipeline = pipelineManager->createGraphicsPipeline(
         pointPipelineInfo, "point_light_pipeline");
+
+    VkGraphicsPipelineCreateInfo pointDebugPipelineInfo = pointPipelineInfo;
+    pointDebugPipelineInfo.stageCount =
+        static_cast<uint32_t>(pointDebugShaderStages.size());
+    pointDebugPipelineInfo.pStages = pointDebugShaderStages.data();
+    pointDebugPipelineInfo.pColorBlendState = &colorBlending;
+    pointLightStencilDebugPipeline = pipelineManager->createGraphicsPipeline(
+        pointDebugPipelineInfo, "point_light_stencil_debug_pipeline");
 
     VkGraphicsPipelineCreateInfo transparentPipelineInfo{};
     transparentPipelineInfo.sType =
@@ -2212,6 +2311,18 @@ class HelloTriangleApplication {
     geometryDebugPipeline = pipelineManager->createGraphicsPipeline(
         debugPipelineInfo, "geometry_debug_pipeline");
 
+    VkGraphicsPipelineCreateInfo surfaceNormalPipelineInfo =
+        transparentPipelineInfo;
+    surfaceNormalPipelineInfo.stageCount =
+        static_cast<uint32_t>(surfaceNormalShaderStages.size());
+    surfaceNormalPipelineInfo.pStages = surfaceNormalShaderStages.data();
+    surfaceNormalPipelineInfo.pInputAssemblyState = &triangleAssembly;
+    surfaceNormalPipelineInfo.pColorBlendState = &overlayColorBlending;
+    surfaceNormalPipelineInfo.pDepthStencilState = &normalLineDepthStencil;
+    surfaceNormalPipelineInfo.layout = scenePipelineLayout;
+    surfaceNormalLinePipeline = pipelineManager->createGraphicsPipeline(
+        surfaceNormalPipelineInfo, "surface_normal_line_pipeline");
+
     VkGraphicsPipelineCreateInfo lightGizmoPipelineInfo =
         fullscreenPipelineInfo;
     lightGizmoPipelineInfo.stageCount =
@@ -2226,15 +2337,18 @@ class HelloTriangleApplication {
     lightGizmoPipeline = pipelineManager->createGraphicsPipeline(
         lightGizmoPipelineInfo, "light_gizmo_pipeline");
 
-    const std::array<VkShaderModule, 18> shaderModules = {
+    const std::array<VkShaderModule, 23> shaderModules = {
         depthPrepassVertShaderModule, depthPrepassFragShaderModule,
         gBufferVertShaderModule,      gBufferFragShaderModule,
         directionalVertShaderModule,  directionalFragShaderModule,
         stencilVertShaderModule,      stencilFragShaderModule,
         pointVertShaderModule,        pointFragShaderModule,
+        pointDebugVertShaderModule,   pointDebugFragShaderModule,
         transparentVertShaderModule,  transparentFragShaderModule,
         postProcessVertShaderModule,  postProcessFragShaderModule,
         debugVertShaderModule,        debugFragShaderModule,
+        surfaceNormalsVertShaderModule, surfaceNormalsGeomShaderModule,
+        surfaceNormalsFragShaderModule,
         lightGizmoVertShaderModule,   lightGizmoFragShaderModule};
     for (VkShaderModule module : shaderModules) {
       vkDestroyShaderModule(deviceWrapper->device(), module, nullptr);
@@ -2302,23 +2416,46 @@ class HelloTriangleApplication {
 
   void resetCameraForScene() {
     if (!camera) return;
-    camera->setYawPitch(kDefaultCameraYaw, kDefaultCameraPitch);
     camera->setScale(glm::vec3(1.0f));
-    camera->setPosition(glm::vec3(0.0f));
     inputManager.setMoveSpeed(kDefaultCameraMoveSpeed);
 
     auto* perspective =
         dynamic_cast<utility::camera::PerspectiveCamera*>(camera.get());
     if (perspective) {
       float farPlane = kDefaultCameraFarPlane;
+      bool hasBounds = false;
+      glm::vec3 boundsCenter{0.0f};
+      float boundsRadius = 1.0f;
       if (sceneManager) {
         const auto& bounds = sceneManager->modelBounds();
         if (bounds.valid) {
+          hasBounds = true;
+          boundsCenter = bounds.center;
+          boundsRadius = bounds.radius;
           farPlane = std::max(farPlane,
-                              glm::length(bounds.center) + bounds.radius * 4.0f);
+                              glm::length(boundsCenter) + boundsRadius * 4.0f);
         }
       }
       perspective->setNearFar(kDefaultCameraNearPlane, farPlane);
+
+      if (hasBounds) {
+        camera->setYawPitch(kDefaultCameraYaw, kDefaultCameraPitch);
+        // Place the camera outside the scene: pull back along the front vector
+        // so that boundsCenter is in view at a comfortable distance.
+        const float distance = boundsRadius * 2.5f + kDefaultCameraNearPlane;
+        const glm::vec3 front = camera->frontVector();
+        camera->setPosition(boundsCenter - front * distance);
+        inputManager.setMoveSpeed(std::max(kDefaultCameraMoveSpeed,
+                                           boundsRadius * 0.5f));
+      } else {
+        // No scene geometry: position camera outside the origin to view the
+        // diagnostic cube at (0,0,0). In RH, yaw=90 gives front=(0,0,-1).
+        camera->setYawPitch(90.0f, 0.0f);
+        camera->setPosition(glm::vec3(0.0f, 0.0f, 3.0f));
+      }
+    } else {
+      camera->setYawPitch(kDefaultCameraYaw, kDefaultCameraPitch);
+      camera->setPosition(glm::vec3(0.0f));
     }
   }
 
@@ -2396,6 +2533,12 @@ class HelloTriangleApplication {
     return anchor;
   }
 
+  glm::vec3 directionalLightPosition() const {
+    const SceneLightingAnchor anchor = computeSceneLightingAnchor();
+    return anchor.center - glm::vec3(lightingData.directionalDirection) *
+                               (anchor.worldRadius * 1.15f);
+  }
+
   void updateLightingData() {
     const SceneLightingAnchor anchor = computeSceneLightingAnchor();
     const glm::mat4& sceneTransform = anchor.sceneTransform;
@@ -2405,21 +2548,23 @@ class HelloTriangleApplication {
 
     lightingData = {};
     const glm::vec3 baseDirectionalDirection =
-        common::math::toLeftHandedDirection(
-            glm::normalize(glm::vec3(-0.45f, -1.0f, -0.3f)));
+        glm::normalize(glm::vec3(-0.45f, -1.0f, -0.3f));
     lightingData.directionalDirection = glm::vec4(
         glm::normalize(
             glm::vec3(sceneTransform * glm::vec4(baseDirectionalDirection, 0.0f))),
         0.0f);
+    constexpr float kDirectionalIntensity = 1.75f;
+    constexpr float kPointLightIntensity = 6.0f;
+    constexpr float kPointLightRadiusScale = 0.5f;
     lightingData.directionalColorIntensity =
-        glm::vec4(1.0f, 0.96f, 0.9f, 4.0f);
+        glm::vec4(1.0f, 0.96f, 0.9f, kDirectionalIntensity);
 
     lightingData.pointLightCount = kMaxDeferredPointLights;
-    const std::array<glm::vec3, kMaxDeferredPointLights> offsets = {{
-        {0.0f, localRadius * 0.35f, 0.0f},
-        {localRadius * 0.45f, localRadius * 0.15f, localRadius * 0.35f},
-        {-localRadius * 0.45f, localRadius * 0.15f, -localRadius * 0.35f},
-        {0.0f, localRadius * 0.65f, -localRadius * 0.45f},
+    const std::array<glm::vec3, kMaxDeferredPointLights> localPositions = {{
+        {0.0f, 3.0f, 5.0f},
+        {0.0f, 3.0f, -5.0f},
+        {5.0f, 3.0f, 5.0f},
+        {-5.0f, 3.0f, 5.0f},
     }};
     const std::array<glm::vec3, kMaxDeferredPointLights> colors = {{
         {1.0f, 0.78f, 0.58f},
@@ -2429,12 +2574,12 @@ class HelloTriangleApplication {
     }};
 
     for (uint32_t i = 0; i < lightingData.pointLightCount; ++i) {
-      const glm::vec3 transformedOffset =
-          glm::vec3(sceneTransform * glm::vec4(offsets[i], 0.0f));
+      const glm::vec3 worldPosition =
+          glm::vec3(sceneTransform * glm::vec4(localPositions[i], 1.0f));
       lightingData.pointLights[i].positionRadius =
-          glm::vec4(center + transformedOffset, radius * 0.65f);
+          glm::vec4(worldPosition, radius * kPointLightRadiusScale);
       lightingData.pointLights[i].colorIntensity =
-          glm::vec4(colors[i], 18.0f);
+          glm::vec4(colors[i], kPointLightIntensity);
     }
 
     if (lightingBuffer.buffer != VK_NULL_HANDLE) {
@@ -2450,8 +2595,13 @@ class HelloTriangleApplication {
     }
 
     const SceneLightingAnchor anchor = computeSceneLightingAnchor();
-    const float gizmoExtent =
-        std::clamp(anchor.worldRadius * 0.025f, 0.15f, 2.5f);
+    const glm::vec3 cameraPosition = camera ? camera->position() : anchor.center;
+    const auto computeGizmoExtent =
+        [&](const glm::vec3& worldPosition, float radiusBias) {
+          const float distanceToCamera =
+              glm::max(glm::length(worldPosition - cameraPosition), 0.1f);
+          return std::clamp(distanceToCamera * 0.03f + radiusBias, 0.25f, 6.0f);
+        };
 
     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       lightGizmoPipeline);
@@ -2466,12 +2616,16 @@ class HelloTriangleApplication {
     const float directionalMaxChannel = std::max(
         {directionalColor.r, directionalColor.g, directionalColor.b, 0.0001f});
     directionalColor /= directionalMaxChannel;
-    directionalColor = glm::max(directionalColor, glm::vec3(0.35f));
+    directionalColor = glm::mix(glm::max(directionalColor, glm::vec3(0.35f)),
+                                glm::vec3(1.0f, 0.95f, 0.35f), 0.5f);
+    const glm::vec3 directionalGizmoPosition =
+        anchor.center - glm::vec3(lightingData.directionalDirection) *
+                            (anchor.worldRadius * 1.15f);
+    const float directionalGizmoExtent =
+        computeGizmoExtent(directionalGizmoPosition,
+                           std::clamp(anchor.worldRadius * 0.02f, 0.05f, 1.0f));
     gizmoPushConstants.positionRadius = glm::vec4(
-        anchor.center -
-            glm::vec3(lightingData.directionalDirection) *
-                (anchor.worldRadius * 1.15f),
-        gizmoExtent * 1.35f);
+        directionalGizmoPosition, directionalGizmoExtent);
     gizmoPushConstants.colorIntensity = glm::vec4(directionalColor, 1.0f);
     vkCmdPushConstants(commandBuffer, lightingPipelineLayout,
                        VK_SHADER_STAGE_VERTEX_BIT |
@@ -2486,10 +2640,18 @@ class HelloTriangleApplication {
       const float maxChannel =
           std::max({lightColor.r, lightColor.g, lightColor.b, 0.0001f});
       lightColor /= maxChannel;
-      lightColor = glm::max(lightColor, glm::vec3(0.25f));
+      lightColor = glm::mix(glm::max(lightColor, glm::vec3(0.35f)),
+                            glm::vec3(1.0f), 0.35f);
+
+      const glm::vec3 lightPosition =
+          glm::vec3(lightingData.pointLights[i].positionRadius);
+      const float pointGizmoExtent =
+          computeGizmoExtent(lightPosition,
+                             std::clamp(anchor.worldRadius * 0.015f, 0.04f,
+                                        0.75f));
 
       gizmoPushConstants.positionRadius = glm::vec4(
-          glm::vec3(lightingData.pointLights[i].positionRadius), gizmoExtent);
+          lightPosition, pointGizmoExtent);
       gizmoPushConstants.colorIntensity = glm::vec4(lightColor, 1.0f);
       vkCmdPushConstants(commandBuffer, lightingPipelineLayout,
                          VK_SHADER_STAGE_VERTEX_BIT |
@@ -2505,6 +2667,50 @@ class HelloTriangleApplication {
 
   void processInput(float deltaTime) {
     if (!camera) return;
+
+    auto toggleFromKey = [this](int key, bool& previousState,
+                                auto&& onToggle) {
+      if (!window) return;
+      GLFWwindow* nativeWindow = window->getNativeWindow();
+      if (!nativeWindow) return;
+
+      const bool keyDown = glfwGetKey(nativeWindow, key) == GLFW_PRESS;
+      if (keyDown && !previousState) {
+        onToggle();
+      }
+      previousState = keyDown;
+    };
+
+    toggleFromKey(GLFW_KEY_F6, debugDirectionalOnlyKeyDown, [this]() {
+      debugDirectionalOnly = !debugDirectionalOnly;
+      if (guiManager) {
+        guiManager->setStatusMessage(debugDirectionalOnly
+                                         ? "Debug: directional-only enabled"
+                                         : "Debug: directional-only disabled");
+      }
+    });
+
+    toggleFromKey(GLFW_KEY_F7, debugVisualizePointLightStencilKeyDown,
+                  [this]() {
+                    debugVisualizePointLightStencil =
+                        !debugVisualizePointLightStencil;
+                    if (guiManager) {
+                      guiManager->setStatusMessage(
+                          debugVisualizePointLightStencil
+                              ? "Debug: point-light stencil visualization enabled"
+                              : "Debug: point-light stencil visualization disabled");
+                    }
+                  });
+
+    toggleFromKey(GLFW_KEY_F8, debugFlipPointLightFrontFaceKeyDown, [this]() {
+      debugFlipPointLightFrontFace = !debugFlipPointLightFrontFace;
+      if (guiManager) {
+        guiManager->setStatusMessage(
+            debugFlipPointLightFrontFace
+                ? "Debug: flipped front-face for stencil volume pass"
+                : "Debug: default front-face for stencil volume pass");
+      }
+    });
 
     if (guiManager && guiManager->isCapturingInput() &&
         !inputManager.isLooking()) {
@@ -2544,7 +2750,7 @@ class HelloTriangleApplication {
     const float aspect =
         static_cast<float>(extent.width) / static_cast<float>(extent.height);
 
-    cameraData.viewProj = camera->viewProjection(aspect);
+    cameraData.viewProj = toShaderMatrix(camera->viewProjection(aspect));
     cameraData.inverseViewProj = glm::inverse(cameraData.viewProj);
     cameraData.cameraWorldPosition = glm::vec4(camera->position(), 1.0f);
     if (cameraBuffer.buffer != VK_NULL_HANDLE) {
@@ -2576,8 +2782,8 @@ class HelloTriangleApplication {
       const uint32_t materialIndex = node->materialIndex;
 
       ObjectData object{};
-      object.model = node->worldTransform;
-      object.normalMatrix = glm::transpose(glm::inverse(node->worldTransform));
+      object.model = toShaderMatrix(node->worldTransform);
+      object.normalMatrix = toShaderNormalMatrix(node->worldTransform);
       object.color = sceneManager->resolveMaterialColor(materialIndex);
       object.emissiveColor =
           sceneManager->resolveMaterialEmissive(materialIndex);
@@ -2620,6 +2826,31 @@ class HelloTriangleApplication {
         opaqueDrawCommands.push_back(drawCommand);
       }
     }
+
+    // Diagnostic cube: appended last so its objectIndex is always known.
+    diagCubeObjectIndex = std::numeric_limits<uint32_t>::max();
+    if (guiManager && guiManager->showNormalDiagCube() &&
+        diagCubeVertexSlice.buffer != VK_NULL_HANDLE) {
+      ObjectData cubeObject{}; // defaults: all textures=invalid
+      glm::vec3 diagCenter{0.0f};
+      float diagScale = 0.5f;
+      if (sceneManager) {
+        const auto& bounds = sceneManager->modelBounds();
+        if (bounds.valid) {
+          diagCenter = bounds.center + glm::vec3(bounds.radius * 1.75f, 0.0f, 0.0f);
+          diagScale = std::max(0.25f, bounds.radius * 0.45f);
+        }
+      }
+      const glm::mat4 cubeModel =
+          glm::translate(glm::mat4(1.0f), diagCenter) *
+          glm::scale(glm::mat4(1.0f), glm::vec3(diagScale));
+      cubeObject.model = toShaderMatrix(cubeModel);
+      cubeObject.normalMatrix = toShaderNormalMatrix(cubeModel);
+      cubeObject.color = glm::vec4(1.0f);
+      cubeObject.metallicRoughness = glm::vec2(0.0f, 0.5f);
+      diagCubeObjectIndex = static_cast<uint32_t>(objectData.size());
+      objectData.push_back(cubeObject);
+    }
   }
 
   void updateObjectBuffer() {
@@ -2642,8 +2873,7 @@ class HelloTriangleApplication {
     indexType = sceneManager->indexType();
     buildSceneGraph();
     ensureObjectBufferCapacity(sceneGraph.renderableNodes().size());
-    createVertexBuffer();
-    createIndexBuffer();
+    createGeometryBuffers();
     updateLightingData();
     createLightVolumeGeometry();
     if (result) {
@@ -2660,14 +2890,40 @@ class HelloTriangleApplication {
     return result;
   }
 
-  void createVertexBuffer() {
-    vertexSlice = allocationManager->uploadVertices(
-        std::span<const geometry::Vertex>(sceneManager->vertices()));
-  }
+  void createGeometryBuffers() {
+    const auto& sceneVertices = sceneManager->vertices();
+    const auto& sceneIndices = sceneManager->indices();
+    const geometry::Model cube = geometry::Model::MakeCube();
 
-  void createIndexBuffer() {
+    std::vector<geometry::Vertex> mergedVertices;
+    mergedVertices.reserve(sceneVertices.size() + cube.vertices().size());
+    mergedVertices.insert(mergedVertices.end(), sceneVertices.begin(),
+                          sceneVertices.end());
+    const uint32_t diagVertexBase = static_cast<uint32_t>(mergedVertices.size());
+    mergedVertices.insert(mergedVertices.end(), cube.vertices().begin(),
+                          cube.vertices().end());
+
+    std::vector<uint32_t> mergedIndices;
+    mergedIndices.reserve(sceneIndices.size() + cube.indices().size());
+    mergedIndices.insert(mergedIndices.end(), sceneIndices.begin(),
+                         sceneIndices.end());
+    const VkDeviceSize diagIndexByteOffset =
+        static_cast<VkDeviceSize>(mergedIndices.size()) * sizeof(uint32_t);
+    for (const uint32_t index : cube.indices()) {
+      mergedIndices.push_back(index + diagVertexBase);
+    }
+
+    vertexSlice = allocationManager->uploadVertices(
+        std::span<const geometry::Vertex>(mergedVertices));
     indexSlice = allocationManager->uploadIndices(
-        std::span<const uint32_t>(sceneManager->indices()));
+        std::span<const uint32_t>(mergedIndices));
+
+    diagCubeVertexSlice = vertexSlice;
+    diagCubeIndexSlice = indexSlice;
+    diagCubeIndexSlice.offset = indexSlice.offset + diagIndexByteOffset;
+    diagCubeIndexSlice.size =
+        static_cast<VkDeviceSize>(cube.indices().size()) * sizeof(uint32_t);
+    diagCubeIndexCount = static_cast<uint32_t>(cube.indices().size());
   }
 
   void createCommandBuffers() {
@@ -2712,6 +2968,10 @@ class HelloTriangleApplication {
   }
 
   void bindSceneGeometryBuffers(VkCommandBuffer commandBuffer) const {
+    if (vertexSlice.buffer == VK_NULL_HANDLE ||
+        indexSlice.buffer == VK_NULL_HANDLE) {
+      return;
+    }
     VkBuffer vertexBuffers[] = {vertexSlice.buffer};
     VkDeviceSize offsets[] = {vertexSlice.offset};
     vkCmdBindVertexBuffers(commandBuffer, 0, 1, vertexBuffers, offsets);
@@ -2866,7 +3126,7 @@ class HelloTriangleApplication {
     depthPrepassInfo.renderArea.extent = swapChainManager->extent();
 
     VkClearValue depthPrepassClearValue{};
-    depthPrepassClearValue.depthStencil = {1.0f, 0};
+    depthPrepassClearValue.depthStencil = {0.0f, 0};
     depthPrepassInfo.clearValueCount = 1;
     depthPrepassInfo.pClearValues = &depthPrepassClearValue;
 
@@ -2881,6 +3141,19 @@ class HelloTriangleApplication {
     setViewportAndScissor(commandBuffer);
     bindSceneGeometryBuffers(commandBuffer);
     drawSceneGeometry(commandBuffer, opaqueDrawCommands, scenePipelineLayout);
+    if (diagCubeObjectIndex != std::numeric_limits<uint32_t>::max() &&
+        diagCubeVertexSlice.buffer != VK_NULL_HANDLE) {
+      VkBuffer diagVB[] = {diagCubeVertexSlice.buffer};
+      VkDeviceSize diagOff[] = {diagCubeVertexSlice.offset};
+      vkCmdBindVertexBuffers(commandBuffer, 0, 1, diagVB, diagOff);
+      vkCmdBindIndexBuffer(commandBuffer, diagCubeIndexSlice.buffer,
+                           diagCubeIndexSlice.offset, VK_INDEX_TYPE_UINT32);
+      pushConstants.objectIndex = diagCubeObjectIndex;
+      vkCmdPushConstants(commandBuffer, scenePipelineLayout,
+                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                         0, sizeof(BindlessPushConstants), &pushConstants);
+      vkCmdDrawIndexed(commandBuffer, diagCubeIndexCount, 1, 0, 0, 0);
+    }
     vkCmdEndRenderPass(commandBuffer);
 
     VkRenderPassBeginInfo gBufferPassInfo{};
@@ -2896,7 +3169,7 @@ class HelloTriangleApplication {
     gBufferClearValues[2].color = {{0.0f, 1.0f, 1.0f, 1.0f}};
     gBufferClearValues[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
     gBufferClearValues[4].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-    gBufferClearValues[5].depthStencil = {1.0f, 0};
+    gBufferClearValues[5].depthStencil = {0.0f, 0};
     gBufferPassInfo.clearValueCount =
         static_cast<uint32_t>(gBufferClearValues.size());
     gBufferPassInfo.pClearValues = gBufferClearValues.data();
@@ -2912,6 +3185,19 @@ class HelloTriangleApplication {
     setViewportAndScissor(commandBuffer);
     bindSceneGeometryBuffers(commandBuffer);
     drawSceneGeometry(commandBuffer, opaqueDrawCommands, scenePipelineLayout);
+    if (diagCubeObjectIndex != std::numeric_limits<uint32_t>::max() &&
+        diagCubeVertexSlice.buffer != VK_NULL_HANDLE) {
+      VkBuffer diagVB[] = {diagCubeVertexSlice.buffer};
+      VkDeviceSize diagOff[] = {diagCubeVertexSlice.offset};
+      vkCmdBindVertexBuffers(commandBuffer, 0, 1, diagVB, diagOff);
+      vkCmdBindIndexBuffer(commandBuffer, diagCubeIndexSlice.buffer,
+                           diagCubeIndexSlice.offset, VK_INDEX_TYPE_UINT32);
+      pushConstants.objectIndex = diagCubeObjectIndex;
+      vkCmdPushConstants(commandBuffer, scenePipelineLayout,
+                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                         0, sizeof(BindlessPushConstants), &pushConstants);
+      vkCmdDrawIndexed(commandBuffer, diagCubeIndexCount, 1, 0, 0, 0);
+    }
     vkCmdEndRenderPass(commandBuffer);
 
     clearExactOitResources(commandBuffer, frame);
@@ -2925,7 +3211,7 @@ class HelloTriangleApplication {
 
     std::array<VkClearValue, 2> lightingClearValues{};
     lightingClearValues[0].color = {{0.0f, 0.0f, 0.0f, 1.0f}};
-    lightingClearValues[1].depthStencil = {1.0f, 0};
+    lightingClearValues[1].depthStencil = {0.0f, 0};
     lightingPassInfo.clearValueCount =
         static_cast<uint32_t>(lightingClearValues.size());
     lightingPassInfo.pClearValues = lightingClearValues.data();
@@ -2944,48 +3230,56 @@ class HelloTriangleApplication {
 
     VkClearAttachment stencilClearAttachment{};
     stencilClearAttachment.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
-    stencilClearAttachment.clearValue.depthStencil = {1.0f, 0};
+    stencilClearAttachment.clearValue.depthStencil = {0.0f, 0};
     VkClearRect stencilClearRect{};
     stencilClearRect.rect.offset = {0, 0};
     stencilClearRect.rect.extent = swapChainManager->extent();
     stencilClearRect.baseArrayLayer = 0;
     stencilClearRect.layerCount = 1;
 
-    for (uint32_t i = 0;
-         i < std::min(lightingData.pointLightCount, kMaxDeferredPointLights);
-         ++i) {
-      vkCmdClearAttachments(commandBuffer, 1, &stencilClearAttachment, 1,
-                            &stencilClearRect);
-      lightPushConstants.positionRadius =
-          lightingData.pointLights[i].positionRadius;
-      lightPushConstants.colorIntensity =
-          lightingData.pointLights[i].colorIntensity;
+    if (!debugDirectionalOnly) {
+      const VkPipeline activeStencilPipeline =
+          debugFlipPointLightFrontFace ? stencilVolumePipelineFlipped
+                                       : stencilVolumePipeline;
+      const VkPipeline activePointPipeline =
+          debugVisualizePointLightStencil ? pointLightStencilDebugPipeline
+                                          : pointLightPipeline;
+      for (uint32_t i = 0;
+           i < std::min(lightingData.pointLightCount, kMaxDeferredPointLights);
+           ++i) {
+        vkCmdClearAttachments(commandBuffer, 1, &stencilClearAttachment, 1,
+                              &stencilClearRect);
+        lightPushConstants.positionRadius =
+            lightingData.pointLights[i].positionRadius;
+        lightPushConstants.colorIntensity =
+            lightingData.pointLights[i].colorIntensity;
 
-      vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        stencilVolumePipeline);
-      vkCmdBindDescriptorSets(
-          commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-          lightingPipelineLayout, 0,
-          static_cast<uint32_t>(lightingDescriptorSets.size()),
-          lightingDescriptorSets.data(), 0, nullptr);
-      vkCmdPushConstants(commandBuffer, lightingPipelineLayout,
-                         VK_SHADER_STAGE_VERTEX_BIT |
-                             VK_SHADER_STAGE_FRAGMENT_BIT,
-                         0, sizeof(LightPushConstants), &lightPushConstants);
-      vkCmdDraw(commandBuffer, lightVolumeIndexCount, 1, 0, 0);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          activeStencilPipeline);
+        vkCmdBindDescriptorSets(
+            commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            lightingPipelineLayout, 0,
+            static_cast<uint32_t>(lightingDescriptorSets.size()),
+            lightingDescriptorSets.data(), 0, nullptr);
+        vkCmdPushConstants(commandBuffer, lightingPipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT |
+                               VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(LightPushConstants), &lightPushConstants);
+        vkCmdDraw(commandBuffer, lightVolumeIndexCount, 1, 0, 0);
 
-      vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        pointLightPipeline);
-      vkCmdBindDescriptorSets(
-          commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-          lightingPipelineLayout, 0,
-          static_cast<uint32_t>(lightingDescriptorSets.size()),
-          lightingDescriptorSets.data(), 0, nullptr);
-      vkCmdPushConstants(commandBuffer, lightingPipelineLayout,
-                         VK_SHADER_STAGE_VERTEX_BIT |
-                             VK_SHADER_STAGE_FRAGMENT_BIT,
-                         0, sizeof(LightPushConstants), &lightPushConstants);
-      vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          activePointPipeline);
+        vkCmdBindDescriptorSets(
+            commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+            lightingPipelineLayout, 0,
+            static_cast<uint32_t>(lightingDescriptorSets.size()),
+            lightingDescriptorSets.data(), 0, nullptr);
+        vkCmdPushConstants(commandBuffer, lightingPipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT |
+                               VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(LightPushConstants), &lightPushConstants);
+        vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+      }
     }
 
     if (!transparentDrawCommands.empty()) {
@@ -3005,6 +3299,21 @@ class HelloTriangleApplication {
         geometryDebugPipeline != VK_NULL_HANDLE) {
       vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         geometryDebugPipeline);
+      vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              scenePipelineLayout, 0, 1, &sceneDescriptorSet, 0,
+                              nullptr);
+      bindSceneGeometryBuffers(commandBuffer);
+      drawSceneGeometry(commandBuffer, opaqueDrawCommands, scenePipelineLayout);
+      drawSceneGeometry(commandBuffer, transparentDrawCommands,
+                        scenePipelineLayout);
+    }
+
+    if (guiManager &&
+        guiManager->gBufferViewMode() ==
+            utility::ui::GBufferViewMode::SurfaceNormals &&
+        surfaceNormalLinePipeline != VK_NULL_HANDLE) {
+      vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        surfaceNormalLinePipeline);
       vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                               scenePipelineLayout, 0, 1, &sceneDescriptorSet, 0,
                               nullptr);
@@ -3048,7 +3357,7 @@ class HelloTriangleApplication {
     PostProcessPushConstants postProcessPushConstants{};
     postProcessPushConstants.outputMode = static_cast<uint32_t>(
         guiManager ? guiManager->gBufferViewMode()
-                   : utility::ui::GBufferViewMode::Lit);
+                   : utility::ui::GBufferViewMode::Overview);
     vkCmdPushConstants(commandBuffer, postProcessPipelineLayout,
                        VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(PostProcessPushConstants),
@@ -3112,6 +3421,8 @@ class HelloTriangleApplication {
           [this](const utility::ui::TransformControls& controls) {
             applyNodeTransform(rootNode, controls);
           },
+          directionalLightPosition(),
+          lightingData,
           selectedMeshNode,
           [this](uint32_t nodeIndex) { selectMeshNode(nodeIndex); },
           nodeTransformControls(selectedMeshNode),

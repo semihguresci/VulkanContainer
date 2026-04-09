@@ -6,7 +6,6 @@
 #include <stdexcept>
 #include <utility>
 
-#include "Container/common/CommonMath.h"
 #include "Container/geometry/GltfModelLoader.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/SceneManager.h"
@@ -26,7 +25,7 @@ glm::mat4 nodeLocalTransform(const tinygltf::Node& node) {
             static_cast<float>(node.matrix[column * 4 + row]);
       }
     }
-    return common::math::toLeftHandedTransform(transform);
+    return transform;
   }
 
   glm::mat4 transform(1.0f);
@@ -56,7 +55,7 @@ glm::mat4 nodeLocalTransform(const tinygltf::Node& node) {
                   static_cast<float>(node.scale[2])));
   }
 
-  return common::math::toLeftHandedTransform(transform);
+  return transform;
 }
 
 }  // namespace
@@ -422,7 +421,7 @@ void SceneManager::loadMaterialXMaterial() {
 }
 
 void SceneManager::loadGltfAssets() {
-  model_ = geometry::Model::MakeCube();
+  model_ = geometry::Model{};
   gltfModel_ = tinygltf::Model{};
 
   if (!config_.modelPath.empty()) {
@@ -447,12 +446,8 @@ void SceneManager::loadGltfAssets() {
           gltfModel_, imageToTexture, materialManager_, defaultMaterialIndex_);
       defaultMaterialIndex_ = fallbackMaterialIndex;
     } catch (const std::exception& e) {
-      std::println(stderr, "glTF load failed: {}; falling back to cube.", e.what());
+      std::println(stderr, "glTF load failed: {}; scene left empty.", e.what());
     }
-  }
-
-  if (model_.empty()) {
-    model_ = geometry::Model::MakeCube();
   }
 
   vertices_ = model_.vertices();

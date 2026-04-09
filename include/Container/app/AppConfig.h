@@ -1,10 +1,10 @@
 #pragma once
 
-#include "Container/common/CommonVulkan.h"
-
 #include <cstdint>
 #include <string>
 #include <vector>
+
+#include "Container/common/CommonVulkan.h"
 
 namespace app {
 
@@ -15,7 +15,7 @@ struct AppConfig {
   uint32_t maxSceneObjects{16};
   bool enableValidationLayers{true};
   std::string modelPath{
-      "F:\\Projects\\Container\\out\\build\\windows-debug\\models\\glTF-Sample-Models\\2.0\\Sponza\\glTF\\Sponza.gltf"};
+      ".\\models\\glTF-Sample-Models\\2.0\\Box\\glTF\\Box.gltf"};
   std::vector<const char*> validationLayers{"VK_LAYER_KHRONOS_validation"};
   std::vector<const char*> deviceExtensions{
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -26,4 +26,3 @@ struct AppConfig {
 [[nodiscard]] inline AppConfig DefaultAppConfig() { return AppConfig{}; }
 
 }  // namespace app
-

@@ -196,6 +196,10 @@ VSOutput vertMain(VSInput input)
         worldTangent = normalize(worldTangent);
     }
 
+    float modelHandednessSign = determinant(modelMatrix) < 0.0 ? -1.0 : 1.0;
+    float tangentHandedness = input.inTangent.w * modelHandednessSign;
+    tangentHandedness = tangentHandedness < 0.0 ? -1.0 : 1.0;
+
     output.pos = mul(uCamera.viewProj, worldPos);
     output.baseColor = obj.color;
     output.texCoord = input.inTexCoord;
@@ -211,7 +215,7 @@ VSOutput vertMain(VSInput input)
     output.alphaCutoff = obj.alphaCutoff;
     output.flags = obj.flags;
     output.worldNormal = worldNormal;
-    output.worldTangent = float4(worldTangent, input.inTangent.w);
+    output.worldTangent = float4(worldTangent, tangentHandedness);
     return output;
 }
 
@@ -256,15 +260,25 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     {
         faceNormal = float3(0.0, 1.0, 0.0);
     }
+    if (!isFrontFace)
+    {
+        faceNormal = -faceNormal;
+    }
 
     float3 geomNormal = vertIn.worldNormal;
-    if (!all(isfinite(geomNormal)) || length(geomNormal) < 1e-4)
+    bool hasGeomNormal = all(isfinite(geomNormal)) && length(geomNormal) >= 1e-4;
+    if (!hasGeomNormal)
     {
         geomNormal = faceNormal;
     }
     else
     {
         geomNormal = normalize(geomNormal);
+        // Trust rasterized face orientation: force interpolated normal to same hemisphere.
+        if (dot(geomNormal, faceNormal) < 0.0)
+        {
+            geomNormal = -geomNormal;
+        }
     }
 
     float3 tangent = vertIn.worldTangent.xyz;
@@ -282,7 +296,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     float3 bitangent = normalize(cross(geomNormal, tangent)) * tangentSign;
     if (!all(isfinite(bitangent)) || length(bitangent) < 1e-4)
     {
-        bitangent = normalize(cross(geomNormal, fallbackTangent(geomNormal)));
+        bitangent = normalize(cross(geomNormal, fallbackTangent(geomNormal))) * tangentSign;
     }
 
     float3 shadingNormal = geomNormal;
@@ -298,7 +312,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             geomNormal * normalSample.z);
     }
 
-    if (!isFrontFace && (vertIn.flags & 0x4u) != 0u)
+    if (dot(shadingNormal, faceNormal) < 0.0)
     {
         shadingNormal = -shadingNormal;
     }

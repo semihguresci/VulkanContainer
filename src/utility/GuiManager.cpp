@@ -146,6 +146,8 @@ void GuiManager::drawSceneControls(
     const std::function<void(const TransformControls&)>& applyCameraTransform,
     const TransformControls& sceneTransform,
     const std::function<void(const TransformControls&)>& applySceneTransform,
+    const glm::vec3& directionalLightPosition,
+    const LightingData& lightingData,
     uint32_t selectedMeshNode,
     const std::function<void(uint32_t)>& selectMeshNode,
     const TransformControls& meshTransform,
@@ -156,7 +158,7 @@ void GuiManager::drawSceneControls(
   static constexpr const char* kGBufferViewLabels[] = {
       "Lit",       "Albedo",      "Normals", "Material",
       "Depth",     "Emissive",    "Transparency",
-      "Revealage"};
+      "Revealage", "Overview",    "Surface Normals"};
 
   ImGui::Begin("Scene Controls");
   ImGui::InputText("glTF path", &gltfPathInput_);
@@ -184,6 +186,7 @@ void GuiManager::drawSceneControls(
   }
   ImGui::Checkbox("Overlay vertices", &showGeometryOverlay_);
   ImGui::Checkbox("Overlay lights", &showLightGizmos_);
+  ImGui::Checkbox("Normal diagnostic cube", &showNormalDiagCube_);
   ImGui::Text("Scene nodes: %zu", sceneGraph.nodeCount());
   ImGui::Text("Renderable primitives: %zu",
               sceneGraph.renderableNodes().size());
@@ -196,6 +199,29 @@ void GuiManager::drawSceneControls(
   TransformControls editableSceneTransform = sceneTransform;
   if (DrawTransformControls("Scene", editableSceneTransform)) {
     applySceneTransform(editableSceneTransform);
+  }
+
+  if (ImGui::TreeNode("Lights")) {
+    ImGui::Text("Directional");
+    ImGui::BulletText("Position: (%.2f, %.2f, %.2f)", directionalLightPosition.x,
+                      directionalLightPosition.y, directionalLightPosition.z);
+    ImGui::BulletText("Direction: (%.2f, %.2f, %.2f)",
+                      lightingData.directionalDirection.x,
+                      lightingData.directionalDirection.y,
+                      lightingData.directionalDirection.z);
+
+    const uint32_t pointLightCount =
+        std::min(lightingData.pointLightCount, kMaxDeferredPointLights);
+    for (uint32_t i = 0; i < pointLightCount; ++i) {
+      const auto& light = lightingData.pointLights[i];
+      ImGui::Separator();
+      ImGui::Text("Point Light %u", i);
+      ImGui::BulletText("Position: (%.2f, %.2f, %.2f)",
+                        light.positionRadius.x, light.positionRadius.y,
+                        light.positionRadius.z);
+      ImGui::BulletText("Radius: %.2f", light.positionRadius.w);
+    }
+    ImGui::TreePop();
   }
 
   const auto& renderableNodes = sceneGraph.renderableNodes();

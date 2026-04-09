@@ -12,6 +12,7 @@
 #include <cctype>
 #include <filesystem>
 #include <functional>
+#include <iostream>
 #include <limits>
 #include <print>
 #include <stdexcept>

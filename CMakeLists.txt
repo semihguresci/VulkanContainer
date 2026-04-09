@@ -28,11 +28,32 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
 set(SHADERS_DIR "${CMAKE_SOURCE_DIR}/shaders")
 set(COMPILED_SHADERS_DIR "${CMAKE_BINARY_DIR}/spv_shaders")
 
-find_program(SLANGC_EXECUTABLE slangc)
+if(NOT TARGET glslang::validator)
+    add_executable(glslang::validator IMPORTED GLOBAL)
+endif()
 
-if(NOT SLANGC_EXECUTABLE)
-    message(WARNING "slangc not found. Precompiled Slang shaders must exist in ${COMPILED_SHADERS_DIR}.")
-else()
+find_program(GLSLANG_VALIDATOR
+    glslangValidator
+    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
+    REQUIRED
+)
+set_property(TARGET glslang::validator PROPERTY IMPORTED_LOCATION "${GLSLANG_VALIDATOR}")
+
+find_program(SLANGC_EXECUTABLE
+    slangc
+    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
+    REQUIRED
+)
+
+if(SLANGC_EXECUTABLE)
+    set(SLANG_MATRIX_LAYOUT_FLAG "-matrix-layout-row-major")
+    set(SLANG_SPIRV_FLAGS
+        -target spirv
+        -profile spirv_1_4
+        -emit-spirv-directly
+        -fvk-use-entrypoint-name
+        ${SLANG_MATRIX_LAYOUT_FLAG}
+    )
     file(GLOB SLANG_SOURCES CONFIGURE_DEPENDS
         "${SHADERS_DIR}/*.slang"
     )
@@ -56,22 +77,35 @@ else()
 
             add_custom_command(
                 OUTPUT "${VERT_OUTPUT}"
-                COMMAND ${SLANGC_EXECUTABLE} "${SLANG_SOURCE}" -target spirv -entry vertMain -o "${VERT_OUTPUT}"
-                DEPENDS "${SLANG_SOURCE}" "${COMPILED_SHADERS_DIR}"
+                COMMAND ${SLANGC_EXECUTABLE} "${SLANG_SOURCE}" ${SLANG_SPIRV_FLAGS} -entry vertMain -o "${VERT_OUTPUT}"
+                DEPENDS "${SLANG_SOURCE}" "${COMPILED_SHADERS_DIR}" "${CMAKE_CURRENT_LIST_FILE}"
                 COMMENT "Compiling ${SLANG_SOURCE} (vertMain) -> ${VERT_OUTPUT}"
                 VERBATIM
             )
 
             add_custom_command(
                 OUTPUT "${FRAG_OUTPUT}"
-                COMMAND ${SLANGC_EXECUTABLE} "${SLANG_SOURCE}" -target spirv -entry fragMain -o "${FRAG_OUTPUT}"
-                DEPENDS "${SLANG_SOURCE}" "${COMPILED_SHADERS_DIR}"
+                COMMAND ${SLANGC_EXECUTABLE} "${SLANG_SOURCE}" ${SLANG_SPIRV_FLAGS} -entry fragMain -o "${FRAG_OUTPUT}"
+                DEPENDS "${SLANG_SOURCE}" "${COMPILED_SHADERS_DIR}" "${CMAKE_CURRENT_LIST_FILE}"
                 COMMENT "Compiling ${SLANG_SOURCE} (fragMain) -> ${FRAG_OUTPUT}"
                 VERBATIM
             )
 
             list(APPEND COMPILED_SHADERS "${VERT_OUTPUT}" "${FRAG_OUTPUT}")
         endforeach()
+
+        set(SURFACE_NORMALS_SOURCE "${SHADERS_DIR}/surface_normals.slang")
+        if(EXISTS "${SURFACE_NORMALS_SOURCE}")
+            set(SURFACE_NORMALS_GEOM_OUTPUT "${COMPILED_SHADERS_DIR}/surface_normals.geom.spv")
+            add_custom_command(
+                OUTPUT "${SURFACE_NORMALS_GEOM_OUTPUT}"
+                COMMAND ${SLANGC_EXECUTABLE} "${SURFACE_NORMALS_SOURCE}" ${SLANG_SPIRV_FLAGS} -entry geomMain -o "${SURFACE_NORMALS_GEOM_OUTPUT}"
+                DEPENDS "${SURFACE_NORMALS_SOURCE}" "${COMPILED_SHADERS_DIR}" "${CMAKE_CURRENT_LIST_FILE}"
+                COMMENT "Compiling ${SURFACE_NORMALS_SOURCE} (geomMain) -> ${SURFACE_NORMALS_GEOM_OUTPUT}"
+                VERBATIM
+            )
+            list(APPEND COMPILED_SHADERS "${SURFACE_NORMALS_GEOM_OUTPUT}")
+        endif()
 
         add_custom_target(shaders_all
             DEPENDS ${COMPILED_SHADERS}

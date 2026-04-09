@@ -38,26 +38,27 @@ class BaseCamera {
     front.x = std::cos(glm::radians(yawDegrees_)) *
               std::cos(glm::radians(pitchDegrees_));
     front.y = std::sin(glm::radians(pitchDegrees_));
-    front.z = std::sin(glm::radians(yawDegrees_)) *
+    // RH: camera looks down -Z, so Z component is negated.
+    front.z = -std::sin(glm::radians(yawDegrees_)) *
               std::cos(glm::radians(pitchDegrees_));
     return glm::normalize(front);
   }
 
   [[nodiscard]] glm::vec3 upVector(const glm::vec3& front) const {
-    const glm::vec3 right = glm::normalize(glm::cross(worldUp_, front));
-    return glm::normalize(glm::cross(front, right));
+    const glm::vec3 right = glm::normalize(glm::cross(front, worldUp_));
+    return glm::normalize(glm::cross(right, front));
   }
 
   [[nodiscard]] glm::vec3 rightVector(const glm::vec3& front,
                                       const glm::vec3& up) const {
-    return glm::normalize(glm::cross(up, front));
+    return glm::normalize(glm::cross(front, up));
   }
 
   [[nodiscard]] glm::mat4 viewMatrix() const {
     const glm::vec3 front = frontVector();
     const glm::vec3 up = upVector(front);
     const glm::mat4 view =
-        common::math::lookAtLeftHanded(position_, position_ + front, up);
+        common::math::lookAt(position_, position_ + front, up);
     return glm::scale(glm::mat4(1.0f), 1.0f / scale_) * view;
   }
 
@@ -85,7 +86,7 @@ class BaseCamera {
 class PerspectiveCamera : public BaseCamera {
  public:
   glm::mat4 projectionMatrix(float aspectRatio) const override {
-    return common::math::perspectiveLeftHandedZo(
+    return common::math::perspectiveRH_ReverseZ(
         glm::radians(fieldOfViewDegrees_), aspectRatio, nearPlane_, farPlane_);
   }
 
@@ -107,8 +108,8 @@ class OrthographicCamera : public BaseCamera {
   glm::mat4 projectionMatrix(float aspectRatio) const override {
     const float halfHeight = 0.5f * viewHeight_;
     const float halfWidth = halfHeight * aspectRatio;
-    return common::math::orthoLeftHandedZo(-halfWidth, halfWidth, -halfHeight,
-                                           halfHeight, nearPlane_, farPlane_);
+    return common::math::orthoRH_ReverseZ(-halfWidth, halfWidth, -halfHeight,
+                                          halfHeight, nearPlane_, farPlane_);
   }
 
   void setViewHeight(float height) { viewHeight_ = height; }
@@ -124,4 +125,3 @@ class OrthographicCamera : public BaseCamera {
 };
 
 }  // namespace utility::camera
-
