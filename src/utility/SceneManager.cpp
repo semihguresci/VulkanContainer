@@ -73,16 +73,11 @@ SceneManager::SceneManager(
 SceneManager::~SceneManager() {
   resetLoadedAssets();
 
-  VkDevice device = deviceWrapper_->device();
+  descriptorSet_ = VK_NULL_HANDLE;
+  descriptorPool_ = VK_NULL_HANDLE;
+  descriptorSetLayout_ = VK_NULL_HANDLE;
 
-  if (descriptorPool_ != VK_NULL_HANDLE) {
-    vkDestroyDescriptorPool(device, descriptorPool_, nullptr);
-    descriptorPool_ = VK_NULL_HANDLE;
-  }
-  if (descriptorSetLayout_ != VK_NULL_HANDLE) {
-    vkDestroyDescriptorSetLayout(device, descriptorSetLayout_, nullptr);
-    descriptorSetLayout_ = VK_NULL_HANDLE;
-  }
+  VkDevice device = deviceWrapper_->device();
   if (baseColorSampler_ != VK_NULL_HANDLE) {
     vkDestroySampler(device, baseColorSampler_, nullptr);
     baseColorSampler_ = VK_NULL_HANDLE;

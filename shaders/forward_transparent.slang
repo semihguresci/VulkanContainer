@@ -4,15 +4,15 @@ static const uint INVALID_NODE_INDEX = 0xffffffffu;
 
 struct CameraBuffer
 {
-    float4x4 viewProj;
-    float4x4 inverseViewProj;
+    column_major float4x4 viewProj;
+    column_major float4x4 inverseViewProj;
     float4 cameraWorldPosition;
 };
 
 struct ObjectBuffer
 {
-    float4x4 model;
-    float4x4 normalMatrix;
+    column_major float4x4 model;
+    column_major float4x4 normalMatrix;
     float4 color;
     float3 emissiveColor;
     float emissiveStrength;
@@ -220,7 +220,7 @@ VSOutput vertMain(VSInput input)
 }
 
 [shader("fragment")]
-float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
+float4 fragMain(VSOutput vertIn) : SV_Target0
 {
     float3 baseColor = vertIn.baseColor.rgb;
     float baseAlpha = vertIn.baseColor.a;
@@ -253,32 +253,14 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         sampledMetallic *= mrSample.b;
     }
 
-    float3 dpdx = ddx(vertIn.worldPos);
-    float3 dpdy = ddy(vertIn.worldPos);
-    float3 faceNormal = normalize(cross(dpdx, dpdy));
-    if (!all(isfinite(faceNormal)) || length(faceNormal) < 1e-4)
-    {
-        faceNormal = float3(0.0, 1.0, 0.0);
-    }
-    if (!isFrontFace)
-    {
-        faceNormal = -faceNormal;
-    }
-
     float3 geomNormal = vertIn.worldNormal;
-    bool hasGeomNormal = all(isfinite(geomNormal)) && length(geomNormal) >= 1e-4;
-    if (!hasGeomNormal)
+    if (!all(isfinite(geomNormal)) || length(geomNormal) < 1e-4)
     {
-        geomNormal = faceNormal;
+        geomNormal = float3(0.0, 1.0, 0.0);
     }
     else
     {
         geomNormal = normalize(geomNormal);
-        // Trust rasterized face orientation: force interpolated normal to same hemisphere.
-        if (dot(geomNormal, faceNormal) < 0.0)
-        {
-            geomNormal = -geomNormal;
-        }
     }
 
     float3 tangent = vertIn.worldTangent.xyz;
@@ -310,11 +292,6 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             tangent * normalSample.x +
             bitangent * normalSample.y +
             geomNormal * normalSample.z);
-    }
-
-    if (dot(shadingNormal, faceNormal) < 0.0)
-    {
-        shadingNormal = -shadingNormal;
     }
 
     float occlusion = 1.0;

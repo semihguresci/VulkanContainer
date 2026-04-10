@@ -1,14 +1,14 @@
 struct CameraBuffer
 {
-    float4x4 viewProj;
-    float4x4 inverseViewProj;
+    column_major float4x4 viewProj;
+    column_major float4x4 inverseViewProj;
     float4 cameraWorldPosition;
 };
 
 struct ObjectBuffer
 {
-    float4x4 model;
-    float4x4 normalMatrix;
+    column_major float4x4 model;
+    column_major float4x4 normalMatrix;
     float4 color;
     float3 emissiveColor;
     float emissiveStrength;
@@ -146,7 +146,7 @@ VSOutput vertMain(VSInput input)
 }
 
 [shader("fragment")]
-PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
+PSOutput fragMain(VSOutput vertIn)
 {
     if ((vertIn.flags & 0x2u) != 0u)
     {
@@ -179,32 +179,14 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         sampledMetallic *= mrSample.b;
     }
 
-    float3 dpdx = ddx(vertIn.worldPos);
-    float3 dpdy = ddy(vertIn.worldPos);
-    float3 faceNormal = normalize(cross(dpdx, dpdy));
-    if (!all(isfinite(faceNormal)) || length(faceNormal) < 1e-4)
-    {
-        faceNormal = float3(0.0, 1.0, 0.0);
-    }
-    if (!isFrontFace)
-    {
-        faceNormal = -faceNormal;
-    }
-
     float3 geomNormal = vertIn.worldNormal;
-    bool hasGeomNormal = all(isfinite(geomNormal)) && length(geomNormal) >= 1e-4;
-    if (!hasGeomNormal)
+    if (!all(isfinite(geomNormal)) || length(geomNormal) < 1e-4)
     {
-        geomNormal = faceNormal;
+        geomNormal = float3(0.0, 1.0, 0.0);
     }
     else
     {
         geomNormal = normalize(geomNormal);
-        // Trust rasterized face orientation: force interpolated normal to same hemisphere.
-        if (dot(geomNormal, faceNormal) < 0.0)
-        {
-            geomNormal = -geomNormal;
-        }
     }
 
     float3 tangent = vertIn.worldTangent.xyz;
@@ -218,7 +200,6 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
     }
 
     float tangentSign = abs(vertIn.worldTangent.w) > 0.5 ? vertIn.worldTangent.w : 1.0;
-    // RH world space: cross(geomNormal, tangent) gives the standard bitangent.
     float3 bitangent = normalize(cross(geomNormal, tangent)) * tangentSign;
     if (!all(isfinite(bitangent)) || length(bitangent) < 1e-4)
     {
@@ -236,12 +217,6 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
             tangent * normalSample.x +
             bitangent * normalSample.y +
             geomNormal * normalSample.z);
-    }
-
-    // Keep shading normal on the same hemisphere as the rasterized face.
-    if (dot(shadingNormal, faceNormal) < 0.0)
-    {
-        shadingNormal = -shadingNormal;
     }
 
     float occlusion = 1.0;

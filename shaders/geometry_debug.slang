@@ -1,14 +1,14 @@
 struct CameraBuffer
 {
-    float4x4 viewProj;
-    float4x4 inverseViewProj;
+    column_major float4x4 viewProj;
+    column_major float4x4 inverseViewProj;
     float4 cameraWorldPosition;
 };
 
 struct ObjectBuffer
 {
-    float4x4 model;
-    float4x4 normalMatrix;
+    column_major float4x4 model;
+    column_major float4x4 normalMatrix;
     float4 color;
     float3 emissiveColor;
     float emissiveStrength;

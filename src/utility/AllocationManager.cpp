@@ -18,7 +18,7 @@ void EnsureArenaCapacity(std::unique_ptr<BufferArena>& arena,
                          VmaAllocationCreateFlags allocationFlags) {
   const VkDeviceSize safeRequiredSize = std::max<VkDeviceSize>(1, requiredSize);
 
-  if (!arena || arena->totalSize() < safeRequiredSize) {
+  if (!arena || arena->remainingSize() < safeRequiredSize) {
     VkDeviceSize requestedSize = safeRequiredSize;
     if (arena) {
       requestedSize = std::max(safeRequiredSize, arena->totalSize() * 2);
@@ -26,8 +26,6 @@ void EnsureArenaCapacity(std::unique_ptr<BufferArena>& arena,
     arena = std::make_unique<BufferArena>(memoryManager, requestedSize, usage,
                                           memoryUsage, allocationFlags);
   }
-
-  arena->reset();
 }
 
 }  // namespace

@@ -6,8 +6,10 @@
 
 #include <glm/geometric.hpp>
 
+#include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -30,28 +32,136 @@ bool isBinaryGltf(const std::string& path) {
   return ext == "glb";
 }
 
-glm::vec3 readVec3(const tinygltf::Accessor& accessor,
-                   const tinygltf::BufferView& view,
-                   const tinygltf::Buffer& buffer, size_t index) {
-  size_t stride = accessor.ByteStride(view);
-  if (stride == 0) {
-    stride = sizeof(float) * 3;
+size_t componentSizeBytes(int componentType) {
+  const int size = tinygltf::GetComponentSizeInBytes(componentType);
+  if (size <= 0) {
+    throw std::runtime_error("Unsupported glTF component type");
   }
-  const auto* dataStart = buffer.data.data() + view.byteOffset + accessor.byteOffset;
-  const auto* element = reinterpret_cast<const float*>(dataStart + index * stride);
-  return glm::vec3(element[0], element[1], element[2]);
+  return static_cast<size_t>(size);
 }
 
-glm::vec4 readVec4(const tinygltf::Accessor& accessor,
-                   const tinygltf::BufferView& view,
-                   const tinygltf::Buffer& buffer, size_t index) {
+const uint8_t* accessorElementData(const tinygltf::Accessor& accessor,
+                                   const tinygltf::BufferView& view,
+                                   const tinygltf::Buffer& buffer,
+                                   size_t index) {
   size_t stride = accessor.ByteStride(view);
   if (stride == 0) {
-    stride = sizeof(float) * 4;
+    stride = static_cast<size_t>(
+        tinygltf::GetNumComponentsInType(accessor.type) *
+        tinygltf::GetComponentSizeInBytes(accessor.componentType));
   }
   const auto* dataStart = buffer.data.data() + view.byteOffset + accessor.byteOffset;
-  const auto* element = reinterpret_cast<const float*>(dataStart + index * stride);
-  return glm::vec4(element[0], element[1], element[2], element[3]);
+  return dataStart + index * stride;
+}
+
+float readComponentAsFloat(const uint8_t* data, int componentType,
+                           bool normalized) {
+  switch (componentType) {
+    case TINYGLTF_COMPONENT_TYPE_FLOAT:
+      return *reinterpret_cast<const float*>(data);
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE: {
+      const auto value = static_cast<float>(*reinterpret_cast<const uint8_t*>(data));
+      return normalized ? value / 255.0f : value;
+    }
+    case TINYGLTF_COMPONENT_TYPE_BYTE: {
+      const auto value = static_cast<float>(*reinterpret_cast<const int8_t*>(data));
+      return normalized ? std::max(value / 127.0f, -1.0f) : value;
+    }
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
+      const auto value =
+          static_cast<float>(*reinterpret_cast<const uint16_t*>(data));
+      return normalized ? value / 65535.0f : value;
+    }
+    case TINYGLTF_COMPONENT_TYPE_SHORT: {
+      const auto value = static_cast<float>(*reinterpret_cast<const int16_t*>(data));
+      return normalized ? std::max(value / 32767.0f, -1.0f) : value;
+    }
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
+      return static_cast<float>(*reinterpret_cast<const uint32_t*>(data));
+    default:
+      throw std::runtime_error("Unsupported glTF component type");
+  }
+}
+
+glm::vec2 readVec2f(const tinygltf::Accessor& accessor,
+                    const tinygltf::BufferView& view,
+                    const tinygltf::Buffer& buffer, size_t index) {
+  const uint8_t* element = accessorElementData(accessor, view, buffer, index);
+  const size_t componentSize = componentSizeBytes(accessor.componentType);
+  return glm::vec2(readComponentAsFloat(element, accessor.componentType,
+                                        accessor.normalized),
+                   readComponentAsFloat(element + componentSize,
+                                        accessor.componentType,
+                                        accessor.normalized));
+}
+
+glm::vec3 readVec3f(const tinygltf::Accessor& accessor,
+                    const tinygltf::BufferView& view,
+                    const tinygltf::Buffer& buffer, size_t index) {
+  const uint8_t* element = accessorElementData(accessor, view, buffer, index);
+  const size_t componentSize = componentSizeBytes(accessor.componentType);
+  return glm::vec3(
+      readComponentAsFloat(element, accessor.componentType, accessor.normalized),
+      readComponentAsFloat(element + componentSize, accessor.componentType,
+                           accessor.normalized),
+      readComponentAsFloat(element + componentSize * 2,
+                           accessor.componentType, accessor.normalized));
+}
+
+glm::vec4 readVec4f(const tinygltf::Accessor& accessor,
+                    const tinygltf::BufferView& view,
+                    const tinygltf::Buffer& buffer, size_t index) {
+  const uint8_t* element = accessorElementData(accessor, view, buffer, index);
+  const size_t componentSize = componentSizeBytes(accessor.componentType);
+  return glm::vec4(
+      readComponentAsFloat(element, accessor.componentType, accessor.normalized),
+      readComponentAsFloat(element + componentSize, accessor.componentType,
+                           accessor.normalized),
+      readComponentAsFloat(element + componentSize * 2,
+                           accessor.componentType, accessor.normalized),
+      readComponentAsFloat(element + componentSize * 3,
+                           accessor.componentType, accessor.normalized));
+}
+
+bool isColorComponentTypeSupported(const tinygltf::Accessor& accessor) {
+  switch (accessor.componentType) {
+    case TINYGLTF_COMPONENT_TYPE_FLOAT:
+      return true;
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+      return accessor.normalized;
+    default:
+      return false;
+  }
+}
+
+bool isTexCoordComponentTypeSupported(const tinygltf::Accessor& accessor) {
+  switch (accessor.componentType) {
+    case TINYGLTF_COMPONENT_TYPE_FLOAT:
+      return true;
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
+    case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
+      return accessor.normalized;
+    default:
+      return false;
+  }
+}
+
+bool isNormalComponentTypeSupported(const tinygltf::Accessor& accessor) {
+  if (accessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+    return true;
+  }
+  switch (accessor.componentType) {
+    case TINYGLTF_COMPONENT_TYPE_BYTE:
+    case TINYGLTF_COMPONENT_TYPE_SHORT:
+      return accessor.normalized;
+    default:
+      return false;
+  }
+}
+
+bool isTangentComponentTypeSupported(const tinygltf::Accessor& accessor) {
+  return isNormalComponentTypeSupported(accessor);
 }
 
 glm::vec3 fallbackTangentForNormal(const glm::vec3& normal) {
@@ -131,54 +241,6 @@ void sanitizeTangents(std::vector<Vertex>& vertices) {
     float handedness = std::isfinite(vertex.tangent.w) ? vertex.tangent.w : 1.0f;
     handedness = handedness < 0.0f ? -1.0f : 1.0f;
     vertex.tangent = glm::vec4(tangent, handedness);
-  }
-}
-
-void alignNormalsAndTangentsToWinding(std::vector<Vertex>& vertices,
-                                      const std::vector<uint32_t>& indices) {
-  std::vector<glm::vec3> windingSums(vertices.size(), glm::vec3(0.0f));
-
-  for (size_t i = 0; i + 2 < indices.size(); i += 3) {
-    const uint32_t i0 = indices[i];
-    const uint32_t i1 = indices[i + 1];
-    const uint32_t i2 = indices[i + 2];
-    if (i0 >= vertices.size() || i1 >= vertices.size() || i2 >= vertices.size()) {
-      continue;
-    }
-
-    const glm::vec3 edge01 = vertices[i1].position - vertices[i0].position;
-    const glm::vec3 edge02 = vertices[i2].position - vertices[i0].position;
-    const glm::vec3 faceNormal = glm::cross(edge01, edge02);
-    if (!isFiniteVec3(faceNormal) ||
-        glm::dot(faceNormal, faceNormal) < 1e-8f) {
-      continue;
-    }
-
-    windingSums[i0] += faceNormal;
-    windingSums[i1] += faceNormal;
-    windingSums[i2] += faceNormal;
-  }
-
-  for (size_t i = 0; i < vertices.size(); ++i) {
-    const glm::vec3 reference = windingSums[i];
-    if (!isFiniteVec3(reference) ||
-        glm::dot(reference, reference) < 1e-8f) {
-      continue;
-    }
-
-    glm::vec3 normal = vertices[i].normal;
-    if (!isFiniteVec3(normal) || glm::dot(normal, normal) < 1e-8f) {
-      vertices[i].normal = glm::normalize(reference);
-      continue;
-    }
-
-    normal = glm::normalize(normal);
-    if (glm::dot(normal, reference) < 0.0f) {
-      vertices[i].normal = -normal;
-      vertices[i].tangent.w = -vertices[i].tangent.w;
-    } else {
-      vertices[i].normal = normal;
-    }
   }
 }
 
@@ -343,12 +405,18 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
   primitiveData.vertices.resize(positionAccessor.count);
   for (size_t i = 0; i < positionAccessor.count; ++i) {
     primitiveData.vertices[i].position =
-        readVec3(positionAccessor, positionView, positionBuffer, i);
+        readVec3f(positionAccessor, positionView, positionBuffer, i);
   }
 
   auto colorIt = primitive.attributes.find("COLOR_0");
   if (colorIt != primitive.attributes.end()) {
     const auto& colorAccessor = model.accessors[colorIt->second];
+    if ((colorAccessor.type != TINYGLTF_TYPE_VEC3 &&
+         colorAccessor.type != TINYGLTF_TYPE_VEC4) ||
+        !isColorComponentTypeSupported(colorAccessor)) {
+      throw std::runtime_error(
+          "COLOR_0 must be VEC3/VEC4 float or normalized unsigned integer");
+    }
     if (colorAccessor.bufferView < 0 ||
         colorAccessor.bufferView >= model.bufferViews.size()) {
       throw std::runtime_error("COLOR_0 accessor missing buffer view");
@@ -358,52 +426,17 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
       throw std::runtime_error("COLOR_0 buffer view missing buffer");
     }
     const auto& colorBuffer = model.buffers[colorView.buffer];
-    size_t stride = colorAccessor.ByteStride(colorView);
-    if (stride == 0) {
-      stride = tinygltf::GetNumComponentsInType(colorAccessor.type) *
-               tinygltf::GetComponentSizeInBytes(colorAccessor.componentType);
-    }
-    const auto* dataStart =
-        colorBuffer.data.data() + colorView.byteOffset + colorAccessor.byteOffset;
-
     if (colorAccessor.count < primitiveData.vertices.size()) {
       throw std::runtime_error("COLOR_0 attribute count is smaller than POSITION count");
     }
 
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
-      const auto* element = dataStart + i * stride;
-      if (colorAccessor.type == TINYGLTF_TYPE_VEC3 &&
-          colorAccessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
-        const auto* value = reinterpret_cast<const float*>(element);
-        primitiveData.vertices[i].color = glm::vec3(value[0], value[1], value[2]);
-      } else if (colorAccessor.type == TINYGLTF_TYPE_VEC4 &&
-                 colorAccessor.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
-        const auto* value = reinterpret_cast<const float*>(element);
-        primitiveData.vertices[i].color = glm::vec3(value[0], value[1], value[2]);
-      } else if (colorAccessor.type == TINYGLTF_TYPE_VEC3 &&
-                 colorAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE &&
-                 colorAccessor.normalized) {
-        const auto* value = reinterpret_cast<const uint8_t*>(element);
+      if (colorAccessor.type == TINYGLTF_TYPE_VEC3) {
         primitiveData.vertices[i].color =
-            glm::vec3(value[0], value[1], value[2]) / 255.0f;
-      } else if (colorAccessor.type == TINYGLTF_TYPE_VEC4 &&
-                 colorAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE &&
-                 colorAccessor.normalized) {
-        const auto* value = reinterpret_cast<const uint8_t*>(element);
+            readVec3f(colorAccessor, colorView, colorBuffer, i);
+      } else {
         primitiveData.vertices[i].color =
-            glm::vec3(value[0], value[1], value[2]) / 255.0f;
-      } else if (colorAccessor.type == TINYGLTF_TYPE_VEC3 &&
-                 colorAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT &&
-                 colorAccessor.normalized) {
-        const auto* value = reinterpret_cast<const uint16_t*>(element);
-        primitiveData.vertices[i].color =
-            glm::vec3(value[0], value[1], value[2]) / glm::vec3(65535.0f);
-      } else if (colorAccessor.type == TINYGLTF_TYPE_VEC4 &&
-                 colorAccessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT &&
-                 colorAccessor.normalized) {
-        const auto* value = reinterpret_cast<const uint16_t*>(element);
-        primitiveData.vertices[i].color =
-            glm::vec3(value[0], value[1], value[2]) / glm::vec3(65535.0f);
+            glm::vec3(readVec4f(colorAccessor, colorView, colorBuffer, i));
       }
     }
   }
@@ -412,8 +445,9 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
   if (texCoordIt != primitive.attributes.end()) {
     const auto& texCoordAccessor = model.accessors[texCoordIt->second];
     if (texCoordAccessor.type != TINYGLTF_TYPE_VEC2 ||
-        texCoordAccessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
-      throw std::runtime_error("TEXCOORD_0 must be a VEC2 float attribute");
+        !isTexCoordComponentTypeSupported(texCoordAccessor)) {
+      throw std::runtime_error(
+          "TEXCOORD_0 must be a VEC2 float or normalized unsigned integer");
     }
 
     if (texCoordAccessor.bufferView < 0 ||
@@ -425,21 +459,13 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
       throw std::runtime_error("TEXCOORD_0 buffer view missing buffer");
     }
     const auto& texCoordBuffer = model.buffers[texCoordView.buffer];
-    size_t stride = texCoordAccessor.ByteStride(texCoordView);
-    if (stride == 0) {
-      stride = sizeof(float) * 2;
-    }
-    const auto* dataStart =
-        texCoordBuffer.data.data() + texCoordView.byteOffset + texCoordAccessor.byteOffset;
-
     if (texCoordAccessor.count < primitiveData.vertices.size()) {
       throw std::runtime_error("TEXCOORD_0 attribute count is smaller than POSITION count");
     }
 
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
-      const auto* element = dataStart + i * stride;
-      const auto* value = reinterpret_cast<const float*>(element);
-      primitiveData.vertices[i].texCoord = glm::vec2(value[0], value[1]);
+      primitiveData.vertices[i].texCoord =
+          readVec2f(texCoordAccessor, texCoordView, texCoordBuffer, i);
     }
   }
 
@@ -447,8 +473,9 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
   if (normalIt != primitive.attributes.end()) {
     const auto& normalAccessor = model.accessors[normalIt->second];
     if (normalAccessor.type != TINYGLTF_TYPE_VEC3 ||
-        normalAccessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
-      throw std::runtime_error("NORMAL must be a VEC3 float attribute");
+        !isNormalComponentTypeSupported(normalAccessor)) {
+      throw std::runtime_error(
+          "NORMAL must be a VEC3 float or normalized signed integer attribute");
     }
     if (normalAccessor.bufferView < 0 ||
         normalAccessor.bufferView >= model.bufferViews.size()) {
@@ -466,7 +493,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
     primitiveData.hasNormals = true;
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
       primitiveData.vertices[i].normal =
-          readVec3(normalAccessor, normalView, normalBuffer, i);
+          readVec3f(normalAccessor, normalView, normalBuffer, i);
     }
   }
 
@@ -474,8 +501,9 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
   if (tangentIt != primitive.attributes.end()) {
     const auto& tangentAccessor = model.accessors[tangentIt->second];
     if (tangentAccessor.type != TINYGLTF_TYPE_VEC4 ||
-        tangentAccessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
-      throw std::runtime_error("TANGENT must be a VEC4 float attribute");
+        !isTangentComponentTypeSupported(tangentAccessor)) {
+      throw std::runtime_error(
+          "TANGENT must be a VEC4 float or normalized signed integer attribute");
     }
     if (tangentAccessor.bufferView < 0 ||
         tangentAccessor.bufferView >= model.bufferViews.size()) {
@@ -493,7 +521,7 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
     primitiveData.hasTangents = true;
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
       primitiveData.vertices[i].tangent =
-          readVec4(tangentAccessor, tangentView, tangentBuffer, i);
+          readVec4f(tangentAccessor, tangentView, tangentBuffer, i);
     }
   }
 
@@ -515,7 +543,6 @@ std::vector<Mesh> parseMeshes(const tinygltf::Model& model) {
         generateMissingTangents(primitiveData.vertices, indices);
       }
       sanitizeTangents(primitiveData.vertices);
-      alignNormalsAndTangentsToWinding(primitiveData.vertices, indices);
       meshes.emplace_back(std::move(primitiveData.vertices), std::move(indices),
                           primitive.material);
     }

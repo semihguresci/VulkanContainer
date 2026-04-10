@@ -162,16 +162,6 @@ glm::mat4 composeTransform(const utility::ui::TransformControls& controls) {
   return transform;
 }
 
-glm::mat4 toShaderMatrix(const glm::mat4& columnVectorMatrix) {
-  return glm::transpose(columnVectorMatrix);
-}
-
-glm::mat4 toShaderNormalMatrix(const glm::mat4& columnVectorModelMatrix) {
-  // For CPU column-vector math the normal matrix is transpose(inverse(model)).
-  // The shader upload path is transposed, so this becomes inverse(model).
-  return glm::inverse(columnVectorModelMatrix);
-}
-
 }  // namespace
 
 
@@ -1861,9 +1851,29 @@ class HelloTriangleApplication {
     }
   }
 
+  static std::filesystem::path executableDirectory() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH]{};
+    const DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (len > 0 && len < MAX_PATH) {
+      return std::filesystem::path(buf).parent_path();
+    }
+#else
+    std::error_code ec;
+    auto p = std::filesystem::canonical("/proc/self/exe", ec);
+    if (!ec) return p.parent_path();
+#endif
+    return std::filesystem::current_path();
+  }
+
   void createGraphicsPipelines() {
-    const auto loadModule = [this](const char* path) {
-      const auto fileData = utility::file::readFile(path);
+    const std::filesystem::path exeDir = executableDirectory();
+    const auto loadModule = [this, &exeDir](const char* path) {
+      std::filesystem::path shaderPath(path);
+      if (shaderPath.is_relative()) {
+        shaderPath = exeDir / shaderPath;
+      }
+      const auto fileData = utility::file::readFile(shaderPath);
       return utility::vulkan::createShaderModule(deviceWrapper->device(),
                                                  fileData);
     };
@@ -2023,15 +2033,19 @@ class HelloTriangleApplication {
     sceneRasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     sceneRasterizer.lineWidth = 1.0f;
     sceneRasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    sceneRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    sceneRasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     sceneRasterizer.depthBiasEnable = VK_FALSE;
 
     VkPipelineRasterizationStateCreateInfo fullscreenRasterizer =
         sceneRasterizer;
-    fullscreenRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    fullscreenRasterizer.cullMode = VK_CULL_MODE_NONE;
+    fullscreenRasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     VkPipelineRasterizationStateCreateInfo fullscreenRasterizerFlipped =
         fullscreenRasterizer;
-    fullscreenRasterizerFlipped.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    fullscreenRasterizerFlipped.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    VkPipelineRasterizationStateCreateInfo normalLineRasterizer =
+        sceneRasterizer;
+    normalLineRasterizer.cullMode = VK_CULL_MODE_NONE;
 
     VkPipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sType =
@@ -2317,6 +2331,7 @@ class HelloTriangleApplication {
         static_cast<uint32_t>(surfaceNormalShaderStages.size());
     surfaceNormalPipelineInfo.pStages = surfaceNormalShaderStages.data();
     surfaceNormalPipelineInfo.pInputAssemblyState = &triangleAssembly;
+    surfaceNormalPipelineInfo.pRasterizationState = &normalLineRasterizer;
     surfaceNormalPipelineInfo.pColorBlendState = &overlayColorBlending;
     surfaceNormalPipelineInfo.pDepthStencilState = &normalLineDepthStencil;
     surfaceNormalPipelineInfo.layout = scenePipelineLayout;
@@ -2750,7 +2765,7 @@ class HelloTriangleApplication {
     const float aspect =
         static_cast<float>(extent.width) / static_cast<float>(extent.height);
 
-    cameraData.viewProj = toShaderMatrix(camera->viewProjection(aspect));
+    cameraData.viewProj = camera->viewProjection(aspect);
     cameraData.inverseViewProj = glm::inverse(cameraData.viewProj);
     cameraData.cameraWorldPosition = glm::vec4(camera->position(), 1.0f);
     if (cameraBuffer.buffer != VK_NULL_HANDLE) {
@@ -2782,8 +2797,8 @@ class HelloTriangleApplication {
       const uint32_t materialIndex = node->materialIndex;
 
       ObjectData object{};
-      object.model = toShaderMatrix(node->worldTransform);
-      object.normalMatrix = toShaderNormalMatrix(node->worldTransform);
+      object.model = node->worldTransform;
+      object.normalMatrix = glm::transpose(glm::inverse(node->worldTransform));
       object.color = sceneManager->resolveMaterialColor(materialIndex);
       object.emissiveColor =
           sceneManager->resolveMaterialEmissive(materialIndex);
@@ -2844,8 +2859,8 @@ class HelloTriangleApplication {
       const glm::mat4 cubeModel =
           glm::translate(glm::mat4(1.0f), diagCenter) *
           glm::scale(glm::mat4(1.0f), glm::vec3(diagScale));
-      cubeObject.model = toShaderMatrix(cubeModel);
-      cubeObject.normalMatrix = toShaderNormalMatrix(cubeModel);
+      cubeObject.model = cubeModel;
+      cubeObject.normalMatrix = glm::transpose(glm::inverse(cubeModel));
       cubeObject.color = glm::vec4(1.0f);
       cubeObject.metallicRoughness = glm::vec2(0.0f, 0.5f);
       diagCubeObjectIndex = static_cast<uint32_t>(objectData.size());

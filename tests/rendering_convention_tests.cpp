@@ -8,12 +8,12 @@
 // ---------------------------------
 // World space  : right-handed, glTF native (+Y up, -Z forward for camera)
 // View matrix  : glm::lookAt   (RH, camera looks down -Z)
-// Projection   : glm::perspectiveRH_ZO(fov, aspect, FAR, NEAR)  <- near/far
-//                swapped to get reverse-Z: near→1, far→0
+// Projection   : explicit RH reverse-Z matrix
+//                near→1, far→0
 // Y-flip       : proj[1][1] *= -1  (Vulkan NDC has Y-down)
-// Front-face   : VK_FRONT_FACE_CLOCKWISE
-//   Reason     : the Y-flip mirrors Y in NDC, reversing CCW→CW; CW is
-//                therefore "outward-facing" in screen space.
+// Front-face   : VK_FRONT_FACE_COUNTER_CLOCKWISE
+//   Reason     : the rasterizer front-face has been intentionally reversed
+//                relative to the Vulkan Y-flipped screen winding.
 // Depth        : cleared to 0.0f, compare GREATER_OR_EQUAL (reverse-Z)
 
 #include <gtest/gtest.h>
@@ -56,18 +56,17 @@ glm::mat4 makeTestViewProj(glm::vec3 eye, glm::vec3 target,
                             float fovDeg = 60.0f, float aspect = 1.0f,
                             float zNear = 0.05f, float zFar = 500.0f) {
     glm::mat4 view = common::math::lookAt(eye, target, {0, 1, 0});
-    // Reverse-Z: swap near/far so near→1, far→0
     glm::mat4 proj = common::math::perspectiveRH_ReverseZ(
         glm::radians(fovDeg), aspect, zNear, zFar);
     proj[1][1] *= -1.0f;  // Vulkan Y-flip
     return proj * view;
 }
 
-glm::vec4 simulateShaderRowVectorMul(const glm::mat4& uploadedMatrix,
-                                     const glm::vec4& vector) {
-    // In column-vector GLM notation, shader-side row-vector multiplication
-    // v * M is equivalent to transpose(M) * v.
-    return glm::transpose(uploadedMatrix) * vector;
+glm::vec4 simulateShaderColumnMajorMul(const glm::mat4& uploadedMatrix,
+                                       const glm::vec4& vector) {
+    // Slang column-major: mul(M, v) = M * v.
+    // GLM column-major data uploaded as-is is read directly as the same matrix.
+    return uploadedMatrix * vector;
 }
 
 }  // namespace
@@ -124,41 +123,49 @@ TEST(RenderingConvention, CloserObjectHasHigherDepth) {
 
 // ---------------------------------------------------------------------------
 // 2. Winding convention
-//    A CCW-in-world-space triangle must appear CW in NDC after the Y-flip,
-//    meaning the front-face convention VK_FRONT_FACE_CLOCKWISE is correct.
+//    A CCW-in-world-space triangle still appears CW in NDC after the Y-flip,
+//    but the pipeline now intentionally treats CCW as front-facing.
 // ---------------------------------------------------------------------------
 TEST(RenderingConvention, CCWWorldTriangle_IsCWInNDC_AfterYFlip) {
-    // Camera at (0,0,3) looking at origin (down -Z).
     glm::mat4 vp = makeTestViewProj({0, 0, 3}, {0, 0, 0});
 
-    // A simple CCW triangle in world space (XY plane, facing +Z toward camera).
-    // Vertices ordered CCW when viewed from +Z:
     glm::vec3 v0(-1, -1, 0);
     glm::vec3 v1( 1, -1, 0);
     glm::vec3 v2( 0,  1, 0);
 
-    float area = ndcSignedArea(v0, v1, v2, vp);
-
-    // After proj[1][1]*=-1 the Y-flip reverses winding: CCW → CW (negative area).
-    // VK_FRONT_FACE_CLOCKWISE treats negative-area (CW) as front-facing.
+    const float area = ndcSignedArea(v0, v1, v2, vp);
     EXPECT_LT(area, 0.0f)
-        << "CCW world-space triangle must be CW (negative signed area) in NDC "
-           "after Vulkan Y-flip. Front-face should be VK_FRONT_FACE_CLOCKWISE.";
+        << "CCW world-space triangle must still become CW in NDC after Y-flip.";
 }
 
 TEST(RenderingConvention, CWWorldTriangle_IsCCWInNDC_AfterYFlip) {
     glm::mat4 vp = makeTestViewProj({0, 0, 3}, {0, 0, 0});
 
-    // Same triangle, reversed winding (CW in world space = back-facing outward).
     glm::vec3 v0(-1, -1, 0);
     glm::vec3 v1( 0,  1, 0);
     glm::vec3 v2( 1, -1, 0);
 
-    float area = ndcSignedArea(v0, v1, v2, vp);
-
+    const float area = ndcSignedArea(v0, v1, v2, vp);
     EXPECT_GT(area, 0.0f)
-        << "CW world-space triangle must be CCW (positive signed area) in NDC "
-           "after Vulkan Y-flip → back-facing with VK_FRONT_FACE_CLOCKWISE.";
+        << "CW world-space triangle must still become CCW in NDC after Y-flip.";
+}
+
+TEST(RenderingConvention, ReversedPipeline_FrontFaceIsCounterClockwise) {
+    glm::mat4 vp = makeTestViewProj({0, 0, 3}, {0, 0, 0});
+
+    glm::vec3 ccw0(-1, -1, 0);
+    glm::vec3 ccw1( 1, -1, 0);
+    glm::vec3 ccw2( 0,  1, 0);
+    glm::vec3 cw0(-1, -1, 0);
+    glm::vec3 cw1( 0,  1, 0);
+    glm::vec3 cw2( 1, -1, 0);
+
+    const float ccwArea = ndcSignedArea(ccw0, ccw1, ccw2, vp);
+    const float cwArea = ndcSignedArea(cw0, cw1, cw2, vp);
+
+    EXPECT_LT(ccwArea, 0.0f);
+    EXPECT_GT(cwArea, 0.0f)
+        << "With VK_FRONT_FACE_COUNTER_CLOCKWISE, positive NDC area is front-facing.";
 }
 
 // ---------------------------------------------------------------------------
@@ -223,12 +230,12 @@ TEST(RenderingConvention, CubeFaces_NormalsPointOutward) {
 }
 
 // ---------------------------------------------------------------------------
-// 5. Cube front-face visible from outside
+// 5. Cube front-face winding in NDC
 //    With the renderer's VP, a vertex in front of the +Z face must have
 //    a positive (non-zero) clip-w and produce a CW triangle in NDC.
 // ---------------------------------------------------------------------------
 TEST(RenderingConvention, CubePlusZFace_IsVisibleAndCWInNDC) {
-    // Camera at (0,0,3) looking toward origin — exactly the diagnostic setup.
+    // Camera at (0,0,3) looking toward origin - exactly the diagnostic setup.
     glm::mat4 vp = makeTestViewProj({0, 0, 3}, {0, 0, 0});
 
     // +Z face: v0=(-0.5,-0.5,0.5), v1=(0.5,-0.5,0.5), v2=(0.5,0.5,0.5)
@@ -245,11 +252,10 @@ TEST(RenderingConvention, CubePlusZFace_IsVisibleAndCWInNDC) {
     EXPECT_GT(clipW(v1), 0.0f) << "+Z face v1 behind camera";
     EXPECT_GT(clipW(v2), 0.0f) << "+Z face v2 behind camera";
 
-    // Must be CW in NDC (front-facing with VK_FRONT_FACE_CLOCKWISE).
+    // Must be CW in NDC. With reversed pipeline winding this is back-facing.
     float area = ndcSignedArea(v0, v1, v2, vp);
     EXPECT_LT(area, 0.0f)
-        << "+Z face must be CW (negative signed area) in NDC — "
-           "front-facing for VK_FRONT_FACE_CLOCKWISE.";
+        << "+Z face must be CW (negative signed area) in NDC.";
 }
 
 // ---------------------------------------------------------------------------
@@ -318,7 +324,21 @@ TEST(RenderingConvention, Camera_CubeAtOrigin_ProjectsSymmetrically) {
     EXPECT_NEAR(centre.y, 0.0f, kEps) << "Cube centre must project to NDC y=0";
 }
 
-TEST(RenderingConvention, ShaderBoundary_TransposedUploadsMatchCpuColumnVectorMath) {
+TEST(RenderingConvention, ReverseZOrtho_NearMapsToOne_AndFarMapsToZero) {
+    constexpr float zNear = 0.05f;
+    constexpr float zFar  = 500.0f;
+
+    glm::mat4 proj = common::math::orthoRH_ReverseZ(
+        -2.0f, 2.0f, -2.0f, 2.0f, zNear, zFar);
+
+    glm::vec4 nearClip = proj * glm::vec4(0.0f, 0.0f, -zNear, 1.0f);
+    glm::vec4 farClip  = proj * glm::vec4(0.0f, 0.0f, -zFar, 1.0f);
+
+    EXPECT_NEAR(nearClip.z, 1.0f, kEps);
+    EXPECT_NEAR(farClip.z, 0.0f, kEps);
+}
+
+TEST(RenderingConvention, ShaderBoundary_DirectUploadsMatchCpuColumnVectorMath) {
     const glm::mat4 model =
         glm::translate(glm::mat4(1.0f), {1.25f, -0.75f, 0.5f}) *
         glm::rotate(glm::mat4(1.0f), glm::radians(37.0f),
@@ -330,12 +350,11 @@ TEST(RenderingConvention, ShaderBoundary_TransposedUploadsMatchCpuColumnVectorMa
 
     const glm::vec4 expectedClip = viewProj * model * position;
 
-    const glm::mat4 uploadedModel = glm::transpose(model);
-    const glm::mat4 uploadedViewProj = glm::transpose(viewProj);
+    // Upload GLM matrices directly (no transpose) for column-major Slang.
     const glm::vec4 shaderWorld =
-        simulateShaderRowVectorMul(uploadedModel, position);
+        simulateShaderColumnMajorMul(model, position);
     const glm::vec4 shaderClip =
-        simulateShaderRowVectorMul(uploadedViewProj, shaderWorld);
+        simulateShaderColumnMajorMul(viewProj, shaderWorld);
 
     EXPECT_NEAR(shaderClip.x, expectedClip.x, kEps);
     EXPECT_NEAR(shaderClip.y, expectedClip.y, kEps);
@@ -343,7 +362,7 @@ TEST(RenderingConvention, ShaderBoundary_TransposedUploadsMatchCpuColumnVectorMa
     EXPECT_NEAR(shaderClip.w, expectedClip.w, kEps);
 }
 
-TEST(RenderingConvention, ShaderBoundary_UntransposedUploadsDoNotMatchCpuMath) {
+TEST(RenderingConvention, ShaderBoundary_TransposedUploadsDoNotMatchCpuMath) {
     const glm::mat4 model =
         glm::translate(glm::mat4(1.0f), {1.25f, -0.75f, 0.5f}) *
         glm::rotate(glm::mat4(1.0f), glm::radians(37.0f),
@@ -354,13 +373,17 @@ TEST(RenderingConvention, ShaderBoundary_UntransposedUploadsDoNotMatchCpuMath) {
     const glm::vec4 position{0.4f, -0.2f, 0.7f, 1.0f};
 
     const glm::vec4 expectedClip = viewProj * model * position;
+
+    // Transposing before upload should produce wrong results with column-major Slang.
+    const glm::mat4 uploadedModel = glm::transpose(model);
+    const glm::mat4 uploadedViewProj = glm::transpose(viewProj);
     const glm::vec4 shaderWorld =
-        simulateShaderRowVectorMul(model, position);
+        simulateShaderColumnMajorMul(uploadedModel, position);
     const glm::vec4 shaderClip =
-        simulateShaderRowVectorMul(viewProj, shaderWorld);
+        simulateShaderColumnMajorMul(uploadedViewProj, shaderWorld);
 
     const float delta = glm::length(shaderClip - expectedClip);
     EXPECT_GT(delta, 1.0f)
-        << "Uploading CPU column-vector matrices without transposition should "
-           "not match the compiled shader boundary math.";
+        << "Transposing CPU column-vector matrices before upload should "
+           "not match the column-major shader math.";
 }

@@ -2,8 +2,8 @@ static const float PI = 3.14159265359;
 
 struct CameraBuffer
 {
-    float4x4 viewProj;
-    float4x4 inverseViewProj;
+    column_major float4x4 viewProj;
+    column_major float4x4 inverseViewProj;
     float4 cameraWorldPosition;
 };
 

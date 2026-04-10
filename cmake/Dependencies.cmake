@@ -231,4 +231,8 @@ message(STATUS "Vulkan: ${Vulkan_VERSION}")
 message(STATUS "slang :(${slang_VERSION})")
 message(STATUS "spdlog: ${spdlog_VERSION}")
 message(STATUS "--------------------------------------------------")
-target_compile_definitions(VulkanDependencies INTERFACE GLM_FORCE_DEPTH_ZERO_TO_ONE GLM_FORCE_RADIANS)
+target_compile_definitions(VulkanDependencies INTERFACE
+    GLM_FORCE_COLUMN_MAJOR
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
+    GLM_FORCE_RADIANS
+)

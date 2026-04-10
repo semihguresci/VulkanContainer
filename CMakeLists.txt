@@ -46,7 +46,7 @@ find_program(SLANGC_EXECUTABLE
 )
 
 if(SLANGC_EXECUTABLE)
-    set(SLANG_MATRIX_LAYOUT_FLAG "-matrix-layout-row-major")
+    set(SLANG_MATRIX_LAYOUT_FLAG "-matrix-layout-column-major")
     set(SLANG_SPIRV_FLAGS
         -target spirv
         -profile spirv_1_4
@@ -62,54 +62,59 @@ if(SLANGC_EXECUTABLE)
         list(LENGTH SLANG_SOURCES SLANG_COUNT)
         message(STATUS "Found ${SLANG_COUNT} Slang shaders in ${SHADERS_DIR}")
 
-        add_custom_command(
-            OUTPUT "${COMPILED_SHADERS_DIR}"
-            COMMAND ${CMAKE_COMMAND} -E make_directory "${COMPILED_SHADERS_DIR}"
-            COMMENT "Creating shader output directory"
+        set(SHADER_BUILD_SCRIPT "${CMAKE_BINARY_DIR}/CompileSlangShaders.cmake")
+        set(SHADER_BUILD_SCRIPT_CONTENT "")
+        string(APPEND SHADER_BUILD_SCRIPT_CONTENT
+            "file(REMOVE_RECURSE [=[${COMPILED_SHADERS_DIR}]=])\n"
+            "file(MAKE_DIRECTORY [=[${COMPILED_SHADERS_DIR}]=])\n"
         )
 
-        set(COMPILED_SHADERS "")
+        function(append_slang_compile_step SCRIPT_CONTENT_VAR SLANG_SOURCE ENTRY_POINT OUTPUT_PATH)
+            set(_script "${${SCRIPT_CONTENT_VAR}}")
+            string(APPEND _script
+                "message(STATUS \"Compiling ${SLANG_SOURCE} (${ENTRY_POINT})\")\n"
+                "execute_process(\n"
+                "    COMMAND [=[${SLANGC_EXECUTABLE}]=] [=[${SLANG_SOURCE}]=]"
+            )
+            foreach(SLANG_FLAG IN LISTS SLANG_SPIRV_FLAGS)
+                string(APPEND _script " [=[${SLANG_FLAG}]=]")
+            endforeach()
+            string(APPEND _script
+                " [=[-entry]=] [=[${ENTRY_POINT}]=] [=[-o]=] [=[${OUTPUT_PATH}]=]\n"
+                "    RESULT_VARIABLE slang_compile_result\n"
+                ")\n"
+                "if(NOT slang_compile_result EQUAL 0)\n"
+                "    message(FATAL_ERROR \"Failed to compile ${SLANG_SOURCE} (${ENTRY_POINT})\")\n"
+                "endif()\n"
+            )
+            set(${SCRIPT_CONTENT_VAR} "${_script}" PARENT_SCOPE)
+        endfunction()
 
         foreach(SLANG_SOURCE ${SLANG_SOURCES})
             get_filename_component(SHADER_BASE ${SLANG_SOURCE} NAME_WE)
             set(VERT_OUTPUT "${COMPILED_SHADERS_DIR}/${SHADER_BASE}.vert.spv")
             set(FRAG_OUTPUT "${COMPILED_SHADERS_DIR}/${SHADER_BASE}.frag.spv")
 
-            add_custom_command(
-                OUTPUT "${VERT_OUTPUT}"
-                COMMAND ${SLANGC_EXECUTABLE} "${SLANG_SOURCE}" ${SLANG_SPIRV_FLAGS} -entry vertMain -o "${VERT_OUTPUT}"
-                DEPENDS "${SLANG_SOURCE}" "${COMPILED_SHADERS_DIR}" "${CMAKE_CURRENT_LIST_FILE}"
-                COMMENT "Compiling ${SLANG_SOURCE} (vertMain) -> ${VERT_OUTPUT}"
-                VERBATIM
-            )
-
-            add_custom_command(
-                OUTPUT "${FRAG_OUTPUT}"
-                COMMAND ${SLANGC_EXECUTABLE} "${SLANG_SOURCE}" ${SLANG_SPIRV_FLAGS} -entry fragMain -o "${FRAG_OUTPUT}"
-                DEPENDS "${SLANG_SOURCE}" "${COMPILED_SHADERS_DIR}" "${CMAKE_CURRENT_LIST_FILE}"
-                COMMENT "Compiling ${SLANG_SOURCE} (fragMain) -> ${FRAG_OUTPUT}"
-                VERBATIM
-            )
-
-            list(APPEND COMPILED_SHADERS "${VERT_OUTPUT}" "${FRAG_OUTPUT}")
+            append_slang_compile_step(
+                SHADER_BUILD_SCRIPT_CONTENT "${SLANG_SOURCE}" "vertMain" "${VERT_OUTPUT}")
+            append_slang_compile_step(
+                SHADER_BUILD_SCRIPT_CONTENT "${SLANG_SOURCE}" "fragMain" "${FRAG_OUTPUT}")
         endforeach()
 
         set(SURFACE_NORMALS_SOURCE "${SHADERS_DIR}/surface_normals.slang")
         if(EXISTS "${SURFACE_NORMALS_SOURCE}")
             set(SURFACE_NORMALS_GEOM_OUTPUT "${COMPILED_SHADERS_DIR}/surface_normals.geom.spv")
-            add_custom_command(
-                OUTPUT "${SURFACE_NORMALS_GEOM_OUTPUT}"
-                COMMAND ${SLANGC_EXECUTABLE} "${SURFACE_NORMALS_SOURCE}" ${SLANG_SPIRV_FLAGS} -entry geomMain -o "${SURFACE_NORMALS_GEOM_OUTPUT}"
-                DEPENDS "${SURFACE_NORMALS_SOURCE}" "${COMPILED_SHADERS_DIR}" "${CMAKE_CURRENT_LIST_FILE}"
-                COMMENT "Compiling ${SURFACE_NORMALS_SOURCE} (geomMain) -> ${SURFACE_NORMALS_GEOM_OUTPUT}"
-                VERBATIM
-            )
-            list(APPEND COMPILED_SHADERS "${SURFACE_NORMALS_GEOM_OUTPUT}")
+            append_slang_compile_step(
+                SHADER_BUILD_SCRIPT_CONTENT "${SURFACE_NORMALS_SOURCE}" "geomMain" "${SURFACE_NORMALS_GEOM_OUTPUT}")
         endif()
 
+        file(WRITE "${SHADER_BUILD_SCRIPT}" "${SHADER_BUILD_SCRIPT_CONTENT}")
+
         add_custom_target(shaders_all
-            DEPENDS ${COMPILED_SHADERS}
-            COMMENT "Building all Slang shaders"
+            COMMAND ${CMAKE_COMMAND} -P "${SHADER_BUILD_SCRIPT}"
+            DEPENDS ${SLANG_SOURCES} "${CMAKE_CURRENT_LIST_FILE}"
+            COMMENT "Rebuilding all Slang shaders"
+            VERBATIM
         )
 
         add_custom_target(shaders DEPENDS shaders_all)
