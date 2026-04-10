@@ -11,9 +11,12 @@
 // Projection   : explicit RH reverse-Z matrix
 //                near→1, far→0
 // Y-flip       : proj[1][1] *= -1  (Vulkan NDC has Y-down)
-// Front-face   : VK_FRONT_FACE_COUNTER_CLOCKWISE
-//   Reason     : the rasterizer front-face has been intentionally reversed
-//                relative to the Vulkan Y-flipped screen winding.
+// Front-face   : VK_FRONT_FACE_CLOCKWISE
+//   Reason     : the Y-flip inverts the perceived winding in NDC; a standard
+//                RH/glTF CCW-wound face appears CW in Vulkan NDC (negative
+//                Vulkan area).  VK_FRONT_FACE_CLOCKWISE makes that CW face
+//                (negative area) front-facing, correctly rendering outward-
+//                facing geometry without rewriting mesh winding.
 // Depth        : cleared to 0.0f, compare GREATER_OR_EQUAL (reverse-Z)
 
 #include <gtest/gtest.h>
@@ -150,7 +153,10 @@ TEST(RenderingConvention, CWWorldTriangle_IsCCWInNDC_AfterYFlip) {
         << "CW world-space triangle must still become CCW in NDC after Y-flip.";
 }
 
-TEST(RenderingConvention, ReversedPipeline_FrontFaceIsCounterClockwise) {
+TEST(RenderingConvention, Pipeline_FrontFaceIsClockwise_ForRHCoordSystem) {
+    // With Y-flip, a standard RH/CCW-wound mesh face appears CW in Vulkan NDC
+    // (negative Vulkan area).  VK_FRONT_FACE_CLOCKWISE maps negative-area
+    // triangles to front-facing, so CCW world-space geometry renders correctly.
     glm::mat4 vp = makeTestViewProj({0, 0, 3}, {0, 0, 0});
 
     glm::vec3 ccw0(-1, -1, 0);
@@ -163,9 +169,10 @@ TEST(RenderingConvention, ReversedPipeline_FrontFaceIsCounterClockwise) {
     const float ccwArea = ndcSignedArea(ccw0, ccw1, ccw2, vp);
     const float cwArea = ndcSignedArea(cw0, cw1, cw2, vp);
 
-    EXPECT_LT(ccwArea, 0.0f);
+    EXPECT_LT(ccwArea, 0.0f)
+        << "CCW world → negative NDC area; with VK_FRONT_FACE_CLOCKWISE this is front-facing.";
     EXPECT_GT(cwArea, 0.0f)
-        << "With VK_FRONT_FACE_COUNTER_CLOCKWISE, positive NDC area is front-facing.";
+        << "CW world → positive NDC area; with VK_FRONT_FACE_CLOCKWISE this is back-facing.";
 }
 
 // ---------------------------------------------------------------------------
@@ -270,7 +277,9 @@ TEST(RenderingConvention, CubePlusZFace_IsVisibleAndCWInNDC) {
     EXPECT_GT(clipW(v1), 0.0f) << "+Z face v1 behind camera";
     EXPECT_GT(clipW(v2), 0.0f) << "+Z face v2 behind camera";
 
-    // Must be CW in NDC. With reversed pipeline winding this is back-facing.
+    // Must be CW in NDC (negative area). With VK_FRONT_FACE_CLOCKWISE, CW
+    // (negative-area) triangles are front-facing, so the +Z face is correctly
+    // visible from the camera.
     float area = ndcSignedArea(v0, v1, v2, vp);
     EXPECT_LT(area, 0.0f)
         << "+Z face must be CW (negative signed area) in NDC.";
