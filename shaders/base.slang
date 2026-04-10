@@ -28,6 +28,8 @@ struct ObjectBuffer
 [[vk::binding(2, 0)]] SamplerState baseSampler;
 [[vk::binding(3, 0)]] Texture2D materialTextures[];
 
+#include "surface_normal_common.slang"
+
 struct PushConstants
 {
     uint objectIndex;
@@ -60,23 +62,8 @@ struct VSOutput
     [[vk::location(9)]] float2 metallicRoughness;
     [[vk::location(10)]] float3 worldPos;
     [[vk::location(11)]] float3 worldNormal;
+    [[vk::location(12)]] float4 worldTangent;
 };
-
-float3 fallbackTangent(float3 normal)
-{
-    float3 axis = abs(normal.y) < 0.999 ? float3(0.0, 1.0, 0.0)
-                                        : float3(1.0, 0.0, 0.0);
-    float3 tangent = cross(axis, normal);
-    if (length(tangent) < 1e-4)
-    {
-        tangent = cross(float3(0.0, 0.0, 1.0), normal);
-    }
-    if (length(tangent) < 1e-4)
-    {
-        tangent = float3(1.0, 0.0, 0.0);
-    }
-    return normalize(tangent);
-}
 
 [shader("vertex")]
 VSOutput vertMain(VSInput input)
@@ -85,16 +72,9 @@ VSOutput vertMain(VSInput input)
     ObjectBuffer obj = uObjects[pc.objectIndex];
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
-
-    float3 worldNormal = mul((float3x3)obj.normalMatrix, input.inNormal);
-    if (!all(isfinite(worldNormal)) || length(worldNormal) < 1e-4)
-    {
-        worldNormal = float3(0.0, 1.0, 0.0);
-    }
-    else
-    {
-        worldNormal = normalize(worldNormal);
-    }
+    float3x3 modelMatrix = (float3x3)obj.model;
+    float3 worldNormal = BuildWorldNormal((float3x3)obj.normalMatrix, input.inNormal);
+    float4 worldTangent = BuildWorldTangent(modelMatrix, worldNormal, input.inTangent);
 
     output.pos = mul(uCamera.viewProj, worldPos);
     output.baseColor = obj.color;
@@ -109,6 +89,7 @@ VSOutput vertMain(VSInput input)
     output.metallicRoughness = obj.metallicRoughness;
     output.worldPos = worldPos.xyz;
     output.worldNormal = worldNormal;
+    output.worldTangent = worldTangent;
 
     return output;
 }
@@ -144,20 +125,12 @@ float4 fragMain(VSOutput vertIn) : SV_Target0
         sampledMetallic *= mrSample.b;
     }
 
-    float3 geomNormal = vertIn.worldNormal;
-    if (!all(isfinite(geomNormal)) || length(geomNormal) < 1e-4)
-    {
-        geomNormal = float3(0.0, 1.0, 0.0);
-    }
-    else
-    {
-        geomNormal = normalize(geomNormal);
-    }
-
-    float3 shadingNormal = geomNormal;
+    SurfaceNormalState surfaceNormal = EvaluateSurfaceNormal(
+        vertIn.worldNormal, vertIn.worldTangent, vertIn.texCoord,
+        vertIn.normalTextureIndex);
 
     float3 lightDir = normalize(float3(0.5, 0.75, -1.0));
-    float lighting = saturate(dot(shadingNormal, lightDir));
+    float lighting = saturate(dot(surfaceNormal.shadingNormal, lightDir));
     baseColor *= 0.2 + 0.8 * lighting;
 
     if (vertIn.emissiveTextureIndex != 0xffffffff)

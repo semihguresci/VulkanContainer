@@ -229,6 +229,24 @@ TEST(RenderingConvention, CubeFaces_NormalsPointOutward) {
     }
 }
 
+TEST(RenderingConvention, CubeVertexTangents_AreOrthogonalToNormals) {
+    const geometry::Model cube = geometry::Model::MakeCube();
+    const auto& verts = cube.vertices();
+
+    for (size_t i = 0; i < verts.size(); ++i) {
+        const glm::vec3 normal = glm::normalize(verts[i].normal);
+        const glm::vec3 tangent = glm::normalize(glm::vec3(verts[i].tangent));
+        const float tangentLength = glm::length(glm::vec3(verts[i].tangent));
+
+        EXPECT_TRUE(std::isfinite(tangentLength));
+        EXPECT_NEAR(tangentLength, 1.0f, kEps)
+            << "Vertex " << i << " tangent must stay unit length.";
+        EXPECT_NEAR(glm::dot(normal, tangent), 0.0f, kEps)
+            << "Vertex " << i << " tangent must be orthogonal to the normal.";
+        EXPECT_TRUE(std::isfinite(verts[i].tangent.w));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 5. Cube front-face winding in NDC
 //    With the renderer's VP, a vertex in front of the +Z face must have

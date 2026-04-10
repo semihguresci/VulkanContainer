@@ -158,7 +158,8 @@ void GuiManager::drawSceneControls(
   static constexpr const char* kGBufferViewLabels[] = {
       "Lit",       "Albedo",      "Normals", "Material",
       "Depth",     "Emissive",    "Transparency",
-      "Revealage", "Overview",    "Surface Normals"};
+      "Revealage", "Overview",    "Surface Normals",
+      "Object Normals"};
 
   ImGui::Begin("Scene Controls");
   ImGui::InputText("glTF path", &gltfPathInput_);

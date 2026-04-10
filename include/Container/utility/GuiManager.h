@@ -28,6 +28,7 @@ enum class GBufferViewMode : uint32_t {
   Revealage = 7,
   Overview = 8,
   SurfaceNormals = 9,
+  ObjectSpaceNormals = 10,
 };
 
 struct TransformControls {

@@ -411,6 +411,11 @@ float4 fragMain(VSOutput input) : SV_Target0
         return float4(screenBackgroundColor, 1.0);
     }
 
+    if (pc.outputMode == 10)
+    {
+        return float4(sceneColor.rgb, 1.0);
+    }
+
     const float exposure = 0.25;
     float3 mapped = ToneMapACES(compositedColor * exposure);
     mapped = pow(mapped, 1.0 / 2.2);

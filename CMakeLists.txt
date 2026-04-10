@@ -52,11 +52,13 @@ if(SLANGC_EXECUTABLE)
         -profile spirv_1_4
         -emit-spirv-directly
         -fvk-use-entrypoint-name
+        -I "${SHADERS_DIR}"
         ${SLANG_MATRIX_LAYOUT_FLAG}
     )
     file(GLOB SLANG_SOURCES CONFIGURE_DEPENDS
         "${SHADERS_DIR}/*.slang"
     )
+    list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/surface_normal_common\\.slang$")
 
     if(SLANG_SOURCES)
         list(LENGTH SLANG_SOURCES SLANG_COUNT)

@@ -235,6 +235,7 @@ class HelloTriangleApplication {
   VkPipeline postProcessPipeline{VK_NULL_HANDLE};
   VkPipeline geometryDebugPipeline{VK_NULL_HANDLE};
   VkPipeline surfaceNormalLinePipeline{VK_NULL_HANDLE};
+  VkPipeline objectNormalDebugPipeline{VK_NULL_HANDLE};
   VkPipeline lightGizmoPipeline{VK_NULL_HANDLE};
   VkFormat sceneColorFormat{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat gBufferAlbedoFormat{VK_FORMAT_R8G8B8A8_UNORM};
@@ -499,6 +500,7 @@ class HelloTriangleApplication {
       postProcessPipeline = VK_NULL_HANDLE;
       geometryDebugPipeline = VK_NULL_HANDLE;
       surfaceNormalLinePipeline = VK_NULL_HANDLE;
+      objectNormalDebugPipeline = VK_NULL_HANDLE;
       lightGizmoPipeline = VK_NULL_HANDLE;
       scenePipelineLayout = VK_NULL_HANDLE;
       transparentPipelineLayout = VK_NULL_HANDLE;
@@ -1938,6 +1940,10 @@ class HelloTriangleApplication {
         loadModule("spv_shaders/surface_normals.geom.spv");
     VkShaderModule surfaceNormalsFragShaderModule =
         loadModule("spv_shaders/surface_normals.frag.spv");
+    VkShaderModule objectNormalsVertShaderModule =
+        loadModule("spv_shaders/object_normals.vert.spv");
+    VkShaderModule objectNormalsFragShaderModule =
+        loadModule("spv_shaders/object_normals.frag.spv");
     VkShaderModule lightGizmoVertShaderModule =
         loadModule("spv_shaders/light_gizmo.vert.spv");
     VkShaderModule lightGizmoFragShaderModule =
@@ -1984,6 +1990,10 @@ class HelloTriangleApplication {
                             VK_SHADER_STAGE_GEOMETRY_BIT),
             makeShaderStage(surfaceNormalsFragShaderModule,
                             VK_SHADER_STAGE_FRAGMENT_BIT)};
+    std::array<VkPipelineShaderStageCreateInfo, 2> objectNormalShaderStages = {
+        makeShaderStage(objectNormalsVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
+        makeShaderStage(objectNormalsFragShaderModule,
+                        VK_SHADER_STAGE_FRAGMENT_BIT)};
     std::array<VkPipelineShaderStageCreateInfo, 2> lightGizmoShaderStages = {
         makeShaderStage(lightGizmoVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
         makeShaderStage(lightGizmoFragShaderModule,
@@ -2324,6 +2334,17 @@ class HelloTriangleApplication {
     surfaceNormalLinePipeline = pipelineManager->createGraphicsPipeline(
         surfaceNormalPipelineInfo, "surface_normal_line_pipeline");
 
+    VkGraphicsPipelineCreateInfo objectNormalPipelineInfo =
+        transparentPipelineInfo;
+    objectNormalPipelineInfo.stageCount =
+        static_cast<uint32_t>(objectNormalShaderStages.size());
+    objectNormalPipelineInfo.pStages = objectNormalShaderStages.data();
+    objectNormalPipelineInfo.pColorBlendState = &overlayColorBlending;
+    objectNormalPipelineInfo.pDepthStencilState = &normalLineDepthStencil;
+    objectNormalPipelineInfo.layout = scenePipelineLayout;
+    objectNormalDebugPipeline = pipelineManager->createGraphicsPipeline(
+        objectNormalPipelineInfo, "object_normal_debug_pipeline");
+
     VkGraphicsPipelineCreateInfo lightGizmoPipelineInfo =
         fullscreenPipelineInfo;
     lightGizmoPipelineInfo.stageCount =
@@ -2338,7 +2359,7 @@ class HelloTriangleApplication {
     lightGizmoPipeline = pipelineManager->createGraphicsPipeline(
         lightGizmoPipelineInfo, "light_gizmo_pipeline");
 
-    const std::array<VkShaderModule, 23> shaderModules = {
+    const std::array<VkShaderModule, 25> shaderModules = {
         depthPrepassVertShaderModule, depthPrepassFragShaderModule,
         gBufferVertShaderModule,      gBufferFragShaderModule,
         directionalVertShaderModule,  directionalFragShaderModule,
@@ -2350,6 +2371,7 @@ class HelloTriangleApplication {
         debugVertShaderModule,        debugFragShaderModule,
         surfaceNormalsVertShaderModule, surfaceNormalsGeomShaderModule,
         surfaceNormalsFragShaderModule,
+        objectNormalsVertShaderModule, objectNormalsFragShaderModule,
         lightGizmoVertShaderModule,   lightGizmoFragShaderModule};
     for (VkShaderModule module : shaderModules) {
       vkDestroyShaderModule(deviceWrapper->device(), module, nullptr);
@@ -2984,6 +3006,26 @@ class HelloTriangleApplication {
     }
   }
 
+  void drawDiagnosticCube(VkCommandBuffer commandBuffer,
+                          VkPipelineLayout pipelineLayout) {
+    if (diagCubeObjectIndex == std::numeric_limits<uint32_t>::max() ||
+        diagCubeVertexSlice.buffer == VK_NULL_HANDLE) {
+      return;
+    }
+
+    VkBuffer diagVB[] = {diagCubeVertexSlice.buffer};
+    VkDeviceSize diagOff[] = {diagCubeVertexSlice.offset};
+    vkCmdBindVertexBuffers(commandBuffer, 0, 1, diagVB, diagOff);
+    vkCmdBindIndexBuffer(commandBuffer, diagCubeIndexSlice.buffer,
+                         diagCubeIndexSlice.offset, VK_INDEX_TYPE_UINT32);
+    pushConstants.objectIndex = diagCubeObjectIndex;
+    vkCmdPushConstants(commandBuffer, pipelineLayout,
+                       VK_SHADER_STAGE_VERTEX_BIT |
+                           VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, sizeof(BindlessPushConstants), &pushConstants);
+    vkCmdDrawIndexed(commandBuffer, diagCubeIndexCount, 1, 0, 0, 0);
+  }
+
   void clearExactOitResources(VkCommandBuffer commandBuffer,
                               const FrameResources& frame) const {
     VkImageMemoryBarrier headPointerClearBarrier{};
@@ -3108,6 +3150,11 @@ class HelloTriangleApplication {
         sceneDescriptorSet, lightDescriptorSet, frame.oitDescriptorSet};
     const std::array<VkDescriptorSet, 2> postProcessDescriptorSets = {
         frame.postProcessDescriptorSet, frame.oitDescriptorSet};
+    const auto displayMode =
+        guiManager ? guiManager->gBufferViewMode()
+                   : utility::ui::GBufferViewMode::Overview;
+    const bool showObjectSpaceNormals =
+        displayMode == utility::ui::GBufferViewMode::ObjectSpaceNormals;
 
     VkRenderPassBeginInfo depthPrepassInfo{};
     depthPrepassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -3132,19 +3179,7 @@ class HelloTriangleApplication {
     setViewportAndScissor(commandBuffer);
     bindSceneGeometryBuffers(commandBuffer);
     drawSceneGeometry(commandBuffer, opaqueDrawCommands, scenePipelineLayout);
-    if (diagCubeObjectIndex != std::numeric_limits<uint32_t>::max() &&
-        diagCubeVertexSlice.buffer != VK_NULL_HANDLE) {
-      VkBuffer diagVB[] = {diagCubeVertexSlice.buffer};
-      VkDeviceSize diagOff[] = {diagCubeVertexSlice.offset};
-      vkCmdBindVertexBuffers(commandBuffer, 0, 1, diagVB, diagOff);
-      vkCmdBindIndexBuffer(commandBuffer, diagCubeIndexSlice.buffer,
-                           diagCubeIndexSlice.offset, VK_INDEX_TYPE_UINT32);
-      pushConstants.objectIndex = diagCubeObjectIndex;
-      vkCmdPushConstants(commandBuffer, scenePipelineLayout,
-                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                         0, sizeof(BindlessPushConstants), &pushConstants);
-      vkCmdDrawIndexed(commandBuffer, diagCubeIndexCount, 1, 0, 0, 0);
-    }
+    drawDiagnosticCube(commandBuffer, scenePipelineLayout);
     vkCmdEndRenderPass(commandBuffer);
 
     VkRenderPassBeginInfo gBufferPassInfo{};
@@ -3176,19 +3211,7 @@ class HelloTriangleApplication {
     setViewportAndScissor(commandBuffer);
     bindSceneGeometryBuffers(commandBuffer);
     drawSceneGeometry(commandBuffer, opaqueDrawCommands, scenePipelineLayout);
-    if (diagCubeObjectIndex != std::numeric_limits<uint32_t>::max() &&
-        diagCubeVertexSlice.buffer != VK_NULL_HANDLE) {
-      VkBuffer diagVB[] = {diagCubeVertexSlice.buffer};
-      VkDeviceSize diagOff[] = {diagCubeVertexSlice.offset};
-      vkCmdBindVertexBuffers(commandBuffer, 0, 1, diagVB, diagOff);
-      vkCmdBindIndexBuffer(commandBuffer, diagCubeIndexSlice.buffer,
-                           diagCubeIndexSlice.offset, VK_INDEX_TYPE_UINT32);
-      pushConstants.objectIndex = diagCubeObjectIndex;
-      vkCmdPushConstants(commandBuffer, scenePipelineLayout,
-                         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                         0, sizeof(BindlessPushConstants), &pushConstants);
-      vkCmdDrawIndexed(commandBuffer, diagCubeIndexCount, 1, 0, 0, 0);
-    }
+    drawDiagnosticCube(commandBuffer, scenePipelineLayout);
     vkCmdEndRenderPass(commandBuffer);
 
     clearExactOitResources(commandBuffer, frame);
@@ -3210,14 +3233,29 @@ class HelloTriangleApplication {
     vkCmdBeginRenderPass(commandBuffer, &lightingPassInfo,
                          VK_SUBPASS_CONTENTS_INLINE);
 
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      directionalLightPipeline);
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                            lightingPipelineLayout, 0,
-                            static_cast<uint32_t>(lightingDescriptorSets.size()),
-                            lightingDescriptorSets.data(), 0, nullptr);
     setViewportAndScissor(commandBuffer);
-    vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    if (showObjectSpaceNormals) {
+      if (objectNormalDebugPipeline != VK_NULL_HANDLE) {
+        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          objectNormalDebugPipeline);
+        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                scenePipelineLayout, 0, 1, &sceneDescriptorSet, 0,
+                                nullptr);
+        bindSceneGeometryBuffers(commandBuffer);
+        drawSceneGeometry(commandBuffer, opaqueDrawCommands, scenePipelineLayout);
+        drawSceneGeometry(commandBuffer, transparentDrawCommands,
+                          scenePipelineLayout);
+        drawDiagnosticCube(commandBuffer, scenePipelineLayout);
+      }
+    } else {
+      vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        directionalLightPipeline);
+      vkCmdBindDescriptorSets(
+          commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, lightingPipelineLayout,
+          0, static_cast<uint32_t>(lightingDescriptorSets.size()),
+          lightingDescriptorSets.data(), 0, nullptr);
+      vkCmdDraw(commandBuffer, 3, 1, 0, 0);
+    }
 
     VkClearAttachment stencilClearAttachment{};
     stencilClearAttachment.aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -3228,7 +3266,7 @@ class HelloTriangleApplication {
     stencilClearRect.baseArrayLayer = 0;
     stencilClearRect.layerCount = 1;
 
-    if (!debugDirectionalOnly) {
+    if (!showObjectSpaceNormals && !debugDirectionalOnly) {
       const VkPipeline activePointPipeline =
           debugVisualizePointLightStencil ? pointLightStencilDebugPipeline
                                           : pointLightPipeline;
@@ -3270,7 +3308,7 @@ class HelloTriangleApplication {
       }
     }
 
-    if (!transparentDrawCommands.empty()) {
+    if (!showObjectSpaceNormals && !transparentDrawCommands.empty()) {
       vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         transparentPipeline);
       vkCmdBindDescriptorSets(
@@ -3297,8 +3335,7 @@ class HelloTriangleApplication {
     }
 
     if (guiManager &&
-        guiManager->gBufferViewMode() ==
-            utility::ui::GBufferViewMode::SurfaceNormals &&
+        displayMode == utility::ui::GBufferViewMode::SurfaceNormals &&
         surfaceNormalLinePipeline != VK_NULL_HANDLE) {
       vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         surfaceNormalLinePipeline);
@@ -3343,9 +3380,7 @@ class HelloTriangleApplication {
     setViewportAndScissor(commandBuffer);
 
     PostProcessPushConstants postProcessPushConstants{};
-    postProcessPushConstants.outputMode = static_cast<uint32_t>(
-        guiManager ? guiManager->gBufferViewMode()
-                   : utility::ui::GBufferViewMode::Overview);
+    postProcessPushConstants.outputMode = static_cast<uint32_t>(displayMode);
     vkCmdPushConstants(commandBuffer, postProcessPipelineLayout,
                        VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(PostProcessPushConstants),

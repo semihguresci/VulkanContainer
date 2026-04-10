@@ -29,11 +29,20 @@ uint32_t countIndices(const std::vector<Mesh>& meshes) {
 Vertex makeFaceVertex(const glm::vec3& position, const glm::vec2& texCoord,
                       const glm::vec3& normal, const glm::vec3& tangent) {
   Vertex vertex{};
+  const glm::vec3 safeNormal = glm::normalize(normal);
+  glm::vec3 safeTangent = tangent - safeNormal * glm::dot(safeNormal, tangent);
+  if (glm::dot(safeTangent, safeTangent) < 1e-8f) {
+    const glm::vec3 axis = std::abs(safeNormal.y) < 0.999f
+                               ? glm::vec3(0.0f, 1.0f, 0.0f)
+                               : glm::vec3(1.0f, 0.0f, 0.0f);
+    safeTangent = glm::cross(axis, safeNormal);
+  }
+  safeTangent = glm::normalize(safeTangent);
   vertex.position = position;
   vertex.color = glm::vec3(1.0f);
   vertex.texCoord = texCoord;
-  vertex.normal = glm::normalize(normal);
-  vertex.tangent = glm::vec4(glm::normalize(tangent), 1.0f);
+  vertex.normal = safeNormal;
+  vertex.tangent = glm::vec4(safeTangent, 1.0f);
   return vertex;
 }
 

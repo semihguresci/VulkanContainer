@@ -68,6 +68,8 @@ struct OitMetadataBuffer
 [[vk::binding(2, 2)]] RWStructuredBuffer<uint> nodeCounter;
 [[vk::binding(3, 2)]] ConstantBuffer<OitMetadataBuffer> uOit;
 
+#include "surface_normal_common.slang"
+
 struct PushConstants
 {
     uint objectIndex;
@@ -151,22 +153,6 @@ float3 EvaluateLight(float3 albedo, float3 normal, float3 V, float3 L,
     return (kD * albedo / PI + specular) * radiance * NdotL;
 }
 
-float3 fallbackTangent(float3 normal)
-{
-    float3 axis = abs(normal.y) < 0.999 ? float3(0.0, 1.0, 0.0)
-                                        : float3(1.0, 0.0, 0.0);
-    float3 tangent = cross(axis, normal);
-    if (length(tangent) < 1e-4)
-    {
-        tangent = cross(float3(0.0, 0.0, 1.0), normal);
-    }
-    if (length(tangent) < 1e-4)
-    {
-        tangent = float3(1.0, 0.0, 0.0);
-    }
-    return normalize(tangent);
-}
-
 [shader("vertex")]
 VSOutput vertMain(VSInput input)
 {
@@ -175,30 +161,8 @@ VSOutput vertMain(VSInput input)
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
     float3x3 modelMatrix = (float3x3)obj.model;
-    float3 worldNormal = mul((float3x3)obj.normalMatrix, input.inNormal);
-    if (!all(isfinite(worldNormal)) || length(worldNormal) < 1e-4)
-    {
-        worldNormal = float3(0.0, 1.0, 0.0);
-    }
-    else
-    {
-        worldNormal = normalize(worldNormal);
-    }
-
-    float3 worldTangent = mul(modelMatrix, input.inTangent.xyz);
-    worldTangent = worldTangent - worldNormal * dot(worldNormal, worldTangent);
-    if (!all(isfinite(worldTangent)) || length(worldTangent) < 1e-4)
-    {
-        worldTangent = fallbackTangent(worldNormal);
-    }
-    else
-    {
-        worldTangent = normalize(worldTangent);
-    }
-
-    float modelHandednessSign = determinant(modelMatrix) < 0.0 ? -1.0 : 1.0;
-    float tangentHandedness = input.inTangent.w * modelHandednessSign;
-    tangentHandedness = tangentHandedness < 0.0 ? -1.0 : 1.0;
+    float3 worldNormal = BuildWorldNormal((float3x3)obj.normalMatrix, input.inNormal);
+    float4 worldTangent = BuildWorldTangent(modelMatrix, worldNormal, input.inTangent);
 
     output.pos = mul(uCamera.viewProj, worldPos);
     output.baseColor = obj.color;
@@ -215,7 +179,7 @@ VSOutput vertMain(VSInput input)
     output.alphaCutoff = obj.alphaCutoff;
     output.flags = obj.flags;
     output.worldNormal = worldNormal;
-    output.worldTangent = float4(worldTangent, tangentHandedness);
+    output.worldTangent = worldTangent;
     return output;
 }
 
@@ -253,46 +217,9 @@ float4 fragMain(VSOutput vertIn) : SV_Target0
         sampledMetallic *= mrSample.b;
     }
 
-    float3 geomNormal = vertIn.worldNormal;
-    if (!all(isfinite(geomNormal)) || length(geomNormal) < 1e-4)
-    {
-        geomNormal = float3(0.0, 1.0, 0.0);
-    }
-    else
-    {
-        geomNormal = normalize(geomNormal);
-    }
-
-    float3 tangent = vertIn.worldTangent.xyz;
-    tangent = tangent - geomNormal * dot(geomNormal, tangent);
-    if (!all(isfinite(tangent)) || length(tangent) < 1e-4)
-    {
-        tangent = fallbackTangent(geomNormal);
-    }
-    else
-    {
-        tangent = normalize(tangent);
-    }
-
-    float tangentSign = abs(vertIn.worldTangent.w) > 0.5 ? vertIn.worldTangent.w : 1.0;
-    float3 bitangent = normalize(cross(geomNormal, tangent)) * tangentSign;
-    if (!all(isfinite(bitangent)) || length(bitangent) < 1e-4)
-    {
-        bitangent = normalize(cross(geomNormal, fallbackTangent(geomNormal))) * tangentSign;
-    }
-
-    float3 shadingNormal = geomNormal;
-    if (vertIn.normalTextureIndex != 0xffffffff)
-    {
-        uint texIndex = NonUniformResourceIndex(vertIn.normalTextureIndex);
-        float3 normalSample = materialTextures[texIndex]
-                                  .Sample(baseSampler, vertIn.texCoord)
-                                  .xyz * 2.0 - 1.0;
-        shadingNormal = normalize(
-            tangent * normalSample.x +
-            bitangent * normalSample.y +
-            geomNormal * normalSample.z);
-    }
+    SurfaceNormalState surfaceNormal = EvaluateSurfaceNormal(
+        vertIn.worldNormal, vertIn.worldTangent, vertIn.texCoord,
+        vertIn.normalTextureIndex);
 
     float occlusion = 1.0;
     if (vertIn.occlusionTextureIndex != 0xffffffff)
@@ -317,7 +244,7 @@ float4 fragMain(VSOutput vertIn) : SV_Target0
     float3 directionalL = normalize(-uLighting.directionalDirection.xyz);
     float3 directionalRadiance =
         uLighting.directionalColorIntensity.rgb * uLighting.directionalColorIntensity.a;
-    lighting += EvaluateLight(baseColor, shadingNormal, V, directionalL,
+    lighting += EvaluateLight(baseColor, surfaceNormal.shadingNormal, V, directionalL,
                               directionalRadiance, metallic, roughness);
 
     for (uint i = 0; i < uLighting.pointLightCount && i < MAX_POINT_LIGHTS; ++i)
@@ -334,7 +261,7 @@ float4 fragMain(VSOutput vertIn) : SV_Target0
         float3 radiance =
             uLighting.pointLights[i].colorIntensity.rgb *
             uLighting.pointLights[i].colorIntensity.a * attenuation;
-        lighting += EvaluateLight(baseColor, shadingNormal, V,
+        lighting += EvaluateLight(baseColor, surfaceNormal.shadingNormal, V,
                                   lightVector / max(distanceToLight, 1e-4),
                                   radiance, metallic, roughness);
     }

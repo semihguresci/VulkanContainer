@@ -182,6 +182,30 @@ bool isFiniteVec3(const glm::vec3& value) {
          std::isfinite(value.z);
 }
 
+glm::vec3 sanitizeNormal(const glm::vec3& normal) {
+  if (!isFiniteVec3(normal) || glm::dot(normal, normal) < 1e-8f) {
+    return glm::vec3(0.0f, 1.0f, 0.0f);
+  }
+  return glm::normalize(normal);
+}
+
+glm::vec4 orthonormalizeTangent(const glm::vec3& normal,
+                                const glm::vec4& tangentValue) {
+  const glm::vec3 safeNormal = sanitizeNormal(normal);
+
+  glm::vec3 tangent(tangentValue);
+  tangent -= safeNormal * glm::dot(safeNormal, tangent);
+  if (!isFiniteVec3(tangent) || glm::dot(tangent, tangent) < 1e-8f) {
+    tangent = fallbackTangentForNormal(safeNormal);
+  } else {
+    tangent = glm::normalize(tangent);
+  }
+
+  float handedness = std::isfinite(tangentValue.w) ? tangentValue.w : 1.0f;
+  handedness = handedness < 0.0f ? -1.0f : 1.0f;
+  return glm::vec4(tangent, handedness);
+}
+
 void generateMissingNormals(std::vector<Vertex>& vertices,
                             const std::vector<uint32_t>& indices) {
   for (auto& vertex : vertices) {
@@ -219,28 +243,14 @@ void generateMissingNormals(std::vector<Vertex>& vertices,
 
 void normalizeLoadedNormals(std::vector<Vertex>& vertices) {
   for (auto& vertex : vertices) {
-    if (glm::dot(vertex.normal, vertex.normal) < 1e-8f ||
-        !isFiniteVec3(vertex.normal)) {
-      vertex.normal = glm::vec3(0.0f, 1.0f, 0.0f);
-      continue;
-    }
-    vertex.normal = glm::normalize(vertex.normal);
+    vertex.normal = sanitizeNormal(vertex.normal);
   }
 }
 
 void sanitizeTangents(std::vector<Vertex>& vertices) {
   for (auto& vertex : vertices) {
-    glm::vec3 tangent(vertex.tangent);
-    if (!isFiniteVec3(tangent) ||
-        glm::dot(tangent, tangent) < 1e-8f) {
-      tangent = fallbackTangentForNormal(vertex.normal);
-    } else {
-      tangent = glm::normalize(tangent);
-    }
-
-    float handedness = std::isfinite(vertex.tangent.w) ? vertex.tangent.w : 1.0f;
-    handedness = handedness < 0.0f ? -1.0f : 1.0f;
-    vertex.tangent = glm::vec4(tangent, handedness);
+    vertex.normal = sanitizeNormal(vertex.normal);
+    vertex.tangent = orthonormalizeTangent(vertex.normal, vertex.tangent);
   }
 }
 
@@ -290,12 +300,7 @@ void generateMissingTangents(std::vector<Vertex>& vertices,
   }
 
   for (size_t i = 0; i < vertices.size(); ++i) {
-    glm::vec3 normal = vertices[i].normal;
-    if (glm::dot(normal, normal) < 1e-8f) {
-      normal = glm::vec3(0.0f, 1.0f, 0.0f);
-    } else {
-      normal = glm::normalize(normal);
-    }
+    glm::vec3 normal = sanitizeNormal(vertices[i].normal);
 
     glm::vec3 tangent = tangents[i] - normal * glm::dot(normal, tangents[i]);
     if (glm::dot(tangent, tangent) < 1e-8f) {
@@ -311,7 +316,8 @@ void generateMissingTangents(std::vector<Vertex>& vertices,
                                                                        : 1.0f;
     }
 
-    vertices[i].tangent = glm::vec4(tangent, handedness);
+    vertices[i].normal = normal;
+    vertices[i].tangent = orthonormalizeTangent(normal, glm::vec4(tangent, handedness));
   }
 }
 
