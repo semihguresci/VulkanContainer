@@ -2039,7 +2039,12 @@ class HelloTriangleApplication {
     sceneRasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     sceneRasterizer.lineWidth = 1.0f;
     sceneRasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    sceneRasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    // With Vulkan Y-flip (proj[1][1] *= -1) a standard RH/glTF CCW-wound face
+    // appears CW in NDC (negative Vulkan area).  VK_FRONT_FACE_CLOCKWISE makes
+    // that CW face (negative area) front-facing, which is the correct mapping
+    // for right-hand coordinate system meshes rendered with a Y-flipped
+    // projection.
+    sceneRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
     sceneRasterizer.depthBiasEnable = VK_FALSE;
 
     VkPipelineRasterizationStateCreateInfo fullscreenRasterizer =
@@ -2179,7 +2184,8 @@ class HelloTriangleApplication {
 
     VkPushConstantRange scenePushConstantRange{};
     scenePushConstantRange.stageFlags =
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
+        VK_SHADER_STAGE_FRAGMENT_BIT;
     scenePushConstantRange.size = sizeof(BindlessPushConstants);
 
     VkPushConstantRange lightPushConstantRange{};
