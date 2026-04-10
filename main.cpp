@@ -229,7 +229,6 @@ class HelloTriangleApplication {
   VkPipeline gBufferPipeline{VK_NULL_HANDLE};
   VkPipeline directionalLightPipeline{VK_NULL_HANDLE};
   VkPipeline stencilVolumePipeline{VK_NULL_HANDLE};
-  VkPipeline stencilVolumePipelineFlipped{VK_NULL_HANDLE};
   VkPipeline pointLightPipeline{VK_NULL_HANDLE};
   VkPipeline pointLightStencilDebugPipeline{VK_NULL_HANDLE};
   VkPipeline transparentPipeline{VK_NULL_HANDLE};
@@ -298,10 +297,8 @@ class HelloTriangleApplication {
   bool framebufferResized = false;
   bool debugDirectionalOnly = false;
   bool debugVisualizePointLightStencil = false;
-  bool debugFlipPointLightFrontFace = false;
   bool debugDirectionalOnlyKeyDown = false;
   bool debugVisualizePointLightStencilKeyDown = false;
-  bool debugFlipPointLightFrontFaceKeyDown = false;
 
   void initWindow() {
     windowManager = std::make_unique<window::WindowManager>();
@@ -496,7 +493,6 @@ class HelloTriangleApplication {
       gBufferPipeline = VK_NULL_HANDLE;
       directionalLightPipeline = VK_NULL_HANDLE;
       stencilVolumePipeline = VK_NULL_HANDLE;
-      stencilVolumePipelineFlipped = VK_NULL_HANDLE;
       pointLightPipeline = VK_NULL_HANDLE;
       pointLightStencilDebugPipeline = VK_NULL_HANDLE;
       transparentPipeline = VK_NULL_HANDLE;
@@ -2040,9 +2036,6 @@ class HelloTriangleApplication {
         sceneRasterizer;
     fullscreenRasterizer.cullMode = VK_CULL_MODE_NONE;
     fullscreenRasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-    VkPipelineRasterizationStateCreateInfo fullscreenRasterizerFlipped =
-        fullscreenRasterizer;
-    fullscreenRasterizerFlipped.frontFace = VK_FRONT_FACE_CLOCKWISE;
     VkPipelineRasterizationStateCreateInfo normalLineRasterizer =
         sceneRasterizer;
     normalLineRasterizer.cullMode = VK_CULL_MODE_NONE;
@@ -2260,13 +2253,6 @@ class HelloTriangleApplication {
     stencilPipelineInfo.pColorBlendState = &stencilColorBlending;
     stencilVolumePipeline = pipelineManager->createGraphicsPipeline(
         stencilPipelineInfo, "stencil_volume_pipeline");
-
-    VkGraphicsPipelineCreateInfo stencilPipelineInfoFlipped =
-        stencilPipelineInfo;
-    stencilPipelineInfoFlipped.pRasterizationState =
-        &fullscreenRasterizerFlipped;
-    stencilVolumePipelineFlipped = pipelineManager->createGraphicsPipeline(
-        stencilPipelineInfoFlipped, "stencil_volume_pipeline_flipped");
 
     VkGraphicsPipelineCreateInfo pointPipelineInfo = fullscreenPipelineInfo;
     pointPipelineInfo.stageCount =
@@ -2716,16 +2702,6 @@ class HelloTriangleApplication {
                               : "Debug: point-light stencil visualization disabled");
                     }
                   });
-
-    toggleFromKey(GLFW_KEY_F8, debugFlipPointLightFrontFaceKeyDown, [this]() {
-      debugFlipPointLightFrontFace = !debugFlipPointLightFrontFace;
-      if (guiManager) {
-        guiManager->setStatusMessage(
-            debugFlipPointLightFrontFace
-                ? "Debug: flipped front-face for stencil volume pass"
-                : "Debug: default front-face for stencil volume pass");
-      }
-    });
 
     if (guiManager && guiManager->isCapturingInput() &&
         !inputManager.isLooking()) {
@@ -3253,9 +3229,6 @@ class HelloTriangleApplication {
     stencilClearRect.layerCount = 1;
 
     if (!debugDirectionalOnly) {
-      const VkPipeline activeStencilPipeline =
-          debugFlipPointLightFrontFace ? stencilVolumePipelineFlipped
-                                       : stencilVolumePipeline;
       const VkPipeline activePointPipeline =
           debugVisualizePointLightStencil ? pointLightStencilDebugPipeline
                                           : pointLightPipeline;
@@ -3270,7 +3243,7 @@ class HelloTriangleApplication {
             lightingData.pointLights[i].colorIntensity;
 
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          activeStencilPipeline);
+                          stencilVolumePipeline);
         vkCmdBindDescriptorSets(
             commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
             lightingPipelineLayout, 0,

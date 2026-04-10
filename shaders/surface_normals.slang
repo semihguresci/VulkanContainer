@@ -46,7 +46,6 @@ struct VSInput
 struct VSOutput
 {
     float3 worldPosition : TEXCOORD0;
-    float3 worldNormal   : TEXCOORD1;
 };
 
 struct GSOutput
@@ -55,15 +54,6 @@ struct GSOutput
     float4 color : COLOR0;
 };
 
-float3 safeNormalize(float3 value, float3 fallbackValue)
-{
-    if (!all(isfinite(value)) || length(value) < 1e-6)
-    {
-        return normalize(fallbackValue);
-    }
-    return normalize(value);
-}
-
 [shader("vertex")]
 VSOutput vertMain(VSInput input)
 {
@@ -71,10 +61,7 @@ VSOutput vertMain(VSInput input)
     ObjectBuffer obj = uObjects[pc.objectIndex];
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
-    float3 worldNormal = mul((float3x3)obj.normalMatrix, input.inNormal);
-
     output.worldPosition = worldPos.xyz;
-    output.worldNormal = safeNormalize(worldNormal, float3(0.0, 1.0, 0.0));
     return output;
 }
 
@@ -96,20 +83,17 @@ void appendLine(inout LineStream<GSOutput> stream,
     stream.RestartStrip();
 }
 
-// Visualize actual triangle winding first, then compare the loaded/interpolated
-// normal against it. The face normal is the authoritative orientation signal.
+// Visualize the geometric face normal. This is the authoritative orientation
+// signal for diagnosing winding/front-face issues.
 [shader("geometry")]
-[maxvertexcount(4)]
+[maxvertexcount(2)]
 void geomMain(triangle VSOutput input[3], inout LineStream<GSOutput> stream)
 {
     static const float kFaceNormalLength = 0.16;
-    static const float kVertexNormalLength = 0.10;
     static const float kNormalOffset = 0.002;
 
     static const float4 kFaceBaseColor = float4(0.15, 0.85, 1.0, 1.0);
     static const float4 kFaceTipColor  = float4(1.0, 0.92, 0.10, 1.0);
-    static const float4 kVertexBaseColor = float4(1.0, 0.25, 0.75, 0.9);
-    static const float4 kVertexTipColor  = float4(0.95, 0.95, 0.95, 0.9);
 
     const float3 p0 = input[0].worldPosition;
     const float3 p1 = input[1].worldPosition;
@@ -124,13 +108,17 @@ void geomMain(triangle VSOutput input[3], inout LineStream<GSOutput> stream)
     }
 
     const float3 faceNormal = normalize(faceNormalRaw);
-    const float3 averagedVertexNormal = safeNormalize(
-        input[0].worldNormal + input[1].worldNormal + input[2].worldNormal,
-        faceNormal);
 
     const float3 centroid = (p0 + p1 + p2) / 3.0;
-    const float3 cameraOffsetDirection = safeNormalize(
-        uCamera.cameraWorldPosition.xyz - centroid, faceNormal);
+    float3 cameraOffsetDirection = uCamera.cameraWorldPosition.xyz - centroid;
+    if (!all(isfinite(cameraOffsetDirection)) || length(cameraOffsetDirection) < 1e-6)
+    {
+        cameraOffsetDirection = faceNormal;
+    }
+    else
+    {
+        cameraOffsetDirection = normalize(cameraOffsetDirection);
+    }
     const float3 lineStart = centroid + cameraOffsetDirection * kNormalOffset;
 
     appendLine(stream,
@@ -138,12 +126,6 @@ void geomMain(triangle VSOutput input[3], inout LineStream<GSOutput> stream)
                lineStart + faceNormal * kFaceNormalLength,
                kFaceBaseColor,
                kFaceTipColor);
-
-    appendLine(stream,
-               lineStart,
-               lineStart + averagedVertexNormal * kVertexNormalLength,
-               kVertexBaseColor,
-               kVertexTipColor);
 }
 
 [shader("fragment")]
