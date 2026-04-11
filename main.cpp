@@ -2039,12 +2039,10 @@ class HelloTriangleApplication {
     sceneRasterizer.polygonMode = VK_POLYGON_MODE_FILL;
     sceneRasterizer.lineWidth = 1.0f;
     sceneRasterizer.cullMode = VK_CULL_MODE_BACK_BIT;
-    // With Vulkan Y-flip (proj[1][1] *= -1) a standard RH/glTF CCW-wound face
-    // appears CW in NDC (negative Vulkan area).  VK_FRONT_FACE_CLOCKWISE makes
-    // that CW face (negative area) front-facing, which is the correct mapping
-    // for right-hand coordinate system meshes rendered with a Y-flipped
-    // projection.
-    sceneRasterizer.frontFace = VK_FRONT_FACE_CLOCKWISE;
+    // Mesh data is authored with standard glTF/RH CCW winding. With the
+    // current positive-height viewport setup, scene geometry should keep CCW
+    // as the front-face convention.
+    sceneRasterizer.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
     sceneRasterizer.depthBiasEnable = VK_FALSE;
 
     VkPipelineRasterizationStateCreateInfo fullscreenRasterizer =
@@ -2802,7 +2800,14 @@ class HelloTriangleApplication {
 
       ObjectData object{};
       object.model = node->worldTransform;
-      object.normalMatrix = glm::transpose(glm::inverse(node->worldTransform));
+      {
+        const glm::mat3 model3 = glm::mat3(node->worldTransform);
+        const glm::mat3 normal3 = glm::transpose(glm::inverse(model3));
+        object.normalMatrix = glm::mat4(1.0f);
+        object.normalMatrix[0] = glm::vec4(normal3[0], 0.0f);
+        object.normalMatrix[1] = glm::vec4(normal3[1], 0.0f);
+        object.normalMatrix[2] = glm::vec4(normal3[2], 0.0f);
+      }
       object.color = sceneManager->resolveMaterialColor(materialIndex);
       object.emissiveColor =
           sceneManager->resolveMaterialEmissive(materialIndex);
@@ -2864,7 +2869,14 @@ class HelloTriangleApplication {
           glm::translate(glm::mat4(1.0f), diagCenter) *
           glm::scale(glm::mat4(1.0f), glm::vec3(diagScale));
       cubeObject.model = cubeModel;
-      cubeObject.normalMatrix = glm::transpose(glm::inverse(cubeModel));
+      {
+        const glm::mat3 model3 = glm::mat3(cubeModel);
+        const glm::mat3 normal3 = glm::transpose(glm::inverse(model3));
+        cubeObject.normalMatrix = glm::mat4(1.0f);
+        cubeObject.normalMatrix[0] = glm::vec4(normal3[0], 0.0f);
+        cubeObject.normalMatrix[1] = glm::vec4(normal3[1], 0.0f);
+        cubeObject.normalMatrix[2] = glm::vec4(normal3[2], 0.0f);
+      }
       cubeObject.color = glm::vec4(1.0f);
       cubeObject.metallicRoughness = glm::vec2(0.0f, 0.5f);
       diagCubeObjectIndex = static_cast<uint32_t>(objectData.size());
