@@ -25,12 +25,12 @@ struct ObjectBuffer
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
-[[vk::binding(2, 0)]] SamplerState baseSampler;
-[[vk::binding(3, 0)]] Texture2D materialTextures[];
 
 struct PushConstants
 {
-    uint objectIndex;
+    [[vk::offset(0)]] uint objectIndex;
+    [[vk::offset(16)]] float4 colorIntensity;
+    [[vk::offset(32)]] float lineWidth;
 };
 
 [[vk::push_constant]]
@@ -48,12 +48,6 @@ struct VSInput
 struct VSOutput
 {
     float4 pos : SV_Position;
-    [[vk::location(0)]] float3 objectNormal;
-    [[vk::location(1)]] float2 texCoord;
-    [[vk::location(2)]] uint baseColorTextureIndex;
-    [[vk::location(3)]] uint flags;
-    [[vk::location(4)]] float alphaCutoff;
-    [[vk::location(5)]] float baseColorAlpha;
 };
 
 [shader("vertex")]
@@ -61,43 +55,16 @@ VSOutput vertMain(VSInput input)
 {
     VSOutput output;
     ObjectBuffer obj = uObjects[pc.objectIndex];
-
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);
-    output.objectNormal = normalize(input.inNormal);
-    output.texCoord = input.inTexCoord;
-    output.baseColorTextureIndex = obj.baseColorTextureIndex;
-    output.flags = obj.flags;
-    output.alphaCutoff = obj.alphaCutoff;
-    output.baseColorAlpha = obj.color.a;
     return output;
 }
 
 [shader("fragment")]
 float4 fragMain(VSOutput input) : SV_Target0
 {
-    if ((input.flags & 0x2u) != 0u)
-    {
-        discard;
-    }
-
-    float alpha = input.baseColorAlpha;
-    if (input.baseColorTextureIndex != 0xffffffff)
-    {
-        uint texIndex = NonUniformResourceIndex(input.baseColorTextureIndex);
-        alpha *= materialTextures[texIndex].Sample(baseSampler, input.texCoord).a;
-    }
-
-    if ((input.flags & 0x1u) != 0u && alpha < input.alphaCutoff)
-    {
-        discard;
-    }
-
-    float3 objectNormal = normalize(input.objectNormal);
-    if (!all(isfinite(objectNormal)))
-    {
-        objectNormal = float3(0.0, 1.0, 0.0);
-    }
-
-    return float4(saturate(objectNormal * 0.5 + 0.5), 1.0);
+    return float4(pc.colorIntensity.rgb, saturate(pc.colorIntensity.a));
 }
+
+
+

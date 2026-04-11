@@ -31,6 +31,20 @@ enum class GBufferViewMode : uint32_t {
   ObjectSpaceNormals = 10,
 };
 
+enum class WireframeMode : uint32_t {
+  Overlay = 0,
+  Full = 1,
+};
+
+struct WireframeSettings {
+  bool enabled{false};
+  WireframeMode mode{WireframeMode::Overlay};
+  bool depthTest{true};
+  glm::vec3 color{0.0f, 1.0f, 0.0f};
+  float lineWidth{1.0f};
+  float overlayIntensity{0.85f};
+};
+
 struct TransformControls {
   glm::vec3 position{0.0f, 0.0f, 0.0f};
   glm::vec3 rotationDegrees{0.0f, 0.0f, 0.0f};
@@ -75,10 +89,15 @@ class GuiManager {
   [[nodiscard]] bool showLightGizmos() const { return showLightGizmos_; }
   [[nodiscard]] bool showNormalDiagCube() const { return showNormalDiagCube_; }
   [[nodiscard]] GBufferViewMode gBufferViewMode() const { return gBufferViewMode_; }
+  [[nodiscard]] const WireframeSettings& wireframeSettings() const {
+    return wireframeSettings_;
+  }
+  [[nodiscard]] bool wireframeSupported() const { return wireframeSupported_; }
   [[nodiscard]] const std::string& statusMessage() const { return statusMessage_; }
   void setStatusMessage(std::string status) {
     statusMessage_ = std::move(status);
   }
+  void setWireframeCapabilities(bool supported, bool wideLineSupported);
 
  private:
   void ensureInitialized() const;
@@ -88,7 +107,10 @@ class GuiManager {
   bool showGeometryOverlay_{false};
   bool showLightGizmos_{true};
   bool showNormalDiagCube_{false};
+  bool wireframeSupported_{false};
+  bool wireframeWideLineSupported_{false};
   GBufferViewMode gBufferViewMode_{GBufferViewMode::Overview};
+  WireframeSettings wireframeSettings_{};
   std::string gltfPathInput_{};
   std::string defaultModelPath_{
       };

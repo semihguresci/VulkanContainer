@@ -11,7 +11,8 @@ struct DeviceCreateInfo {
   std::vector<const char*> requiredExtensions{};
   std::vector<const char*> validationLayers{};
   bool enableValidationLayers{false};
-  VkPhysicalDeviceFeatures enabledFeatures{};  // C Vulkan features struct
+  VkPhysicalDeviceFeatures enabledFeatures{};  // Required features.
+  VkPhysicalDeviceFeatures optionalFeatures{}; // Enabled when supported.
   const void* next{nullptr};
 };
 
@@ -35,6 +36,9 @@ class VulkanDevice {
   [[nodiscard]] QueueFamilyIndices queueFamilyIndices() const noexcept {
     return queueFamilyIndices_;
   }
+  [[nodiscard]] const VkPhysicalDeviceFeatures& enabledFeatures() const noexcept {
+    return enabledFeatures_;
+  }
 
  private:
   bool isDeviceSuitable(VkPhysicalDevice device) const;
@@ -53,6 +57,7 @@ class VulkanDevice {
   VkQueue graphicsQueue_{VK_NULL_HANDLE};
   VkQueue presentQueue_{VK_NULL_HANDLE};
   QueueFamilyIndices queueFamilyIndices_{};
+  VkPhysicalDeviceFeatures enabledFeatures_{};
 };
 
 }  // namespace utility::vulkan

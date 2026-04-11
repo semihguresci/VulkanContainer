@@ -12,7 +12,9 @@
 //                near→1, far→0
 // Y-flip       : proj[1][1] *= -1  (Vulkan NDC has Y-down)
 // Front-face   : VK_FRONT_FACE_COUNTER_CLOCKWISE
-//   Reason     : the Y-flip inverts the perceived winding in NDC; with the current positive-height viewport configuration,`r`n//                scene geometry keeps CCW as front-facing in framebuffer`r`n//                space.
+//   Reason     : the Y-flip inverts the perceived winding in NDC; with the current positive-height viewport configuration,
+//                scene geometry keeps CCW as front-facing in framebuffer
+//                space.
 // Depth        : cleared to 0.0f, compare GREATER_OR_EQUAL (reverse-Z)
 
 #include <gtest/gtest.h>
@@ -149,7 +151,31 @@ TEST(RenderingConvention, CWWorldTriangle_IsCCWInNDC_AfterYFlip) {
         << "CW world-space triangle must still become CCW in NDC after Y-flip.";
 }
 
-TEST(RenderingConvention, Pipeline_FrontFaceIsCounterClockwise_InFramebufferConvention) {`r`n    // After projection Y-flip, CCW world winding appears CW in NDC. Vulkan front-face`r`n    // classification is effectively in framebuffer convention (Y-down), where that`r`n    // same triangle is CCW and therefore front-facing with VK_FRONT_FACE_COUNTER_CLOCKWISE.`r`n    glm::mat4 vp = makeTestViewProj({0, 0, 3}, {0, 0, 0});`r`n`r`n    glm::vec3 ccw0(-1, -1, 0);`r`n    glm::vec3 ccw1( 1, -1, 0);`r`n    glm::vec3 ccw2( 0,  1, 0);`r`n    glm::vec3 cw0(-1, -1, 0);`r`n    glm::vec3 cw1( 0,  1, 0);`r`n    glm::vec3 cw2( 1, -1, 0);`r`n`r`n    const float ccwAreaNdc = ndcSignedArea(ccw0, ccw1, ccw2, vp);`r`n    const float cwAreaNdc = ndcSignedArea(cw0, cw1, cw2, vp);`r`n`r`n    // Convert NDC signed area to framebuffer (Y-down) signed area by flipping sign.`r`n    const float ccwAreaFramebuffer = -ccwAreaNdc;`r`n    const float cwAreaFramebuffer = -cwAreaNdc;`r`n`r`n    EXPECT_GT(ccwAreaFramebuffer, 0.0f)`r`n        << "CCW world winding should be front-facing with VK_FRONT_FACE_COUNTER_CLOCKWISE.";`r`n    EXPECT_LT(cwAreaFramebuffer, 0.0f)`r`n        << "CW world winding should be back-facing with VK_FRONT_FACE_COUNTER_CLOCKWISE.";`r`n}
+TEST(RenderingConvention, Pipeline_FrontFaceIsCounterClockwise_InFramebufferConvention) {
+    // After projection Y-flip, CCW world winding appears CW in NDC. Vulkan front-face
+    // classification is effectively in framebuffer convention (Y-down), where that
+    // same triangle is CCW and therefore front-facing with VK_FRONT_FACE_COUNTER_CLOCKWISE.
+    glm::mat4 vp = makeTestViewProj({0, 0, 3}, {0, 0, 0});
+
+    glm::vec3 ccw0(-1, -1, 0);
+    glm::vec3 ccw1( 1, -1, 0);
+    glm::vec3 ccw2( 0,  1, 0);
+    glm::vec3 cw0(-1, -1, 0);
+    glm::vec3 cw1( 0,  1, 0);
+    glm::vec3 cw2( 1, -1, 0);
+
+    const float ccwAreaNdc = ndcSignedArea(ccw0, ccw1, ccw2, vp);
+    const float cwAreaNdc = ndcSignedArea(cw0, cw1, cw2, vp);
+
+    // Convert NDC signed area to framebuffer (Y-down) signed area by flipping sign.
+    const float ccwAreaFramebuffer = -ccwAreaNdc;
+    const float cwAreaFramebuffer = -cwAreaNdc;
+
+    EXPECT_GT(ccwAreaFramebuffer, 0.0f)
+        << "CCW world winding should be front-facing with VK_FRONT_FACE_COUNTER_CLOCKWISE.";
+    EXPECT_LT(cwAreaFramebuffer, 0.0f)
+        << "CW world winding should be back-facing with VK_FRONT_FACE_COUNTER_CLOCKWISE.";
+}
 
 // ---------------------------------------------------------------------------
 // 3. Cube geometry
@@ -388,3 +414,4 @@ TEST(RenderingConvention, ShaderBoundary_TransposedUploadsDoNotMatchCpuMath) {
         << "Transposing CPU column-vector matrices before upload should "
            "not match the column-major shader math.";
 }
+

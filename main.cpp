@@ -112,6 +112,20 @@ struct PostProcessPushConstants {
   uint32_t outputMode{0};
 };
 
+struct WireframePushConstants {
+  alignas(4) uint32_t objectIndex{0};
+  alignas(4) uint32_t padding0{0};
+  alignas(4) uint32_t padding1{0};
+  alignas(4) uint32_t padding2{0};
+  alignas(16) glm::vec4 colorIntensity{0.0f, 1.0f, 0.0f, 1.0f};
+  alignas(4) float lineWidth{1.0f};
+  alignas(4) float padding3{0.0f};
+  alignas(4) float padding4{0.0f};
+  alignas(4) float padding5{0.0f};
+};
+static_assert(offsetof(WireframePushConstants, colorIntensity) == 16);
+static_assert(offsetof(WireframePushConstants, lineWidth) == 32);
+
 inline constexpr uint32_t kInvalidOitNodeIndex =
     std::numeric_limits<uint32_t>::max();
 
@@ -216,6 +230,7 @@ class HelloTriangleApplication {
   VkPipelineLayout transparentPipelineLayout{VK_NULL_HANDLE};
   VkPipelineLayout lightingPipelineLayout{VK_NULL_HANDLE};
   VkPipelineLayout postProcessPipelineLayout{VK_NULL_HANDLE};
+  VkPipelineLayout wireframePipelineLayout{VK_NULL_HANDLE};
   VkDescriptorSetLayout lightingDescriptorSetLayout{VK_NULL_HANDLE};
   VkDescriptorSetLayout postProcessDescriptorSetLayout{VK_NULL_HANDLE};
   VkDescriptorSetLayout oitDescriptorSetLayout{VK_NULL_HANDLE};
@@ -234,6 +249,8 @@ class HelloTriangleApplication {
   VkPipeline transparentPipeline{VK_NULL_HANDLE};
   VkPipeline postProcessPipeline{VK_NULL_HANDLE};
   VkPipeline geometryDebugPipeline{VK_NULL_HANDLE};
+  VkPipeline wireframeDepthPipeline{VK_NULL_HANDLE};
+  VkPipeline wireframeNoDepthPipeline{VK_NULL_HANDLE};
   VkPipeline surfaceNormalLinePipeline{VK_NULL_HANDLE};
   VkPipeline objectNormalDebugPipeline{VK_NULL_HANDLE};
   VkPipeline lightGizmoPipeline{VK_NULL_HANDLE};
@@ -278,6 +295,7 @@ class HelloTriangleApplication {
   std::vector<DrawCommand> transparentDrawCommands;
   BindlessPushConstants pushConstants{};
   LightPushConstants lightPushConstants{};
+  WireframePushConstants wireframePushConstants{};
 
   std::unique_ptr<utility::camera::BaseCamera> camera;
   utility::input::InputManager inputManager{};
@@ -298,6 +316,9 @@ class HelloTriangleApplication {
   bool framebufferResized = false;
   bool debugDirectionalOnly = false;
   bool debugVisualizePointLightStencil = false;
+  bool wireframeSupported = false;
+  bool wireframeWideLinesSupported = false;
+  bool wireframeRasterModeSupported = false;
   bool debugDirectionalOnlyKeyDown = false;
   bool debugVisualizePointLightStencilKeyDown = false;
 
@@ -403,6 +424,8 @@ class HelloTriangleApplication {
         postProcessRenderPass,
         static_cast<uint32_t>(swapChainManager->imageCount()),
         window->getNativeWindow(), config_.modelPath);
+    guiManager->setWireframeCapabilities(wireframeSupported,
+                                        wireframeWideLinesSupported);
     createCommandBuffers();
     frameSyncManager = std::make_unique<FrameSyncManager>(
         deviceWrapper->device(), config_.maxFramesInFlight);
@@ -621,6 +644,8 @@ class HelloTriangleApplication {
     createInfo.enabledFeatures.samplerAnisotropy = VK_TRUE;
     createInfo.enabledFeatures.fragmentStoresAndAtomics = VK_TRUE;
     createInfo.enabledFeatures.geometryShader = VK_TRUE;
+    createInfo.optionalFeatures.fillModeNonSolid = VK_TRUE;
+    createInfo.optionalFeatures.wideLines = VK_TRUE;
 
     VkPhysicalDeviceDescriptorIndexingFeatures descriptorIndexingFeatures{};
     descriptorIndexingFeatures.sType =
@@ -647,6 +672,17 @@ class HelloTriangleApplication {
 
     deviceWrapper = std::make_shared<utility::vulkan::VulkanDevice>(
         instance, surface, createInfo);
+
+    const auto& enabledFeatures = deviceWrapper->enabledFeatures();
+    wireframeRasterModeSupported = enabledFeatures.fillModeNonSolid == VK_TRUE;
+    wireframeWideLinesSupported = wireframeRasterModeSupported
+                                     ? (enabledFeatures.wideLines == VK_TRUE)
+                                     : true;
+    wireframeSupported = true;
+    if (!wireframeRasterModeSupported) {
+      utility::logger::ContainerLogger::instance().renderer()->warn(
+          "Wireframe polygon mode unsupported; using shader-based wireframe fallback");
+    }
   }
 
   VkFormat findSupportedFormat(std::initializer_list<VkFormat> candidates,
@@ -1934,6 +1970,16 @@ class HelloTriangleApplication {
         loadModule("spv_shaders/geometry_debug.vert.spv");
     VkShaderModule debugFragShaderModule =
         loadModule("spv_shaders/geometry_debug.frag.spv");
+    VkShaderModule wireframeVertShaderModule =
+        loadModule("spv_shaders/wireframe_debug.vert.spv");
+    VkShaderModule wireframeFragShaderModule =
+        loadModule("spv_shaders/wireframe_debug.frag.spv");
+    VkShaderModule wireframeFallbackVertShaderModule =
+        loadModule("spv_shaders/wireframe_fallback.vert.spv");
+    VkShaderModule wireframeFallbackGeomShaderModule =
+        loadModule("spv_shaders/wireframe_fallback.geom.spv");
+    VkShaderModule wireframeFallbackFragShaderModule =
+        loadModule("spv_shaders/wireframe_fallback.frag.spv");
     VkShaderModule surfaceNormalsVertShaderModule =
         loadModule("spv_shaders/surface_normals.vert.spv");
     VkShaderModule surfaceNormalsGeomShaderModule =
@@ -1982,6 +2028,16 @@ class HelloTriangleApplication {
     std::array<VkPipelineShaderStageCreateInfo, 2> debugShaderStages = {
         makeShaderStage(debugVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
         makeShaderStage(debugFragShaderModule, VK_SHADER_STAGE_FRAGMENT_BIT)};
+    std::array<VkPipelineShaderStageCreateInfo, 2> wireframeShaderStages = {
+        makeShaderStage(wireframeVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
+        makeShaderStage(wireframeFragShaderModule,
+                        VK_SHADER_STAGE_FRAGMENT_BIT)};
+    std::array<VkPipelineShaderStageCreateInfo, 3> wireframeFallbackShaderStages = {
+        makeShaderStage(wireframeFallbackVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
+        makeShaderStage(wireframeFallbackGeomShaderModule,
+                        VK_SHADER_STAGE_GEOMETRY_BIT),
+        makeShaderStage(wireframeFallbackFragShaderModule,
+                        VK_SHADER_STAGE_FRAGMENT_BIT)};
     std::array<VkPipelineShaderStageCreateInfo, 3>
         surfaceNormalShaderStages = {
             makeShaderStage(surfaceNormalsVertShaderModule,
@@ -2052,7 +2108,14 @@ class HelloTriangleApplication {
     VkPipelineRasterizationStateCreateInfo normalLineRasterizer =
         sceneRasterizer;
     normalLineRasterizer.cullMode = VK_CULL_MODE_NONE;
-
+    VkPipelineRasterizationStateCreateInfo wireframeRasterizer =
+        sceneRasterizer;
+    wireframeRasterizer.polygonMode = VK_POLYGON_MODE_LINE;
+    wireframeRasterizer.cullMode = VK_CULL_MODE_NONE;
+    wireframeRasterizer.lineWidth = 1.0f;
+    VkPipelineRasterizationStateCreateInfo wireframeFallbackRasterizer =
+        sceneRasterizer;
+    wireframeFallbackRasterizer.cullMode = VK_CULL_MODE_NONE;
     VkPipelineMultisampleStateCreateInfo multisampling{};
     multisampling.sType =
         VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
@@ -2081,6 +2144,19 @@ class HelloTriangleApplication {
     additiveBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     additiveBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
 
+    VkPipelineColorBlendAttachmentState wireframeBlendAttachment =
+        colorBlendAttachment;
+    wireframeBlendAttachment.blendEnable = VK_TRUE;
+    wireframeBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_SRC_ALPHA;
+    wireframeBlendAttachment.dstColorBlendFactor =
+        VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    wireframeBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    wireframeBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    wireframeBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+    wireframeBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+
+    std::array<VkPipelineColorBlendAttachmentState, 1>
+        wireframeColorBlendAttachments = {wireframeBlendAttachment};
     VkPipelineColorBlendAttachmentState noColorWriteAttachment =
         colorBlendAttachment;
     noColorWriteAttachment.colorWriteMask = 0;
@@ -2126,6 +2202,8 @@ class HelloTriangleApplication {
 
     VkPipelineColorBlendStateCreateInfo overlayColorBlending = colorBlending;
     overlayColorBlending.pAttachments = overlayLightingAttachments.data();
+    VkPipelineColorBlendStateCreateInfo wireframeColorBlending = colorBlending;
+    wireframeColorBlending.pAttachments = wireframeColorBlendAttachments.data();
 
     std::array<VkDynamicState, 2> dynamicStates = {
         VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
@@ -2134,6 +2212,16 @@ class HelloTriangleApplication {
     dynamicState.dynamicStateCount =
         static_cast<uint32_t>(dynamicStates.size());
     dynamicState.pDynamicStates = dynamicStates.data();
+    std::array<VkDynamicState, 3> wireframeDynamicStates = {
+        VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
+        VK_DYNAMIC_STATE_LINE_WIDTH};
+    VkPipelineDynamicStateCreateInfo wireframeDynamicState{};
+    wireframeDynamicState.sType =
+        VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    wireframeDynamicState.dynamicStateCount =
+        static_cast<uint32_t>(wireframeDynamicStates.size());
+    wireframeDynamicState.pDynamicStates = wireframeDynamicStates.data();
+
 
     VkPipelineDepthStencilStateCreateInfo depthPrepassDepthStencil{};
     depthPrepassDepthStencil.sType =
@@ -2156,6 +2244,11 @@ class HelloTriangleApplication {
     VkPipelineDepthStencilStateCreateInfo normalLineDepthStencil =
         depthPrepassDepthStencil;
     normalLineDepthStencil.depthWriteEnable = VK_FALSE;
+    VkPipelineDepthStencilStateCreateInfo wireframeDepthStencil =
+        normalLineDepthStencil;
+
+    VkPipelineDepthStencilStateCreateInfo wireframeNoDepthStencil =
+        disabledDepthStencil;
 
     VkPipelineDepthStencilStateCreateInfo stencilDepthStencil =
         depthPrepassDepthStencil;
@@ -2194,6 +2287,11 @@ class HelloTriangleApplication {
     VkPushConstantRange postProcessPushConstantRange{};
     postProcessPushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     postProcessPushConstantRange.size = sizeof(PostProcessPushConstants);
+    VkPushConstantRange wireframePushConstantRange{};
+    wireframePushConstantRange.stageFlags =
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+    wireframePushConstantRange.size = sizeof(WireframePushConstants);
+
 
     scenePipelineLayout = pipelineManager->createPipelineLayout(
         {sceneManager->descriptorSetLayout()}, {scenePushConstantRange});
@@ -2207,6 +2305,8 @@ class HelloTriangleApplication {
     postProcessPipelineLayout = pipelineManager->createPipelineLayout(
         {postProcessDescriptorSetLayout, oitDescriptorSetLayout},
         {postProcessPushConstantRange});
+    wireframePipelineLayout = pipelineManager->createPipelineLayout(
+        {sceneManager->descriptorSetLayout()}, {wireframePushConstantRange});
 
     VkGraphicsPipelineCreateInfo depthPrepassPipelineInfo{};
     depthPrepassPipelineInfo.sType =
@@ -2325,6 +2425,35 @@ class HelloTriangleApplication {
     geometryDebugPipeline = pipelineManager->createGraphicsPipeline(
         debugPipelineInfo, "geometry_debug_pipeline");
 
+    VkGraphicsPipelineCreateInfo wireframePipelineInfo =
+        transparentPipelineInfo;
+    wireframePipelineInfo.pInputAssemblyState = &triangleAssembly;
+    wireframePipelineInfo.pColorBlendState = &wireframeColorBlending;
+    wireframePipelineInfo.layout = wireframePipelineLayout;
+    wireframePipelineInfo.renderPass = lightingRenderPass;
+
+    if (wireframeRasterModeSupported) {
+      wireframePipelineInfo.stageCount =
+          static_cast<uint32_t>(wireframeShaderStages.size());
+      wireframePipelineInfo.pStages = wireframeShaderStages.data();
+      wireframePipelineInfo.pRasterizationState = &wireframeRasterizer;
+      wireframePipelineInfo.pDynamicState = &wireframeDynamicState;
+    } else {
+      wireframePipelineInfo.stageCount =
+          static_cast<uint32_t>(wireframeFallbackShaderStages.size());
+      wireframePipelineInfo.pStages = wireframeFallbackShaderStages.data();
+      wireframePipelineInfo.pRasterizationState = &wireframeFallbackRasterizer;
+      wireframePipelineInfo.pDynamicState = &dynamicState;
+    }
+
+    wireframePipelineInfo.pDepthStencilState = &wireframeDepthStencil;
+    wireframeDepthPipeline = pipelineManager->createGraphicsPipeline(
+        wireframePipelineInfo, "wireframe_depth_pipeline");
+
+    wireframePipelineInfo.pDepthStencilState = &wireframeNoDepthStencil;
+    wireframeNoDepthPipeline = pipelineManager->createGraphicsPipeline(
+        wireframePipelineInfo, "wireframe_no_depth_pipeline");
+
     VkGraphicsPipelineCreateInfo surfaceNormalPipelineInfo =
         transparentPipelineInfo;
     surfaceNormalPipelineInfo.stageCount =
@@ -2363,7 +2492,7 @@ class HelloTriangleApplication {
     lightGizmoPipeline = pipelineManager->createGraphicsPipeline(
         lightGizmoPipelineInfo, "light_gizmo_pipeline");
 
-    const std::array<VkShaderModule, 25> shaderModules = {
+    const std::array<VkShaderModule, 32> shaderModules = {
         depthPrepassVertShaderModule, depthPrepassFragShaderModule,
         gBufferVertShaderModule,      gBufferFragShaderModule,
         directionalVertShaderModule,  directionalFragShaderModule,
@@ -2373,6 +2502,9 @@ class HelloTriangleApplication {
         transparentVertShaderModule,  transparentFragShaderModule,
         postProcessVertShaderModule,  postProcessFragShaderModule,
         debugVertShaderModule,        debugFragShaderModule,
+        wireframeVertShaderModule,    wireframeFragShaderModule,
+        wireframeFallbackVertShaderModule, wireframeFallbackGeomShaderModule,
+        wireframeFallbackFragShaderModule,
         surfaceNormalsVertShaderModule, surfaceNormalsGeomShaderModule,
         surfaceNormalsFragShaderModule,
         objectNormalsVertShaderModule, objectNormalsFragShaderModule,
@@ -3017,6 +3149,24 @@ class HelloTriangleApplication {
     }
   }
 
+  void drawWireframeGeometry(VkCommandBuffer commandBuffer,
+                             const std::vector<DrawCommand>& drawCommands,
+                             const glm::vec3& color, float intensity,
+                             float lineWidth) {
+    wireframePushConstants.colorIntensity =
+        glm::vec4(color, std::clamp(intensity, 0.0f, 1.0f));
+    wireframePushConstants.lineWidth = std::max(lineWidth, 1.0f);
+    for (const DrawCommand& drawCommand : drawCommands) {
+      wireframePushConstants.objectIndex = drawCommand.objectIndex;
+      vkCmdPushConstants(
+          commandBuffer, wireframePipelineLayout,
+          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, 0,
+          sizeof(WireframePushConstants), &wireframePushConstants);
+      vkCmdDrawIndexed(commandBuffer, drawCommand.indexCount, 1,
+                       drawCommand.firstIndex, 0, 0);
+    }
+  }
+
   void drawDiagnosticCube(VkCommandBuffer commandBuffer,
                           VkPipelineLayout pipelineLayout) {
     if (diagCubeObjectIndex == std::numeric_limits<uint32_t>::max() ||
@@ -3166,7 +3316,24 @@ class HelloTriangleApplication {
                    : utility::ui::GBufferViewMode::Overview;
     const bool showObjectSpaceNormals =
         displayMode == utility::ui::GBufferViewMode::ObjectSpaceNormals;
+    const utility::ui::WireframeSettings wireframeSettings =
+        guiManager ? guiManager->wireframeSettings()
+                   : utility::ui::WireframeSettings{};
+    const bool wireframeEnabled =
+        guiManager && guiManager->wireframeSupported() &&
+        wireframeSettings.enabled && wireframeDepthPipeline != VK_NULL_HANDLE &&
+        wireframeNoDepthPipeline != VK_NULL_HANDLE;
+    const bool wireframeFullMode =
+        wireframeEnabled &&
+        wireframeSettings.mode == utility::ui::WireframeMode::Full;
+    const bool wireframeOverlayMode =
+        wireframeEnabled &&
+        wireframeSettings.mode == utility::ui::WireframeMode::Overlay;
+    const VkPipeline activeWireframePipeline =
+        wireframeSettings.depthTest ? wireframeDepthPipeline
+                                    : wireframeNoDepthPipeline;
 
+    if (!wireframeFullMode || wireframeSettings.depthTest) {
     VkRenderPassBeginInfo depthPrepassInfo{};
     depthPrepassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     depthPrepassInfo.renderPass = depthPrepassRenderPass;
@@ -3193,6 +3360,7 @@ class HelloTriangleApplication {
     drawDiagnosticCube(commandBuffer, scenePipelineLayout);
     vkCmdEndRenderPass(commandBuffer);
 
+    if (!wireframeFullMode) {
     VkRenderPassBeginInfo gBufferPassInfo{};
     gBufferPassInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
     gBufferPassInfo.renderPass = gBufferRenderPass;
@@ -3224,6 +3392,8 @@ class HelloTriangleApplication {
     drawSceneGeometry(commandBuffer, opaqueDrawCommands, scenePipelineLayout);
     drawDiagnosticCube(commandBuffer, scenePipelineLayout);
     vkCmdEndRenderPass(commandBuffer);
+    }
+    }
 
     clearExactOitResources(commandBuffer, frame);
 
@@ -3245,7 +3415,28 @@ class HelloTriangleApplication {
                          VK_SUBPASS_CONTENTS_INLINE);
 
     setViewportAndScissor(commandBuffer);
-    if (showObjectSpaceNormals) {
+    if (wireframeFullMode) {
+      vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        activeWireframePipeline);
+      vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              wireframePipelineLayout, 0, 1, &sceneDescriptorSet, 0,
+                              nullptr);
+      if (wireframeRasterModeSupported) {
+        const float lineWidth =
+            wireframeWideLinesSupported ? wireframeSettings.lineWidth : 1.0f;
+        vkCmdSetLineWidth(commandBuffer, lineWidth);
+      }
+      bindSceneGeometryBuffers(commandBuffer);
+      drawWireframeGeometry(commandBuffer, opaqueDrawCommands,
+                            wireframeSettings.color,
+                            wireframeSettings.overlayIntensity,
+                            wireframeSettings.lineWidth);
+      drawWireframeGeometry(commandBuffer, transparentDrawCommands,
+                            wireframeSettings.color,
+                            wireframeSettings.overlayIntensity,
+                            wireframeSettings.lineWidth);
+      drawDiagnosticCube(commandBuffer, wireframePipelineLayout);
+    } else if (showObjectSpaceNormals) {
       if (objectNormalDebugPipeline != VK_NULL_HANDLE) {
         vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                           objectNormalDebugPipeline);
@@ -3277,7 +3468,7 @@ class HelloTriangleApplication {
     stencilClearRect.baseArrayLayer = 0;
     stencilClearRect.layerCount = 1;
 
-    if (!showObjectSpaceNormals && !debugDirectionalOnly) {
+    if (!wireframeFullMode && !showObjectSpaceNormals && !debugDirectionalOnly) {
       const VkPipeline activePointPipeline =
           debugVisualizePointLightStencil ? pointLightStencilDebugPipeline
                                           : pointLightPipeline;
@@ -3319,7 +3510,7 @@ class HelloTriangleApplication {
       }
     }
 
-    if (!showObjectSpaceNormals && !transparentDrawCommands.empty()) {
+    if (!wireframeFullMode && !showObjectSpaceNormals && !transparentDrawCommands.empty()) {
       vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         transparentPipeline);
       vkCmdBindDescriptorSets(
@@ -3357,6 +3548,28 @@ class HelloTriangleApplication {
       drawSceneGeometry(commandBuffer, opaqueDrawCommands, scenePipelineLayout);
       drawSceneGeometry(commandBuffer, transparentDrawCommands,
                         scenePipelineLayout);
+    }
+
+    if (wireframeOverlayMode && activeWireframePipeline != VK_NULL_HANDLE) {
+      vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        activeWireframePipeline);
+      vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              wireframePipelineLayout, 0, 1, &sceneDescriptorSet, 0,
+                              nullptr);
+      if (wireframeRasterModeSupported) {
+        const float lineWidth =
+            wireframeWideLinesSupported ? wireframeSettings.lineWidth : 1.0f;
+        vkCmdSetLineWidth(commandBuffer, lineWidth);
+      }
+      bindSceneGeometryBuffers(commandBuffer);
+      drawWireframeGeometry(commandBuffer, opaqueDrawCommands,
+                            wireframeSettings.color,
+                            wireframeSettings.overlayIntensity,
+                            wireframeSettings.lineWidth);
+      drawWireframeGeometry(commandBuffer, transparentDrawCommands,
+                            wireframeSettings.color,
+                            wireframeSettings.overlayIntensity,
+                            wireframeSettings.lineWidth);
     }
 
     if (guiManager && guiManager->showLightGizmos() &&
@@ -3528,3 +3741,51 @@ int main(int argc, char** argv) {
   }
   return EXIT_SUCCESS;
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

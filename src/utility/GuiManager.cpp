@@ -188,6 +188,41 @@ void GuiManager::drawSceneControls(
   ImGui::Checkbox("Overlay vertices", &showGeometryOverlay_);
   ImGui::Checkbox("Overlay lights", &showLightGizmos_);
   ImGui::Checkbox("Normal diagnostic cube", &showNormalDiagCube_);
+
+  ImGui::Separator();
+  ImGui::Text("Wireframe Debug");
+  ImGui::TextDisabled("Backend: %s",
+                      wireframeWideLineSupported_ ? "Native raster line"
+                                                 : "Shader fallback");
+  if (!wireframeSupported_) {
+    ImGui::BeginDisabled();
+  }
+  ImGui::Checkbox("Wireframe Enabled", &wireframeSettings_.enabled);
+  int wireframeMode = static_cast<int>(wireframeSettings_.mode);
+  static constexpr const char* kWireframeModeLabels[] = {"Overlay", "Full"};
+  if (ImGui::Combo("Wireframe Mode", &wireframeMode, kWireframeModeLabels,
+                   IM_ARRAYSIZE(kWireframeModeLabels))) {
+    wireframeSettings_.mode = static_cast<WireframeMode>(wireframeMode);
+  }
+  ImGui::Checkbox("Wireframe Depth Test", &wireframeSettings_.depthTest);
+  ImGui::ColorEdit3("Wireframe Color", &wireframeSettings_.color.x);
+  ImGui::SliderFloat("Wireframe Intensity", &wireframeSettings_.overlayIntensity,
+                     0.0f, 1.0f);
+  if (wireframeWideLineSupported_) {
+    ImGui::SliderFloat("Wireframe Line Width", &wireframeSettings_.lineWidth,
+                       1.0f, 8.0f);
+  } else {
+    wireframeSettings_.lineWidth = 1.0f;
+    ImGui::BeginDisabled();
+    ImGui::SliderFloat("Wireframe Line Width", &wireframeSettings_.lineWidth,
+                       1.0f, 1.0f);
+    ImGui::EndDisabled();
+  }
+  if (!wireframeSupported_) {
+    wireframeSettings_.enabled = false;
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Wireframe unavailable: fillModeNonSolid unsupported");
+  }
   ImGui::Text("Scene nodes: %zu", sceneGraph.nodeCount());
   ImGui::Text("Renderable primitives: %zu",
               sceneGraph.renderableNodes().size());
@@ -279,6 +314,17 @@ bool GuiManager::isCapturingInput() const {
   return io.WantCaptureMouse || io.WantCaptureKeyboard;
 }
 
+void GuiManager::setWireframeCapabilities(bool supported, bool wideLineSupported) {
+  wireframeSupported_ = supported;
+  wireframeWideLineSupported_ = wideLineSupported;
+  if (!wireframeSupported_) {
+    wireframeSettings_.enabled = false;
+  }
+  if (!wireframeWideLineSupported_) {
+    wireframeSettings_.lineWidth = 1.0f;
+  }
+}
+
 void GuiManager::ensureInitialized() const {
   if (!initialized_) {
     throw std::runtime_error("GuiManager used before initialization");
@@ -286,3 +332,5 @@ void GuiManager::ensureInitialized() const {
 }
 
 }  // namespace utility::ui
+
+
