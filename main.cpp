@@ -2869,14 +2869,7 @@ class HelloTriangleApplication {
           glm::translate(glm::mat4(1.0f), diagCenter) *
           glm::scale(glm::mat4(1.0f), glm::vec3(diagScale));
       cubeObject.model = cubeModel;
-      {
-        const glm::mat3 model3 = glm::mat3(cubeModel);
-        const glm::mat3 normal3 = glm::transpose(glm::inverse(model3));
-        cubeObject.normalMatrix = glm::mat4(1.0f);
-        cubeObject.normalMatrix[0] = glm::vec4(normal3[0], 0.0f);
-        cubeObject.normalMatrix[1] = glm::vec4(normal3[1], 0.0f);
-        cubeObject.normalMatrix[2] = glm::vec4(normal3[2], 0.0f);
-      }
+      cubeObject.normalMatrix = glm::mat4(glm::transpose(glm::inverse(glm::mat3(cubeModel))));
       cubeObject.color = glm::vec4(1.0f);
       cubeObject.metallicRoughness = glm::vec2(0.0f, 0.5f);
       diagCubeObjectIndex = static_cast<uint32_t>(objectData.size());
