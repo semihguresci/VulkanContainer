@@ -211,7 +211,7 @@ float4 fragMain(VSOutput input) : SV_Target0
             while (insertAt > 0u)
             {
                 TransparentNode prevNode = transparentNodes[sortedIndices[insertAt - 1u]];
-                if (prevNode.depth <= node.depth)
+                if (prevNode.depth >= node.depth)
                 {
                     break;
                 }
@@ -318,7 +318,7 @@ float4 fragMain(VSOutput input) : SV_Target0
                 uint sortedIndices[MAX_OIT_NODES_PER_PIXEL];
                 uint nodeCount = 0u;
 
-                uint current = headPointerImage[panelPixel];
+                uint current = headPointerImage.Load(int3(panelPixel, 0));
                 while (current != INVALID_NODE_INDEX && nodeCount < MAX_OIT_NODES_PER_PIXEL)
                 {
                     if (current >= uOit.nodeCapacity)
@@ -331,7 +331,7 @@ float4 fragMain(VSOutput input) : SV_Target0
                     while (insertAt > 0u)
                     {
                         TransparentNode prevNode = transparentNodes[sortedIndices[insertAt - 1u]];
-                        if (prevNode.depth <= node.depth)
+                        if (prevNode.depth >= node.depth)
                         {
                             break;
                         }
