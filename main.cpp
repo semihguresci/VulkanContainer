@@ -124,6 +124,21 @@ struct WireframePushConstants {
   alignas(4) float padding5{0.0f};
 };
 static_assert(offsetof(WireframePushConstants, colorIntensity) == 16);
+struct NormalValidationPushConstants {
+  alignas(4) uint32_t objectIndex{0};
+  alignas(4) uint32_t showFaceFill{1};
+  alignas(4) float lineLength{0.24f};
+  alignas(4) float lineOffset{0.004f};
+};
+static_assert(sizeof(NormalValidationPushConstants) == 16);
+
+struct SurfaceNormalPushConstants {
+  alignas(4) uint32_t objectIndex{0};
+  alignas(4) float lineLength{0.16f};
+  alignas(4) float lineOffset{0.002f};
+};
+static_assert(sizeof(SurfaceNormalPushConstants) == 12);
+
 static_assert(offsetof(WireframePushConstants, lineWidth) == 32);
 
 inline constexpr uint32_t kInvalidOitNodeIndex =
@@ -181,6 +196,7 @@ glm::mat4 composeTransform(const utility::ui::TransformControls& controls) {
 
 class HelloTriangleApplication {
  public:
+
   explicit HelloTriangleApplication(app::AppConfig config)
       : config_(std::move(config)) {
   }
@@ -231,6 +247,8 @@ class HelloTriangleApplication {
   VkPipelineLayout lightingPipelineLayout{VK_NULL_HANDLE};
   VkPipelineLayout postProcessPipelineLayout{VK_NULL_HANDLE};
   VkPipelineLayout wireframePipelineLayout{VK_NULL_HANDLE};
+  VkPipelineLayout normalValidationPipelineLayout{VK_NULL_HANDLE};
+  VkPipelineLayout surfaceNormalPipelineLayout{VK_NULL_HANDLE};
   VkDescriptorSetLayout lightingDescriptorSetLayout{VK_NULL_HANDLE};
   VkDescriptorSetLayout postProcessDescriptorSetLayout{VK_NULL_HANDLE};
   VkDescriptorSetLayout oitDescriptorSetLayout{VK_NULL_HANDLE};
@@ -249,6 +267,7 @@ class HelloTriangleApplication {
   VkPipeline transparentPipeline{VK_NULL_HANDLE};
   VkPipeline postProcessPipeline{VK_NULL_HANDLE};
   VkPipeline geometryDebugPipeline{VK_NULL_HANDLE};
+  VkPipeline normalValidationPipeline{VK_NULL_HANDLE};
   VkPipeline wireframeDepthPipeline{VK_NULL_HANDLE};
   VkPipeline wireframeNoDepthPipeline{VK_NULL_HANDLE};
   VkPipeline surfaceNormalLinePipeline{VK_NULL_HANDLE};
@@ -296,6 +315,8 @@ class HelloTriangleApplication {
   BindlessPushConstants pushConstants{};
   LightPushConstants lightPushConstants{};
   WireframePushConstants wireframePushConstants{};
+  NormalValidationPushConstants normalValidationPushConstants{};
+  SurfaceNormalPushConstants surfaceNormalPushConstants{};
 
   std::unique_ptr<utility::camera::BaseCamera> camera;
   utility::input::InputManager inputManager{};
@@ -522,6 +543,7 @@ class HelloTriangleApplication {
       transparentPipeline = VK_NULL_HANDLE;
       postProcessPipeline = VK_NULL_HANDLE;
       geometryDebugPipeline = VK_NULL_HANDLE;
+      normalValidationPipeline = VK_NULL_HANDLE;
       surfaceNormalLinePipeline = VK_NULL_HANDLE;
       objectNormalDebugPipeline = VK_NULL_HANDLE;
       lightGizmoPipeline = VK_NULL_HANDLE;
@@ -529,6 +551,9 @@ class HelloTriangleApplication {
       transparentPipelineLayout = VK_NULL_HANDLE;
       lightingPipelineLayout = VK_NULL_HANDLE;
       postProcessPipelineLayout = VK_NULL_HANDLE;
+      wireframePipelineLayout = VK_NULL_HANDLE;
+      normalValidationPipelineLayout = VK_NULL_HANDLE;
+      surfaceNormalPipelineLayout = VK_NULL_HANDLE;
       lightingDescriptorSetLayout = VK_NULL_HANDLE;
       postProcessDescriptorSetLayout = VK_NULL_HANDLE;
       oitDescriptorSetLayout = VK_NULL_HANDLE;
@@ -1970,6 +1995,12 @@ class HelloTriangleApplication {
         loadModule("spv_shaders/geometry_debug.vert.spv");
     VkShaderModule debugFragShaderModule =
         loadModule("spv_shaders/geometry_debug.frag.spv");
+    VkShaderModule normalValidationVertShaderModule =
+        loadModule("spv_shaders/normal_validation.vert.spv");
+    VkShaderModule normalValidationGeomShaderModule =
+        loadModule("spv_shaders/normal_validation.geom.spv");
+    VkShaderModule normalValidationFragShaderModule =
+        loadModule("spv_shaders/normal_validation.frag.spv");
     VkShaderModule wireframeVertShaderModule =
         loadModule("spv_shaders/wireframe_debug.vert.spv");
     VkShaderModule wireframeFragShaderModule =
@@ -2028,6 +2059,12 @@ class HelloTriangleApplication {
     std::array<VkPipelineShaderStageCreateInfo, 2> debugShaderStages = {
         makeShaderStage(debugVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
         makeShaderStage(debugFragShaderModule, VK_SHADER_STAGE_FRAGMENT_BIT)};
+    std::array<VkPipelineShaderStageCreateInfo, 3> normalValidationShaderStages = {
+        makeShaderStage(normalValidationVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
+        makeShaderStage(normalValidationGeomShaderModule,
+                        VK_SHADER_STAGE_GEOMETRY_BIT),
+        makeShaderStage(normalValidationFragShaderModule,
+                        VK_SHADER_STAGE_FRAGMENT_BIT)};
     std::array<VkPipelineShaderStageCreateInfo, 2> wireframeShaderStages = {
         makeShaderStage(wireframeVertShaderModule, VK_SHADER_STAGE_VERTEX_BIT),
         makeShaderStage(wireframeFragShaderModule,
@@ -2068,6 +2105,31 @@ class HelloTriangleApplication {
     sceneVertexInputInfo.pVertexAttributeDescriptions =
         attributeDescriptions.data();
 
+    std::array<VkVertexInputAttributeDescription, 1> positionOnlyAttributes = {
+        attributeDescriptions[0]};
+    VkPipelineVertexInputStateCreateInfo positionOnlyVertexInputInfo =
+        sceneVertexInputInfo;
+    positionOnlyVertexInputInfo.vertexAttributeDescriptionCount = 1;
+    positionOnlyVertexInputInfo.pVertexAttributeDescriptions =
+        positionOnlyAttributes.data();
+
+    std::array<VkVertexInputAttributeDescription, 2> positionTexAttributes = {
+        attributeDescriptions[0], attributeDescriptions[2]};
+    VkPipelineVertexInputStateCreateInfo positionTexVertexInputInfo =
+        sceneVertexInputInfo;
+    positionTexVertexInputInfo.vertexAttributeDescriptionCount = 2;
+    positionTexVertexInputInfo.pVertexAttributeDescriptions =
+        positionTexAttributes.data();
+
+    std::array<VkVertexInputAttributeDescription, 3> positionTexNormalAttributes = {
+        attributeDescriptions[0], attributeDescriptions[2],
+        attributeDescriptions[3]};
+    VkPipelineVertexInputStateCreateInfo positionTexNormalVertexInputInfo =
+        sceneVertexInputInfo;
+    positionTexNormalVertexInputInfo.vertexAttributeDescriptionCount = 3;
+    positionTexNormalVertexInputInfo.pVertexAttributeDescriptions =
+        positionTexNormalAttributes.data();
+
     VkPipelineVertexInputStateCreateInfo fullscreenVertexInputInfo{};
     fullscreenVertexInputInfo.sType =
         VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -2080,6 +2142,7 @@ class HelloTriangleApplication {
 
     VkPipelineInputAssemblyStateCreateInfo pointAssembly = triangleAssembly;
     pointAssembly.topology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
+    pointAssembly.primitiveRestartEnable = VK_FALSE;
 
     VkPipelineInputAssemblyStateCreateInfo lineAssembly = triangleAssembly;
     lineAssembly.topology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
@@ -2275,8 +2338,7 @@ class HelloTriangleApplication {
 
     VkPushConstantRange scenePushConstantRange{};
     scenePushConstantRange.stageFlags =
-        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
-        VK_SHADER_STAGE_FRAGMENT_BIT;
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     scenePushConstantRange.size = sizeof(BindlessPushConstants);
 
     VkPushConstantRange lightPushConstantRange{};
@@ -2287,14 +2349,27 @@ class HelloTriangleApplication {
     VkPushConstantRange postProcessPushConstantRange{};
     postProcessPushConstantRange.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
     postProcessPushConstantRange.size = sizeof(PostProcessPushConstants);
+
     VkPushConstantRange wireframePushConstantRange{};
     wireframePushConstantRange.stageFlags =
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
     wireframePushConstantRange.size = sizeof(WireframePushConstants);
 
+    VkPushConstantRange surfaceNormalPushConstantRange{};
+    surfaceNormalPushConstantRange.stageFlags =
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
+        VK_SHADER_STAGE_FRAGMENT_BIT;
+    surfaceNormalPushConstantRange.size = sizeof(SurfaceNormalPushConstants);
+
+    VkPushConstantRange normalValidationPushConstantRange{};
+    normalValidationPushConstantRange.stageFlags =
+        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
+        VK_SHADER_STAGE_FRAGMENT_BIT;
+    normalValidationPushConstantRange.size =
+        sizeof(NormalValidationPushConstants);
 
     scenePipelineLayout = pipelineManager->createPipelineLayout(
-        {sceneManager->descriptorSetLayout()}, {scenePushConstantRange});
+        {sceneManager->descriptorSetLayout()}, {surfaceNormalPushConstantRange});
     transparentPipelineLayout = pipelineManager->createPipelineLayout(
         {sceneManager->descriptorSetLayout(), lightDescriptorSetLayout,
          oitDescriptorSetLayout},
@@ -2308,13 +2383,17 @@ class HelloTriangleApplication {
     wireframePipelineLayout = pipelineManager->createPipelineLayout(
         {sceneManager->descriptorSetLayout()}, {wireframePushConstantRange});
 
+    normalValidationPipelineLayout =
+        pipelineManager->createPipelineLayout(
+            {sceneManager->descriptorSetLayout()},
+            {normalValidationPushConstantRange});
     VkGraphicsPipelineCreateInfo depthPrepassPipelineInfo{};
     depthPrepassPipelineInfo.sType =
         VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
     depthPrepassPipelineInfo.stageCount =
         static_cast<uint32_t>(depthPrepassShaderStages.size());
     depthPrepassPipelineInfo.pStages = depthPrepassShaderStages.data();
-    depthPrepassPipelineInfo.pVertexInputState = &sceneVertexInputInfo;
+    depthPrepassPipelineInfo.pVertexInputState = &positionTexVertexInputInfo;
     depthPrepassPipelineInfo.pInputAssemblyState = &triangleAssembly;
     depthPrepassPipelineInfo.pViewportState = &viewportState;
     depthPrepassPipelineInfo.pRasterizationState = &sceneRasterizer;
@@ -2418,12 +2497,28 @@ class HelloTriangleApplication {
     debugPipelineInfo.stageCount =
         static_cast<uint32_t>(debugShaderStages.size());
     debugPipelineInfo.pStages = debugShaderStages.data();
+    debugPipelineInfo.pVertexInputState = &positionOnlyVertexInputInfo;
     debugPipelineInfo.pInputAssemblyState = &pointAssembly;
     debugPipelineInfo.pColorBlendState = &overlayColorBlending;
     debugPipelineInfo.pDepthStencilState = &disabledDepthStencil;
     debugPipelineInfo.layout = scenePipelineLayout;
     geometryDebugPipeline = pipelineManager->createGraphicsPipeline(
         debugPipelineInfo, "geometry_debug_pipeline");
+
+    VkGraphicsPipelineCreateInfo normalValidationPipelineInfo =
+        transparentPipelineInfo;
+    normalValidationPipelineInfo.stageCount =
+        static_cast<uint32_t>(normalValidationShaderStages.size());
+    normalValidationPipelineInfo.pStages = normalValidationShaderStages.data();
+    normalValidationPipelineInfo.pVertexInputState =
+        &sceneVertexInputInfo;
+    normalValidationPipelineInfo.pInputAssemblyState = &triangleAssembly;
+    normalValidationPipelineInfo.pColorBlendState = &overlayColorBlending;
+    normalValidationPipelineInfo.pDepthStencilState = &normalLineDepthStencil;
+    normalValidationPipelineInfo.layout = normalValidationPipelineLayout;
+    normalValidationPipelineInfo.renderPass = lightingRenderPass;
+    normalValidationPipeline = pipelineManager->createGraphicsPipeline(
+        normalValidationPipelineInfo, "normal_validation_pipeline");
 
     VkGraphicsPipelineCreateInfo wireframePipelineInfo =
         transparentPipelineInfo;
@@ -2459,11 +2554,16 @@ class HelloTriangleApplication {
     surfaceNormalPipelineInfo.stageCount =
         static_cast<uint32_t>(surfaceNormalShaderStages.size());
     surfaceNormalPipelineInfo.pStages = surfaceNormalShaderStages.data();
+    surfaceNormalPipelineInfo.pVertexInputState =
+        &sceneVertexInputInfo;
     surfaceNormalPipelineInfo.pInputAssemblyState = &triangleAssembly;
     surfaceNormalPipelineInfo.pRasterizationState = &normalLineRasterizer;
     surfaceNormalPipelineInfo.pColorBlendState = &overlayColorBlending;
     surfaceNormalPipelineInfo.pDepthStencilState = &normalLineDepthStencil;
-    surfaceNormalPipelineInfo.layout = scenePipelineLayout;
+    surfaceNormalPipelineInfo.pDynamicState = &wireframeDynamicState;
+    surfaceNormalPipelineLayout = pipelineManager->createPipelineLayout(
+        {sceneManager->descriptorSetLayout()}, {surfaceNormalPushConstantRange});
+    surfaceNormalPipelineInfo.layout = surfaceNormalPipelineLayout;
     surfaceNormalLinePipeline = pipelineManager->createGraphicsPipeline(
         surfaceNormalPipelineInfo, "surface_normal_line_pipeline");
 
@@ -2472,6 +2572,7 @@ class HelloTriangleApplication {
     objectNormalPipelineInfo.stageCount =
         static_cast<uint32_t>(objectNormalShaderStages.size());
     objectNormalPipelineInfo.pStages = objectNormalShaderStages.data();
+    objectNormalPipelineInfo.pVertexInputState = &positionTexNormalVertexInputInfo;
     objectNormalPipelineInfo.pColorBlendState = &overlayColorBlending;
     objectNormalPipelineInfo.pDepthStencilState = &normalLineDepthStencil;
     objectNormalPipelineInfo.layout = scenePipelineLayout;
@@ -2492,7 +2593,7 @@ class HelloTriangleApplication {
     lightGizmoPipeline = pipelineManager->createGraphicsPipeline(
         lightGizmoPipelineInfo, "light_gizmo_pipeline");
 
-    const std::array<VkShaderModule, 32> shaderModules = {
+    const std::array<VkShaderModule, 35> shaderModules = {
         depthPrepassVertShaderModule, depthPrepassFragShaderModule,
         gBufferVertShaderModule,      gBufferFragShaderModule,
         directionalVertShaderModule,  directionalFragShaderModule,
@@ -2502,6 +2603,8 @@ class HelloTriangleApplication {
         transparentVertShaderModule,  transparentFragShaderModule,
         postProcessVertShaderModule,  postProcessFragShaderModule,
         debugVertShaderModule,        debugFragShaderModule,
+        normalValidationVertShaderModule, normalValidationGeomShaderModule,
+        normalValidationFragShaderModule,
         wireframeVertShaderModule,    wireframeFragShaderModule,
         wireframeFallbackVertShaderModule, wireframeFallbackGeomShaderModule,
         wireframeFallbackFragShaderModule,
@@ -3332,6 +3435,9 @@ class HelloTriangleApplication {
     const VkPipeline activeWireframePipeline =
         wireframeSettings.depthTest ? wireframeDepthPipeline
                                     : wireframeNoDepthPipeline;
+    const bool showNormalValidation =
+        guiManager && guiManager->showNormalValidation() &&
+        normalValidationPipeline != VK_NULL_HANDLE;
 
     if (!wireframeFullMode || wireframeSettings.depthTest) {
     VkRenderPassBeginInfo depthPrepassInfo{};
@@ -3436,19 +3542,6 @@ class HelloTriangleApplication {
                             wireframeSettings.overlayIntensity,
                             wireframeSettings.lineWidth);
       drawDiagnosticCube(commandBuffer, wireframePipelineLayout);
-    } else if (showObjectSpaceNormals) {
-      if (objectNormalDebugPipeline != VK_NULL_HANDLE) {
-        vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          objectNormalDebugPipeline);
-        vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                                scenePipelineLayout, 0, 1, &sceneDescriptorSet, 0,
-                                nullptr);
-        bindSceneGeometryBuffers(commandBuffer);
-        drawSceneGeometry(commandBuffer, opaqueDrawCommands, scenePipelineLayout);
-        drawSceneGeometry(commandBuffer, transparentDrawCommands,
-                          scenePipelineLayout);
-        drawDiagnosticCube(commandBuffer, scenePipelineLayout);
-      }
     } else {
       vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         directionalLightPipeline);
@@ -3536,6 +3629,77 @@ class HelloTriangleApplication {
                         scenePipelineLayout);
     }
 
+    if (showNormalValidation && normalValidationPipeline != VK_NULL_HANDLE) {
+      vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        normalValidationPipeline);
+      vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              normalValidationPipelineLayout, 0, 1,
+                              &sceneDescriptorSet, 0, nullptr);
+      const auto& nv = guiManager->normalValidationSettings();
+      normalValidationPushConstants.showFaceFill = nv.showFaceFill ? 1u : 0u;
+      normalValidationPushConstants.lineLength = nv.lineLength;
+      normalValidationPushConstants.lineOffset = nv.lineOffset;
+      bindSceneGeometryBuffers(commandBuffer);
+      for (const DrawCommand& drawCommand : opaqueDrawCommands) {
+        normalValidationPushConstants.objectIndex = drawCommand.objectIndex;
+        vkCmdPushConstants(commandBuffer, normalValidationPipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
+                               VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(NormalValidationPushConstants),
+                           &normalValidationPushConstants);
+        vkCmdDrawIndexed(commandBuffer, drawCommand.indexCount, 1,
+                         drawCommand.firstIndex, 0, 0);
+      }
+      for (const DrawCommand& drawCommand : transparentDrawCommands) {
+        normalValidationPushConstants.objectIndex = drawCommand.objectIndex;
+        vkCmdPushConstants(commandBuffer, normalValidationPipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
+                               VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(NormalValidationPushConstants),
+                           &normalValidationPushConstants);
+        vkCmdDrawIndexed(commandBuffer, drawCommand.indexCount, 1,
+                         drawCommand.firstIndex, 0, 0);
+      }
+    }
+
+    if (showNormalValidation && surfaceNormalLinePipeline != VK_NULL_HANDLE) {
+      vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        surfaceNormalLinePipeline);
+      if (wireframeRasterModeSupported) {
+        const auto& nv = guiManager->normalValidationSettings();
+        const float lineWidth =
+            wireframeWideLinesSupported ? nv.lineWidth : 1.0f;
+        vkCmdSetLineWidth(commandBuffer, lineWidth);
+      }
+      vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              surfaceNormalPipelineLayout, 0, 1,
+                              &sceneDescriptorSet, 0, nullptr);
+      const auto& nv = guiManager->normalValidationSettings();
+      surfaceNormalPushConstants.lineLength = nv.lineLength;
+      surfaceNormalPushConstants.lineOffset = nv.lineOffset;
+      bindSceneGeometryBuffers(commandBuffer);
+      for (const DrawCommand& drawCommand : opaqueDrawCommands) {
+        surfaceNormalPushConstants.objectIndex = drawCommand.objectIndex;
+        vkCmdPushConstants(commandBuffer, surfaceNormalPipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
+                               VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(SurfaceNormalPushConstants),
+                           &surfaceNormalPushConstants);
+        vkCmdDrawIndexed(commandBuffer, drawCommand.indexCount, 1,
+                         drawCommand.firstIndex, 0, 0);
+      }
+      for (const DrawCommand& drawCommand : transparentDrawCommands) {
+        surfaceNormalPushConstants.objectIndex = drawCommand.objectIndex;
+        vkCmdPushConstants(commandBuffer, surfaceNormalPipelineLayout,
+                           VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
+                               VK_SHADER_STAGE_FRAGMENT_BIT,
+                           0, sizeof(SurfaceNormalPushConstants),
+                           &surfaceNormalPushConstants);
+        vkCmdDrawIndexed(commandBuffer, drawCommand.indexCount, 1,
+                         drawCommand.firstIndex, 0, 0);
+      }
+
+    }
     if (guiManager &&
         displayMode == utility::ui::GBufferViewMode::SurfaceNormals &&
         surfaceNormalLinePipeline != VK_NULL_HANDLE) {
@@ -3741,29 +3905,6 @@ int main(int argc, char** argv) {
   }
   return EXIT_SUCCESS;
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

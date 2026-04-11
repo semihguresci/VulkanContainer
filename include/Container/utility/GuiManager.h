@@ -88,6 +88,12 @@ class GuiManager {
   [[nodiscard]] bool showGeometryOverlay() const { return showGeometryOverlay_; }
   [[nodiscard]] bool showLightGizmos() const { return showLightGizmos_; }
   [[nodiscard]] bool showNormalDiagCube() const { return showNormalDiagCube_; }
+  [[nodiscard]] bool showNormalValidation() const {
+    return normalValidationSettings_.enabled;
+  }
+  [[nodiscard]] const NormalValidationSettings& normalValidationSettings() const {
+    return normalValidationSettings_;
+  }
   [[nodiscard]] GBufferViewMode gBufferViewMode() const { return gBufferViewMode_; }
   [[nodiscard]] const WireframeSettings& wireframeSettings() const {
     return wireframeSettings_;
@@ -111,6 +117,7 @@ class GuiManager {
   bool wireframeWideLineSupported_{false};
   GBufferViewMode gBufferViewMode_{GBufferViewMode::Overview};
   WireframeSettings wireframeSettings_{};
+  NormalValidationSettings normalValidationSettings_{};
   std::string gltfPathInput_{};
   std::string defaultModelPath_{
       };
@@ -118,3 +125,8 @@ class GuiManager {
 };
 
 }  // namespace utility::ui
+
+
+
+
+

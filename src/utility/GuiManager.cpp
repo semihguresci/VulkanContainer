@@ -187,7 +187,25 @@ void GuiManager::drawSceneControls(
   }
   ImGui::Checkbox("Overlay vertices", &showGeometryOverlay_);
   ImGui::Checkbox("Overlay lights", &showLightGizmos_);
-  ImGui::Checkbox("Normal diagnostic cube", &showNormalDiagCube_);
+  ImGui::Checkbox("Normal validation", &normalValidationSettings_.enabled);
+  if (normalValidationSettings_.enabled) {
+    ImGui::Checkbox("Normal validation face fill",
+                    &normalValidationSettings_.showFaceFill);
+    ImGui::SliderFloat("Normal line length", &normalValidationSettings_.lineLength,
+                       0.01f, 100.0f);
+    ImGui::SliderFloat("Normal line offset", &normalValidationSettings_.lineOffset,
+                       0.0f, 0.05f);
+    if (wireframeWideLineSupported_) {
+      ImGui::SliderFloat("Normal line width",
+                         &normalValidationSettings_.lineWidth, 1.0f, 100.0f);
+    } else {
+      normalValidationSettings_.lineWidth = 1.0f;
+      ImGui::BeginDisabled();
+      ImGui::SliderFloat("Normal line width",
+                         &normalValidationSettings_.lineWidth, 1.0f, 1.0f);
+      ImGui::EndDisabled();
+    }
+  }
 
   ImGui::Separator();
   ImGui::Text("Wireframe Debug");
@@ -332,5 +350,16 @@ void GuiManager::ensureInitialized() const {
 }
 
 }  // namespace utility::ui
+
+
+
+
+
+
+
+
+
+
+
 
 

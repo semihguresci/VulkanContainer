@@ -29,8 +29,9 @@ struct ObjectBuffer
 struct PushConstants
 {
     uint objectIndex;
+    float lineLength;
+    float lineOffset;
 };
-
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
 
@@ -89,8 +90,8 @@ void appendLine(inout LineStream<GSOutput> stream,
 [maxvertexcount(2)]
 void geomMain(triangle VSOutput input[3], inout LineStream<GSOutput> stream)
 {
-    static const float kFaceNormalLength = 0.16;
-    static const float kNormalOffset = 0.002;
+    const float faceNormalLength = max(pc.lineLength, 0.001);
+    const float normalOffset = max(pc.lineOffset, 0.0);
 
     static const float4 kFaceBaseColor = float4(0.15, 0.85, 1.0, 1.0);
     static const float4 kFaceTipColor  = float4(1.0, 0.92, 0.10, 1.0);
@@ -119,11 +120,11 @@ void geomMain(triangle VSOutput input[3], inout LineStream<GSOutput> stream)
     {
         cameraOffsetDirection = normalize(cameraOffsetDirection);
     }
-    const float3 lineStart = centroid + cameraOffsetDirection * kNormalOffset;
+    const float3 lineStart = centroid + cameraOffsetDirection * normalOffset;
 
     appendLine(stream,
                lineStart,
-               lineStart + faceNormal * kFaceNormalLength,
+               lineStart + faceNormal * faceNormalLength,
                kFaceBaseColor,
                kFaceTipColor);
 }
@@ -133,3 +134,4 @@ float4 fragMain(GSOutput input) : SV_Target0
 {
     return input.color;
 }
+

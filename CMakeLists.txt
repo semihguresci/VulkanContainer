@@ -117,6 +117,13 @@ if(SLANGC_EXECUTABLE)
                 SHADER_BUILD_SCRIPT_CONTENT "${WIREFRAME_FALLBACK_SOURCE}" "geomMain" "${WIREFRAME_FALLBACK_GEOM_OUTPUT}")
         endif()
 
+        set(NORMAL_VALIDATION_SOURCE "${SHADERS_DIR}/normal_validation.slang")
+        if(EXISTS "${NORMAL_VALIDATION_SOURCE}")
+            set(NORMAL_VALIDATION_GEOM_OUTPUT "${COMPILED_SHADERS_DIR}/normal_validation.geom.spv")
+            append_slang_compile_step(
+                SHADER_BUILD_SCRIPT_CONTENT "${NORMAL_VALIDATION_SOURCE}" "geomMain" "${NORMAL_VALIDATION_GEOM_OUTPUT}")
+        endif()
+
         file(WRITE "${SHADER_BUILD_SCRIPT}" "${SHADER_BUILD_SCRIPT_CONTENT}")
 
         add_custom_target(shaders_all
@@ -206,6 +213,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE ${Vulkan_INCLUDE_DIRS} ${CMAK
 
 # Include the tests configuration
 include(${CMAKE_SOURCE_DIR}/tests/CMakeLists.tests.cmake)
+
 
 
 

@@ -198,7 +198,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         uint sortedIndices[MAX_OIT_NODES_PER_PIXEL];
         uint nodeCount = 0u;
 
-        uint current = headPointerImage[pixelCoord];
+        uint current = headPointerImage.Load(int3(pixelCoord, 0));
         while (current != INVALID_NODE_INDEX && nodeCount < MAX_OIT_NODES_PER_PIXEL)
         {
             if (current >= uOit.nodeCapacity)
