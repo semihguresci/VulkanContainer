@@ -2,8 +2,8 @@ static const float PI = 3.14159265359;
 
 struct CameraBuffer
 {
-    float4x4 viewProj;
-    float4x4 inverseViewProj;
+    column_major float4x4 viewProj;
+    column_major float4x4 inverseViewProj;
     float4 cameraWorldPosition;
 };
 
@@ -58,6 +58,16 @@ float3 FresnelSchlick(float cosTheta, float3 F0)
     return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
 }
 
+float3 SafeNormalize(float3 v, float3 fallback)
+{
+    float lenSq = dot(v, v);
+    if (!all(isfinite(v)) || lenSq < 1e-8)
+    {
+        return fallback;
+    }
+    return v * rsqrt(lenSq);
+}
+
 [shader("vertex")]
 VSOutput vertMain(uint vertexIndex : SV_VertexID)
 {
@@ -82,19 +92,22 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
 [shader("fragment")]
 float4 fragMain(VSOutput input) : SV_Target0
 {
-    float4 albedo = gAlbedoTexture.SampleLevel(gBufferSampler, input.texCoord, 0.0);
-    float3 normal = normalize(gNormalTexture.SampleLevel(gBufferSampler, input.texCoord, 0.0).xyz * 2.0 - 1.0);
-    float4 material = gMaterialTexture.SampleLevel(gBufferSampler, input.texCoord, 0.0);
-    float4 positionSample = gPositionTexture.SampleLevel(gBufferSampler, input.texCoord, 0.0);
+    uint width = 0u;
+    uint height = 0u;
+    gPositionTexture.GetDimensions(width, height);
+    uint2 pixelCoord = uint2(input.pos.xy);
+    pixelCoord = min(pixelCoord, uint2(max(width, 1u) - 1u, max(height, 1u) - 1u));
+    float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
+
+    float4 albedo = gAlbedoTexture.SampleLevel(gBufferSampler, uv, 0.0);
+    float3 normal = SafeNormalize(gNormalTexture.SampleLevel(gBufferSampler, uv, 0.0).xyz * 2.0 - 1.0,
+                                  float3(0.0, 1.0, 0.0));
+    float4 material = gMaterialTexture.SampleLevel(gBufferSampler, uv, 0.0);
+    float4 positionSample = gPositionTexture.SampleLevel(gBufferSampler, uv, 0.0);
 
     if (positionSample.w <= 0.0 || albedo.a <= 0.0)
     {
         return 0.0.xxxx;
-    }
-
-    if (!all(isfinite(normal)) || length(normal) < 1e-4)
-    {
-        normal = float3(0.0, 1.0, 0.0);
     }
 
     float3 worldPosition = positionSample.xyz;
@@ -109,9 +122,9 @@ float4 fragMain(VSOutput input) : SV_Target0
     float metallic = saturate(material.x);
     float roughness = clamp(material.y, 0.045, 1.0);
     float attenuation = pow(saturate(1.0 - distanceToLight / lightRadius), 2.0);
-    float3 L = lightVector / max(distanceToLight, 1e-4);
-    float3 V = normalize(uCamera.cameraWorldPosition.xyz - worldPosition);
-    float3 H = normalize(V + L);
+    float3 L = SafeNormalize(lightVector, float3(0.0, 1.0, 0.0));
+    float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
+    float3 H = SafeNormalize(V + L, normal);
     float3 radiance = pc.colorIntensity.rgb * pc.colorIntensity.a * attenuation;
 
     float3 F0 = lerp(0.04.xxx, albedo.rgb, metallic);
@@ -119,15 +132,13 @@ float4 fragMain(VSOutput input) : SV_Target0
     float G = GeometrySmith(normal, V, L, roughness);
     float3 F = FresnelSchlick(saturate(dot(H, V)), F0);
     float3 numerator = NDF * G * F;
-    float denominator =
-        max(4.0 * saturate(dot(normal, V)) * saturate(dot(normal, L)), 1e-4);
+    float denominator = max(4.0 * saturate(dot(normal, V)) * saturate(dot(normal, L)), 1e-4);
     float3 specular = numerator / denominator;
 
     float3 kS = F;
     float3 kD = (1.0 - kS) * (1.0 - metallic);
     float NdotL = saturate(dot(normal, L));
-    float3 directLighting =
-        (kD * albedo.rgb / PI + specular) * radiance * NdotL;
+    float3 directLighting = (kD * albedo.rgb / PI + specular) * radiance * NdotL;
 
     return float4(directLighting, 1.0);
 }

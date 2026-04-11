@@ -80,3 +80,27 @@ add_custom_test(
     ${DEFAULT_SHADER_DIR}
     ${TEST_RESULTS_DIR}
 )
+
+# rendering_convention_tests requires VulkanContainer_Core (for Model, CommonMath).
+add_executable(rendering_convention_tests
+    ${TESTS_DIR}/rendering_convention_tests.cpp
+)
+target_link_libraries(rendering_convention_tests PRIVATE
+    VulkanContainer_Core
+    VulkanDependencies
+    GTest::gtest
+    GTest::gtest_main
+)
+set_target_properties(rendering_convention_tests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests
+    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/tests
+    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/tests
+    CXX_STANDARD 23
+    CXX_STANDARD_REQUIRED ON
+    CXX_EXTENSIONS OFF
+)
+add_test(
+    NAME rendering_convention_tests
+    COMMAND rendering_convention_tests
+        --gtest_output=xml:${TEST_RESULTS_DIR}/rendering_convention_tests.xml
+)

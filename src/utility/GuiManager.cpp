@@ -146,6 +146,8 @@ void GuiManager::drawSceneControls(
     const std::function<void(const TransformControls&)>& applyCameraTransform,
     const TransformControls& sceneTransform,
     const std::function<void(const TransformControls&)>& applySceneTransform,
+    const glm::vec3& directionalLightPosition,
+    const LightingData& lightingData,
     uint32_t selectedMeshNode,
     const std::function<void(uint32_t)>& selectMeshNode,
     const TransformControls& meshTransform,
@@ -156,7 +158,8 @@ void GuiManager::drawSceneControls(
   static constexpr const char* kGBufferViewLabels[] = {
       "Lit",       "Albedo",      "Normals", "Material",
       "Depth",     "Emissive",    "Transparency",
-      "Revealage"};
+      "Revealage", "Overview",    "Surface Normals",
+      "Object Normals"};
 
   ImGui::Begin("Scene Controls");
   ImGui::InputText("glTF path", &gltfPathInput_);
@@ -184,6 +187,62 @@ void GuiManager::drawSceneControls(
   }
   ImGui::Checkbox("Overlay vertices", &showGeometryOverlay_);
   ImGui::Checkbox("Overlay lights", &showLightGizmos_);
+  ImGui::Checkbox("Normal validation", &normalValidationSettings_.enabled);
+  if (normalValidationSettings_.enabled) {
+    ImGui::Checkbox("Normal validation face fill",
+                    &normalValidationSettings_.showFaceFill);
+    ImGui::SliderFloat("Normal line length", &normalValidationSettings_.lineLength,
+                       0.01f, 100.0f);
+    ImGui::SliderFloat("Normal line offset", &normalValidationSettings_.lineOffset,
+                       0.0f, 0.05f);
+    if (wireframeWideLineSupported_) {
+    ImGui::SliderFloat("Normal face alpha", &normalValidationSettings_.faceAlpha,
+                       0.0f, 1.0f);
+      ImGui::SliderFloat("Normal line width",
+                         &normalValidationSettings_.lineWidth, 1.0f, 100.0f);
+    } else {
+      normalValidationSettings_.lineWidth = 1.0f;
+      ImGui::BeginDisabled();
+      ImGui::SliderFloat("Normal line width",
+                         &normalValidationSettings_.lineWidth, 1.0f, 1.0f);
+      ImGui::EndDisabled();
+    }
+  }
+
+  ImGui::Separator();
+  ImGui::Text("Wireframe Debug");
+  ImGui::TextDisabled("Backend: %s",
+                      wireframeWideLineSupported_ ? "Native raster line"
+                                                 : "Shader fallback");
+  if (!wireframeSupported_) {
+    ImGui::BeginDisabled();
+  }
+  ImGui::Checkbox("Wireframe Enabled", &wireframeSettings_.enabled);
+  int wireframeMode = static_cast<int>(wireframeSettings_.mode);
+  static constexpr const char* kWireframeModeLabels[] = {"Overlay", "Full"};
+  if (ImGui::Combo("Wireframe Mode", &wireframeMode, kWireframeModeLabels,
+                   IM_ARRAYSIZE(kWireframeModeLabels))) {
+    wireframeSettings_.mode = static_cast<WireframeMode>(wireframeMode);
+  }
+  ImGui::Checkbox("Wireframe Depth Test", &wireframeSettings_.depthTest);
+  ImGui::ColorEdit3("Wireframe Color", &wireframeSettings_.color.x);
+  ImGui::SliderFloat("Wireframe Intensity", &wireframeSettings_.overlayIntensity,
+                     0.0f, 1.0f);
+  if (wireframeWideLineSupported_) {
+    ImGui::SliderFloat("Wireframe Line Width", &wireframeSettings_.lineWidth,
+                       1.0f, 8.0f);
+  } else {
+    wireframeSettings_.lineWidth = 1.0f;
+    ImGui::BeginDisabled();
+    ImGui::SliderFloat("Wireframe Line Width", &wireframeSettings_.lineWidth,
+                       1.0f, 1.0f);
+    ImGui::EndDisabled();
+  }
+  if (!wireframeSupported_) {
+    wireframeSettings_.enabled = false;
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("Wireframe unavailable: fillModeNonSolid unsupported");
+  }
   ImGui::Text("Scene nodes: %zu", sceneGraph.nodeCount());
   ImGui::Text("Renderable primitives: %zu",
               sceneGraph.renderableNodes().size());
@@ -196,6 +255,29 @@ void GuiManager::drawSceneControls(
   TransformControls editableSceneTransform = sceneTransform;
   if (DrawTransformControls("Scene", editableSceneTransform)) {
     applySceneTransform(editableSceneTransform);
+  }
+
+  if (ImGui::TreeNode("Lights")) {
+    ImGui::Text("Directional");
+    ImGui::BulletText("Position: (%.2f, %.2f, %.2f)", directionalLightPosition.x,
+                      directionalLightPosition.y, directionalLightPosition.z);
+    ImGui::BulletText("Direction: (%.2f, %.2f, %.2f)",
+                      lightingData.directionalDirection.x,
+                      lightingData.directionalDirection.y,
+                      lightingData.directionalDirection.z);
+
+    const uint32_t pointLightCount =
+        std::min(lightingData.pointLightCount, kMaxDeferredPointLights);
+    for (uint32_t i = 0; i < pointLightCount; ++i) {
+      const auto& light = lightingData.pointLights[i];
+      ImGui::Separator();
+      ImGui::Text("Point Light %u", i);
+      ImGui::BulletText("Position: (%.2f, %.2f, %.2f)",
+                        light.positionRadius.x, light.positionRadius.y,
+                        light.positionRadius.z);
+      ImGui::BulletText("Radius: %.2f", light.positionRadius.w);
+    }
+    ImGui::TreePop();
   }
 
   const auto& renderableNodes = sceneGraph.renderableNodes();
@@ -252,6 +334,17 @@ bool GuiManager::isCapturingInput() const {
   return io.WantCaptureMouse || io.WantCaptureKeyboard;
 }
 
+void GuiManager::setWireframeCapabilities(bool supported, bool wideLineSupported) {
+  wireframeSupported_ = supported;
+  wireframeWideLineSupported_ = wideLineSupported;
+  if (!wireframeSupported_) {
+    wireframeSettings_.enabled = false;
+  }
+  if (!wireframeWideLineSupported_) {
+    wireframeSettings_.lineWidth = 1.0f;
+  }
+}
+
 void GuiManager::ensureInitialized() const {
   if (!initialized_) {
     throw std::runtime_error("GuiManager used before initialization");
@@ -259,3 +352,16 @@ void GuiManager::ensureInitialized() const {
 }
 
 }  // namespace utility::ui
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,5 +1,7 @@
 #include <Container/utility/VulkanDevice.h>
 
+#include <array>
+#include <cstring>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -66,12 +68,38 @@ void VulkanDevice::createLogicalDevice() {
     queueCreateInfos.push_back(queueCreateInfo);
   }
 
+  VkPhysicalDeviceFeatures supportedFeatures{};
+  vkGetPhysicalDeviceFeatures(physicalDevice_, &supportedFeatures);
+
+  enabledFeatures_ = createInfo_.enabledFeatures;
+
+  constexpr size_t featureCount =
+      sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
+  static_assert(sizeof(VkPhysicalDeviceFeatures) == featureCount * sizeof(VkBool32),
+                "VkPhysicalDeviceFeatures has unexpected padding; update merge logic");
+
+  std::array<VkBool32, featureCount> enabledArr{};
+  std::array<VkBool32, featureCount> optionalArr{};
+  std::array<VkBool32, featureCount> supportedArr{};
+
+  std::memcpy(enabledArr.data(),  &enabledFeatures_,            sizeof(VkPhysicalDeviceFeatures));
+  std::memcpy(optionalArr.data(), &createInfo_.optionalFeatures, sizeof(VkPhysicalDeviceFeatures));
+  std::memcpy(supportedArr.data(), &supportedFeatures,           sizeof(VkPhysicalDeviceFeatures));
+
+  for (size_t i = 0; i < featureCount; ++i) {
+    if (optionalArr[i] && supportedArr[i]) {
+      enabledArr[i] = VK_TRUE;
+    }
+  }
+
+  std::memcpy(&enabledFeatures_, enabledArr.data(), sizeof(VkPhysicalDeviceFeatures));
+
   VkDeviceCreateInfo deviceCreateInfo{};
   deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
   deviceCreateInfo.queueCreateInfoCount =
       static_cast<uint32_t>(queueCreateInfos.size());
   deviceCreateInfo.pQueueCreateInfos = queueCreateInfos.data();
-  deviceCreateInfo.pEnabledFeatures = &createInfo_.enabledFeatures;
+  deviceCreateInfo.pEnabledFeatures = &enabledFeatures_;
   deviceCreateInfo.pNext = createInfo_.next;
   deviceCreateInfo.enabledExtensionCount =
       static_cast<uint32_t>(createInfo_.requiredExtensions.size());
@@ -167,3 +195,4 @@ bool VulkanDevice::supportsRequestedFeatures(VkPhysicalDevice device) const {
 }
 
 }  // namespace utility::vulkan
+

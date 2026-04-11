@@ -41,16 +41,19 @@ struct VSInput
     [[vk::location(0)]] float3 inPosition;
     [[vk::location(1)]] float3 inColor;
     [[vk::location(2)]] float2 inTexCoord;
+    [[vk::location(3)]] float3 inNormal;
+    [[vk::location(4)]] float4 inTangent;
 };
 
 struct VSOutput
 {
     float4 pos : SV_Position;
-    [[vk::location(0)]] float2 texCoord;
-    [[vk::location(1)]] uint baseColorTextureIndex;
-    [[vk::location(2)]] uint flags;
-    [[vk::location(3)]] float alphaCutoff;
-    [[vk::location(4)]] float baseColorAlpha;
+    [[vk::location(0)]] float3 objectNormal;
+    [[vk::location(1)]] float2 texCoord;
+    [[vk::location(2)]] uint baseColorTextureIndex;
+    [[vk::location(3)]] uint flags;
+    [[vk::location(4)]] float alphaCutoff;
+    [[vk::location(5)]] float baseColorAlpha;
 };
 
 [shader("vertex")]
@@ -58,8 +61,10 @@ VSOutput vertMain(VSInput input)
 {
     VSOutput output;
     ObjectBuffer obj = uObjects[pc.objectIndex];
+
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);
+    output.objectNormal = normalize(input.inNormal);
     output.texCoord = input.inTexCoord;
     output.baseColorTextureIndex = obj.baseColorTextureIndex;
     output.flags = obj.flags;
@@ -88,5 +93,11 @@ float4 fragMain(VSOutput input) : SV_Target0
         discard;
     }
 
-    return 0.0.xxxx;
+    float3 objectNormal = normalize(input.objectNormal);
+    if (!all(isfinite(objectNormal)))
+    {
+        objectNormal = float3(0.0, 1.0, 0.0);
+    }
+
+    return float4(saturate(objectNormal * 0.5 + 0.5), 1.0);
 }

@@ -6,7 +6,6 @@
 #include <stdexcept>
 #include <utility>
 
-#include "Container/common/CommonMath.h"
 #include "Container/geometry/GltfModelLoader.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/SceneManager.h"
@@ -26,7 +25,7 @@ glm::mat4 nodeLocalTransform(const tinygltf::Node& node) {
             static_cast<float>(node.matrix[column * 4 + row]);
       }
     }
-    return common::math::toLeftHandedTransform(transform);
+    return transform;
   }
 
   glm::mat4 transform(1.0f);
@@ -56,7 +55,7 @@ glm::mat4 nodeLocalTransform(const tinygltf::Node& node) {
                   static_cast<float>(node.scale[2])));
   }
 
-  return common::math::toLeftHandedTransform(transform);
+  return transform;
 }
 
 }  // namespace
@@ -74,16 +73,11 @@ SceneManager::SceneManager(
 SceneManager::~SceneManager() {
   resetLoadedAssets();
 
-  VkDevice device = deviceWrapper_->device();
+  descriptorSet_ = VK_NULL_HANDLE;
+  descriptorPool_ = VK_NULL_HANDLE;
+  descriptorSetLayout_ = VK_NULL_HANDLE;
 
-  if (descriptorPool_ != VK_NULL_HANDLE) {
-    vkDestroyDescriptorPool(device, descriptorPool_, nullptr);
-    descriptorPool_ = VK_NULL_HANDLE;
-  }
-  if (descriptorSetLayout_ != VK_NULL_HANDLE) {
-    vkDestroyDescriptorSetLayout(device, descriptorSetLayout_, nullptr);
-    descriptorSetLayout_ = VK_NULL_HANDLE;
-  }
+  VkDevice device = deviceWrapper_->device();
   if (baseColorSampler_ != VK_NULL_HANDLE) {
     vkDestroySampler(device, baseColorSampler_, nullptr);
     baseColorSampler_ = VK_NULL_HANDLE;
@@ -350,7 +344,8 @@ void SceneManager::createDescriptorSetLayout() {
   std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
 
   bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
-                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
+                     VK_SHADER_STAGE_FRAGMENT_BIT,
                  nullptr};
 
   bindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
@@ -422,7 +417,7 @@ void SceneManager::loadMaterialXMaterial() {
 }
 
 void SceneManager::loadGltfAssets() {
-  model_ = geometry::Model::MakeCube();
+  model_ = geometry::Model{};
   gltfModel_ = tinygltf::Model{};
 
   if (!config_.modelPath.empty()) {
@@ -447,12 +442,8 @@ void SceneManager::loadGltfAssets() {
           gltfModel_, imageToTexture, materialManager_, defaultMaterialIndex_);
       defaultMaterialIndex_ = fallbackMaterialIndex;
     } catch (const std::exception& e) {
-      std::println(stderr, "glTF load failed: {}; falling back to cube.", e.what());
+      std::println(stderr, "glTF load failed: {}; scene left empty.", e.what());
     }
-  }
-
-  if (model_.empty()) {
-    model_ = geometry::Model::MakeCube();
   }
 
   vertices_ = model_.vertices();

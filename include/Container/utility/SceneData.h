@@ -29,6 +29,16 @@ struct ObjectData {
   alignas(8) glm::vec2 padding{0.0f};
 };
 
+struct NormalValidationSettings
+{
+  bool enabled{false};
+  bool showFaceFill{true};
+  float lineLength{0.16f};
+  float lineOffset{0.002f};
+  float lineWidth{1.0f};
+  float faceAlpha{1.0f};
+};
+
 struct BindlessPushConstants {
   uint32_t objectIndex{0};
 };
@@ -50,4 +60,5 @@ struct LightingData {
   alignas(4) uint32_t pointLightCount{0};
   alignas(16) std::array<PointLightData, kMaxDeferredPointLights> pointLights{};
 };
+
 
