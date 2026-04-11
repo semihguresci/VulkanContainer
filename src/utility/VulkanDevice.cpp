@@ -1,5 +1,7 @@
 #include <Container/utility/VulkanDevice.h>
 
+#include <array>
+#include <cstring>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -70,17 +72,27 @@ void VulkanDevice::createLogicalDevice() {
   vkGetPhysicalDeviceFeatures(physicalDevice_, &supportedFeatures);
 
   enabledFeatures_ = createInfo_.enabledFeatures;
-  auto* enabled = reinterpret_cast<VkBool32*>(&enabledFeatures_);
-  const auto* optional =
-      reinterpret_cast<const VkBool32*>(&createInfo_.optionalFeatures);
-  const auto* supported = reinterpret_cast<const VkBool32*>(&supportedFeatures);
+
   constexpr size_t featureCount =
       sizeof(VkPhysicalDeviceFeatures) / sizeof(VkBool32);
+  static_assert(sizeof(VkPhysicalDeviceFeatures) == featureCount * sizeof(VkBool32),
+                "VkPhysicalDeviceFeatures has unexpected padding; update merge logic");
+
+  std::array<VkBool32, featureCount> enabledArr{};
+  std::array<VkBool32, featureCount> optionalArr{};
+  std::array<VkBool32, featureCount> supportedArr{};
+
+  std::memcpy(enabledArr.data(),  &enabledFeatures_,            sizeof(VkPhysicalDeviceFeatures));
+  std::memcpy(optionalArr.data(), &createInfo_.optionalFeatures, sizeof(VkPhysicalDeviceFeatures));
+  std::memcpy(supportedArr.data(), &supportedFeatures,           sizeof(VkPhysicalDeviceFeatures));
+
   for (size_t i = 0; i < featureCount; ++i) {
-    if (optional[i] && supported[i]) {
-      enabled[i] = VK_TRUE;
+    if (optionalArr[i] && supportedArr[i]) {
+      enabledArr[i] = VK_TRUE;
     }
   }
+
+  std::memcpy(&enabledFeatures_, enabledArr.data(), sizeof(VkPhysicalDeviceFeatures));
 
   VkDeviceCreateInfo deviceCreateInfo{};
   deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
