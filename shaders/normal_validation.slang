@@ -29,6 +29,13 @@ struct ObjectBuffer
 struct PushConstants
 {
     uint objectIndex;
+    uint showFaceFill;
+    float lineLength;
+    float lineOffset;
+    float faceAlpha;
+    float _pad0;
+    float _pad1;
+    float _pad2;
 };
 
 [[vk::push_constant]]
@@ -78,6 +85,7 @@ void geomMain(triangle VSOutput input[3], inout TriangleStream<GSOutput> stream)
     const float lenSq = dot(faceCross, faceCross);
 
     float3 baseColor = float3(1.0, 0.0, 0.0);
+    const float faceAlpha = saturate(pc.faceAlpha);
     if (lenSq >= 1e-10)
     {
         const float3 faceNormal = normalize(faceCross);
@@ -108,7 +116,7 @@ void geomMain(triangle VSOutput input[3], inout TriangleStream<GSOutput> stream)
 [shader("fragment")]
 float4 fragMain(GSOutput input) : SV_Target0
 {
-    return float4(input.faceColor, 1.0);
+    return float4(input.faceColor, saturate(pc.faceAlpha));
 }
 
 

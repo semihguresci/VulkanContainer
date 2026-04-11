@@ -36,6 +36,7 @@ struct NormalValidationSettings
   float lineLength{0.16f};
   float lineOffset{0.002f};
   float lineWidth{1.0f};
+  float faceAlpha{1.0f};
 };
 
 struct BindlessPushConstants {

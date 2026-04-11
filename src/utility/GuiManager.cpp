@@ -196,6 +196,8 @@ void GuiManager::drawSceneControls(
     ImGui::SliderFloat("Normal line offset", &normalValidationSettings_.lineOffset,
                        0.0f, 0.05f);
     if (wireframeWideLineSupported_) {
+    ImGui::SliderFloat("Normal face alpha", &normalValidationSettings_.faceAlpha,
+                       0.0f, 1.0f);
       ImGui::SliderFloat("Normal line width",
                          &normalValidationSettings_.lineWidth, 1.0f, 100.0f);
     } else {

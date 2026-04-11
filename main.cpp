@@ -129,8 +129,12 @@ struct NormalValidationPushConstants {
   alignas(4) uint32_t showFaceFill{1};
   alignas(4) float lineLength{0.24f};
   alignas(4) float lineOffset{0.004f};
+  alignas(4) float faceAlpha{1.0f};
+  alignas(4) float padding0{0.0f};
+  alignas(4) float padding1{0.0f};
+  alignas(4) float padding2{0.0f};
 };
-static_assert(sizeof(NormalValidationPushConstants) == 16);
+static_assert(sizeof(NormalValidationPushConstants) == 32);
 
 struct SurfaceNormalPushConstants {
   alignas(4) uint32_t objectIndex{0};
@@ -2233,7 +2237,7 @@ class HelloTriangleApplication {
     std::array<VkPipelineColorBlendAttachmentState, 1>
         transparentOitAttachments = {noColorWriteAttachment};
     std::array<VkPipelineColorBlendAttachmentState, 1>
-        overlayLightingAttachments = {colorBlendAttachment};
+        overlayLightingAttachments = {wireframeBlendAttachment};
 
     VkPipelineColorBlendStateCreateInfo noColorBlending{};
     noColorBlending.sType =
@@ -3639,6 +3643,7 @@ class HelloTriangleApplication {
       normalValidationPushConstants.showFaceFill = nv.showFaceFill ? 1u : 0u;
       normalValidationPushConstants.lineLength = nv.lineLength;
       normalValidationPushConstants.lineOffset = nv.lineOffset;
+      normalValidationPushConstants.faceAlpha = nv.faceAlpha;
       bindSceneGeometryBuffers(commandBuffer);
       for (const DrawCommand& drawCommand : opaqueDrawCommands) {
         normalValidationPushConstants.objectIndex = drawCommand.objectIndex;
