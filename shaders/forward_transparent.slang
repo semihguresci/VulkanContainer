@@ -78,6 +78,10 @@ struct PushConstants
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
 
+static const uint kObjectFlagAlphaCutoff = 0x1u;
+static const uint kObjectFlagTransparentOnly = 0x2u;
+static const uint kObjectFlagDoubleSided = 0x4u;
+
 struct VSInput
 {
     [[vk::location(0)]] float3 inPosition;
@@ -184,7 +188,7 @@ VSOutput vertMain(VSInput input)
 }
 
 [shader("fragment")]
-float4 fragMain(VSOutput vertIn) : SV_Target0
+float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 {
     float3 baseColor = vertIn.baseColor.rgb;
     float baseAlpha = vertIn.baseColor.a;
@@ -197,7 +201,7 @@ float4 fragMain(VSOutput vertIn) : SV_Target0
         baseAlpha *= texColor.a;
     }
 
-    if ((vertIn.flags & 0x1u) != 0u && baseAlpha < vertIn.alphaCutoff)
+    if ((vertIn.flags & kObjectFlagAlphaCutoff) != 0u && baseAlpha < vertIn.alphaCutoff)
     {
         discard;
     }
@@ -220,6 +224,11 @@ float4 fragMain(VSOutput vertIn) : SV_Target0
     SurfaceNormalState surfaceNormal = EvaluateSurfaceNormal(
         vertIn.worldNormal, vertIn.worldTangent, vertIn.texCoord,
         vertIn.normalTextureIndex);
+
+    if ((vertIn.flags & kObjectFlagDoubleSided) != 0u && !isFrontFace)
+    {
+        surfaceNormal.shadingNormal = -surfaceNormal.shadingNormal;
+    }
 
     float occlusion = 1.0;
     if (vertIn.occlusionTextureIndex != 0xffffffff)
