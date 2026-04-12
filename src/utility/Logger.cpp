@@ -1,8 +1,7 @@
 #include <Container/utility/Logger.h>
 #include <Container/utility/VkResultToString.h>
 
-namespace utility {
-namespace logger {
+namespace container::log {
 
 ContainerLogger& ContainerLogger::instance() {
   static ContainerLogger instance;
@@ -40,10 +39,9 @@ void ContainerLogger::log_vk_result(VkResult result, std::string_view operation,
   if (result != VK_SUCCESS) {
     vulkan_logger_->error("Vulkan error in {} ({}:{}): {} ({})", operation,
                           location.file_name(), location.line(),
-                          utility::vkResultToString(result),
+                          container::gpu::vkResultToString(result),
                           static_cast<int>(result));
   }
 }
 
-}  // namespace logger
-}  // namespace utility
+}  // namespace container::log

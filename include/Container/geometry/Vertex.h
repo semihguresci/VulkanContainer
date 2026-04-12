@@ -9,7 +9,7 @@
 #include <array>
 #include <cstddef>
 
-namespace geometry {
+namespace container::geometry {
 
 struct Vertex {
   glm::vec3 position{};
@@ -59,5 +59,5 @@ struct Vertex {
   }
 };
 
-}  // namespace geometry
+}  // namespace container::geometry
 

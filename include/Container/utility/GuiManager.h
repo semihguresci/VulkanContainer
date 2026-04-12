@@ -5,17 +5,18 @@
 #include <string>
 #include <utility>
 
-#include "Container/app/AppConfig.h"
-
 #include "Container/common/CommonVulkan.h"
-#include "Container/common/CommonGLFW.h"
 #include "Container/common/CommonMath.h"
 
 #include "Container/utility/SceneData.h"
-#include "Container/utility/SceneGraph.h"
-#include "Container/utility/SceneManager.h"
 
-namespace utility::ui {
+struct GLFWwindow;
+
+namespace container::scene {
+class SceneGraph;
+}  // namespace container::scene
+
+namespace container::ui {
 
 enum class GBufferViewMode : uint32_t {
   Lit = 0,
@@ -69,7 +70,7 @@ class GuiManager {
   void render(VkCommandBuffer commandBuffer);
 
   void drawSceneControls(
-      const utility::scene::SceneGraph& sceneGraph,
+      const container::scene::SceneGraph& sceneGraph,
       const std::function<bool(const std::string&)>& reloadModel,
       const std::function<bool()>& reloadDefault,
       const TransformControls& cameraTransform,
@@ -77,7 +78,7 @@ class GuiManager {
       const TransformControls& sceneTransform,
       const std::function<void(const TransformControls&)>& applySceneTransform,
       const glm::vec3& directionalLightPosition,
-      const LightingData& lightingData,
+      const container::gpu::LightingData& lightingData,
       uint32_t selectedMeshNode,
       const std::function<void(uint32_t)>& selectMeshNode,
       const TransformControls& meshTransform,
@@ -91,7 +92,7 @@ class GuiManager {
   [[nodiscard]] bool showNormalValidation() const {
     return normalValidationSettings_.enabled;
   }
-  [[nodiscard]] const NormalValidationSettings& normalValidationSettings() const {
+  [[nodiscard]] const container::gpu::NormalValidationSettings& normalValidationSettings() const {
     return normalValidationSettings_;
   }
   [[nodiscard]] GBufferViewMode gBufferViewMode() const { return gBufferViewMode_; }
@@ -117,14 +118,14 @@ class GuiManager {
   bool wireframeWideLineSupported_{false};
   GBufferViewMode gBufferViewMode_{GBufferViewMode::Overview};
   WireframeSettings wireframeSettings_{};
-  NormalValidationSettings normalValidationSettings_{};
+  container::gpu::NormalValidationSettings normalValidationSettings_{};
   std::string gltfPathInput_{};
   std::string defaultModelPath_{
       };
   std::string statusMessage_{};
 };
 
-}  // namespace utility::ui
+}  // namespace container::ui
 
 
 

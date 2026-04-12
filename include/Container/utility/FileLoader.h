@@ -7,7 +7,7 @@
 #include <string>
 #include <vector>
 
-namespace utility::file {
+namespace container::util {
 
 /**
  * @brief Read a file fully into a byte buffer.
@@ -73,4 +73,4 @@ namespace utility::file {
   return buffer;
 }
 
-}  // namespace utility::file
+}  // namespace container::util

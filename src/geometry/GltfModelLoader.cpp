@@ -17,7 +17,7 @@
 #include <utility>
 #include <vector>
 
-namespace geometry {
+namespace container::geometry {
 namespace gltf {
 namespace {
 
@@ -603,4 +603,4 @@ GltfLoadResult LoadModelWithSource(const std::string& path) {
 }
 
 }  // namespace gltf
-}  // namespace geometry
+}  // namespace container::geometry

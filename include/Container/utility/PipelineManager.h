@@ -6,7 +6,7 @@
 #include <unordered_map>
 #include <vector>
 
-namespace utility::pipeline {
+namespace container::gpu {
 
 class PipelineManager {
  public:
@@ -51,4 +51,4 @@ class PipelineManager {
   std::vector<VkPipeline> pipelines_{};
 };
 
-}  // namespace utility::pipeline
+}  // namespace container::gpu

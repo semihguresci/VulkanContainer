@@ -4,7 +4,7 @@
 
 #include "Container/common/CommonVulkan.h"
 
-namespace utility::debug {
+namespace container::gpu {
 
 static inline VkResult CreateDebugUtilsMessengerEXT(
     VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT* pCreateInfo,
@@ -35,5 +35,5 @@ static inline VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
 
   return VK_FALSE;
 }
-}  // namespace utility::debug
+}  // namespace container::gpu
 

@@ -1,6 +1,7 @@
 # cmake/DependenciesSettings.cmake
 
-set(CMAKE_PREFIX_PATH "F:/Projects/vcpkg/installed/x64-windows;${CMAKE_PREFIX_PATH}")
+# vcpkg toolchain sets CMAKE_PREFIX_PATH automatically via the toolchain file
+# specified in CMakePresets.json.  No hardcoded paths needed here.
 
 # GLFW 
 set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)

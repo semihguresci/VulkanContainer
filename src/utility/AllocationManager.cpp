@@ -6,7 +6,7 @@
 
 #include "stb_image.h"
 
-namespace utility::memory {
+namespace container::gpu {
 
 namespace {
 
@@ -36,7 +36,7 @@ void AllocationManager::initialize(VkInstance instance,
                                    VkPhysicalDevice physicalDevice,
                                    VkDevice device, VkQueue graphicsQueue,
                                    VkCommandPool commandPool,
-                                   const app::AppConfig& config) {
+                                   const container::app::AppConfig& config) {
   instance_ = instance;
   physicalDevice_ = physicalDevice;
   device_ = device;
@@ -62,9 +62,9 @@ void AllocationManager::cleanup() {
 }
 
 BufferSlice AllocationManager::uploadVertices(
-    std::span<const geometry::Vertex> vertices) {
+    std::span<const container::geometry::Vertex> vertices) {
   if (vertices.empty()) return {};
-  VkDeviceSize bufferSize = sizeof(geometry::Vertex) * vertices.size();
+  VkDeviceSize bufferSize = sizeof(container::geometry::Vertex) * vertices.size();
 
   EnsureArenaCapacity(
       vertexArena_, *memoryManager_, bufferSize,
@@ -77,7 +77,7 @@ BufferSlice AllocationManager::uploadVertices(
                         static_cast<size_t>(bufferSize)});
 
   BufferSlice slice =
-      vertexArena_->allocate(bufferSize, alignof(geometry::Vertex));
+      vertexArena_->allocate(bufferSize, alignof(container::geometry::Vertex));
 
   copyBuffer(stagingBuffer.buffer().buffer, slice.buffer, bufferSize, 0,
              slice.offset);
@@ -122,7 +122,7 @@ void AllocationManager::destroyBuffer(AllocatedBuffer& buffer) {
   }
 }
 
-utility::material::TextureResource AllocationManager::createTextureFromFile(
+container::material::TextureResource AllocationManager::createTextureFromFile(
     const std::string& texturePath) {
   int texWidth, texHeight, texChannels;
   stbi_uc* pixels = stbi_load(texturePath.c_str(), &texWidth, &texHeight,
@@ -181,7 +181,7 @@ utility::material::TextureResource AllocationManager::createTextureFromFile(
   textureImages_.push_back(image);
   textureImageViews_.push_back(imageView);
 
-  utility::material::TextureResource resource{};
+  container::material::TextureResource resource{};
   resource.name =
       std::filesystem::path(texturePath).lexically_normal().string();
   resource.image = image;
@@ -325,4 +325,4 @@ VkImageView AllocationManager::createImageView(VkImage image, VkFormat format) {
   return view;
 }
 
-}  // namespace utility::memory
+}  // namespace container::gpu

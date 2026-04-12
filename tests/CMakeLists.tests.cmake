@@ -7,20 +7,23 @@ file(MAKE_DIRECTORY ${TEST_RESULTS_DIR})
 
 set(DEFAULT_SHADER_DIR "${CMAKE_SOURCE_DIR}/tests/shaders")
 
+# ── Helper function ──────────────────────────────────────────────────────────
+# add_custom_test(TARGET_NAME SOURCE_FILE SHADER_DIR TEST_RESULTS_DIR [deps...])
+#
+# Creates a GTest executable with consistent properties.  Dependencies are
+# passed as additional arguments after TEST_RESULTS_DIR.
+# If SHADER_DIR is empty (""), the post-build shader copy step is skipped.
 function(add_custom_test TARGET_NAME SOURCE_FILE SHADER_DIR TEST_RESULTS_DIR)
-    # Add the executable
+    set(extra_deps ${ARGN})
+
     add_executable(${TARGET_NAME} ${SOURCE_FILE})
 
-    # Link the necessary libraries
-    target_link_libraries(${TARGET_NAME} PRIVATE 
-        VulkanDependencies 
-        GTest::gtest 
-        GTest::gtest_main 
-        GTest::gmock 
-        GTest::gmock_main
+    target_link_libraries(${TARGET_NAME} PRIVATE
+        ${extra_deps}
+        GTest::gtest
+        GTest::gtest_main
     )
 
-    # Set target properties
     set_target_properties(${TARGET_NAME} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests
         RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/tests
@@ -32,75 +35,63 @@ function(add_custom_test TARGET_NAME SOURCE_FILE SHADER_DIR TEST_RESULTS_DIR)
         CXX_EXTENSIONS OFF
     )
 
-    # Set compile options for Release configuration
-    target_compile_options(${TARGET_NAME} PRIVATE
-        $<$<CONFIG:Release>:-O3>
-    )
-
-    # Add the test
     add_test(
         NAME ${TARGET_NAME}
         COMMAND ${TARGET_NAME} --gtest_output=xml:${TEST_RESULTS_DIR}/${TARGET_NAME}.xml
     )
 
-    # Copy shaders to the output directory
-    add_custom_command(
-        TARGET ${TARGET_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${SHADER_DIR}
-            $<TARGET_FILE_DIR:${TARGET_NAME}>/shaders
-        COMMENT "Copying shaders from ${SHADER_DIR} to output directory for ${TARGET_NAME}"
-    )
+    # Copy shaders only when a shader directory is provided.
+    if(NOT "${SHADER_DIR}" STREQUAL "")
+        add_custom_command(
+            TARGET ${TARGET_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${SHADER_DIR}
+                $<TARGET_FILE_DIR:${TARGET_NAME}>/shaders
+            COMMENT "Copying shaders to output directory for ${TARGET_NAME}"
+        )
+    endif()
 endfunction()
-#message(FATAL_ERROR "TESTS_DIR ${TESTS_DIR}")
-add_custom_test(
-    glm_tests
-    ${TESTS_DIR}/glm_tests.cpp
-    ${DEFAULT_SHADER_DIR}
-    ${TEST_RESULTS_DIR}
+
+# ── CPU-only tests (no shaders needed) ───────────────────────────────────────
+
+add_custom_test(glm_tests
+    ${TESTS_DIR}/glm_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    Dep_Math
 )
 
-add_custom_test(
-    triangle_test
-    ${TESTS_DIR}/triangle_test.cpp
-    ${DEFAULT_SHADER_DIR}
-    ${TEST_RESULTS_DIR}
+add_custom_test(rendering_convention_tests
+    ${TESTS_DIR}/rendering_convention_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanContainer_geometry
 )
 
-add_custom_test(
-    vulkan_tests
-    ${TESTS_DIR}/vulkan_tests.cpp
-    ${DEFAULT_SHADER_DIR}
-    ${TEST_RESULTS_DIR}
+add_custom_test(renderer_struct_tests
+    ${TESTS_DIR}/renderer_struct_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanContainer_renderer
 )
 
-add_custom_test(
-    window_creation_test
-    ${TESTS_DIR}/window_creation_test.cpp
-    ${DEFAULT_SHADER_DIR}
-    ${TEST_RESULTS_DIR}
+add_custom_test(ecs_tests
+    ${TESTS_DIR}/ecs_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanContainer_ecs  VulkanContainer_scene
 )
 
-# rendering_convention_tests requires VulkanContainer_Core (for Model, CommonMath).
-add_executable(rendering_convention_tests
-    ${TESTS_DIR}/rendering_convention_tests.cpp
+add_custom_test(scene_graph_tests
+    ${TESTS_DIR}/scene_graph_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanContainer_scene
 )
-target_link_libraries(rendering_convention_tests PRIVATE
-    VulkanContainer_Core
-    VulkanDependencies
-    GTest::gtest
-    GTest::gtest_main
+
+# ── Tests that need Vulkan / windowing runtime ───────────────────────────────
+
+add_custom_test(triangle_test
+    ${TESTS_DIR}/triangle_test.cpp  ${DEFAULT_SHADER_DIR}  ${TEST_RESULTS_DIR}
+    Dep_Windowing
 )
-set_target_properties(rendering_convention_tests PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests
-    RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/tests
-    RUNTIME_OUTPUT_DIRECTORY_RELEASE ${CMAKE_BINARY_DIR}/tests
-    CXX_STANDARD 23
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
+
+add_custom_test(vulkan_tests
+    ${TESTS_DIR}/vulkan_tests.cpp  ${DEFAULT_SHADER_DIR}  ${TEST_RESULTS_DIR}
+    Dep_VulkanCore
 )
-add_test(
-    NAME rendering_convention_tests
-    COMMAND rendering_convention_tests
-        --gtest_output=xml:${TEST_RESULTS_DIR}/rendering_convention_tests.xml
+
+add_custom_test(window_creation_test
+    ${TESTS_DIR}/window_creation_test.cpp  ${DEFAULT_SHADER_DIR}  ${TEST_RESULTS_DIR}
+    Dep_Windowing
 )

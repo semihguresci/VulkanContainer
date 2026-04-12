@@ -9,7 +9,7 @@
 
 #include "Container/utility/TextureResource.h"
 
-namespace utility::material {
+namespace container::material {
 
 /// Transparent hash for heterogeneous lookup on std::unordered_map<std::string, ...>
 struct StringHash {
@@ -33,4 +33,4 @@ class TextureManager {
       textureNameToIndex_{};
 };
 
-}  // namespace utility::material
+}  // namespace container::material

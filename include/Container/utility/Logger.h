@@ -1,5 +1,4 @@
-#ifndef UTILITY_LOGGER_H
-#define UTILITY_LOGGER_H
+#pragma once
 
 #include <spdlog/sinks/basic_file_sink.h>
 #include <spdlog/sinks/rotating_file_sink.h>
@@ -14,8 +13,7 @@
 
 #include "Container/common/CommonVulkan.h"  
 
-namespace utility {
-namespace logger {
+namespace container::log {
 
 using SpdLogger = std::shared_ptr<spdlog::logger>;
 using SpdSink = std::shared_ptr<spdlog::sinks::sink>;
@@ -52,7 +50,5 @@ inline void check_vk_result(
   ContainerLogger::instance().log_vk_result(result, operation, location);
 }
 
-}  // namespace logger
-}  // namespace utility
+}  // namespace container::log
 
-#endif  // UTILITY_LOGGER_H

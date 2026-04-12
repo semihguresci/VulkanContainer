@@ -5,7 +5,7 @@
 
 #include "Container/utility/VulkanAlignment.h"
 
-namespace utility::memory {
+namespace container::gpu {
 
 /* ========================= StagingBuffer ========================= */
 
@@ -228,4 +228,4 @@ BufferSlice BufferArena::allocate(VkDeviceSize size, VkDeviceSize alignment) {
 
 void BufferArena::reset() { next_offset_ = 0; }
 
-}  // namespace utility::memory
+}  // namespace container::gpu

@@ -6,7 +6,7 @@
 
 #include "Container/common/CommonVulkan.h"
 
-namespace app {
+namespace container::app {
 
 struct AppConfig {
   uint32_t windowWidth{800};
@@ -27,4 +27,4 @@ struct AppConfig {
 
 [[nodiscard]] inline AppConfig DefaultAppConfig() { return AppConfig{}; }
 
-}  // namespace app
+}  // namespace container::app

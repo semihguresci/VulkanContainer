@@ -43,3 +43,4 @@ toolchain.cmake
 /.vs
 /vcpkg
 /.vcpkg-cache
+imgui.ini

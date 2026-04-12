@@ -6,7 +6,7 @@
 
 #include "Container/common/CommonVulkan.h"
 
-namespace utility::vulkan {
+namespace container::gpu {
 
 /**
  * @brief Create a Vulkan shader module from SPIR-V bytecode.
@@ -44,4 +44,4 @@ namespace utility::vulkan {
   return shaderModule;
 }
 
-}  // namespace utility::vulkan
+}  // namespace container::gpu

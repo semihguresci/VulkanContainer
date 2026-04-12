@@ -4,7 +4,7 @@
 
 #include <vector>
 
-namespace geometry {
+namespace container::geometry {
 
 class Mesh {
  public:
@@ -23,5 +23,5 @@ class Mesh {
   int32_t materialIndex_{-1};
 };
 
-}  // namespace geometry
+}  // namespace container::geometry
 

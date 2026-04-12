@@ -2,28 +2,12 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <vector>
 
 #include "Container/common/CommonGLFW.h"
-#include "Container/common/CommonVulkan.h"
+#include "Container/common/VulkanTypes.h"
 
-namespace utility {
-
-struct QueueFamilyIndices {
-  std::optional<uint32_t> graphicsFamily;
-  std::optional<uint32_t> presentFamily;
-
-  [[nodiscard]] bool isComplete() const {
-    return graphicsFamily.has_value() && presentFamily.has_value();
-  }
-};
-
-struct SwapChainSupportDetails {
-  VkSurfaceCapabilitiesKHR capabilities{};
-  std::vector<VkSurfaceFormatKHR> formats;
-  std::vector<VkPresentModeKHR> presentModes;
-};
+namespace container::gpu {
 
 class SwapChainManager {
  public:
@@ -86,4 +70,4 @@ class SwapChainManager {
   std::vector<VkFramebuffer> swapChainFramebuffers_;
 };
 
-}  // namespace utility
+}  // namespace container::gpu

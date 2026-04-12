@@ -4,7 +4,7 @@
 
 #include <glm/glm.hpp>
 
-namespace utility::input {
+namespace container::window {
 
 void InputManager::setWindow(GLFWwindow* window) {
   window_ = window;
@@ -150,4 +150,4 @@ void InputManager::setLookMode(bool enabled) {
   }
 }
 
-}  // namespace utility::input
+}  // namespace container::window

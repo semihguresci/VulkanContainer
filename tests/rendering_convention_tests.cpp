@@ -56,8 +56,8 @@ float ndcSignedArea(glm::vec3 w0, glm::vec3 w1, glm::vec3 w2,
 glm::mat4 makeTestViewProj(glm::vec3 eye, glm::vec3 target,
                             float fovDeg = 60.0f, float aspect = 1.0f,
                             float zNear = 0.05f, float zFar = 500.0f) {
-    glm::mat4 view = common::math::lookAt(eye, target, {0, 1, 0});
-    glm::mat4 proj = common::math::perspectiveRH_ReverseZ(
+    glm::mat4 view = container::math::lookAt(eye, target, {0, 1, 0});
+    glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
         glm::radians(fovDeg), aspect, zNear, zFar);
     proj[1][1] *= -1.0f;  // Vulkan Y-flip
     return proj * view;
@@ -81,7 +81,7 @@ TEST(RenderingConvention, ReverseZ_NearMapsToOne) {
     constexpr float zNear = 0.05f;
     constexpr float zFar  = 500.0f;
 
-    glm::mat4 proj = common::math::perspectiveRH_ReverseZ(
+    glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
         glm::radians(60.0f), 1.0f, zNear, zFar);
 
     // A point exactly at the near plane in RH view space has view_z = -zNear
@@ -94,7 +94,7 @@ TEST(RenderingConvention, ReverseZ_FarMapsToZero) {
     constexpr float zNear = 0.05f;
     constexpr float zFar  = 500.0f;
 
-    glm::mat4 proj = common::math::perspectiveRH_ReverseZ(
+    glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
         glm::radians(60.0f), 1.0f, zNear, zFar);
 
     // A point at the far plane in RH view space has view_z = -zFar
@@ -107,7 +107,7 @@ TEST(RenderingConvention, CloserObjectHasHigherDepth) {
     constexpr float zNear = 0.05f;
     constexpr float zFar  = 500.0f;
 
-    glm::mat4 proj = common::math::perspectiveRH_ReverseZ(
+    glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
         glm::radians(60.0f), 1.0f, zNear, zFar);
 
     // Near object at view_z = -1
@@ -183,7 +183,7 @@ TEST(RenderingConvention, Pipeline_FrontFaceIsCounterClockwise_InFramebufferConv
 //    normal (outward-pointing).
 // ---------------------------------------------------------------------------
 TEST(RenderingConvention, CubeFaces_GeometricNormalMatchesAssignedNormal) {
-    const geometry::Model cube = geometry::Model::MakeCube();
+    const container::geometry::Model cube = container::geometry::Model::MakeCube();
     const auto& verts   = cube.vertices();
     const auto& indices = cube.indices();
 
@@ -217,7 +217,7 @@ TEST(RenderingConvention, CubeFaces_GeometricNormalMatchesAssignedNormal) {
 // 4. Cube face normals point away from origin (outward)
 // ---------------------------------------------------------------------------
 TEST(RenderingConvention, CubeFaces_NormalsPointOutward) {
-    const geometry::Model cube = geometry::Model::MakeCube();
+    const container::geometry::Model cube = container::geometry::Model::MakeCube();
     const auto& verts   = cube.vertices();
     const auto& indices = cube.indices();
 
@@ -239,7 +239,7 @@ TEST(RenderingConvention, CubeFaces_NormalsPointOutward) {
 }
 
 TEST(RenderingConvention, CubeVertexTangents_AreOrthogonalToNormals) {
-    const geometry::Model cube = geometry::Model::MakeCube();
+    const container::geometry::Model cube = container::geometry::Model::MakeCube();
     const auto& verts = cube.vertices();
 
     for (size_t i = 0; i < verts.size(); ++i) {
@@ -304,7 +304,7 @@ TEST(RenderingConvention, DepthClear_IsZero_ForReverseZ) {
 //    Cube at origin from (0,0,3) must project symmetrically to NDC.
 // ---------------------------------------------------------------------------
 TEST(RenderingConvention, Camera_FrontVector_Yaw90_Pitch0_IsNegativeZ) {
-    utility::camera::PerspectiveCamera cam;
+    container::scene::PerspectiveCamera cam;
     cam.setYawPitch(90.0f, 0.0f);
     glm::vec3 front = cam.frontVector();
     EXPECT_NEAR(front.x, 0.0f,  kEps) << "front.x should be 0 for yaw=90";
@@ -313,7 +313,7 @@ TEST(RenderingConvention, Camera_FrontVector_Yaw90_Pitch0_IsNegativeZ) {
 }
 
 TEST(RenderingConvention, Camera_UpVector_IsWorldUp_WhenLookingDownNegZ) {
-    utility::camera::PerspectiveCamera cam;
+    container::scene::PerspectiveCamera cam;
     cam.setYawPitch(90.0f, 0.0f);
     glm::vec3 front = cam.frontVector();
     glm::vec3 up    = cam.upVector(front);
@@ -324,7 +324,7 @@ TEST(RenderingConvention, Camera_UpVector_IsWorldUp_WhenLookingDownNegZ) {
 
 TEST(RenderingConvention, Camera_CubeAtOrigin_ProjectsSymmetrically) {
     // Camera at (0,0,3) looking at origin — diagnostic cube setup.
-    utility::camera::PerspectiveCamera cam;
+    container::scene::PerspectiveCamera cam;
     cam.setYawPitch(90.0f, 0.0f);
     cam.setPosition({0.0f, 0.0f, 3.0f});
 
@@ -355,7 +355,7 @@ TEST(RenderingConvention, ReverseZOrtho_NearMapsToOne_AndFarMapsToZero) {
     constexpr float zNear = 0.05f;
     constexpr float zFar  = 500.0f;
 
-    glm::mat4 proj = common::math::orthoRH_ReverseZ(
+    glm::mat4 proj = container::math::orthoRH_ReverseZ(
         -2.0f, 2.0f, -2.0f, 2.0f, zNear, zFar);
 
     glm::vec4 nearClip = proj * glm::vec4(0.0f, 0.0f, -zNear, 1.0f);

@@ -7,7 +7,7 @@
 #include <utility>
 #include <vector>
 
-namespace geometry {
+namespace container::geometry {
 namespace {
 
 uint32_t countVertices(const std::vector<Mesh>& meshes) {
@@ -144,4 +144,4 @@ Model Model::MakeCube() {
   return Model{std::move(meshes)};
 }
 
-}  // namespace geometry
+}  // namespace container::geometry

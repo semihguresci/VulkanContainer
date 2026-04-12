@@ -1,0 +1,168 @@
+#include "Container/renderer/VulkanContextInitializer.h"
+
+#include "Container/app/AppConfig.h"
+#include "Container/common/CommonGLFW.h"
+#include "Container/common/CommonVulkan.h"
+#include "Container/utility/DebugMessengerExt.h"
+#include "Container/utility/Logger.h"
+#include "Container/utility/VulkanDevice.h"
+#include "Container/utility/VulkanInstance.h"
+
+#include <stdexcept>
+#include <vector>
+
+namespace container::renderer {
+
+using container::gpu::CreateDebugUtilsMessengerEXT;
+using container::gpu::debugCallback;
+using container::gpu::DestroyDebugUtilsMessengerEXT;
+
+VulkanContextInitializer::VulkanContextInitializer(const container::app::AppConfig& config)
+    : config_(config) {
+}
+
+VulkanContextResult VulkanContextInitializer::initialize(
+    const std::vector<const char*>& requiredWindowExtensions,
+    GLFWwindow* nativeWindow) const {
+  VulkanContextResult result{};
+
+  // --- Instance ---
+  {
+    container::gpu::InstanceCreateInfo ci{};
+    ci.applicationName        = "Vulkan Container";
+    ci.engineName             = "Vulkan Container Engine";
+    ci.apiVersion             = VK_API_VERSION_1_3;
+    ci.enableValidationLayers  = config_.enableValidationLayers;
+    ci.validationLayers       = config_.validationLayers;
+    ci.requiredExtensions     = requiredWindowExtensions;
+    if (config_.enableValidationLayers) {
+      ci.requiredExtensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+    }
+
+    VkDebugUtilsMessengerCreateInfoEXT debugCI{};
+    if (config_.enableValidationLayers) {
+      debugCI.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+      debugCI.messageSeverity =
+          VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+          VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+          VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+      debugCI.messageType =
+          VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+          VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+          VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+      debugCI.pfnUserCallback = debugCallback;
+      ci.next = &debugCI;
+    }
+
+    result.instanceWrapper =
+        std::make_shared<container::gpu::VulkanInstance>(ci);
+    result.instance = result.instanceWrapper->instance();
+  }
+
+  // --- Debug messenger ---
+  if (config_.enableValidationLayers) {
+    VkDebugUtilsMessengerCreateInfoEXT ci{};
+    ci.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+    ci.messageSeverity =
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+    ci.messageType =
+        VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+        VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
+    ci.pfnUserCallback = debugCallback;
+
+    if (CreateDebugUtilsMessengerEXT(result.instance, &ci, nullptr,
+                                     &result.debugMessenger) != VK_SUCCESS) {
+      throw std::runtime_error("failed to set up debug messenger!");
+    }
+  }
+
+  // --- Surface ---
+  if (glfwCreateWindowSurface(result.instance, nativeWindow, nullptr,
+                              &result.surface) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create window surface!");
+  }
+
+  // --- Device ---
+  {
+    container::gpu::DeviceCreateInfo ci{};
+    ci.requiredExtensions     = config_.deviceExtensions;
+    ci.validationLayers       = config_.validationLayers;
+    ci.enableValidationLayers  = config_.enableValidationLayers;
+    ci.enabledFeatures.samplerAnisotropy       = VK_TRUE;
+    ci.enabledFeatures.fragmentStoresAndAtomics = VK_TRUE;
+    ci.enabledFeatures.geometryShader          = VK_TRUE;
+    ci.optionalFeatures.fillModeNonSolid       = VK_TRUE;
+    ci.optionalFeatures.wideLines              = VK_TRUE;
+
+    VkPhysicalDeviceDescriptorIndexingFeatures indexingFeatures{};
+    indexingFeatures.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
+    indexingFeatures.runtimeDescriptorArray                    = VK_TRUE;
+    indexingFeatures.descriptorBindingPartiallyBound           = VK_TRUE;
+    indexingFeatures.descriptorBindingVariableDescriptorCount  = VK_TRUE;
+    indexingFeatures.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+
+    VkPhysicalDeviceBufferDeviceAddressFeatures bufferAddrFeatures{};
+    bufferAddrFeatures.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
+    bufferAddrFeatures.bufferDeviceAddress = VK_TRUE;
+
+    VkPhysicalDeviceVulkan11Features vulkan11Features{};
+    vulkan11Features.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
+    vulkan11Features.shaderDrawParameters = VK_TRUE;
+
+    bufferAddrFeatures.pNext = &vulkan11Features;
+    indexingFeatures.pNext   = &bufferAddrFeatures;
+    ci.next                  = &indexingFeatures;
+
+    result.deviceWrapper = std::make_shared<container::gpu::VulkanDevice>(
+        result.instance, result.surface, ci);
+
+    const auto& enabled                 = result.deviceWrapper->enabledFeatures();
+    result.wireframeRasterModeSupported = enabled.fillModeNonSolid == VK_TRUE;
+    result.wireframeWideLinesSupported  = result.wireframeRasterModeSupported
+                                              ? (enabled.wideLines == VK_TRUE)
+                                              : true;
+    result.wireframeSupported           = true;
+
+    if (!result.wireframeRasterModeSupported) {
+      container::log::ContainerLogger::instance().renderer()->warn(
+          "Wireframe polygon mode unsupported; using shader-based wireframe fallback");
+    }
+  }
+
+  return result;
+}
+
+VkFormat VulkanContextInitializer::findSupportedFormat(
+    VkPhysicalDevice physicalDevice,
+    std::initializer_list<VkFormat> candidates,
+    VkImageTiling tiling,
+    VkFormatFeatureFlags features) {
+  for (VkFormat fmt : candidates) {
+    VkFormatProperties props{};
+    vkGetPhysicalDeviceFormatProperties(physicalDevice, fmt, &props);
+    const VkFormatFeatureFlags tilingFeatures =
+        tiling == VK_IMAGE_TILING_LINEAR ? props.linearTilingFeatures
+                                         : props.optimalTilingFeatures;
+    if ((tilingFeatures & features) == features) {
+      return fmt;
+    }
+  }
+  throw std::runtime_error("failed to find a supported Vulkan image format");
+}
+
+VkFormat VulkanContextInitializer::findDepthStencilFormat(
+    VkPhysicalDevice physicalDevice) {
+  return findSupportedFormat(
+      physicalDevice,
+      {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT},
+      VK_IMAGE_TILING_OPTIMAL,
+      VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+}
+
+}  // namespace container::renderer

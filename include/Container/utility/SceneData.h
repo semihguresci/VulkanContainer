@@ -6,6 +6,8 @@
 #include <cstdint>
 #include <limits>
 
+namespace container::gpu {
+
 struct CameraData {
   alignas(16) glm::mat4 viewProj{1.0f};
   alignas(16) glm::mat4 inverseViewProj{1.0f};
@@ -54,6 +56,10 @@ struct PointLightData {
   alignas(16) glm::vec4 colorIntensity{1.0f, 1.0f, 1.0f, 1.0f};
 };
 
+struct PostProcessPushConstants {
+  uint32_t outputMode{0};
+};
+
 struct LightingData {
   alignas(16) glm::vec4 directionalDirection{0.0f, 0.0f, 1.0f, 0.0f};
   alignas(16) glm::vec4 directionalColorIntensity{1.0f, 1.0f, 1.0f, 1.0f};
@@ -61,4 +67,5 @@ struct LightingData {
   alignas(16) std::array<PointLightData, kMaxDeferredPointLights> pointLights{};
 };
 
+}  // namespace container::gpu
 

@@ -2,8 +2,7 @@
 
 #include "Container/common/CommonVulkan.h"
 
-namespace utility {
-namespace memory {
+namespace container::gpu {
 
 class VulkanAlignment {
  public:
@@ -29,5 +28,4 @@ class VulkanAlignment {
   }
 };
 
-}  // namespace memory
-}  // namespace utility
+}  // namespace container::gpu

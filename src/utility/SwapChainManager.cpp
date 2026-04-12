@@ -4,7 +4,7 @@
 
 #include "Container/utility/SwapChainManager.h"
 
-namespace utility {
+namespace container::gpu {
 
 SwapChainManager::SwapChainManager(GLFWwindow* window,
                                    VkPhysicalDevice physicalDevice,
@@ -282,4 +282,4 @@ VkExtent2D SwapChainManager::chooseSwapExtent(
   return actualExtent;
 }
 
-}  // namespace utility
+}  // namespace container::gpu

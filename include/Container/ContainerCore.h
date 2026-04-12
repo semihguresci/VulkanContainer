@@ -1,7 +1,6 @@
-#ifndef CONTAINER_CORE_H
-#define CONTAINER_CORE_H
+#pragma once
 
-namespace Container {
+namespace container {
 struct Version {
   int major;
   int minor;
@@ -19,7 +18,5 @@ class ContainerCore {
 
   constexpr auto version() const noexcept -> Version;
 };
-}  // namespace Container
-
-#endif  // CONTAINER_CORE_H
+}  // namespace container
 

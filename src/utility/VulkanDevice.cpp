@@ -1,4 +1,5 @@
 #include <Container/utility/VulkanDevice.h>
+#include "Container/utility/SwapChainManager.h"  // FindQueueFamilies, QuerySwapChainSupport
 
 #include <array>
 #include <cstring>
@@ -7,7 +8,7 @@
 #include <string>
 #include <vector>
 
-namespace utility::vulkan {
+namespace container::gpu {
 
 VulkanDevice::VulkanDevice(VkInstance instance, VkSurfaceKHR surface,
                            const DeviceCreateInfo& createInfo)
@@ -194,5 +195,5 @@ bool VulkanDevice::supportsRequestedFeatures(VkPhysicalDevice device) const {
   return true;
 }
 
-}  // namespace utility::vulkan
+}  // namespace container::gpu
 
