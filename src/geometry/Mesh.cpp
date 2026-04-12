@@ -1,6 +1,6 @@
 #include <Container/geometry/Mesh.h>
 
-namespace geometry {
+namespace container::geometry {
 
 Mesh::Mesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices,
            int32_t materialIndex)
@@ -8,5 +8,5 @@ Mesh::Mesh(std::vector<Vertex> vertices, std::vector<uint32_t> indices,
       indices_(std::move(indices)),
       materialIndex_(materialIndex) {}
 
-}  // namespace geometry
+}  // namespace container::geometry
 

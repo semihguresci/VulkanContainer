@@ -7,7 +7,7 @@
 
 #include "Container/common/CommonGLFW.h"
 
-namespace utility::window {
+namespace container::window {
 
 namespace {
 constexpr int kDefaultClientApi = GLFW_NO_API;
@@ -244,4 +244,4 @@ std::vector<const char*> WindowManager::getRequiredInstanceExtensions() const {
   return std::vector<const char*>(extensions, extensions + count);
 }
 
-}  // namespace utility::window
+}  // namespace container::window

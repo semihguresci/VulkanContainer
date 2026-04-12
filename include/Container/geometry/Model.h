@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-namespace geometry {
+namespace container::geometry {
 
 struct GltfLoadResult;
 
@@ -54,5 +54,5 @@ class Model {
   std::vector<PrimitiveRange> primitiveRanges_{};
 };
 
-}  // namespace geometry
+}  // namespace container::geometry
 

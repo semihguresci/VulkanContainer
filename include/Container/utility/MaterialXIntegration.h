@@ -14,7 +14,7 @@
 #include <string>
 #include <vector>
 
-namespace utility::materialx {
+namespace container::material {
 
 class SlangMaterialXBridge {
  public:
@@ -48,14 +48,14 @@ class SlangMaterialXBridge {
 
     std::vector<uint32_t> loadTexturesForGltf(
         const tinygltf::Model& model, const std::filesystem::path& baseDir,
-        utility::material::TextureManager& textureManager,
-        const std::function<utility::material::TextureResource(
+        container::material::TextureManager& textureManager,
+        const std::function<container::material::TextureResource(
             const std::string&)>& textureLoader) const;
 
     void loadMaterialsForGltf(
         const tinygltf::Model& model,
         const std::vector<uint32_t>& imageToTexture,
-        utility::material::MaterialManager& materialManager,
+        container::material::MaterialManager& materialManager,
         uint32_t& defaultMaterialIndex) const;
 
 private:
@@ -66,4 +66,4 @@ private:
                                          int textureIndex);
 };
 
-} // namespace utility::materialx
+} // namespace container::material

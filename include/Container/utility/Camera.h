@@ -4,7 +4,7 @@
 
 #include "Container/common/CommonMath.h"
 
-namespace utility::camera {
+namespace container::scene {
 
 class BaseCamera {
  public:
@@ -58,7 +58,7 @@ class BaseCamera {
     const glm::vec3 front = frontVector();
     const glm::vec3 up = upVector(front);
     const glm::mat4 view =
-        common::math::lookAt(position_, position_ + front, up);
+        container::math::lookAt(position_, position_ + front, up);
     return glm::scale(glm::mat4(1.0f), 1.0f / scale_) * view;
   }
 
@@ -86,7 +86,7 @@ class BaseCamera {
 class PerspectiveCamera : public BaseCamera {
  public:
   glm::mat4 projectionMatrix(float aspectRatio) const override {
-    return common::math::perspectiveRH_ReverseZ(
+    return container::math::perspectiveRH_ReverseZ(
         glm::radians(fieldOfViewDegrees_), aspectRatio, nearPlane_, farPlane_);
   }
 
@@ -108,7 +108,7 @@ class OrthographicCamera : public BaseCamera {
   glm::mat4 projectionMatrix(float aspectRatio) const override {
     const float halfHeight = 0.5f * viewHeight_;
     const float halfWidth = halfHeight * aspectRatio;
-    return common::math::orthoRH_ReverseZ(-halfWidth, halfWidth, -halfHeight,
+    return container::math::orthoRH_ReverseZ(-halfWidth, halfWidth, -halfHeight,
                                           halfHeight, nearPlane_, farPlane_);
   }
 
@@ -124,4 +124,4 @@ class OrthographicCamera : public BaseCamera {
   float farPlane_{100.0f};
 };
 
-}  // namespace utility::camera
+}  // namespace container::scene

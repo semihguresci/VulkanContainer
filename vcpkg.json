@@ -12,20 +12,12 @@
         "vulkan-binding"
       ]
     },
-    "vulkan-utility-libraries",
     "vulkan-memory-allocator",
     "shader-slang",
     "tinygltf",
     "stb",
     "spdlog",
     "entt",
-    "assimp",
-    "yaml-cpp",
-    "cxxopts",
-    "libzip",
-    "libpng",
-    "libjpeg-turbo",
-    "eigen3",
     "materialx"
   ]
 }

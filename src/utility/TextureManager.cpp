@@ -2,7 +2,7 @@
 #include <Container/utility/TextureResource.h>
 
 
-namespace utility::material {
+namespace container::material {
 
 uint32_t TextureManager::registerTexture(const TextureResource& resource) {
   if (!resource.name.empty()) {
@@ -35,4 +35,4 @@ const TextureResource* TextureManager::getTexture(uint32_t index) const {
   return &textures_[index];
 }
 
-}  // namespace utility::material
+}  // namespace container::material

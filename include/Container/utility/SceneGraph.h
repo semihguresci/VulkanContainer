@@ -8,7 +8,7 @@
 #include <span>
 #include <vector>
 
-namespace utility::scene {
+namespace container::scene {
 
 struct SceneNode {
   glm::mat4 localTransform{1.0f};
@@ -48,4 +48,4 @@ class SceneGraph {
   std::vector<uint32_t> renderableNodes_{};
 };
 
-}  // namespace utility::scene
+}  // namespace container::scene

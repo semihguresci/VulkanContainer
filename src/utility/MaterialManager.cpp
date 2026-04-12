@@ -1,7 +1,7 @@
 #include <Container/utility/MaterialManager.h>
 #include <Container/utility/Material.h>
 
-namespace utility::material {
+namespace container::material {
 
 uint32_t MaterialManager::createMaterial(const Material& material) {
   materials_.push_back(material);
@@ -19,4 +19,4 @@ const Material* MaterialManager::getMaterial(uint32_t index) const {
   return &materials_[index];
 }
 
-}  // namespace utility::material
+}  // namespace container::material

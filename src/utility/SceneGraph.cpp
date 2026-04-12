@@ -2,7 +2,7 @@
 
 #include <algorithm>
 
-namespace utility::scene {
+namespace container::scene {
 
 uint32_t SceneGraph::createNode(const glm::mat4& localTransform,
                                 uint32_t materialIndex, bool renderable,
@@ -89,4 +89,4 @@ void SceneGraph::unregisterRenderable(uint32_t nodeIndex) {
   std::erase(renderableNodes_, nodeIndex);
 }
 
-}  // namespace utility::scene
+}  // namespace container::scene

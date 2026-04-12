@@ -5,16 +5,21 @@
 
 #include "Container/utility/GuiManager.h"
 
+#include "Container/common/CommonGLFW.h"
+#include "Container/utility/SceneGraph.h"
+
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 #include <imgui_stdlib.h>
 
-
 #include "Container/common/CommonMath.h"
 
 
-namespace utility::ui {
+namespace container::ui {
+
+using container::gpu::kMaxDeferredPointLights;
+using container::gpu::LightingData;
 
 namespace {
 
@@ -139,7 +144,7 @@ void GuiManager::render(VkCommandBuffer commandBuffer) {
 }
 
 void GuiManager::drawSceneControls(
-    const utility::scene::SceneGraph& sceneGraph,
+    const container::scene::SceneGraph& sceneGraph,
     const std::function<bool(const std::string&)>& reloadModel,
     const std::function<bool()>& reloadDefault,
     const TransformControls& cameraTransform,
@@ -147,7 +152,7 @@ void GuiManager::drawSceneControls(
     const TransformControls& sceneTransform,
     const std::function<void(const TransformControls&)>& applySceneTransform,
     const glm::vec3& directionalLightPosition,
-    const LightingData& lightingData,
+    const container::gpu::LightingData& lightingData,
     uint32_t selectedMeshNode,
     const std::function<void(uint32_t)>& selectMeshNode,
     const TransformControls& meshTransform,
@@ -195,9 +200,9 @@ void GuiManager::drawSceneControls(
                        0.01f, 100.0f);
     ImGui::SliderFloat("Normal line offset", &normalValidationSettings_.lineOffset,
                        0.0f, 0.05f);
-    if (wireframeWideLineSupported_) {
     ImGui::SliderFloat("Normal face alpha", &normalValidationSettings_.faceAlpha,
                        0.0f, 1.0f);
+    if (wireframeWideLineSupported_) {
       ImGui::SliderFloat("Normal line width",
                          &normalValidationSettings_.lineWidth, 1.0f, 100.0f);
     } else {
@@ -291,7 +296,7 @@ void GuiManager::drawSceneControls(
     std::string selectedLabel = "Node " + std::to_string(activeMeshNode);
     if (const auto* node = sceneGraph.getNode(activeMeshNode);
         node != nullptr &&
-        node->primitiveIndex != utility::scene::SceneGraph::kInvalidNode) {
+        node->primitiveIndex != container::scene::SceneGraph::kInvalidNode) {
       selectedLabel += " / Primitive " + std::to_string(node->primitiveIndex);
     }
 
@@ -300,7 +305,7 @@ void GuiManager::drawSceneControls(
         std::string label = "Node " + std::to_string(nodeIndex);
         if (const auto* node = sceneGraph.getNode(nodeIndex);
             node != nullptr &&
-            node->primitiveIndex != utility::scene::SceneGraph::kInvalidNode) {
+            node->primitiveIndex != container::scene::SceneGraph::kInvalidNode) {
           label += " / Primitive " + std::to_string(node->primitiveIndex);
         }
         const bool selected = nodeIndex == activeMeshNode;
@@ -351,7 +356,7 @@ void GuiManager::ensureInitialized() const {
   }
 }
 
-}  // namespace utility::ui
+}  // namespace container::ui
 
 
 

@@ -1,0 +1,134 @@
+#pragma once
+
+#include "Container/common/CommonVulkan.h"
+#include "Container/common/CommonMath.h"
+#include "Container/renderer/FrameResources.h"
+
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+namespace container::gpu {
+class AllocationManager;
+class PipelineManager;
+class SwapChainManager;
+class VulkanDevice;
+struct AllocatedBuffer;
+}  // namespace container::gpu
+
+namespace container::renderer {
+
+// Per-node data in the OIT linked list.
+struct OitNode {
+  alignas(16) glm::vec4 color{0.0f};
+  alignas(4)  float     depth{0.0f};
+  alignas(4)  uint32_t  next{~0u};
+  alignas(8)  glm::vec2 padding{0.0f};
+};
+
+// Uniform uploaded per-frame for the OIT resolve pass.
+struct OitMetadata {
+  alignas(4) uint32_t nodeCapacity{0};
+  alignas(4) uint32_t viewportWidth{0};
+  alignas(4) uint32_t viewportHeight{0};
+  alignas(4) uint32_t reserved{0};
+};
+
+// Aggregated format bundle passed into FrameResourceManager::create().
+struct GBufferFormats {
+  VkFormat depthStencil{VK_FORMAT_UNDEFINED};
+  VkFormat sceneColor{VK_FORMAT_R16G16B16A16_SFLOAT};
+  VkFormat albedo{VK_FORMAT_R8G8B8A8_UNORM};
+  VkFormat normal{VK_FORMAT_R16G16B16A16_SFLOAT};
+  VkFormat material{VK_FORMAT_R16G16B16A16_SFLOAT};
+  VkFormat emissive{VK_FORMAT_R16G16B16A16_SFLOAT};
+  VkFormat position{VK_FORMAT_R16G16B16A16_SFLOAT};
+  VkFormat oitHeadPointer{VK_FORMAT_R32_UINT};
+
+  // Returns a GBufferFormats initialised with all defaults except
+  // depthStencil, which must be queried from RenderPassManager at runtime.
+  [[nodiscard]] static GBufferFormats defaults() {
+    return {};  // all member initialisers above already hold the defaults
+  }
+};
+
+class FrameResourceManager {
+ public:
+  FrameResourceManager(
+      std::shared_ptr<container::gpu::VulkanDevice> device,
+      container::gpu::AllocationManager&            allocationManager,
+      container::gpu::PipelineManager&            pipelineManager,
+      container::gpu::SwapChainManager&                     swapChainManager,
+      VkCommandPool                                  commandPool);
+
+  ~FrameResourceManager();
+  FrameResourceManager(const FrameResourceManager&) = delete;
+  FrameResourceManager& operator=(const FrameResourceManager&) = delete;
+
+  // Call once after pipeline manager is ready.
+  void createDescriptorSetLayouts();
+  void createGBufferSampler();
+
+  [[nodiscard]] VkDescriptorSetLayout lightingLayout()    const { return lightingLayout_; }
+  [[nodiscard]] VkDescriptorSetLayout postProcessLayout() const { return postProcessLayout_; }
+  [[nodiscard]] VkDescriptorSetLayout oitLayout()         const { return oitLayout_; }
+  [[nodiscard]] VkSampler             gBufferSampler()    const { return gBufferSampler_; }
+
+  // Create / recreate per-swapchain-image resources.
+  void create(const GBufferFormats&                    formats,
+              VkRenderPass                             depthPrepassPass,
+              VkRenderPass                             gBufferPass,
+              VkRenderPass                             lightingPass,
+              const container::gpu::AllocatedBuffer& cameraBuffer,
+              const container::gpu::AllocatedBuffer& objectBuffer);
+
+  void destroy();
+
+  void updateDescriptorSets(const container::gpu::AllocatedBuffer& cameraBuffer,
+                            const container::gpu::AllocatedBuffer& objectBuffer);
+
+  void validateOitFormatSupport() const;
+
+  // Returns true if the OIT node pool was grown (caller must recreate).
+  bool growOitPoolIfNeeded(uint32_t imageIndex, uint32_t& capacityFloor);
+
+  [[nodiscard]] uint32_t computeOitNodeCapacity(uint32_t floor) const;
+
+  [[nodiscard]] const std::vector<FrameResources>& frames() const { return frames_; }
+  [[nodiscard]] std::vector<FrameResources>&       frames()       { return frames_; }
+
+ private:
+  AttachmentImage createAttachment(VkFormat fmt, VkImageUsageFlags usage,
+                                   VkImageAspectFlags aspect) const;
+  void            destroyAttachment(AttachmentImage& a) const;
+  void            transitionToGeneral(VkImage image, VkImageAspectFlags mask) const;
+  void            writeOitMetadata(FrameResources& frame) const;
+  VkCommandBuffer beginImmediate() const;
+  void            endImmediate(VkCommandBuffer cmd) const;
+
+  std::shared_ptr<container::gpu::VulkanDevice> device_;
+  container::gpu::AllocationManager*            allocationMgr_{nullptr};
+  container::gpu::PipelineManager*            pipelineMgr_{nullptr};
+  container::gpu::SwapChainManager*                     swapChain_{nullptr};
+  VkCommandPool                                  commandPool_{VK_NULL_HANDLE};
+
+  VkDescriptorSetLayout lightingLayout_{VK_NULL_HANDLE};
+  VkDescriptorSetLayout postProcessLayout_{VK_NULL_HANDLE};
+  VkDescriptorSetLayout oitLayout_{VK_NULL_HANDLE};
+  VkSampler             gBufferSampler_{VK_NULL_HANDLE};
+
+  VkDescriptorPool lightingPool_{VK_NULL_HANDLE};
+  VkDescriptorPool postProcessPool_{VK_NULL_HANDLE};
+  VkDescriptorPool oitPool_{VK_NULL_HANDLE};
+
+  GBufferFormats formats_{};
+  VkRenderPass   depthPrepassPass_{VK_NULL_HANDLE};
+  VkRenderPass   gBufferPass_{VK_NULL_HANDLE};
+  VkRenderPass   lightingPass_{VK_NULL_HANDLE};
+
+  std::vector<FrameResources> frames_;
+
+  static constexpr uint32_t kOitAvgNodesPerPixel = 4u;
+};
+
+}  // namespace container::renderer

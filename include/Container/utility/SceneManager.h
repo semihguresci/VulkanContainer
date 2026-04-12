@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -11,17 +12,22 @@
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonMath.h"
 #include "Container/geometry/Model.h"
-#include "Container/utility/AllocationManager.h"
 #include "Container/utility/MaterialManager.h"
 #include "Container/utility/MaterialXIntegration.h"
-#include "Container/utility/PipelineManager.h"
-#include "Container/utility/SceneData.h"
-#include "Container/utility/SceneGraph.h"
 #include "Container/utility/TextureManager.h"
-#include "Container/utility/TextureResource.h"
-#include "Container/utility/VulkanDevice.h"
 
-namespace utility::scene {
+namespace container::gpu {
+class AllocationManager;
+class PipelineManager;
+class VulkanDevice;
+struct AllocatedBuffer;
+}  // namespace container::gpu
+
+namespace container::scene {
+class SceneGraph;
+}  // namespace container::scene
+
+namespace container::scene {
 
 struct ModelBounds {
   glm::vec3 min{0.0f};
@@ -34,10 +40,10 @@ struct ModelBounds {
 
 class SceneManager {
  public:
-  SceneManager(utility::memory::AllocationManager& allocationManager,
-               utility::pipeline::PipelineManager& pipelineManager,
-               std::shared_ptr<utility::vulkan::VulkanDevice> deviceWrapper,
-               const app::AppConfig& config);
+  SceneManager(container::gpu::AllocationManager& allocationManager,
+               container::gpu::PipelineManager& pipelineManager,
+               std::shared_ptr<container::gpu::VulkanDevice> deviceWrapper,
+               const container::app::AppConfig& config);
   ~SceneManager();
 
   SceneManager(const SceneManager&) = delete;
@@ -46,24 +52,24 @@ class SceneManager {
   void initialize(const std::string& initialModelPath);
 
   bool reloadModel(const std::string& path,
-                   const utility::memory::AllocatedBuffer& cameraBuffer,
-                   const utility::memory::AllocatedBuffer& objectBuffer);
+                   const container::gpu::AllocatedBuffer& cameraBuffer,
+                   const container::gpu::AllocatedBuffer& objectBuffer);
 
   void updateDescriptorSet(
-      const utility::memory::AllocatedBuffer& cameraBuffer,
-      const utility::memory::AllocatedBuffer& objectBuffer);
+      const container::gpu::AllocatedBuffer& cameraBuffer,
+      const container::gpu::AllocatedBuffer& objectBuffer);
 
   VkDescriptorSetLayout descriptorSetLayout() const {
     return descriptorSetLayout_;
   }
   VkDescriptorSet descriptorSet() const { return descriptorSet_; }
 
-  const std::vector<geometry::Vertex>& vertices() const { return vertices_; }
+  const std::vector<container::geometry::Vertex>& vertices() const { return vertices_; }
   const std::vector<uint32_t>& indices() const { return indices_; }
-  const std::vector<geometry::PrimitiveRange>& primitiveRanges() const {
+  const std::vector<container::geometry::PrimitiveRange>& primitiveRanges() const {
     return model_.primitiveRanges();
   }
-  const geometry::Model& model() const { return model_; }
+  const container::geometry::Model& model() const { return model_; }
   VkIndexType indexType() const { return indexType_; }
   uint32_t defaultMaterialIndex() const { return defaultMaterialIndex_; }
   const ModelBounds& modelBounds() const { return modelBounds_; }
@@ -94,22 +100,22 @@ class SceneManager {
   void updateModelBounds();
   void allocateDescriptorSet();
   void writeDescriptorSetContents(
-      const utility::memory::AllocatedBuffer& cameraBuffer,
-      const utility::memory::AllocatedBuffer& objectBuffer);
+      const container::gpu::AllocatedBuffer& cameraBuffer,
+      const container::gpu::AllocatedBuffer& objectBuffer);
   void resetLoadedAssets();
 
-  utility::memory::AllocationManager* allocationManager_{nullptr};
-  utility::pipeline::PipelineManager* pipelineManager_{nullptr};
-  std::shared_ptr<utility::vulkan::VulkanDevice> deviceWrapper_{};
-  app::AppConfig config_{};
+  container::gpu::AllocationManager* allocationManager_{nullptr};
+  container::gpu::PipelineManager* pipelineManager_{nullptr};
+  std::shared_ptr<container::gpu::VulkanDevice> deviceWrapper_{};
+  container::app::AppConfig config_{};
 
-  utility::materialx::SlangMaterialXBridge materialXBridge_{};
-  utility::material::TextureManager textureManager_{};
-  utility::material::MaterialManager materialManager_{};
+  container::material::SlangMaterialXBridge materialXBridge_{};
+  container::material::TextureManager textureManager_{};
+  container::material::MaterialManager materialManager_{};
 
-  geometry::Model model_{};
+  container::geometry::Model model_{};
   tinygltf::Model gltfModel_{};
-  std::vector<geometry::Vertex> vertices_{};
+  std::vector<container::geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
   ModelBounds modelBounds_{};
 
@@ -126,4 +132,4 @@ class SceneManager {
   uint32_t textureDescriptorCapacity_{1};
 };
 
-}  // namespace utility::scene
+}  // namespace container::scene

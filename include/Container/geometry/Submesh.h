@@ -1,6 +1,6 @@
 #pragma once
 
-namespace geometry {
+namespace container::geometry {
 struct Submesh;
 }
 

@@ -5,11 +5,11 @@
 
 struct GLFWwindow;
 
-namespace utility::camera {
+namespace container::scene {
 class BaseCamera;
 }
 
-namespace utility::input {
+namespace container::window {
 
 class InputManager {
  public:
@@ -19,7 +19,7 @@ class InputManager {
   void setMouseSensitivity(float sensitivity) {
     mouseSensitivity_ = sensitivity;
   }
-  void setCamera(utility::camera::BaseCamera* camera) { camera_ = camera; }
+  void setCamera(container::scene::BaseCamera* camera) { camera_ = camera; }
   void setWindow(GLFWwindow* window);
 
   [[nodiscard]] bool isLooking() const { return lookModeActive_; }
@@ -36,7 +36,7 @@ class InputManager {
   void applyKeyboardInput(float deltaTime);
   void setLookMode(bool enabled);
 
-  utility::camera::BaseCamera* camera_{nullptr};
+  container::scene::BaseCamera* camera_{nullptr};
   GLFWwindow* window_{nullptr};
   std::unordered_set<int> pressedKeys_{};
 
@@ -51,4 +51,4 @@ class InputManager {
   float mouseSensitivity_{0.10f};
 };
 
-}  // namespace utility::input
+}  // namespace container::window

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Container/common/CommonMath.h"
-namespace utility::material {
+namespace container::material {
 
 enum class AlphaMode : uint32_t {
   Opaque = 0,
@@ -23,4 +23,4 @@ struct Material {
   AlphaMode alphaMode{AlphaMode::Opaque};
   bool doubleSided{false};
 };
-}  // namespace utility::material
+}  // namespace container::material

@@ -1,11 +1,11 @@
 #pragma once
 
 #include "Container/common/CommonVulkan.h"
-#include <Container/utility/SwapChainManager.h>
+#include "Container/common/VulkanTypes.h"
 
 #include <vector>
 
-namespace utility::vulkan {
+namespace container::gpu {
 
 struct DeviceCreateInfo {
   std::vector<const char*> requiredExtensions{};
@@ -60,4 +60,4 @@ class VulkanDevice {
   VkPhysicalDeviceFeatures enabledFeatures_{};
 };
 
-}  // namespace utility::vulkan
+}  // namespace container::gpu

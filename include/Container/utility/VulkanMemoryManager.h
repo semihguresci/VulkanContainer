@@ -1,8 +1,6 @@
-#ifndef UTILITY_VULKAN_MEMORY_MANAGER_H
-#define UTILITY_VULKAN_MEMORY_MANAGER_H
+#pragma once
 
 #include <cstddef>
-#include <span>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -11,7 +9,7 @@
 #include "Container/common/CommonVMA.h"
 #include "Container/common/CommonVulkan.h"
 
-namespace utility::memory {
+namespace container::gpu {
 
 class VulkanMemoryManager;
 
@@ -112,6 +110,5 @@ class BufferArena {
   VkDeviceSize next_offset_{0};
 };
 
-}  // namespace utility::memory
+}  // namespace container::gpu
 
-#endif  // UTILITY_VULKAN_MEMORY_MANAGER_H

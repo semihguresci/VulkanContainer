@@ -1,11 +1,10 @@
-#ifndef UTILITY_VK_RESULT_TO_STRING_H
-#define UTILITY_VK_RESULT_TO_STRING_H
+#pragma once
 
 #include "Container/common/CommonVulkan.h"
 
 #include <string>
 
-namespace utility {
+namespace container::gpu {
 
 inline const char* vkResultToString(VkResult result) {
   switch (result) {
@@ -75,6 +74,5 @@ inline const char* vkResultToString(VkResult result) {
   }
 }
 
-}  // namespace utility
+}  // namespace container::gpu
 
-#endif  // UTILITY_VK_RESULT_TO_STRING_H

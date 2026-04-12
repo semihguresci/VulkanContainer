@@ -15,7 +15,7 @@
 //   - Reverse-Z: depth cleared to 0, compare GREATER_OR_EQUAL.
 //                The helpers below map near -> 1 and far -> 0 explicitly.
 
-namespace common::math {
+namespace container::math {
 
 // Standard RH view matrix (camera looks down -Z).
 [[nodiscard]] inline glm::mat4 lookAt(const glm::vec3& eye,
@@ -55,4 +55,4 @@ namespace common::math {
   return result;
 }
 
-}  // namespace common::math
+}  // namespace container::math

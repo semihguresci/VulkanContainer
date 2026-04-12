@@ -5,7 +5,7 @@
 #include <utility>
 #include <vector>
 
-namespace utility::vulkan {
+namespace container::gpu {
 
 VulkanInstance::VulkanInstance(const InstanceCreateInfo& createInfo) {
   if (createInfo.enableValidationLayers &&
@@ -98,4 +98,4 @@ bool VulkanInstance::checkValidationLayerSupport(
   return true;
 }
 
-}  // namespace utility::vulkan
+}  // namespace container::gpu

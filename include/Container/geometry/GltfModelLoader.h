@@ -6,7 +6,7 @@
 
 #include <string>
 
-namespace geometry {
+namespace container::geometry {
 
 struct GltfLoadResult {
   Model model;
@@ -22,5 +22,5 @@ Model LoadModelFromFile(const std::string& path);
 GltfLoadResult LoadModelWithSource(const std::string& path);
 
 }  // namespace gltf
-}  // namespace geometry
+}  // namespace container::geometry
 

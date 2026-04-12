@@ -1,8 +1,8 @@
 #include <Container/ContainerCore.h>
 
-namespace Container {
+namespace container {
 
 constexpr auto ContainerCore::version() const noexcept -> Version { return {1, 0, 0}; }
 
-}  // namespace Container
+}  // namespace container
 

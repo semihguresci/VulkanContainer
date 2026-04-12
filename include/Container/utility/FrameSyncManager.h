@@ -5,7 +5,7 @@
 
 #include "Container/common/CommonVulkan.h"
 
-namespace utility {
+namespace container::gpu {
 
 class FrameSyncManager {
  public:
@@ -40,4 +40,4 @@ class FrameSyncManager {
   std::vector<VkFence> inFlightFences_;
 };
 
-}  // namespace utility
+}  // namespace container::gpu

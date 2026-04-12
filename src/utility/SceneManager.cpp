@@ -7,12 +7,16 @@
 #include <utility>
 
 #include "Container/geometry/GltfModelLoader.h"
+#include "Container/utility/AllocationManager.h"
+#include "Container/utility/PipelineManager.h"
 #include "Container/utility/SceneData.h"
+#include "Container/utility/SceneGraph.h"
 #include "Container/utility/SceneManager.h"
+#include "Container/utility/VulkanDevice.h"
 
 #include <glm/gtc/quaternion.hpp>
 
-namespace utility::scene {
+namespace container::scene {
 
 namespace {
 
@@ -61,10 +65,10 @@ glm::mat4 nodeLocalTransform(const tinygltf::Node& node) {
 }  // namespace
 
 SceneManager::SceneManager(
-    utility::memory::AllocationManager& allocationManager,
-    utility::pipeline::PipelineManager& pipelineManager,
-    std::shared_ptr<utility::vulkan::VulkanDevice> deviceWrapper,
-    const app::AppConfig& config)
+    container::gpu::AllocationManager& allocationManager,
+    container::gpu::PipelineManager& pipelineManager,
+    std::shared_ptr<container::gpu::VulkanDevice> deviceWrapper,
+    const container::app::AppConfig& config)
     : allocationManager_(&allocationManager),
       pipelineManager_(&pipelineManager),
       deviceWrapper_(std::move(deviceWrapper)),
@@ -215,8 +219,8 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
 
 bool SceneManager::reloadModel(
     const std::string& path,
-    const utility::memory::AllocatedBuffer& cameraBuffer,
-    const utility::memory::AllocatedBuffer& objectBuffer) {
+    const container::gpu::AllocatedBuffer& cameraBuffer,
+    const container::gpu::AllocatedBuffer& objectBuffer) {
   resetLoadedAssets();
   loadMaterialXMaterial();
 
@@ -224,15 +228,15 @@ bool SceneManager::reloadModel(
   vertices_.clear();
   indices_.clear();
   gltfModel_ = tinygltf::Model{};
-  model_ = geometry::Model{};
+  model_ = container::geometry::Model{};
 
   try {
     loadGltfAssets();
     writeDescriptorSetContents(cameraBuffer, objectBuffer);
     return true;
   } catch (...) {
-    materialManager_ = utility::material::MaterialManager{};
-    textureManager_ = utility::material::TextureManager{};
+    materialManager_ = container::material::MaterialManager{};
+    textureManager_ = container::material::TextureManager{};
     materialBaseColor_ = glm::vec4(1.0f);
     defaultMaterialIndex_ = std::numeric_limits<uint32_t>::max();
     loadMaterialXMaterial();
@@ -241,8 +245,8 @@ bool SceneManager::reloadModel(
 }
 
 void SceneManager::updateDescriptorSet(
-    const utility::memory::AllocatedBuffer& cameraBuffer,
-    const utility::memory::AllocatedBuffer& objectBuffer) {
+    const container::gpu::AllocatedBuffer& cameraBuffer,
+    const container::gpu::AllocatedBuffer& objectBuffer) {
   writeDescriptorSetContents(cameraBuffer, objectBuffer);
 }
 
@@ -319,14 +323,14 @@ float SceneManager::resolveMaterialAlphaCutoff(uint32_t materialIndex) const {
 
 bool SceneManager::isMaterialTransparent(uint32_t materialIndex) const {
   if (const auto* m = materialManager_.getMaterial(materialIndex)) {
-    return m->alphaMode == utility::material::AlphaMode::Blend;
+    return m->alphaMode == container::material::AlphaMode::Blend;
   }
   return false;
 }
 
 bool SceneManager::isMaterialAlphaMasked(uint32_t materialIndex) const {
   if (const auto* m = materialManager_.getMaterial(materialIndex)) {
-    return m->alphaMode == utility::material::AlphaMode::Mask;
+    return m->alphaMode == container::material::AlphaMode::Mask;
   }
   return false;
 }
@@ -393,7 +397,7 @@ void SceneManager::createSampler() {
 /* ---------- Assets ---------- */
 
 void SceneManager::loadMaterialXMaterial() {
-  utility::material::Material material{};
+  container::material::Material material{};
 
   try {
     auto doc = materialXBridge_.loadDocument("materials/base.mtlx");
@@ -417,12 +421,12 @@ void SceneManager::loadMaterialXMaterial() {
 }
 
 void SceneManager::loadGltfAssets() {
-  model_ = geometry::Model{};
+  model_ = container::geometry::Model{};
   gltfModel_ = tinygltf::Model{};
 
   if (!config_.modelPath.empty()) {
     try {
-      auto result = geometry::gltf::LoadModelWithSource(config_.modelPath);
+      auto result = container::geometry::gltf::LoadModelWithSource(config_.modelPath);
       gltfModel_ = std::move(result.gltfModel);
       model_ = std::move(result.model);
 
@@ -518,11 +522,11 @@ void SceneManager::allocateDescriptorSet() {
 }
 
 void SceneManager::writeDescriptorSetContents(
-    const utility::memory::AllocatedBuffer& cameraBuffer,
-    const utility::memory::AllocatedBuffer& objectBuffer) {
+    const container::gpu::AllocatedBuffer& cameraBuffer,
+    const container::gpu::AllocatedBuffer& objectBuffer) {
   if (descriptorSet_ == VK_NULL_HANDLE) return;
 
-  VkDescriptorBufferInfo cameraInfo{cameraBuffer.buffer, 0, sizeof(CameraData)};
+  VkDescriptorBufferInfo cameraInfo{cameraBuffer.buffer, 0, sizeof(container::gpu::CameraData)};
   VkDescriptorBufferInfo objectInfo{
       objectBuffer.buffer, 0, objectBuffer.allocation_info.size};
 
@@ -590,12 +594,12 @@ void SceneManager::writeDescriptorSetContents(
 
 void SceneManager::resetLoadedAssets() {
   allocationManager_->resetTextureAllocations();
-  materialManager_ = utility::material::MaterialManager{};
-  textureManager_ = utility::material::TextureManager{};
+  materialManager_ = container::material::MaterialManager{};
+  textureManager_ = container::material::TextureManager{};
   defaultMaterialIndex_ = std::numeric_limits<uint32_t>::max();
   gltfMaterialBaseIndex_ = 0;
   materialBaseColor_ = glm::vec4(1.0f);
   modelBounds_ = ModelBounds{};
 }
 
-}  // namespace utility::scene
+}  // namespace container::scene

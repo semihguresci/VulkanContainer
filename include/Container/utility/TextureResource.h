@@ -3,7 +3,7 @@
 
 #include "Container/common/CommonVulkan.h"
 
-namespace utility::material {
+namespace container::material {
 
 struct TextureResource {
   std::string name;
@@ -12,4 +12,4 @@ struct TextureResource {
   VkSampler sampler{VK_NULL_HANDLE};
 };
 
-}  // namespace utility::material
+}  // namespace container::material

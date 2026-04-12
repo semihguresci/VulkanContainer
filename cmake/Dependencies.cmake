@@ -1,18 +1,19 @@
 ﻿# cmake/Dependencies.cmake
+#
+# Phase 1 refactoring: Targeted dependency groups (Dep_*) replace the former
+# monolithic VulkanDependencies INTERFACE library.  Each internal library now
+# links only the third-party packages it actually uses.
 
-add_library(VulkanDependencies INTERFACE)
-
-find_package(Vulkan REQUIRED)
-
-# Set up external directory
+# ── External directory ───────────────────────────────────────────────────────
 if(NOT DEFINED EXTERNAL_DIR)
     set(EXTERNAL_DIR "${CMAKE_SOURCE_DIR}/external" CACHE PATH "Directory for external dependencies")
 endif()
 
 include(cmake/DependenciesSettings.cmake)
-
-# Find Vulkan with custom module
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+
+# ── Find Vulkan SDK ──────────────────────────────────────────────────────────
+find_package(Vulkan REQUIRED)
 
 if(Vulkan_FOUND)
     message(STATUS "✅ Vulkan found - Version: ${Vulkan_VERSION}")
@@ -20,6 +21,7 @@ else()
     message(FATAL_ERROR "❌ Vulkan not found - Please install Vulkan SDK and set VULKAN_SDK")
 endif()
 
+# ── Vulkan Memory Allocator ──────────────────────────────────────────────────
 find_package(VulkanMemoryAllocator CONFIG REQUIRED)
 
 message(STATUS "---- VMA targets check ----")
@@ -46,15 +48,11 @@ else()
 endif()
 get_target_property(_vma_includes ${VMA_TARGET} INTERFACE_INCLUDE_DIRECTORIES)
 message(STATUS "VMA include dirs: ${_vma_includes}")
-target_include_directories(VulkanDependencies INTERFACE
-    ${Vulkan_INCLUDE_DIRS}
-)
 
-
+# ── Validation layers ────────────────────────────────────────────────────────
 option(ENABLE_VULKAN_VALIDATION_LAYERS "Enable Vulkan validation layers" ON)
 
 if(ENABLE_VULKAN_VALIDATION_LAYERS)
-  # Try to locate the Khronos validation layer manifest
   set(_vulkan_sdk $ENV{VULKAN_SDK})
 
   set(_candidate_layer_dirs "")
@@ -73,12 +71,10 @@ if(ENABLE_VULKAN_VALIDATION_LAYERS)
     endif()
   endif()
 
-  # Also allow user override
   if(DEFINED Vulkan_LAYER_DIR)
     list(APPEND _candidate_layer_dirs "${Vulkan_LAYER_DIR}")
   endif()
 
-  # Search for the JSON
   find_file(VK_KHRONOS_VALIDATION_JSON
     NAMES VkLayer_khronos_validation.json
     HINTS ${_candidate_layer_dirs}
@@ -89,7 +85,6 @@ if(ENABLE_VULKAN_VALIDATION_LAYERS)
     get_filename_component(VK_LAYER_PATH_DIR "${VK_KHRONOS_VALIDATION_JSON}" DIRECTORY)
     message(STATUS "✅ Found validation layer manifest: ${VK_KHRONOS_VALIDATION_JSON}")
     message(STATUS "   Suggested VK_LAYER_PATH: ${VK_LAYER_PATH_DIR}")
-
     set(ENV{VK_LAYER_PATH} "${VK_LAYER_PATH_DIR}:$ENV{VK_LAYER_PATH}")
   else()
     message(WARNING
@@ -100,8 +95,7 @@ if(ENABLE_VULKAN_VALIDATION_LAYERS)
   endif()
 endif()
 
-
-# Define all required packages
+# ── Find all required packages ───────────────────────────────────────────────
 set(REQUIRED_PACKAGES
     VulkanMemoryAllocator
     MaterialX
@@ -110,23 +104,11 @@ set(REQUIRED_PACKAGES
     glfw3
     GTest
     imgui
-    assimp
-    cxxopts
     EnTT
-    slang
-    PNG
-    libzip
     nlohmann_json
     spdlog
-    yaml-cpp
-    Eigen3
-    VulkanUtilityLibraries
-    libjpeg-turbo
 )
 
-
-
-# Find all packages
 foreach(pkg IN LISTS REQUIRED_PACKAGES)
     find_package(${pkg} CONFIG REQUIRED)
 endforeach()
@@ -155,84 +137,78 @@ else()
     message(WARNING "⚠️ STB not found - some features may be disabled")
 endif()
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Targeted dependency groups (Dep_*)
+#
+# Each group bundles a coherent set of third-party libraries.  Internal
+# targets link only the groups they actually need.
+# ─────────────────────────────────────────────────────────────────────────────
 
+# -- Dep_VulkanCore: Vulkan SDK + VMA ----------------------------------------
+add_library(Dep_VulkanCore INTERFACE)
+target_include_directories(Dep_VulkanCore INTERFACE ${Vulkan_INCLUDE_DIRS})
+target_link_libraries(Dep_VulkanCore INTERFACE
+    Vulkan::Vulkan
+    $<IF:$<TARGET_EXISTS:Vulkan::Headers>,Vulkan::Headers,>
+    ${VMA_TARGET}
+)
+# NOMINMAX prevents Windows.h min/max macros from clashing with std::min/max.
+# WIN32_LEAN_AND_MEAN reduces the Windows.h include footprint.
+# Previously provided by Vulkan::CompilerConfiguration.
+target_compile_definitions(Dep_VulkanCore INTERFACE
+    $<$<PLATFORM_ID:Windows>:NOMINMAX>
+    $<$<PLATFORM_ID:Windows>:WIN32_LEAN_AND_MEAN>
+)
 
+# -- Dep_Math: GLM with project-wide defines --------------------------------
+add_library(Dep_Math INTERFACE)
+target_link_libraries(Dep_Math INTERFACE glm::glm)
+target_compile_definitions(Dep_Math INTERFACE
+    GLM_FORCE_COLUMN_MAJOR
+    GLM_FORCE_DEPTH_ZERO_TO_ONE
+    GLM_FORCE_RADIANS
+)
 
-# Include directories
-target_include_directories(VulkanDependencies INTERFACE
+# -- Dep_Windowing: GLFW ----------------------------------------------------
+add_library(Dep_Windowing INTERFACE)
+target_link_libraries(Dep_Windowing INTERFACE glfw)
+
+# -- Dep_UI: Dear ImGui ------------------------------------------------------
+add_library(Dep_UI INTERFACE)
+target_link_libraries(Dep_UI INTERFACE imgui::imgui)
+
+# -- Dep_Logging: spdlog + fmt -----------------------------------------------
+add_library(Dep_Logging INTERFACE)
+target_link_libraries(Dep_Logging INTERFACE spdlog::spdlog fmt::fmt)
+
+# -- Dep_SceneIO: Model/texture loading (tinygltf, stb) ---------------------
+add_library(Dep_SceneIO INTERFACE)
+target_include_directories(Dep_SceneIO INTERFACE
     $<IF:$<TARGET_EXISTS:tinygltf::tinygltf>,${TINYGLTF_INCLUDE_DIRS},"">
     $<IF:$<TARGET_EXISTS:stb::stb>,${STB_INCLUDE_DIRS},"">
 )
-
-# Vulkan-related libraries
-set(VULKAN_LIBS
-    Vulkan::Vulkan
-    Vulkan::SafeStruct
-    Vulkan::LayerSettings
-    Vulkan::UtilityHeaders
-    Vulkan::CompilerConfiguration
-    $<IF:$<TARGET_EXISTS:Vulkan::Headers>,Vulkan::Headers,>
+target_link_libraries(Dep_SceneIO INTERFACE
+    $<IF:$<TARGET_EXISTS:tinygltf::tinygltf>,tinygltf::tinygltf,"">
+    $<IF:$<TARGET_EXISTS:stb::stb>,stb::stb,"">
 )
 
-list(APPEND VULKAN_LIBS ${VMA_TARGET})
-
- set(SHADER_LIBS
-      slang::slang 
-    )
-
-# Graphics/rendering libraries
-set(GRAPHICS_LIBS
-    glfw
-    glm::glm
-    imgui::imgui
-)
-
-set(MATERIALX_LIBS
+# -- Dep_Material: MaterialX --------------------------------------------------
+add_library(Dep_Material INTERFACE)
+target_link_libraries(Dep_Material INTERFACE
     MaterialXCore
     MaterialXFormat
     MaterialXGenShader
 )
 
-# Utility libraries
-set(UTILITY_LIBS
-    fmt::fmt
-    spdlog::spdlog
-    yaml-cpp::yaml-cpp
-    nlohmann_json::nlohmann_json
-    cxxopts::cxxopts
+# -- Dep_ECS: EnTT ───────────────────────────────────────────────────────────
+add_library(Dep_ECS INTERFACE)
+target_link_libraries(Dep_ECS INTERFACE
     EnTT::EnTT
-    Eigen3::Eigen
 )
 
-# Media libraries
-set(MEDIA_LIBS
-    assimp::assimp
-    PNG::PNG
-    libzip::zip
-    $<IF:$<TARGET_EXISTS:tinygltf::tinygltf>,tinygltf::tinygltf,"">
-    $<IF:$<TARGET_EXISTS:stb::stb>,stb::stb,"">
-    $<IF:$<TARGET_EXISTS:libjpeg-turbo::turbojpeg>,libjpeg-turbo::turbojpeg,libjpeg-turbo::turbojpeg-static>
-)
-    
-# Combine all libraries
-target_link_libraries(VulkanDependencies INTERFACE
-    ${VULKAN_LIBS}
-    ${SHADER_LIBS}
-    ${GRAPHICS_LIBS}
-    ${UTILITY_LIBS}
-    ${MEDIA_LIBS}
-    ${MATERIALX_LIBS}
-)
-
-# Print summary
+# ── Summary
 message(STATUS "--------------------------------------------------")
 message(STATUS "Dependency Configuration Summary:")
 message(STATUS "Vulkan: ${Vulkan_VERSION}")
-message(STATUS "slang :(${slang_VERSION})")
 message(STATUS "spdlog: ${spdlog_VERSION}")
 message(STATUS "--------------------------------------------------")
-target_compile_definitions(VulkanDependencies INTERFACE
-    GLM_FORCE_COLUMN_MAJOR
-    GLM_FORCE_DEPTH_ZERO_TO_ONE
-    GLM_FORCE_RADIANS
-)

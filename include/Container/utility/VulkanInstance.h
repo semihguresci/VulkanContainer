@@ -4,7 +4,7 @@
 #include <vector>
 #include "Container/common/CommonVulkan.h"
 
-namespace utility::vulkan {
+namespace container::gpu {
 
 struct InstanceCreateInfo {
   std::string applicationName{"VulkanApplication"};
@@ -38,4 +38,4 @@ class VulkanInstance {
   VkInstance instance_{nullptr};
 };
 
-}  // namespace utility::vulkan
+}  // namespace container::gpu

@@ -3,7 +3,7 @@
 
 #include "Container/utility/FrameSyncManager.h"
 
-namespace utility {
+namespace container::gpu {
 
 FrameSyncManager::FrameSyncManager(VkDevice device, size_t framesInFlight)
     : device_(device), framesInFlight_(framesInFlight) {}
@@ -130,4 +130,4 @@ void FrameSyncManager::destroyRenderFinishedSemaphores() {
   renderFinishedSemaphores_.clear();
 }
 
-}  // namespace utility
+}  // namespace container::gpu

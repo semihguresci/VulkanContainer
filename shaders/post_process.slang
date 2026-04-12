@@ -29,7 +29,7 @@ struct OitMetadataBuffer
 [[vk::binding(4, 0)]] Texture2D<float4> gMaterialTexture;
 [[vk::binding(5, 0)]] Texture2D<float4> gEmissiveTexture;
 [[vk::binding(6, 0)]] Texture2D<float4> gPositionTexture;
-[[vk::binding(0, 1)]] Texture2D<uint> headPointerImage;
+[[vk::binding(0, 1)]] RWTexture2D<uint> headPointerImage;
 [[vk::binding(1, 1)]] StructuredBuffer<TransparentNode> transparentNodes;
 [[vk::binding(2, 1)]] StructuredBuffer<uint> nodeCounter;
 [[vk::binding(3, 1)]] ConstantBuffer<OitMetadataBuffer> uOit;
@@ -198,7 +198,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         uint sortedIndices[MAX_OIT_NODES_PER_PIXEL];
         uint nodeCount = 0u;
 
-        uint current = headPointerImage.Load(int3(pixelCoord, 0));
+        uint current = headPointerImage.Load(int2(pixelCoord));
         while (current != INVALID_NODE_INDEX && nodeCount < MAX_OIT_NODES_PER_PIXEL)
         {
             if (current >= uOit.nodeCapacity)
@@ -318,7 +318,7 @@ float4 fragMain(VSOutput input) : SV_Target0
                 uint sortedIndices[MAX_OIT_NODES_PER_PIXEL];
                 uint nodeCount = 0u;
 
-                uint current = headPointerImage.Load(int3(panelPixel, 0));
+                uint current = headPointerImage.Load(int2(panelPixel));
                 while (current != INVALID_NODE_INDEX && nodeCount < MAX_OIT_NODES_PER_PIXEL)
                 {
                     if (current >= uOit.nodeCapacity)

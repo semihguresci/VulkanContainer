@@ -5,7 +5,7 @@
 
 #include "Container/utility/Material.h"
 
-namespace utility::material {
+namespace container::material {
 
 class MaterialManager {
  public:
@@ -18,4 +18,4 @@ class MaterialManager {
   std::vector<Material> materials_{};
 };
 
-}  // namespace utility::material
+}  // namespace container::material

@@ -71,7 +71,7 @@ std::string resolveImageFileInput(const MaterialX::InputPtr& input) {
 }
 }  // namespace
 
-namespace utility::materialx {
+namespace container::material {
 
 SlangMaterialXBridge::SlangMaterialXBridge() = default;
 
@@ -451,8 +451,8 @@ std::vector<MaterialX::DocumentPtr> SlangMaterialXBridge::loadGltfMaterials(
 
 std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
     const tinygltf::Model& model, const std::filesystem::path& baseDir,
-    utility::material::TextureManager& textureManager,
-    const std::function<utility::material::TextureResource(const std::string&)>&
+    container::material::TextureManager& textureManager,
+    const std::function<container::material::TextureResource(const std::string&)>&
         textureLoader) const {
   std::vector<uint32_t> imageToTexture(model.images.size(),
                                        std::numeric_limits<uint32_t>::max());
@@ -481,7 +481,7 @@ std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
 
 void SlangMaterialXBridge::loadMaterialsForGltf(
     const tinygltf::Model& model, const std::vector<uint32_t>& imageToTexture,
-    utility::material::MaterialManager& materialManager,
+    container::material::MaterialManager& materialManager,
     uint32_t& defaultMaterialIndex) const {
   auto materialDocs = loadGltfMaterials(model);
 
@@ -507,7 +507,7 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
   const auto existingMaterials = materialManager.materialCount();
   for (size_t i = 0; i < model.materials.size(); ++i) {
     const auto& mat = model.materials[i];
-    utility::material::Material material{};
+    container::material::Material material{};
     if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
       material.baseColor = glm::vec4(
           static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[0]),
@@ -523,11 +523,11 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
     material.alphaCutoff = static_cast<float>(mat.alphaCutoff);
     material.doubleSided = mat.doubleSided;
     if (mat.alphaMode == "MASK") {
-      material.alphaMode = utility::material::AlphaMode::Mask;
+      material.alphaMode = AlphaMode::Mask;
     } else if (mat.alphaMode == "BLEND") {
-      material.alphaMode = utility::material::AlphaMode::Blend;
+      material.alphaMode = AlphaMode::Blend;
     } else {
-      material.alphaMode = utility::material::AlphaMode::Opaque;
+      material.alphaMode = AlphaMode::Opaque;
     }
     if (mat.emissiveFactor.size() == 3) {
       material.emissiveColor =
@@ -641,4 +641,4 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
   }
 }
 
-}  // namespace utility::materialx
+}  // namespace container::materialx

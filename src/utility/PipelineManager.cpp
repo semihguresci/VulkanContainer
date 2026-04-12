@@ -2,7 +2,7 @@
 
 #include <stdexcept>
 
-namespace utility::pipeline {
+namespace container::gpu {
 
 PipelineManager::PipelineManager(VkDevice device) : device_(device) {}
 
@@ -151,4 +151,4 @@ void PipelineManager::destroyManagedResources() {
   pipelineCaches_.clear();
 }
 
-}  // namespace utility::pipeline
+}  // namespace container::gpu

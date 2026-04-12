@@ -9,14 +9,13 @@
 #include "Container/utility/VulkanMemoryManager.h"
 
 #include <cstdint>
-#include <span>
 #include <glm/glm.hpp>
 #include <memory>
 #include <span>
 #include <string>
 #include <vector>
 
-namespace utility::memory {
+namespace container::gpu {
 
 struct TextureAllocation {
   VkImage image{VK_NULL_HANDLE};
@@ -44,7 +43,7 @@ class AllocationManager {
 
   void destroyBuffer(AllocatedBuffer& buffer);
 
-  utility::material::TextureResource createTextureFromFile(
+  container::material::TextureResource createTextureFromFile(
       const std::string& texturePath);
 
   void resetTextureAllocations();
@@ -82,4 +81,4 @@ class AllocationManager {
   std::vector<VkImageView> textureImageViews_{};
 };
 
-}  // namespace utility::memory
+}  // namespace container::gpu

@@ -13,7 +13,7 @@
 struct GLFWwindow;
 struct GLFWmonitor;
 
-namespace utility::window {
+namespace container::window {
 
 class Window {
  public:
@@ -125,4 +125,4 @@ class WindowManager {
   bool initialized_ = false;
 };
 
-}  // namespace utility::window
+}  // namespace container::window

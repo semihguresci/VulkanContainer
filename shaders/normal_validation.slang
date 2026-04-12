@@ -30,12 +30,8 @@ struct PushConstants
 {
     uint objectIndex;
     uint showFaceFill;
-    float lineLength;
-    float lineOffset;
     float faceAlpha;
     float _pad0;
-    float _pad1;
-    float _pad2;
 };
 
 [[vk::push_constant]]
@@ -44,10 +40,6 @@ ConstantBuffer<PushConstants> pc;
 struct VSInput
 {
     [[vk::location(0)]] float3 inPosition;
-    [[vk::location(1)]] float3 inColor;
-    [[vk::location(2)]] float2 inTexCoord;
-    [[vk::location(3)]] float3 inNormal;
-    [[vk::location(4)]] float4 inTangent;
 };
 
 struct VSOutput
@@ -95,22 +87,25 @@ void geomMain(triangle VSOutput input[3], inout TriangleStream<GSOutput> stream)
         baseColor = correct ? float3(0.0, 0.2, 1.0) : float3(1.0, 0.0, 0.0);
     }
 
-    GSOutput out0;
-    out0.pos = input[0].pos;
-    out0.faceColor = baseColor;
-    stream.Append(out0);
+    if (pc.showFaceFill != 0u && faceAlpha > 0.001)
+    {
+        GSOutput out0;
+        out0.pos = input[0].pos;
+        out0.faceColor = baseColor;
+        stream.Append(out0);
 
-    GSOutput out1;
-    out1.pos = input[1].pos;
-    out1.faceColor = baseColor;
-    stream.Append(out1);
+        GSOutput out1;
+        out1.pos = input[1].pos;
+        out1.faceColor = baseColor;
+        stream.Append(out1);
 
-    GSOutput out2;
-    out2.pos = input[2].pos;
-    out2.faceColor = baseColor;
-    stream.Append(out2);
+        GSOutput out2;
+        out2.pos = input[2].pos;
+        out2.faceColor = baseColor;
+        stream.Append(out2);
 
-    stream.RestartStrip();
+        stream.RestartStrip();
+    }
 }
 
 [shader("fragment")]
