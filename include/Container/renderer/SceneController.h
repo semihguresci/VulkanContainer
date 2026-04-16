@@ -123,6 +123,18 @@ class SceneController {
 
   const std::vector<DrawCommand>& opaqueDrawCommands()      const { return opaqueDrawCommands_; }
   const std::vector<DrawCommand>& transparentDrawCommands() const { return transparentDrawCommands_; }
+  const std::vector<DrawCommand>& opaqueSingleSidedDrawCommands() const {
+    return opaqueSingleSidedDrawCommands_;
+  }
+  const std::vector<DrawCommand>& opaqueDoubleSidedDrawCommands() const {
+    return opaqueDoubleSidedDrawCommands_;
+  }
+  const std::vector<DrawCommand>& transparentSingleSidedDrawCommands() const {
+    return transparentSingleSidedDrawCommands_;
+  }
+  const std::vector<DrawCommand>& transparentDoubleSidedDrawCommands() const {
+    return transparentDoubleSidedDrawCommands_;
+  }
   const std::vector<container::gpu::ObjectData>&  objectData()              const { return objectData_; }
 
   container::gpu::BufferSlice vertexSlice()         const { return vertexSlice_; }
@@ -150,6 +162,10 @@ class SceneController {
   std::vector<container::gpu::ObjectData>   objectData_;
   std::vector<DrawCommand>  opaqueDrawCommands_;
   std::vector<DrawCommand>  transparentDrawCommands_;
+  std::vector<DrawCommand>  opaqueSingleSidedDrawCommands_;
+  std::vector<DrawCommand>  opaqueDoubleSidedDrawCommands_;
+  std::vector<DrawCommand>  transparentSingleSidedDrawCommands_;
+  std::vector<DrawCommand>  transparentDoubleSidedDrawCommands_;
 
   container::gpu::BufferSlice vertexSlice_{};
   container::gpu::BufferSlice indexSlice_{};

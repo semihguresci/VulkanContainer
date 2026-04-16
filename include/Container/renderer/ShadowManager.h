@@ -1,0 +1,113 @@
+#pragma once
+
+#include "Container/common/CommonMath.h"
+#include "Container/common/CommonVulkan.h"
+#include "Container/common/CommonVMA.h"
+#include "Container/utility/SceneData.h"
+#include "Container/utility/VulkanMemoryManager.h"
+
+#include <array>
+#include <cstdint>
+#include <memory>
+
+namespace container::gpu {
+class AllocationManager;
+class PipelineManager;
+class VulkanDevice;
+}  // namespace container::gpu
+
+namespace container::scene {
+class BaseCamera;
+}
+
+namespace container::renderer {
+
+class ShadowManager {
+ public:
+  ShadowManager(
+      std::shared_ptr<container::gpu::VulkanDevice> device,
+      container::gpu::AllocationManager&            allocationManager,
+      container::gpu::PipelineManager&              pipelineManager);
+
+  ~ShadowManager();
+  ShadowManager(const ShadowManager&) = delete;
+  ShadowManager& operator=(const ShadowManager&) = delete;
+
+  // Create shadow atlas image, per-layer views, sampler, UBO, descriptor
+  // resources.  Must be called once after construction.
+  void createResources(VkFormat depthFormat);
+
+  // Destroy all GPU resources.
+  void destroy();
+
+  // Recompute cascade splits and view-projection matrices, upload to UBO.
+  void update(const container::scene::BaseCamera* camera,
+              float aspectRatio,
+              const glm::vec3& lightDirection);
+
+  // ---- Accessors -----------------------------------------------------------
+
+  [[nodiscard]] VkDescriptorSetLayout descriptorSetLayout() const {
+    return descriptorSetLayout_;
+  }
+  [[nodiscard]] VkDescriptorSet descriptorSet() const {
+    return descriptorSet_;
+  }
+  [[nodiscard]] const container::gpu::AllocatedBuffer& shadowUbo() const {
+    return shadowUbo_;
+  }
+  [[nodiscard]] const container::gpu::ShadowData& shadowData() const {
+    return shadowData_;
+  }
+  [[nodiscard]] VkImageView shadowAtlasArrayView() const {
+    return shadowAtlasArrayView_;
+  }
+  [[nodiscard]] VkImageView cascadeView(uint32_t cascadeIndex) const {
+    return cascadeViews_[cascadeIndex];
+  }
+  [[nodiscard]] VkSampler shadowSampler() const { return shadowSampler_; }
+  [[nodiscard]] VkFormat  depthFormat()   const { return depthFormat_; }
+  [[nodiscard]] VkImage   shadowAtlasImage() const { return shadowAtlasImage_; }
+
+  [[nodiscard]] const std::array<VkFramebuffer, container::gpu::kShadowCascadeCount>&
+      framebuffers() const { return framebuffers_; }
+
+  void createFramebuffers(VkRenderPass shadowRenderPass);
+  void destroyFramebuffers();
+
+ private:
+  void computeCascadeSplits(float nearPlane, float farPlane);
+  glm::mat4 computeCascadeViewProj(
+      uint32_t cascadeIndex,
+      const glm::vec3& lightDirection,
+      const glm::mat4& cameraView,
+      const glm::mat4& cameraProj,
+      float cameraNear,
+      float cameraFar) const;
+
+  std::shared_ptr<container::gpu::VulkanDevice> device_;
+  container::gpu::AllocationManager&            allocationManager_;
+  container::gpu::PipelineManager&              pipelineManager_;
+
+  VkFormat      depthFormat_{VK_FORMAT_UNDEFINED};
+  VkImage       shadowAtlasImage_{VK_NULL_HANDLE};
+  VmaAllocation shadowAtlasAllocation_{nullptr};
+  VkImageView   shadowAtlasArrayView_{VK_NULL_HANDLE};
+  std::array<VkImageView, container::gpu::kShadowCascadeCount>
+      cascadeViews_{};
+  std::array<VkFramebuffer, container::gpu::kShadowCascadeCount>
+      framebuffers_{};
+  VkSampler     shadowSampler_{VK_NULL_HANDLE};
+
+  container::gpu::AllocatedBuffer shadowUbo_{};
+  container::gpu::ShadowData      shadowData_{};
+  std::array<float, container::gpu::kShadowCascadeCount> cascadeSplits_{};
+
+  VkDescriptorSetLayout descriptorSetLayout_{VK_NULL_HANDLE};
+  VkDescriptorPool      descriptorPool_{VK_NULL_HANDLE};
+  VkDescriptorSet       descriptorSet_{VK_NULL_HANDLE};
+
+  static constexpr float kCascadeLambda = 0.75f;
+};
+
+}  // namespace container::renderer

@@ -19,13 +19,17 @@ struct AppConfig;
 }  // namespace container::app
 
 namespace container::renderer {
+class BloomManager;
 class CameraController;
 class CommandBufferManager;
+class EnvironmentManager;
 class FrameRecorder;
 class FrameResourceManager;
 class GraphicsPipelineBuilder;
+class GpuCullManager;
 class OitManager;
 class SceneController;
+class ShadowManager;
 struct VulkanContextResult;
 }  // namespace container::renderer
 
@@ -114,6 +118,10 @@ class RendererFrontend {
     std::unique_ptr<SceneController>                    sceneController;
     std::unique_ptr<CameraController>                   cameraController;
     std::unique_ptr<LightingManager>                    lightingManager;
+    std::unique_ptr<ShadowManager>                       shadowManager;
+    std::unique_ptr<EnvironmentManager>                  environmentManager;
+    std::unique_ptr<GpuCullManager>                      gpuCullManager;
+    std::unique_ptr<BloomManager>                          bloomManager;
     std::unique_ptr<GraphicsPipelineBuilder>             pipelineBuilder;
     std::unique_ptr<FrameRecorder>                      frameRecorder;
     std::unique_ptr<container::ui::GuiManager>          guiManager;

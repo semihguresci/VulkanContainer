@@ -321,8 +321,7 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
         "vector3");
     normalMap->addInput("in", "vector3")->setConnectedNode(normalImage);
     float normalScale = static_cast<float>(gltfMaterial.normalTexture.scale);
-    normalMap->addInput("scale", "float")
-        ->setValue(normalScale == 0.0f ? 1.0f : normalScale);
+    normalMap->addInput("scale", "float")->setValue(normalScale);
 
     auto normalInput = shader->addInput("normal", "vector3");
     normalInput->setConnectedNode(normalMap);
@@ -352,9 +351,6 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
 
     auto occlusionInput = shader->addInput("occlusion", "float");
     float strength = static_cast<float>(gltfMaterial.occlusionTexture.strength);
-    if (strength == 0.0f) {
-      strength = 1.0f;
-    }
     auto strengthMultiply = document->addNode(
         "multiply",
         (materialName.empty() ? "occlusion_strength"
@@ -521,6 +517,10 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
     material.roughnessFactor =
         static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
     material.alphaCutoff = static_cast<float>(mat.alphaCutoff);
+    material.normalTextureScale =
+        static_cast<float>(mat.normalTexture.scale);
+    material.occlusionStrength =
+        static_cast<float>(mat.occlusionTexture.strength);
     material.doubleSided = mat.doubleSided;
     if (mat.alphaMode == "MASK") {
       material.alphaMode = AlphaMode::Mask;
@@ -540,7 +540,12 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
         i < materialDocs.size() ? materialDocs[i] : nullptr;
 
     if (materialDoc) {
+      const float gltfBaseAlpha = material.baseColor.a;
       material.baseColor = extractBaseColor(materialDoc);
+      // MaterialX's standard_surface base_color carries RGB only; preserve the
+      // original glTF alpha factor so alpha-mask and blend materials keep their
+      // authored opacity.
+      material.baseColor.a = gltfBaseAlpha;
       material.emissiveColor = extractColorInput(materialDoc, "emission_color",
                                                  material.emissiveColor);
       material.metallicFactor =

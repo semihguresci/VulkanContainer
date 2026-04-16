@@ -42,7 +42,6 @@ struct GBufferFormats {
   VkFormat normal{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat material{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat emissive{VK_FORMAT_R16G16B16A16_SFLOAT};
-  VkFormat position{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat oitHeadPointer{VK_FORMAT_R32_UINT};
 
   // Returns a GBufferFormats initialised with all defaults except
@@ -85,7 +84,21 @@ class FrameResourceManager {
   void destroy();
 
   void updateDescriptorSets(const container::gpu::AllocatedBuffer& cameraBuffer,
-                            const container::gpu::AllocatedBuffer& objectBuffer);
+                            const container::gpu::AllocatedBuffer& objectBuffer,
+                            VkImageView shadowAtlasView = VK_NULL_HANDLE,
+                            VkSampler   shadowSampler   = VK_NULL_HANDLE,
+                            const container::gpu::AllocatedBuffer* shadowUbo = nullptr,
+                            VkImageView irradianceView    = VK_NULL_HANDLE,
+                            VkImageView prefilteredView   = VK_NULL_HANDLE,
+                            VkImageView brdfLutView       = VK_NULL_HANDLE,
+                            VkSampler   envSampler        = VK_NULL_HANDLE,
+                            VkSampler   brdfLutSampler    = VK_NULL_HANDLE,
+                            VkImageView aoTextureView     = VK_NULL_HANDLE,
+                            VkSampler   aoSampler         = VK_NULL_HANDLE,
+                            VkImageView bloomTextureView  = VK_NULL_HANDLE,
+                            VkSampler   bloomSampler      = VK_NULL_HANDLE,
+                            VkBuffer    tileGridBuffer    = VK_NULL_HANDLE,
+                            VkDeviceSize tileGridBufferSize = 0);
 
   void validateOitFormatSupport() const;
 

@@ -4,6 +4,7 @@
 #include <functional>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonMath.h"
@@ -15,6 +16,10 @@ struct GLFWwindow;
 namespace container::scene {
 class SceneGraph;
 }  // namespace container::scene
+
+namespace container::renderer {
+struct CullStats;
+}  // namespace container::renderer
 
 namespace container::ui {
 
@@ -30,6 +35,8 @@ enum class GBufferViewMode : uint32_t {
   Overview = 8,
   SurfaceNormals = 9,
   ObjectSpaceNormals = 10,
+  ShadowCascades = 11,
+  TileLightHeatMap = 12,
 };
 
 enum class WireframeMode : uint32_t {
@@ -50,6 +57,14 @@ struct TransformControls {
   glm::vec3 position{0.0f, 0.0f, 0.0f};
   glm::vec3 rotationDegrees{0.0f, 0.0f, 0.0f};
   glm::vec3 scale{1.0f, 1.0f, 1.0f};
+};
+
+struct RenderPassToggle {
+  std::string name;
+  bool        enabled{true};
+  bool        locked{false};
+  bool        autoDisabled{false};
+  std::string dependencyNote{};
 };
 
 class GuiManager {
@@ -105,6 +120,22 @@ class GuiManager {
     statusMessage_ = std::move(status);
   }
   void setWireframeCapabilities(bool supported, bool wideLineSupported);
+  void setCullStats(uint32_t total, uint32_t frustumPassed, uint32_t occlusionPassed);
+  void setFreezeCulling(bool frozen);
+  [[nodiscard]] bool freezeCullingRequested() const { return freezeCulling_; }
+
+  // Bloom settings (bidirectional sync with BloomManager).
+  void setBloomSettings(bool enabled, float threshold, float knee, float intensity, float radius);
+  [[nodiscard]] bool  bloomEnabled()    const { return bloomEnabled_; }
+  [[nodiscard]] float bloomThreshold()  const { return bloomThreshold_; }
+  [[nodiscard]] float bloomKnee()       const { return bloomKnee_; }
+  [[nodiscard]] float bloomIntensity()  const { return bloomIntensity_; }
+  [[nodiscard]] float bloomRadius()     const { return bloomRadius_; }
+
+  // Render pass toggles (bidirectional sync with RenderGraph).
+  void setRenderPassList(const std::vector<RenderPassToggle>& passes);
+  [[nodiscard]] std::vector<RenderPassToggle>& renderPassToggles() { return renderPassToggles_; }
+  [[nodiscard]] const std::vector<RenderPassToggle>& renderPassToggles() const { return renderPassToggles_; }
 
  private:
   void ensureInitialized() const;
@@ -123,6 +154,16 @@ class GuiManager {
   std::string defaultModelPath_{
       };
   std::string statusMessage_{};
+  uint32_t cullStatsTotal_{0};
+  uint32_t cullStatsFrustum_{0};
+  uint32_t cullStatsOcclusion_{0};
+  bool freezeCulling_{false};
+  bool  bloomEnabled_{true};
+  float bloomThreshold_{1.0f};
+  float bloomKnee_{0.1f};
+  float bloomIntensity_{0.3f};
+  float bloomRadius_{1.0f};
+  std::vector<RenderPassToggle> renderPassToggles_;
 };
 
 }  // namespace container::ui

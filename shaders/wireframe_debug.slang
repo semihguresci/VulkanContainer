@@ -14,13 +14,15 @@ struct ObjectBuffer
     float emissiveStrength;
     float2 metallicRoughness;
     float alphaCutoff;
+    float normalTextureScale;
+    float occlusionStrength;
     uint baseColorTextureIndex;
     uint normalTextureIndex;
     uint occlusionTextureIndex;
     uint emissiveTextureIndex;
     uint metallicRoughnessTextureIndex;
     uint flags;
-    float2 padding;
+    float4 boundingSphere;
 };
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
@@ -28,9 +30,11 @@ struct ObjectBuffer
 
 struct PushConstants
 {
-    [[vk::offset(0)]] uint objectIndex;
-    [[vk::offset(16)]] float4 colorIntensity;
-    [[vk::offset(32)]] float lineWidth;
+    uint objectIndex;
+    float3 _pad0;
+    float4 colorIntensity;
+    float lineWidth;
+    float3 _pad1;
 };
 
 [[vk::push_constant]]
@@ -51,10 +55,11 @@ struct VSOutput
 };
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
 {
     VSOutput output;
-    ObjectBuffer obj = uObjects[pc.objectIndex];
+    uint objectIndex = instanceID;
+    ObjectBuffer obj = uObjects[objectIndex];
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);
     return output;

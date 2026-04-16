@@ -44,6 +44,47 @@ bool DrawTransformControls(const char* label,
   return changed;
 }
 
+void DrawRenderPassToggleEntry(RenderPassToggle& pass) {
+  if (pass.locked) {
+    ImGui::BeginDisabled();
+    ImGui::Checkbox(pass.name.c_str(), &pass.enabled);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("core");
+    return;
+  }
+
+  ImGui::Checkbox(pass.name.c_str(), &pass.enabled);
+  if (pass.autoDisabled) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", pass.dependencyNote.empty()
+                                  ? "disabled by dependency"
+                                  : pass.dependencyNote.c_str());
+  }
+}
+
+std::string_view RenderPassSectionName(std::string_view passName) {
+  if (passName == "FrustumCull" || passName == "DepthPrepass" ||
+      passName == "HiZGenerate" || passName == "OcclusionCull" ||
+      passName == "CullStatsReadback" || passName == "GBuffer" ||
+      passName == "DepthToReadOnly") {
+    return "Culling";
+  }
+
+  if (passName == "ShadowCascade0" || passName == "ShadowCascade1" ||
+      passName == "ShadowCascade2" || passName == "ShadowCascade3") {
+    return "Shadows";
+  }
+
+  if (passName == "OitClear" || passName == "TileCull" ||
+      passName == "GTAO" || passName == "Lighting" ||
+      passName == "OitResolve") {
+    return "Lighting";
+  }
+
+  return "Post-process";
+}
+
 }  // namespace
 
 GuiManager::~GuiManager() = default;
@@ -164,7 +205,8 @@ void GuiManager::drawSceneControls(
       "Lit",       "Albedo",      "Normals", "Material",
       "Depth",     "Emissive",    "Transparency",
       "Revealage", "Overview",    "Surface Normals",
-      "Object Normals"};
+      "Object Normals", "Shadow Cascades",
+      "Tile Light Heat Map"};
 
   ImGui::Begin("Scene Controls");
   ImGui::InputText("glTF path", &gltfPathInput_);
@@ -179,8 +221,8 @@ void GuiManager::drawSceneControls(
 
   if (ImGui::Button("Reload Default")) {
     const bool success = reloadDefault();
-    statusMessage_ = success ? "Loaded default model: " + defaultModelPath_
-                             : "Failed to load default model";
+    statusMessage_ = success ? "Loaded default test scene"
+                             : "Failed to load default test scene";
     gltfPathInput_ = defaultModelPath_;
   }
 
@@ -251,6 +293,70 @@ void GuiManager::drawSceneControls(
   ImGui::Text("Scene nodes: %zu", sceneGraph.nodeCount());
   ImGui::Text("Renderable primitives: %zu",
               sceneGraph.renderableNodes().size());
+
+  if (cullStatsTotal_ > 0) {
+    ImGui::Separator();
+    ImGui::Text("GPU Culling");
+    ImGui::Checkbox("Freeze culling camera (F8)", &freezeCulling_);
+    if (freezeCulling_)
+      ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "CULLING FROZEN");
+    ImGui::BulletText("Input: %u", cullStatsTotal_);
+    ImGui::BulletText("Frustum passed: %u", cullStatsFrustum_);
+    ImGui::BulletText("Occlusion passed: %u", cullStatsOcclusion_);
+    ImGui::BulletText("Frustum culled: %u", cullStatsTotal_ - cullStatsFrustum_);
+    if (cullStatsFrustum_ > 0)
+      ImGui::BulletText("Occlusion culled: %u", cullStatsFrustum_ - cullStatsOcclusion_);
+  }
+
+  if (!renderPassToggles_.empty()) {
+    ImGui::Separator();
+    if (ImGui::TreeNode("Render Passes")) {
+      if (ImGui::SmallButton("Enable All")) {
+        for (auto& p : renderPassToggles_) p.enabled = true;
+      }
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Disable All")) {
+        // Keep PostProcess always on so the UI remains visible.
+        for (auto& p : renderPassToggles_) {
+          p.enabled = p.locked;
+        }
+      }
+
+      auto drawRenderPassSection = [&](std::string_view sectionName) {
+        if (!ImGui::TreeNode(std::string(sectionName).c_str())) {
+          return;
+        }
+
+        for (auto& p : renderPassToggles_) {
+          if (RenderPassSectionName(p.name) == sectionName) {
+            DrawRenderPassToggleEntry(p);
+          }
+        }
+
+        ImGui::TreePop();
+      };
+
+      drawRenderPassSection("Culling");
+      drawRenderPassSection("Shadows");
+      drawRenderPassSection("Lighting");
+      drawRenderPassSection("Post-process");
+
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Protected passes are shown as locked. Optional passes may be auto-disabled when a dependency is off.");
+      }
+      ImGui::TreePop();
+    }
+  }
+
+  ImGui::Separator();
+  ImGui::Text("Bloom");
+  ImGui::Checkbox("Bloom Enabled", &bloomEnabled_);
+  if (bloomEnabled_) {
+    ImGui::SliderFloat("Bloom Threshold", &bloomThreshold_, 0.0f, 5.0f);
+    ImGui::SliderFloat("Bloom Knee", &bloomKnee_, 0.0f, 1.0f);
+    ImGui::SliderFloat("Bloom Intensity", &bloomIntensity_, 0.0f, 2.0f);
+    ImGui::SliderFloat("Bloom Radius", &bloomRadius_, 0.1f, 3.0f);
+  }
 
   TransformControls editableCameraTransform = cameraTransform;
   if (DrawTransformControls("Camera", editableCameraTransform)) {
@@ -348,6 +454,50 @@ void GuiManager::setWireframeCapabilities(bool supported, bool wideLineSupported
   if (!wireframeWideLineSupported_) {
     wireframeSettings_.lineWidth = 1.0f;
   }
+}
+
+void GuiManager::setCullStats(uint32_t total, uint32_t frustumPassed,
+                              uint32_t occlusionPassed) {
+  cullStatsTotal_     = total;
+  cullStatsFrustum_   = frustumPassed;
+  cullStatsOcclusion_ = occlusionPassed;
+}
+
+void GuiManager::setFreezeCulling(bool frozen) {
+  freezeCulling_ = frozen;
+}
+
+void GuiManager::setBloomSettings(bool enabled, float threshold, float knee,
+                                  float intensity, float radius) {
+  bloomEnabled_   = enabled;
+  bloomThreshold_ = threshold;
+  bloomKnee_      = knee;
+  bloomIntensity_ = intensity;
+  bloomRadius_    = radius;
+}
+
+void GuiManager::setRenderPassList(const std::vector<RenderPassToggle>& passes) {
+  // Rebuild the toggle list, preserving existing enabled states by name.
+  std::vector<RenderPassToggle> updated;
+  updated.reserve(passes.size());
+  for (const auto& incoming : passes) {
+    bool found = false;
+    for (const auto& existing : renderPassToggles_) {
+      if (existing.name == incoming.name) {
+        RenderPassToggle merged = existing;
+        merged.locked = incoming.locked;
+        merged.autoDisabled = incoming.autoDisabled;
+        merged.dependencyNote = incoming.dependencyNote;
+        updated.push_back(std::move(merged));
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      updated.push_back(incoming);
+    }
+  }
+  renderPassToggles_ = std::move(updated);
 }
 
 void GuiManager::ensureInitialized() const {

@@ -1,0 +1,147 @@
+#pragma once
+
+#include "Container/common/CommonVulkan.h"
+#include "Container/common/CommonVMA.h"
+#include "Container/utility/VulkanMemoryManager.h"
+
+#include <cstdint>
+#include <filesystem>
+#include <memory>
+
+namespace container::gpu {
+class AllocationManager;
+class PipelineManager;
+class VulkanDevice;
+}  // namespace container::gpu
+
+namespace container::renderer {
+
+// Manages IBL (Image-Based Lighting) resources and SSAO (GTAO) resources.
+// Generates: BRDF LUT, irradiance cubemap, pre-filtered specular cubemap,
+// and per-frame GTAO compute passes.
+class EnvironmentManager {
+ public:
+  EnvironmentManager(
+      std::shared_ptr<container::gpu::VulkanDevice> device,
+      container::gpu::AllocationManager&            allocationManager,
+      container::gpu::PipelineManager&              pipelineManager,
+      VkCommandPool                                  commandPool);
+
+  ~EnvironmentManager();
+  EnvironmentManager(const EnvironmentManager&) = delete;
+  EnvironmentManager& operator=(const EnvironmentManager&) = delete;
+
+  // Create IBL resources: BRDF LUT, placeholder cubemaps, compute pipelines.
+  // Must be called once after construction.
+  void createResources(const std::filesystem::path& shaderDir);
+
+  // Create GTAO resources: AO textures, blur texture, compute pipelines.
+  void createGtaoResources(const std::filesystem::path& shaderDir,
+                           uint32_t fullWidth, uint32_t fullHeight);
+
+  // Recreate GTAO textures on resize.
+  void recreateGtaoTextures(uint32_t fullWidth, uint32_t fullHeight);
+
+  void destroy();
+
+  // ---- Per-frame GTAO dispatch ----
+
+  void dispatchGtao(VkCommandBuffer cmd,
+                    uint32_t fullWidth, uint32_t fullHeight,
+                    VkBuffer cameraBuffer, VkDeviceSize cameraBufferSize,
+                    VkImageView depthView, VkSampler depthSampler,
+                    VkImageView normalView, VkSampler normalSampler) const;
+
+  void dispatchGtaoBlur(VkCommandBuffer cmd) const;
+
+  // ---- Accessors ----
+
+  [[nodiscard]] bool isReady()             const { return brdfLutView_ != VK_NULL_HANDLE; }
+  [[nodiscard]] bool isGtaoReady()         const { return gtaoBlurredView_ != VK_NULL_HANDLE; }
+
+  // IBL textures for lighting descriptor binding.
+  [[nodiscard]] VkImageView   brdfLutView()           const { return brdfLutView_; }
+  [[nodiscard]] VkSampler     brdfLutSampler()        const { return brdfLutSampler_; }
+  [[nodiscard]] VkImageView   irradianceView()        const { return irradianceCubeView_; }
+  [[nodiscard]] VkImageView   prefilteredView()       const { return prefilteredCubeView_; }
+  [[nodiscard]] VkSampler     envSampler()            const { return envSampler_; }
+
+  // AO texture for lighting descriptor binding (blurred result).
+  [[nodiscard]] VkImageView   aoTextureView()         const { return gtaoBlurredView_; }
+  [[nodiscard]] VkSampler     aoSampler()             const { return gtaoSampler_; }
+
+  // GTAO settings.
+  float& aoRadius()    { return aoRadius_; }
+  float& aoIntensity() { return aoIntensity_; }
+  uint32_t& aoSampleCount() { return aoSampleCount_; }
+  bool& aoEnabled()    { return aoEnabled_; }
+
+ private:
+  void createBrdfLut(const std::filesystem::path& shaderDir);
+  void createPlaceholderCubemaps();
+  void createSamplers();
+  void createGtaoPipelines(const std::filesystem::path& shaderDir);
+  void createGtaoTextures(uint32_t halfWidth, uint32_t halfHeight);
+  void destroyGtaoTextures();
+
+  std::shared_ptr<container::gpu::VulkanDevice> device_;
+  container::gpu::AllocationManager&            allocationManager_;
+  container::gpu::PipelineManager&              pipelineManager_;
+  VkCommandPool                                  commandPool_{VK_NULL_HANDLE};
+
+  // ---- BRDF LUT ----
+  VkImage       brdfLutImage_{VK_NULL_HANDLE};
+  VmaAllocation brdfLutAlloc_{nullptr};
+  VkImageView   brdfLutView_{VK_NULL_HANDLE};
+  VkSampler     brdfLutSampler_{VK_NULL_HANDLE};
+
+  // ---- Environment cubemaps (placeholder white for now) ----
+  VkImage       irradianceCubeImage_{VK_NULL_HANDLE};
+  VmaAllocation irradianceCubeAlloc_{nullptr};
+  VkImageView   irradianceCubeView_{VK_NULL_HANDLE};
+
+  VkImage       prefilteredCubeImage_{VK_NULL_HANDLE};
+  VmaAllocation prefilteredCubeAlloc_{nullptr};
+  VkImageView   prefilteredCubeView_{VK_NULL_HANDLE};
+
+  VkSampler     envSampler_{VK_NULL_HANDLE};
+
+  // ---- BRDF LUT compute pipeline ----
+  VkPipeline              brdfLutPipeline_{VK_NULL_HANDLE};
+  VkPipelineLayout        brdfLutPipelineLayout_{VK_NULL_HANDLE};
+  VkDescriptorSetLayout   brdfLutSetLayout_{VK_NULL_HANDLE};
+
+  // ---- GTAO ----
+  VkImage       gtaoImage_{VK_NULL_HANDLE};
+  VmaAllocation gtaoAlloc_{nullptr};
+  VkImageView   gtaoView_{VK_NULL_HANDLE};
+
+  VkImage       gtaoBlurredImage_{VK_NULL_HANDLE};
+  VmaAllocation gtaoBlurredAlloc_{nullptr};
+  VkImageView   gtaoBlurredView_{VK_NULL_HANDLE};
+
+  VkSampler     gtaoSampler_{VK_NULL_HANDLE};
+  uint32_t      gtaoWidth_{0};
+  uint32_t      gtaoHeight_{0};
+
+  // GTAO compute pipelines
+  VkPipeline            gtaoPipeline_{VK_NULL_HANDLE};
+  VkPipelineLayout      gtaoPipelineLayout_{VK_NULL_HANDLE};
+  VkDescriptorSetLayout gtaoSetLayout_{VK_NULL_HANDLE};
+  VkDescriptorPool      gtaoDescriptorPool_{VK_NULL_HANDLE};
+  VkDescriptorSet       gtaoSet_{VK_NULL_HANDLE};
+
+  VkPipeline            gtaoBlurPipeline_{VK_NULL_HANDLE};
+  VkPipelineLayout      gtaoBlurPipelineLayout_{VK_NULL_HANDLE};
+  VkDescriptorSetLayout gtaoBlurSetLayout_{VK_NULL_HANDLE};
+  VkDescriptorPool      gtaoBlurDescriptorPool_{VK_NULL_HANDLE};
+  VkDescriptorSet       gtaoBlurSet_{VK_NULL_HANDLE};
+
+  // GTAO settings
+  float    aoRadius_{0.5f};
+  float    aoIntensity_{1.5f};
+  uint32_t aoSampleCount_{16};
+  bool     aoEnabled_{true};
+};
+
+}  // namespace container::renderer

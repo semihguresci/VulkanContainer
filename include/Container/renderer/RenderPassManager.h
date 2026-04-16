@@ -10,6 +10,7 @@ namespace container::renderer {
 struct RenderPasses {
   VkRenderPass depthPrepass{VK_NULL_HANDLE};
   VkRenderPass gBuffer{VK_NULL_HANDLE};
+  VkRenderPass shadow{VK_NULL_HANDLE};
   VkRenderPass lighting{VK_NULL_HANDLE};
   VkRenderPass postProcess{VK_NULL_HANDLE};
 };
@@ -28,8 +29,7 @@ class RenderPassManager {
               VkFormat albedoFormat,
               VkFormat normalFormat,
               VkFormat materialFormat,
-              VkFormat emissiveFormat,
-              VkFormat positionFormat);
+              VkFormat emissiveFormat);
 
   void destroy();
 

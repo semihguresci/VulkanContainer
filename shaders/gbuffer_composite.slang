@@ -1,11 +1,5 @@
-static const float PI = 3.14159265359;
-
-struct CameraBuffer
-{
-    column_major float4x4 viewProj;
-    column_major float4x4 inverseViewProj;
-    float4 cameraWorldPosition;
-};
+#include "brdf_common.slang"
+#include "lighting_structs.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] SamplerState gBufferSampler;
@@ -28,53 +22,6 @@ struct VSOutput
     float4 pos : SV_Position;
     [[vk::location(0)]] float2 texCoord;
 };
-
-float DistributionGGX(float3 N, float3 H, float roughness)
-{
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float NdotH = saturate(dot(N, H));
-    float NdotH2 = NdotH * NdotH;
-    float denom = NdotH2 * (a2 - 1.0) + 1.0;
-    return a2 / max(PI * denom * denom, 1e-4);
-}
-
-float GeometrySchlickGGX(float NdotV, float roughness)
-{
-    float r = roughness + 1.0;
-    float k = (r * r) / 8.0;
-    return NdotV / max(NdotV * (1.0 - k) + k, 1e-4);
-}
-
-float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
-{
-    float NdotV = saturate(dot(N, V));
-    float NdotL = saturate(dot(N, L));
-    return GeometrySchlickGGX(NdotV, roughness) * GeometrySchlickGGX(NdotL, roughness);
-}
-
-float3 FresnelSchlick(float cosTheta, float3 F0)
-{
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
-}
-
-float3 SafeNormalize(float3 v, float3 fallback)
-{
-    float lenSq = dot(v, v);
-    if (!all(isfinite(v)) || lenSq < 1e-8)
-    {
-        return fallback;
-    }
-    return v * rsqrt(lenSq);
-}
-
-float3 ReconstructWorldPosition(float2 texCoord, float depth)
-{
-    float2 ndcXY = texCoord * 2.0 - 1.0;
-    float4 clipPosition = float4(ndcXY, depth, 1.0);
-    float4 worldPosition = mul(uCamera.inverseViewProj, clipPosition);
-    return worldPosition.xyz / max(worldPosition.w, 1e-6);
-}
 
 [shader("vertex")]
 VSOutput vertMain(uint vertexIndex : SV_VertexID)
@@ -100,11 +47,18 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
 [shader("fragment")]
 float4 fragMain(VSOutput input) : SV_Target0
 {
-    float4 albedo = gAlbedoTexture.SampleLevel(gBufferSampler, input.texCoord, 0.0);
-    float3 encodedNormal = gNormalTexture.SampleLevel(gBufferSampler, input.texCoord, 0.0).xyz;
-    float4 material = gMaterialTexture.SampleLevel(gBufferSampler, input.texCoord, 0.0);
-    float3 emissive = gEmissiveTexture.SampleLevel(gBufferSampler, input.texCoord, 0.0).rgb;
-    float depth = gDepthTexture.SampleLevel(gBufferSampler, input.texCoord, 0.0);
+    uint width = 0u;
+    uint height = 0u;
+    gDepthTexture.GetDimensions(width, height);
+    uint2 pixelCoord = uint2(input.pos.xy);
+    pixelCoord = min(pixelCoord, uint2(max(width, 1u) - 1u, max(height, 1u) - 1u));
+    float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
+
+    float4 albedo = gAlbedoTexture.Load(int3(pixelCoord, 0));
+    float3 encodedNormal = gNormalTexture.Load(int3(pixelCoord, 0)).xyz;
+    float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
+    float3 emissive = gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb;
+    float depth = gDepthTexture.Load(int3(pixelCoord, 0));
 
     float3 normal = SafeNormalize(encodedNormal * 2.0 - 1.0, float3(0.0, 1.0, 0.0));
 
@@ -139,7 +93,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         return float4(emissive, 1.0);
     }
 
-    float3 worldPosition = ReconstructWorldPosition(input.texCoord, depth);
+    float3 worldPosition = ReconstructWorldPosition(uv, depth, uCamera.inverseViewProj);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
     float3 L = SafeNormalize(float3(0.45, 0.65, 1.0), float3(0.0, 1.0, 0.0));
     float3 H = SafeNormalize(V + L, normal);

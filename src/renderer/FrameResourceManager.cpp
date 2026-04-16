@@ -39,7 +39,7 @@ FrameResourceManager::~FrameResourceManager() {
 // -----------------------------------------------------------------------
 void FrameResourceManager::createDescriptorSetLayouts() {
   if (lightingLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 7> b = {{
+    const std::array<VkDescriptorSetLayoutBinding, 17> b = {{
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,  1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -48,6 +48,18 @@ void FrameResourceManager::createDescriptorSetLayouts() {
         {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {6, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,   1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {8, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,    1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {9, VK_DESCRIPTOR_TYPE_SAMPLER,           1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        // IBL bindings (10-14)
+        {10, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,   1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // irradiance cubemap
+        {11, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,   1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // prefiltered specular cubemap
+        {12, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,   1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // BRDF LUT
+        {13, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // env sampler
+        {14, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // BRDF LUT sampler
+        // AO bindings (15-16)
+        {15, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,   1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // AO texture
+        {16, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // AO sampler
     }};
     const std::vector<VkDescriptorBindingFlags> flags(b.size(), 0);
     lightingLayout_ = pipelineMgr_->createDescriptorSetLayout(
@@ -55,7 +67,7 @@ void FrameResourceManager::createDescriptorSetLayouts() {
   }
 
   if (postProcessLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 7> b = {{
+    const std::array<VkDescriptorSetLayoutBinding, 10> b = {{
         {0, VK_DESCRIPTOR_TYPE_SAMPLER,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -63,6 +75,9 @@ void FrameResourceManager::createDescriptorSetLayouts() {
         {4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {6, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
+        {7, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // bloom texture
+        {8, VK_DESCRIPTOR_TYPE_SAMPLER,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // bloom sampler
+        {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // tile grid SSBO
     }};
     const std::vector<VkDescriptorBindingFlags> flags(b.size(), 0);
     postProcessLayout_ = pipelineMgr_->createDescriptorSetLayout(
@@ -174,10 +189,13 @@ void FrameResourceManager::create(
   // --- Descriptor pools ---
   {
     std::array<VkDescriptorPoolSize, 3> sizes = {{
-        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, n},
-        {VK_DESCRIPTOR_TYPE_SAMPLER, n},
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 5},
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, n * 2},
+        {VK_DESCRIPTOR_TYPE_SAMPLER, n * 5},    // 1(gbuf) + 1(shadow) + 1(env) + 1(brdfLut) + 1(ao)
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 9}, // 5(gbuf) + 1(shadow) + 1(irrad) + 1(prefilt) + 1(brdfLut) + ... err: 5+1+3+1=10 → use 10
     }};
+    // Corrected: samplers=5/frame, sampled_images=5(gbuf)+1(shadow)+3(IBL)+1(AO)=10/frame
+    sizes[1].descriptorCount = n * 5;
+    sizes[2].descriptorCount = n * 10;
     VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     ci.maxSets       = n;
     ci.poolSizeCount = static_cast<uint32_t>(sizes.size());
@@ -186,9 +204,10 @@ void FrameResourceManager::create(
       throw std::runtime_error("failed to create lighting descriptor pool");
   }
   {
-    std::array<VkDescriptorPoolSize, 2> sizes = {{
-        {VK_DESCRIPTOR_TYPE_SAMPLER, n},
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 6},
+    std::array<VkDescriptorPoolSize, 3> sizes = {{
+        {VK_DESCRIPTOR_TYPE_SAMPLER, n * 2},          // gBuffer sampler + bloom sampler
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 7},    // sceneColor + 4 gbuf + depth + bloom
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, n * 1},   // tile grid SSBO
     }};
     VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     ci.maxSets       = n;
@@ -251,9 +270,6 @@ void FrameResourceManager::create(
     f.emissive = createAttachment(formats_.emissive,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
-    f.position = createAttachment(formats_.position,
-                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
-                   VK_IMAGE_ASPECT_COLOR_BIT);
     f.sceneColor = createAttachment(formats_.sceneColor,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
@@ -280,8 +296,19 @@ void FrameResourceManager::create(
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
             VMA_ALLOCATION_CREATE_MAPPED_BIT);
     f.depthStencil = createAttachment(formats_.depthStencil,
-                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+
+    // Create a depth-only image view for shader sampling.
+    {
+      VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+      vi.image    = f.depthStencil.image;
+      vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+      vi.format   = formats_.depthStencil;
+      vi.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+      if (vkCreateImageView(dev, &vi, nullptr, &f.depthSamplingView) != VK_SUCCESS)
+        throw std::runtime_error("failed to create depth sampling view");
+    }
 
     writeOitMetadata(f);
 
@@ -300,9 +327,9 @@ void FrameResourceManager::create(
 
     // GBuffer framebuffer
     {
-      std::array<VkImageView, 6> views = {f.albedo.view, f.normal.view,
+      std::array<VkImageView, 5> views = {f.albedo.view, f.normal.view,
                                           f.material.view, f.emissive.view,
-                                          f.position.view, f.depthStencil.view};
+                                          f.depthStencil.view};
       VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
       fbi.renderPass      = gBufferPass_;
       fbi.attachmentCount = static_cast<uint32_t>(views.size());
@@ -348,7 +375,10 @@ void FrameResourceManager::destroy() {
     destroyAttachment(f.normal);
     destroyAttachment(f.material);
     destroyAttachment(f.emissive);
-    destroyAttachment(f.position);
+    if (f.depthSamplingView != VK_NULL_HANDLE) {
+      vkDestroyImageView(dev, f.depthSamplingView, nullptr);
+      f.depthSamplingView = VK_NULL_HANDLE;
+    }
     destroyAttachment(f.depthStencil);
     destroyAttachment(f.sceneColor);
     destroyAttachment(f.oitHeadPointers);
@@ -375,7 +405,21 @@ void FrameResourceManager::destroy() {
 // -----------------------------------------------------------------------
 void FrameResourceManager::updateDescriptorSets(
     const container::gpu::AllocatedBuffer& cameraBuffer,
-    const container::gpu::AllocatedBuffer& objectBuffer) {
+    const container::gpu::AllocatedBuffer& objectBuffer,
+    VkImageView shadowAtlasView,
+    VkSampler   shadowSampler,
+    const container::gpu::AllocatedBuffer* shadowUbo,
+    VkImageView irradianceView,
+    VkImageView prefilteredView,
+    VkImageView brdfLutView,
+    VkSampler   envSampler,
+    VkSampler   brdfLutSampler,
+    VkImageView aoTextureView,
+    VkSampler   aoSampler,
+    VkImageView bloomTextureView,
+    VkSampler   bloomSampler,
+    VkBuffer    tileGridBuffer,
+    VkDeviceSize tileGridBufferSize) {
   (void)objectBuffer;  // reserved for future per-frame object buffer binding
   if (cameraBuffer.buffer == VK_NULL_HANDLE) return;
 
@@ -393,12 +437,15 @@ void FrameResourceManager::updateDescriptorSets(
     auto normal   = imgInfo(f.normal.view,    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto material = imgInfo(f.material.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto emissive = imgInfo(f.emissive.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    auto position = imgInfo(f.position.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    auto depthImg = imgInfo(f.depthSamplingView,
+                            VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);
     auto scColor  = imgInfo(f.sceneColor.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    auto depthPostProcess = imgInfo(f.depthSamplingView,
+                                    VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL);
 
     // Lighting set
     {
-      std::array<VkWriteDescriptorSet, 7> w{};
+      std::array<VkWriteDescriptorSet, 17> w{};
       auto set = f.lightingDescriptorSet;
       auto buf = [&](int b, VkDescriptorType t, const VkDescriptorBufferInfo* i) {
         w[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -418,13 +465,93 @@ void FrameResourceManager::updateDescriptorSets(
       img(3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  &normal);
       img(4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  &material);
       img(5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  &emissive);
-      img(6, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  &position);
+      img(6, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  &depthImg);
+
+      // Shadow bindings (7=UBO, 8=atlas, 9=sampler)
+      VkDescriptorBufferInfo shadowUboInfo{};
+      if (shadowUbo && shadowUbo->buffer != VK_NULL_HANDLE) {
+        shadowUboInfo = {shadowUbo->buffer, 0, sizeof(container::gpu::ShadowData)};
+      } else {
+        shadowUboInfo = camInfo;  // fallback to avoid null descriptor
+      }
+      buf(7, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &shadowUboInfo);
+
+      VkDescriptorImageInfo shadowAtlasInfo{};
+      shadowAtlasInfo.imageView = shadowAtlasView;
+      shadowAtlasInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      if (shadowAtlasView == VK_NULL_HANDLE) {
+        shadowAtlasInfo = depthImg;  // fallback
+      }
+      img(8, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &shadowAtlasInfo);
+
+      VkDescriptorImageInfo shadowSamplerInfo{};
+      shadowSamplerInfo.sampler = shadowSampler;
+      if (shadowSampler == VK_NULL_HANDLE) {
+        shadowSamplerInfo = sampInfo;  // fallback
+      }
+      img(9, VK_DESCRIPTOR_TYPE_SAMPLER, &shadowSamplerInfo);
+
+      // IBL bindings (10-14)
+      VkDescriptorImageInfo irradianceInfo{};
+      irradianceInfo.imageView   = irradianceView;
+      irradianceInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      if (irradianceView == VK_NULL_HANDLE) {
+        irradianceInfo = albedo;  // fallback
+      }
+      img(10, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &irradianceInfo);
+
+      VkDescriptorImageInfo prefilteredInfo{};
+      prefilteredInfo.imageView   = prefilteredView;
+      prefilteredInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      if (prefilteredView == VK_NULL_HANDLE) {
+        prefilteredInfo = albedo;  // fallback
+      }
+      img(11, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &prefilteredInfo);
+
+      VkDescriptorImageInfo brdfLutInfo{};
+      brdfLutInfo.imageView   = brdfLutView;
+      brdfLutInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      if (brdfLutView == VK_NULL_HANDLE) {
+        brdfLutInfo = albedo;  // fallback
+      }
+      img(12, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &brdfLutInfo);
+
+      VkDescriptorImageInfo envSamplerInfo{};
+      envSamplerInfo.sampler = envSampler;
+      if (envSampler == VK_NULL_HANDLE) {
+        envSamplerInfo = sampInfo;  // fallback
+      }
+      img(13, VK_DESCRIPTOR_TYPE_SAMPLER, &envSamplerInfo);
+
+      VkDescriptorImageInfo brdfLutSamplerInfo{};
+      brdfLutSamplerInfo.sampler = brdfLutSampler;
+      if (brdfLutSampler == VK_NULL_HANDLE) {
+        brdfLutSamplerInfo = sampInfo;  // fallback
+      }
+      img(14, VK_DESCRIPTOR_TYPE_SAMPLER, &brdfLutSamplerInfo);
+
+      // AO bindings (15-16)
+      VkDescriptorImageInfo aoInfo{};
+      aoInfo.imageView   = aoTextureView;
+      aoInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+      if (aoTextureView == VK_NULL_HANDLE) {
+        aoInfo = albedo;  // fallback (will produce 0 but shader defaults to 1.0)
+      }
+      img(15, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &aoInfo);
+
+      VkDescriptorImageInfo aoSamplerInfo{};
+      aoSamplerInfo.sampler = aoSampler;
+      if (aoSampler == VK_NULL_HANDLE) {
+        aoSamplerInfo = sampInfo;  // fallback
+      }
+      img(16, VK_DESCRIPTOR_TYPE_SAMPLER, &aoSamplerInfo);
+
       vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
     }
 
     // Post-process set
     {
-      std::array<VkWriteDescriptorSet, 7> w{};
+      std::array<VkWriteDescriptorSet, 10> w{};
       auto set = f.postProcessDescriptorSet;
       auto img = [&](int b, VkDescriptorType t, const VkDescriptorImageInfo* i) {
         w[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -438,7 +565,38 @@ void FrameResourceManager::updateDescriptorSets(
       img(3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  &normal);
       img(4, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  &material);
       img(5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  &emissive);
-      img(6, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  &position);
+      img(6, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,  &depthPostProcess);
+
+      // Bloom bindings (7-8)
+      VkDescriptorImageInfo bloomInfo{};
+      bloomInfo.imageView   = bloomTextureView;
+      bloomInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
+      if (bloomTextureView == VK_NULL_HANDLE) {
+        bloomInfo = albedo;  // fallback to avoid null descriptor
+      }
+      img(7, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &bloomInfo);
+
+      VkDescriptorImageInfo bloomSampInfo{};
+      bloomSampInfo.sampler = bloomSampler;
+      if (bloomSampler == VK_NULL_HANDLE) {
+        bloomSampInfo = sampInfo;  // fallback
+      }
+      img(8, VK_DESCRIPTOR_TYPE_SAMPLER, &bloomSampInfo);
+
+      // Tile grid SSBO (binding 9)
+      VkDescriptorBufferInfo tileGridInfo{};
+      if (tileGridBuffer != VK_NULL_HANDLE && tileGridBufferSize > 0) {
+        tileGridInfo = {tileGridBuffer, 0, tileGridBufferSize};
+      } else {
+        // Fallback: bind camera buffer to avoid null descriptor.
+        tileGridInfo = camInfo;
+      }
+      w[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+      w[9].dstSet = set; w[9].dstBinding = 9;
+      w[9].descriptorCount = 1;
+      w[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      w[9].pBufferInfo = &tileGridInfo;
+
       vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
     }
 

@@ -124,6 +124,23 @@ VkPipeline PipelineManager::createGraphicsPipeline(
   return pipeline;
 }
 
+VkPipeline PipelineManager::createComputePipeline(
+    const VkComputePipelineCreateInfo& pipelineInfo,
+    const std::string& cacheKey) {
+  VkPipelineCache cache = getOrCreatePipelineCache(cacheKey, nullptr);
+
+  VkPipeline pipeline = VK_NULL_HANDLE;
+  VkResult res = vkCreateComputePipelines(device_, cache, 1, &pipelineInfo,
+                                          nullptr, &pipeline);
+
+  if (res != VK_SUCCESS) {
+    throw std::runtime_error("Failed to create compute pipeline");
+  }
+
+  pipelines_.push_back(pipeline);
+  return pipeline;
+}
+
 void PipelineManager::destroyManagedResources() {
   for (VkPipeline pipeline : pipelines_) {
     vkDestroyPipeline(device_, pipeline, nullptr);

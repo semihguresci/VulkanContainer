@@ -14,13 +14,15 @@ struct ObjectBuffer
     float emissiveStrength;
     float2 metallicRoughness;
     float alphaCutoff;
+    float normalTextureScale;
+    float occlusionStrength;
     uint baseColorTextureIndex;
     uint normalTextureIndex;
     uint occlusionTextureIndex;
     uint emissiveTextureIndex;
     uint metallicRoughnessTextureIndex;
     uint flags;
-    float2 padding;
+    float4 boundingSphere;
 };
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
@@ -59,15 +61,16 @@ float3 hashColor(uint index)
 }
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
 {
     VSOutput output;
-    ObjectBuffer obj = uObjects[pc.objectIndex];
+    uint objectIndex = instanceID;
+    ObjectBuffer obj = uObjects[objectIndex];
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);
     output.pointSize = 4.0;
-    output.color = hashColor(pc.objectIndex);
+    output.color = hashColor(objectIndex);
     return output;
 }
 

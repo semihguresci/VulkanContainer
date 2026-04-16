@@ -15,6 +15,8 @@ namespace container::renderer {
 
 using container::gpu::BindlessPushConstants;
 using container::gpu::PostProcessPushConstants;
+using container::gpu::ShadowPushConstants;
+using container::gpu::TiledLightingPushConstants;
 
 GraphicsPipelineBuilder::GraphicsPipelineBuilder(
     std::shared_ptr<container::gpu::VulkanDevice> device,
@@ -88,6 +90,10 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkShaderModule onFrag           = loadModule("spv_shaders/object_normals.frag.spv");
   VkShaderModule lgVert           = loadModule("spv_shaders/light_gizmo.vert.spv");
   VkShaderModule lgFrag           = loadModule("spv_shaders/light_gizmo.frag.spv");
+  VkShaderModule sdVert           = loadModule("spv_shaders/shadow_depth.vert.spv");
+  VkShaderModule sdFrag           = loadModule("spv_shaders/shadow_depth.frag.spv");
+  VkShaderModule tlVert           = loadModule("spv_shaders/tiled_lighting.vert.spv");
+  VkShaderModule tlFrag           = loadModule("spv_shaders/tiled_lighting.frag.spv");
 
   // ---- shader stage arrays --------------------------------------------------
   std::array<VkPipelineShaderStageCreateInfo, 2> depthPrepassStages = {
@@ -138,6 +144,12 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   std::array<VkPipelineShaderStageCreateInfo, 2> lgStages = {
       makeStage(lgVert,  VK_SHADER_STAGE_VERTEX_BIT),
       makeStage(lgFrag,  VK_SHADER_STAGE_FRAGMENT_BIT)};
+  std::array<VkPipelineShaderStageCreateInfo, 2> sdStages = {
+      makeStage(sdVert,  VK_SHADER_STAGE_VERTEX_BIT),
+      makeStage(sdFrag,  VK_SHADER_STAGE_FRAGMENT_BIT)};
+  std::array<VkPipelineShaderStageCreateInfo, 2> tlStages = {
+      makeStage(tlVert,  VK_SHADER_STAGE_VERTEX_BIT),
+      makeStage(tlFrag,  VK_SHADER_STAGE_FRAGMENT_BIT)};
 
   // ---- vertex input states --------------------------------------------------
   const auto bindingDesc   = container::geometry::Vertex::bindingDescription();
@@ -193,7 +205,14 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   sceneRaster.polygonMode = VK_POLYGON_MODE_FILL;
   sceneRaster.lineWidth   = 1.0f;
   sceneRaster.cullMode    = VK_CULL_MODE_BACK_BIT;
+  // glTF authors geometry with counter-clockwise front faces in world space.
+  // Although the scene pass uses a negative-height viewport, we keep the
+  // front-face convention as CCW here (matching the source data); this has
+  // been verified to produce correct back-face culling in practice.
   sceneRaster.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+
+  VkPipelineRasterizationStateCreateInfo noCullRaster = sceneRaster;
+  noCullRaster.cullMode = VK_CULL_MODE_NONE;
 
   VkPipelineRasterizationStateCreateInfo fullscreenRaster = sceneRaster;
   fullscreenRaster.cullMode = VK_CULL_MODE_NONE;
@@ -241,8 +260,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkPipelineColorBlendAttachmentState noColorAttach = opaqueAttach;
   noColorAttach.colorWriteMask = 0;
 
-  std::array<VkPipelineColorBlendAttachmentState, 5> gBufAttachs =
-      {opaqueAttach, opaqueAttach, opaqueAttach, opaqueAttach, opaqueAttach};
+  std::array<VkPipelineColorBlendAttachmentState, 4> gBufAttachs =
+      {opaqueAttach, opaqueAttach, opaqueAttach, opaqueAttach};
   std::array<VkPipelineColorBlendAttachmentState, 1> opaqueArr    = {opaqueAttach};
   std::array<VkPipelineColorBlendAttachmentState, 1> additiveArr  = {additiveAttach};
   std::array<VkPipelineColorBlendAttachmentState, 1> overlayArr   = {overlayAttach};
@@ -259,7 +278,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   };
 
   VkPipelineColorBlendStateCreateInfo noBlend      = makeBlend(nullptr, 0);
-  VkPipelineColorBlendStateCreateInfo gBufBlend    = makeBlend(gBufAttachs.data(), 5);
+  VkPipelineColorBlendStateCreateInfo gBufBlend    = makeBlend(gBufAttachs.data(), 4);
   VkPipelineColorBlendStateCreateInfo opaqueBlend  = makeBlend(opaqueArr.data(), 1);
   VkPipelineColorBlendStateCreateInfo addBlend     = makeBlend(additiveArr.data(), 1);
   VkPipelineColorBlendStateCreateInfo overlayBlend = makeBlend(overlayArr.data(), 1);
@@ -346,6 +365,14 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
                      VK_SHADER_STAGE_FRAGMENT_BIT;
   nvPCR.size       = sizeof(NormalValidationPushConstants);
 
+  VkPushConstantRange shadowPCR{};
+  shadowPCR.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+  shadowPCR.size       = sizeof(ShadowPushConstants);
+
+  VkPushConstantRange tiledLightPCR{};
+  tiledLightPCR.stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+  tiledLightPCR.size       = sizeof(TiledLightingPushConstants);
+
   // ---- pipeline layouts -----------------------------------------------------
   PipelineLayouts layouts;
   layouts.scene = pipelineManager_.createPipelineLayout(
@@ -355,6 +382,10 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       {scenePCR});
   layouts.lighting = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.lighting, descriptorLayouts.light}, {lightPCR});
+  layouts.tiledLighting = pipelineManager_.createPipelineLayout(
+      {descriptorLayouts.lighting, descriptorLayouts.tiled}, {tiledLightPCR});
+  layouts.shadow = pipelineManager_.createPipelineLayout(
+      {descriptorLayouts.scene, descriptorLayouts.shadow}, {shadowPCR});
   layouts.postProcess = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.postProcess, descriptorLayouts.oit}, {postPCR});
   layouts.wireframe = pipelineManager_.createPipelineLayout(
@@ -416,15 +447,62 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.depthPrepass = pipelineManager_.createGraphicsPipeline(
       scenePCI, "depth_prepass_pipeline");
 
+  VkGraphicsPipelineCreateInfo depthNoCullPCI = scenePCI;
+  depthNoCullPCI.pRasterizationState = &noCullRaster;
+  pipelines.depthPrepassNoCull = pipelineManager_.createGraphicsPipeline(
+      depthNoCullPCI, "depth_prepass_no_cull_pipeline");
+
   // GBuffer
   VkGraphicsPipelineCreateInfo gBufPCI = scenePCI;
   gBufPCI.stageCount          = static_cast<uint32_t>(gBufferStages.size());
   gBufPCI.pStages             = gBufferStages.data();
+  // The deferred G-buffer shader consumes normal and tangent attributes in
+  // addition to position/UV, so it must use the full vertex layout.
+  gBufPCI.pVertexInputState   = &fullVertexInput;
   gBufPCI.pDepthStencilState  = &gBufDS;
   gBufPCI.pColorBlendState    = &gBufBlend;
   gBufPCI.renderPass          = renderPasses.gBuffer;
   pipelines.gBuffer = pipelineManager_.createGraphicsPipeline(
       gBufPCI, "gbuffer_pipeline");
+
+  VkGraphicsPipelineCreateInfo gBufNoCullPCI = gBufPCI;
+  gBufNoCullPCI.pRasterizationState = &noCullRaster;
+  pipelines.gBufferNoCull = pipelineManager_.createGraphicsPipeline(
+      gBufNoCullPCI, "gbuffer_no_cull_pipeline");
+
+  // Shadow depth
+  VkPipelineRasterizationStateCreateInfo shadowRaster = sceneRaster;
+  // Shadow cascades render with a positive-height viewport, so they preserve
+  // glTF's native CCW winding in framebuffer space.
+  shadowRaster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  shadowRaster.cullMode = VK_CULL_MODE_FRONT_BIT;
+  shadowRaster.depthBiasEnable         = VK_TRUE;
+  // Negative bias for reverse-Z: pushes stored depth towards far (0.0),
+  // making the shadow surface appear slightly farther from the light
+  // to avoid self-shadowing.
+  shadowRaster.depthBiasConstantFactor = -4.0f;
+  shadowRaster.depthBiasSlopeFactor    = -1.5f;
+
+  VkGraphicsPipelineCreateInfo sdPCI = scenePCI;
+  sdPCI.stageCount          = static_cast<uint32_t>(sdStages.size());
+  sdPCI.pStages             = sdStages.data();
+  sdPCI.pVertexInputState   = &posTexInput;
+  sdPCI.pInputAssemblyState = &triAssembly;
+  sdPCI.pRasterizationState = &shadowRaster;
+  sdPCI.pDepthStencilState  = &depthPrepassDS;
+  sdPCI.pColorBlendState    = &noBlend;
+  sdPCI.layout              = layouts.shadow;
+  sdPCI.renderPass          = renderPasses.shadow;
+  pipelines.shadowDepth = pipelineManager_.createGraphicsPipeline(
+      sdPCI, "shadow_depth_pipeline");
+
+  VkPipelineRasterizationStateCreateInfo shadowNoCullRaster = shadowRaster;
+  shadowNoCullRaster.cullMode = VK_CULL_MODE_NONE;
+
+  VkGraphicsPipelineCreateInfo sdNoCullPCI = sdPCI;
+  sdNoCullPCI.pRasterizationState = &shadowNoCullRaster;
+  pipelines.shadowDepthNoCull = pipelineManager_.createGraphicsPipeline(
+      sdNoCullPCI, "shadow_depth_no_cull_pipeline");
 
   // Directional light
   fsPCI.stageCount = static_cast<uint32_t>(dirStages.size());
@@ -461,6 +539,11 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   // Transparent (OIT)
   pipelines.transparent = pipelineManager_.createGraphicsPipeline(
       meshPCI, "transparent_pipeline");
+
+  VkGraphicsPipelineCreateInfo transparentNoCullPCI = meshPCI;
+  transparentNoCullPCI.pRasterizationState = &noCullRaster;
+  pipelines.transparentNoCull = pipelineManager_.createGraphicsPipeline(
+      transparentNoCullPCI, "transparent_no_cull_pipeline");
 
   // Post process
   VkGraphicsPipelineCreateInfo postPCI = fsPCI;
@@ -548,6 +631,11 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.objectNormalDebug = pipelineManager_.createGraphicsPipeline(
       onPCI, "object_normal_debug_pipeline");
 
+  VkGraphicsPipelineCreateInfo onNoCullPCI = onPCI;
+  onNoCullPCI.pRasterizationState = &noCullRaster;
+  pipelines.objectNormalDebugNoCull = pipelineManager_.createGraphicsPipeline(
+      onNoCullPCI, "object_normal_debug_no_cull_pipeline");
+
   // Light gizmo
   VkGraphicsPipelineCreateInfo lgPCI = fsPCI;
   lgPCI.stageCount          = static_cast<uint32_t>(lgStages.size());
@@ -561,8 +649,20 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.lightGizmo = pipelineManager_.createGraphicsPipeline(
       lgPCI, "light_gizmo_pipeline");
 
+  // Tiled point light (fullscreen, additive blend, no stencil)
+  VkGraphicsPipelineCreateInfo tlPCI = fsPCI;
+  tlPCI.stageCount          = static_cast<uint32_t>(tlStages.size());
+  tlPCI.pStages             = tlStages.data();
+  tlPCI.pVertexInputState   = &emptyVertexInput;
+  tlPCI.pColorBlendState    = &addBlend;
+  tlPCI.pDepthStencilState  = &noDS;
+  tlPCI.layout              = layouts.tiledLighting;
+  tlPCI.renderPass          = renderPasses.lighting;
+  pipelines.tiledPointLight = pipelineManager_.createGraphicsPipeline(
+      tlPCI, "tiled_point_light_pipeline");
+
   // ---- destroy shader modules -----------------------------------------------
-  const std::array<VkShaderModule, 35> modules = {
+  const std::array<VkShaderModule, 39> modules = {
       depthPrepassVert, depthPrepassFrag,
       gBufferVert,      gBufferFrag,
       dirVert,          dirFrag,
@@ -577,7 +677,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       wfFbVert,         wfFbGeom, wfFbFrag,
       snVert,           snGeom,  snFrag,
       onVert,           onFrag,
-      lgVert,           lgFrag};
+      lgVert,           lgFrag,
+      sdVert,           sdFrag,
+      tlVert,           tlFrag};
   for (VkShaderModule m : modules) {
     vkDestroyShaderModule(device_->device(), m, nullptr);
   }

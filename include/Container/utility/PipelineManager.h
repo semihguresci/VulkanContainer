@@ -40,6 +40,10 @@ class PipelineManager {
       const VkGraphicsPipelineCreateInfo& pipelineInfo,
       const std::string& cacheKey);
 
+  VkPipeline createComputePipeline(
+      const VkComputePipelineCreateInfo& pipelineInfo,
+      const std::string& cacheKey);
+
   void destroyManagedResources();
 
  private:

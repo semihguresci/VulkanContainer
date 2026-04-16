@@ -1,0 +1,243 @@
+# Vulkan Coordinate Setup
+
+This document defines the coordinate, depth, viewport, winding, and normal
+conventions for the Container renderer.
+
+Primary references:
+- [Vulkan Guide: Depth](https://docs.vulkan.org/guide/latest/depth.html)
+- [Vulkan Spec: Polygon Rasterization](https://github.khronos.org/Vulkan-Site/spec/latest/chapters/primsrast.html)
+- [glTF 2.0: doubleSided materials](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#double-sided)
+
+The most important rule is to keep these spaces separate:
+
+1. World and view space
+2. Clip and NDC space
+3. Framebuffer coordinates
+4. Sampled image UV coordinates
+
+Most past bugs came from mixing the last three.
+
+## 1. World and View Space
+
+The engine uses a right-handed world:
+
+| Property | Value |
+| --- | --- |
+| Handedness | Right-handed |
+| +X | Right |
+| +Y | Up |
+| Camera forward | -Z |
+| Camera view matrix | `glm::lookAt`, no handedness fixup |
+
+Implications:
+- World-space geometry, normals, tangents, and light directions stay in a
+  right-handed basis.
+- The projection matrix is not allowed to hide a Y flip.
+- Any mirrored transform with `det(model3x3) < 0` changes the tangent-frame
+  handedness and must be accounted for when building the bitangent sign.
+
+## 2. Clip Space and Reverse-Z
+
+Vulkan uses `Zc` in the clip volume `0 <= Zc <= Wc` by default. After
+perspective divide:
+
+- `x_ndc` and `y_ndc` are in `[-1, 1]`
+- `z_ndc` is in `[0, 1]`
+
+Container uses reverse-Z:
+
+| Quantity | Value |
+| --- | --- |
+| Near plane | `z_ndc = 1` |
+| Far plane | `z_ndc = 0` |
+| Depth clear | `0.0` |
+| Depth compare | `VK_COMPARE_OP_GREATER_OR_EQUAL` |
+
+Rules:
+- `perspectiveRH_ReverseZ()` and `orthoRH_ReverseZ()` must not flip Y.
+- Reverse-Z changes only depth mapping. It does not change winding or normal
+  orientation.
+
+## 3. Framebuffer Coordinates
+
+Vulkan front-face classification is defined from the polygon area in
+framebuffer coordinates. Framebuffer coordinates are not the same thing as NDC.
+
+Framebuffer convention:
+
+| Property | Value |
+| --- | --- |
+| Origin | Upper-left |
+| +X | Right |
+| +Y | Down |
+
+That means there are two legal viewport setups in this renderer:
+
+### Scene passes
+
+Scene-facing graphics passes use a negative-height viewport:
+
+```cpp
+viewport.x = 0.0f;
+viewport.y = float(height);
+viewport.width = float(width);
+viewport.height = -float(height);
+viewport.minDepth = 0.0f;
+viewport.maxDepth = 1.0f;
+```
+
+Effect:
+- `y_ndc = +1` maps to the top of the framebuffer.
+- The projection matrix stays clean.
+- A glTF-native CCW triangle appears clockwise in framebuffer space, so scene
+  pipelines must use `VK_FRONT_FACE_CLOCKWISE`.
+
+### Shadow passes
+
+Shadow cascades use a positive-height viewport:
+
+```cpp
+viewport.x = 0.0f;
+viewport.y = 0.0f;
+viewport.width = float(shadowMapSize);
+viewport.height = float(shadowMapSize);
+viewport.minDepth = 0.0f;
+viewport.maxDepth = 1.0f;
+```
+
+Effect:
+- `y_ndc = -1` maps to the top row of the shadow image.
+- Shadow NDC to atlas UV uses the default Vulkan mapping with no extra Y flip.
+
+## 4. UV <-> NDC Conversion
+
+This is the part that must stay explicit.
+
+### Scene framebuffer UV to scene NDC
+
+Use this for world-position reconstruction from the main depth buffer:
+
+```slang
+float2 ndc;
+ndc.x = uv.x * 2.0 - 1.0;
+ndc.y = 1.0 - uv.y * 2.0;
+```
+
+Equivalent form:
+
+```slang
+float2 ndc = uv * 2.0 - 1.0;
+ndc.y = -ndc.y;
+```
+
+### Scene NDC to scene framebuffer UV
+
+Use this when a world-space sample is projected back into the main scene
+buffers:
+
+```slang
+float2 uv;
+uv.x = ndc.x * 0.5 + 0.5;
+uv.y = 0.5 - ndc.y * 0.5;
+```
+
+### Shadow NDC to shadow atlas UV
+
+Shadow cascades use a positive viewport, so they do not reuse the scene Y flip:
+
+```slang
+float2 uv = shadowNdc.xy * 0.5 + 0.5;
+```
+
+The inverse is:
+
+```slang
+float2 shadowNdc = shadowUv * 2.0 - 1.0;
+```
+
+## 5. Winding and Culling
+
+Global rasterization defaults:
+
+| Setting | Value |
+| --- | --- |
+| Scene front face | `VK_FRONT_FACE_CLOCKWISE` |
+| Shadow front face | `VK_FRONT_FACE_COUNTER_CLOCKWISE` |
+| Opaque scene cull | `VK_CULL_MODE_BACK_BIT` |
+| Shadow cull | `VK_CULL_MODE_FRONT_BIT` |
+
+Rules:
+- Winding is evaluated after viewport transform, in framebuffer coordinates.
+- Negative-height scene viewports are part of the culling convention, so scene
+  front-face classification differs from shadow passes.
+- Reverse-Z is unrelated to front-face classification.
+
+glTF-specific rule:
+- When `doubleSided == false`, back-face culling stays enabled.
+- When `doubleSided == true`, back-face culling must be disabled and back-face
+  normals must be reversed before lighting.
+- The current renderer implements that by routing double-sided draws through
+  explicit no-cull pipeline variants instead of changing the global front-face
+  convention.
+
+## 6. Normals and Tangent Space
+
+G-buffer normal convention:
+
+| Property | Value |
+| --- | --- |
+| Stored space | World space |
+| Encoding | `normal * 0.5 + 0.5` |
+| Decoding | `encoded * 2.0 - 1.0` |
+
+Normal-map convention:
+
+| Property | Value |
+| --- | --- |
+| Normal map space | Tangent space |
+| Tangent source | glTF tangent attribute |
+| Tangent sign | `tangent.w` |
+| Bitangent | `cross(N, T) * tangentSign` |
+| glTF normal scale | Multiply tangent-space `xy` before normalization |
+| glTF occlusion strength | `mix(1.0, occlusionTex.r, strength)` |
+
+Rules:
+- The normal matrix is `transpose(inverse(model3x3))`.
+- The tangent must be orthogonalized against the transformed geometric normal.
+- Mirrored transforms multiply the tangent handedness by the sign of
+  `det(model3x3)`.
+- For double-sided lighting, negate the final lighting normal on back faces.
+
+## 7. Pass-by-Pass Checklist
+
+| Pass | Viewport | Depth | UV/NDC rule | Notes |
+| --- | --- | --- | --- | --- |
+| Depth prepass | Negative height | Reverse-Z write | None | Alpha mask only |
+| G-buffer | Negative height | Reverse-Z equal/read | None | Must receive full vertex layout including normal+tangent |
+| Directional light | Negative height | Samples main depth | Scene UV -> scene NDC | Shadow sampling uses positive-height shadow rule |
+| Point light | Negative height | Samples main depth | Scene UV -> scene NDC | Same reconstruction as directional |
+| Tiled point light | Negative height | Samples main depth | Scene UV -> scene NDC | Same reconstruction as directional |
+| GTAO | Compute | Samples main depth | Scene NDC -> scene UV when reprojecting | Y flip required |
+| Frustum cull | Compute | N/A | Clip planes come from Slang row access on `viewProj` | Do not use GLSL-style column extraction |
+| Occlusion cull | Compute | Samples Hi-Z | Scene NDC -> scene UV | Y flip required; sphere bounds must use projection scale and nearest-point reverse-Z depth |
+| Tile light cull | Compute | Samples main depth | Scene UV -> scene NDC for tile corners | Y flip required |
+| Shadow depth | Positive height | Reverse-Z write | None | Uses light-space orthographic projection and matches alpha-mask discard |
+| Shadow lookup | N/A | Samples shadow atlas | Shadow NDC -> shadow UV | No scene-style Y flip |
+| Post-process | Negative height | Samples scene buffers | Usually derive from `SV_Position` | Avoid unnecessary NDC conversion; depth debug views must linearize reverse-Z instead of using `1 - depth` |
+
+## 8. Current Engine Decisions
+
+These are the conventions the code should implement everywhere:
+
+- Right-handed world and view space
+- Reverse-Z depth with clean projection matrices
+- Negative-height viewport for scene-facing passes only
+- Positive-height viewport for shadow cascades
+- Clockwise front faces for scene passes with negative-height viewports
+- Counter-clockwise front faces for shadow passes with positive-height viewports
+- World-space normals in the G-buffer
+- glTF tangent handedness and double-sided lighting rules
+
+If a new pass needs depth reconstruction or reprojection, pick one of the
+conversion rules in section 4 and write it explicitly in code. Do not infer it
+from another pass.

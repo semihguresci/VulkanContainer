@@ -48,7 +48,8 @@ float4 BuildWorldTangent(float3x3 modelMatrix, float3 worldNormal,
 }
 
 SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent,
-                                         float2 texCoord, uint normalTextureIndex)
+                                         float2 texCoord, uint normalTextureIndex,
+                                         float normalTextureScale)
 {
     SurfaceNormalState state;
     state.geometricNormal = SafeNormalize(worldNormal, float3(0.0, 1.0, 0.0));
@@ -73,6 +74,8 @@ SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent
         uint texIndex = NonUniformResourceIndex(normalTextureIndex);
         float3 normalSample =
             materialTextures[texIndex].Sample(baseSampler, texCoord).xyz * 2.0 - 1.0;
+        normalSample.xy *= normalTextureScale;
+        normalSample = SafeNormalize(normalSample, float3(0.0, 0.0, 1.0));
         state.shadingNormal = SafeNormalize(
             tangent * normalSample.x + bitangent * normalSample.y +
                 state.geometricNormal * normalSample.z,

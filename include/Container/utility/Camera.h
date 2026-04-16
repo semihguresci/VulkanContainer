@@ -63,9 +63,7 @@ class BaseCamera {
   }
 
   [[nodiscard]] glm::mat4 viewProjection(float aspectRatio) const {
-    glm::mat4 proj = projectionMatrix(aspectRatio);
-    proj[1][1] *= -1.0f;
-    return proj * viewMatrix();
+    return projectionMatrix(aspectRatio) * viewMatrix();
   }
 
   virtual glm::mat4 projectionMatrix(float aspectRatio) const = 0;
@@ -92,6 +90,8 @@ class PerspectiveCamera : public BaseCamera {
 
   [[nodiscard]] float fieldOfViewDegrees() const noexcept { return fieldOfViewDegrees_; }
   void setFieldOfView(float fovDegrees) { fieldOfViewDegrees_ = fovDegrees; }
+  [[nodiscard]] float nearPlane() const noexcept { return nearPlane_; }
+  [[nodiscard]] float farPlane() const noexcept { return farPlane_; }
   void setNearFar(float nearPlane, float farPlane) {
     nearPlane_ = nearPlane;
     farPlane_ = farPlane;

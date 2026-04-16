@@ -16,7 +16,7 @@ void DebugOverlayRenderer::drawScene(VkCommandBuffer cmd,
     vkCmdPushConstants(cmd, layout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(BindlessPushConstants), &pc);
-    vkCmdDrawIndexed(cmd, dc.indexCount, 1, dc.firstIndex, 0, 0);
+    vkCmdDrawIndexed(cmd, dc.indexCount, 1, dc.firstIndex, 0, dc.objectIndex);
   }
 }
 
@@ -34,7 +34,7 @@ void DebugOverlayRenderer::drawWireframe(VkCommandBuffer cmd,
     vkCmdPushConstants(cmd, layout,
                        VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                        0, sizeof(WireframePushConstants), &pc);
-    vkCmdDrawIndexed(cmd, dc.indexCount, 1, dc.firstIndex, 0, 0);
+    vkCmdDrawIndexed(cmd, dc.indexCount, 1, dc.firstIndex, 0, dc.objectIndex);
   }
 }
 
@@ -56,7 +56,7 @@ void DebugOverlayRenderer::recordNormalValidation(
       pc.objectIndex = dc.objectIndex;
       vkCmdPushConstants(cmd, layout, kStages, 0,
                          sizeof(NormalValidationPushConstants), &pc);
-      vkCmdDrawIndexed(cmd, dc.indexCount, 1, dc.firstIndex, 0, 0);
+      vkCmdDrawIndexed(cmd, dc.indexCount, 1, dc.firstIndex, 0, dc.objectIndex);
     }
   };
   draw(opaque);
@@ -81,7 +81,7 @@ void DebugOverlayRenderer::recordSurfaceNormals(
       pc.objectIndex = dc.objectIndex;
       vkCmdPushConstants(cmd, layout, kStages, 0,
                          sizeof(SurfaceNormalPushConstants), &pc);
-      vkCmdDrawIndexed(cmd, dc.indexCount, 1, dc.firstIndex, 0, 0);
+      vkCmdDrawIndexed(cmd, dc.indexCount, 1, dc.firstIndex, 0, dc.objectIndex);
     }
   };
   draw(opaque);

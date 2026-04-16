@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <string>
@@ -73,6 +74,7 @@ class SceneManager {
   VkIndexType indexType() const { return indexType_; }
   uint32_t defaultMaterialIndex() const { return defaultMaterialIndex_; }
   const ModelBounds& modelBounds() const { return modelBounds_; }
+  bool isDefaultTestSceneActive() const;
   void populateSceneGraph(SceneGraph& sceneGraph) const;
 
   glm::vec4 resolveMaterialColor(uint32_t materialIndex) const;
@@ -81,7 +83,9 @@ class SceneManager {
       uint32_t materialIndex) const;
   uint32_t resolveMaterialTextureIndex(uint32_t materialIndex) const;
   uint32_t resolveMaterialNormalTexture(uint32_t materialIndex) const;
+  float resolveMaterialNormalTextureScale(uint32_t materialIndex) const;
   uint32_t resolveMaterialOcclusionTexture(uint32_t materialIndex) const;
+  float resolveMaterialOcclusionStrength(uint32_t materialIndex) const;
   uint32_t resolveMaterialEmissiveTexture(uint32_t materialIndex) const;
   uint32_t resolveMaterialMetallicRoughnessTexture(
       uint32_t materialIndex) const;
@@ -97,12 +101,18 @@ class SceneManager {
   void createSampler();
   void loadMaterialXMaterial();
   void loadGltfAssets();
+  void loadDefaultTestSceneAssets();
   void updateModelBounds();
   void allocateDescriptorSet();
   void writeDescriptorSetContents(
       const container::gpu::AllocatedBuffer& cameraBuffer,
       const container::gpu::AllocatedBuffer& objectBuffer);
   void resetLoadedAssets();
+  void appendSceneAsset(const std::filesystem::path& assetPath,
+                        const glm::mat4& transform,
+                        std::vector<container::geometry::Mesh>& mergedMeshes);
+  [[nodiscard]] std::filesystem::path resolveSceneAssetPath(
+      std::string_view relativePath) const;
 
   container::gpu::AllocationManager* allocationManager_{nullptr};
   container::gpu::PipelineManager* pipelineManager_{nullptr};

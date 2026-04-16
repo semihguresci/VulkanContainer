@@ -14,13 +14,15 @@ struct ObjectBuffer
     float emissiveStrength;
     float2 metallicRoughness;
     float alphaCutoff;
+    float normalTextureScale;
+    float occlusionStrength;
     uint baseColorTextureIndex;
     uint normalTextureIndex;
     uint occlusionTextureIndex;
     uint emissiveTextureIndex;
     uint metallicRoughnessTextureIndex;
     uint flags;
-    float2 padding;
+    float4 boundingSphere;
 };
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
@@ -37,6 +39,10 @@ struct PushConstants
 
 [[vk::push_constant]]
 ConstantBuffer<PushConstants> pc;
+
+static const uint kObjectFlagAlphaMask = 0x1u;
+static const uint kObjectFlagTransparentOnly = 0x2u;
+static const uint kObjectFlagDoubleSided = 0x4u;
 
 struct VSInput
 {
@@ -62,9 +68,11 @@ struct VSOutput
     [[vk::location(9)]] float2 metallicRoughness;
     [[vk::location(10)]] float3 worldPos;
     [[vk::location(11)]] float alphaCutoff;
-    [[vk::location(12)]] uint flags;
-    [[vk::location(13)]] float3 worldNormal;
-    [[vk::location(14)]] float4 worldTangent;
+    [[vk::location(12)]] float normalTextureScale;
+    [[vk::location(13)]] float occlusionStrength;
+    [[vk::location(14)]] uint flags;
+    [[vk::location(15)]] float3 worldNormal;
+    [[vk::location(16)]] float4 worldTangent;
 };
 
 struct PSOutput
@@ -73,14 +81,14 @@ struct PSOutput
     float4 normal : SV_Target1;
     float4 material : SV_Target2;
     float4 emissive : SV_Target3;
-    float4 position : SV_Target4;
 };
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
 {
     VSOutput output;
-    ObjectBuffer obj = uObjects[pc.objectIndex];
+    uint objectIndex = instanceID;
+    ObjectBuffer obj = uObjects[objectIndex];
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
     float3x3 modelMatrix = (float3x3)obj.model;
@@ -100,6 +108,8 @@ VSOutput vertMain(VSInput input)
     output.metallicRoughness = obj.metallicRoughness;
     output.worldPos = worldPos.xyz;
     output.alphaCutoff = obj.alphaCutoff;
+    output.normalTextureScale = obj.normalTextureScale;
+    output.occlusionStrength = obj.occlusionStrength;
     output.flags = obj.flags;
     output.worldNormal = worldNormal;
     output.worldTangent = worldTangent;
@@ -107,9 +117,9 @@ VSOutput vertMain(VSInput input)
 }
 
 [shader("fragment")]
-PSOutput fragMain(VSOutput vertIn)
+PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
 {
-    if ((vertIn.flags & 0x2u) != 0u)
+    if ((vertIn.flags & kObjectFlagTransparentOnly) != 0u)
     {
         discard;
     }
@@ -125,7 +135,7 @@ PSOutput fragMain(VSOutput vertIn)
         baseAlpha *= texColor.a;
     }
 
-    if ((vertIn.flags & 0x1u) != 0u && baseAlpha < vertIn.alphaCutoff)
+    if ((vertIn.flags & kObjectFlagAlphaMask) != 0u && baseAlpha < vertIn.alphaCutoff)
     {
         discard;
     }
@@ -142,13 +152,19 @@ PSOutput fragMain(VSOutput vertIn)
 
     SurfaceNormalState surfaceNormal = EvaluateSurfaceNormal(
         vertIn.worldNormal, vertIn.worldTangent, vertIn.texCoord,
-        vertIn.normalTextureIndex);
+        vertIn.normalTextureIndex, vertIn.normalTextureScale);
+    if ((vertIn.flags & kObjectFlagDoubleSided) != 0u && !isFrontFace)
+    {
+        surfaceNormal.shadingNormal = -surfaceNormal.shadingNormal;
+    }
 
     float occlusion = 1.0;
     if (vertIn.occlusionTextureIndex != 0xffffffff)
     {
         uint texIndex = NonUniformResourceIndex(vertIn.occlusionTextureIndex);
-        occlusion = materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).r;
+        float sampledOcclusion =
+            materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).r;
+        occlusion = lerp(1.0, sampledOcclusion, saturate(vertIn.occlusionStrength));
     }
 
     float3 emissive = vertIn.emissiveColor * vertIn.emissiveStrength;
@@ -159,13 +175,10 @@ PSOutput fragMain(VSOutput vertIn)
                     * vertIn.emissiveStrength;
     }
 
-    float linearDepth = length(vertIn.worldPos - uCamera.cameraWorldPosition.xyz);
-
     PSOutput output;
     output.albedo = float4(baseColor, baseAlpha);
     output.normal = float4(surfaceNormal.shadingNormal * 0.5 + 0.5, 1.0);
     output.material = float4(sampledMetallic, sampledRoughness, occlusion, baseAlpha);
     output.emissive = float4(emissive, 1.0);
-    output.position = float4(vertIn.worldPos, linearDepth);
     return output;
 }

@@ -7,7 +7,9 @@
 #include <utility>
 
 #include "Container/geometry/GltfModelLoader.h"
+#include "Container/geometry/Mesh.h"
 #include "Container/utility/AllocationManager.h"
+#include "Container/utility/Platform.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/SceneGraph.h"
@@ -60,6 +62,80 @@ glm::mat4 nodeLocalTransform(const tinygltf::Node& node) {
   }
 
   return transform;
+}
+
+bool isDefaultSceneRequest(std::string_view path) {
+  return path == container::app::kDefaultSceneModelToken;
+}
+
+bool isProceduralSphereEntry(std::string_view entry) {
+  return entry == "__procedural_uv_sphere__";
+}
+
+glm::mat4 makeDefaultSceneTransform(const glm::vec3& translation, float uniformScale) {
+  glm::mat4 transform = glm::translate(glm::mat4(1.0f), translation);
+  return glm::scale(transform, glm::vec3(uniformScale));
+}
+
+glm::mat4 composeNodeWorldTransform(const tinygltf::Model& model, int nodeIndex) {
+  glm::mat4 worldTransform(1.0f);
+  if (nodeIndex < 0 || nodeIndex >= static_cast<int>(model.nodes.size())) {
+    return worldTransform;
+  }
+
+  std::vector<int> parentByNode(model.nodes.size(), -1);
+  for (size_t parentIndex = 0; parentIndex < model.nodes.size(); ++parentIndex) {
+    for (int childIndex : model.nodes[parentIndex].children) {
+      if (childIndex >= 0 && childIndex < static_cast<int>(model.nodes.size())) {
+        parentByNode[childIndex] = static_cast<int>(parentIndex);
+      }
+    }
+  }
+
+  std::vector<int> chain;
+  for (int current = nodeIndex; current >= 0; current = parentByNode[current]) {
+    chain.push_back(current);
+  }
+  for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+    worldTransform *= nodeLocalTransform(model.nodes[*it]);
+  }
+  return worldTransform;
+}
+
+container::geometry::Mesh transformMesh(const container::geometry::Mesh& mesh,
+                                        const glm::mat4& transform,
+                                        int32_t materialIndex) {
+  std::vector<container::geometry::Vertex> vertices = mesh.vertices();
+  const glm::mat3 modelMatrix = glm::mat3(transform);
+  const glm::mat3 normalMatrix = glm::transpose(glm::inverse(modelMatrix));
+
+  for (auto& vertex : vertices) {
+    vertex.position = glm::vec3(transform * glm::vec4(vertex.position, 1.0f));
+
+    glm::vec3 worldNormal = normalMatrix * vertex.normal;
+    if (glm::dot(worldNormal, worldNormal) > 1e-8f) {
+      vertex.normal = glm::normalize(worldNormal);
+    }
+
+    glm::vec3 worldTangent = modelMatrix * glm::vec3(vertex.tangent);
+    worldTangent -= vertex.normal * glm::dot(vertex.normal, worldTangent);
+    if (glm::dot(worldTangent, worldTangent) > 1e-8f) {
+      vertex.tangent = glm::vec4(glm::normalize(worldTangent), vertex.tangent.w);
+    }
+  }
+
+  return container::geometry::Mesh(vertices, mesh.indices(), materialIndex);
+}
+
+void appendModelMeshes(const container::geometry::Model& model,
+                       const glm::mat4& transform,
+                       int32_t materialIndex,
+                       std::vector<container::geometry::Mesh>& mergedMeshes) {
+  for (const auto& mesh : model.meshes()) {
+    const int32_t resolvedMaterialIndex =
+        materialIndex >= 0 ? materialIndex : mesh.materialIndex();
+    mergedMeshes.push_back(transformMesh(mesh, transform, resolvedMaterialIndex));
+  }
 }
 
 }  // namespace
@@ -115,6 +191,10 @@ void SceneManager::initialize(const std::string& initialModelPath) {
   config_.modelPath = initialModelPath;
   loadGltfAssets();
   allocateDescriptorSet();
+}
+
+bool SceneManager::isDefaultTestSceneActive() const {
+  return isDefaultSceneRequest(config_.modelPath);
 }
 
 void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
@@ -290,12 +370,28 @@ uint32_t SceneManager::resolveMaterialNormalTexture(
   return std::numeric_limits<uint32_t>::max();
 }
 
+float SceneManager::resolveMaterialNormalTextureScale(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->normalTextureScale;
+  }
+  return 1.0f;
+}
+
 uint32_t SceneManager::resolveMaterialOcclusionTexture(
     uint32_t materialIndex) const {
   if (const auto* m = materialManager_.getMaterial(materialIndex)) {
     return m->occlusionTextureIndex;
   }
   return std::numeric_limits<uint32_t>::max();
+}
+
+float SceneManager::resolveMaterialOcclusionStrength(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->occlusionStrength;
+  }
+  return 1.0f;
 }
 
 uint32_t SceneManager::resolveMaterialEmissiveTexture(
@@ -424,6 +520,15 @@ void SceneManager::loadGltfAssets() {
   model_ = container::geometry::Model{};
   gltfModel_ = tinygltf::Model{};
 
+   if (isDefaultSceneRequest(config_.modelPath)) {
+    loadDefaultTestSceneAssets();
+    vertices_ = model_.vertices();
+    indices_ = model_.indices();
+    updateModelBounds();
+    indexType_ = VK_INDEX_TYPE_UINT32;
+    return;
+  }
+
   if (!config_.modelPath.empty()) {
     try {
       auto result = container::geometry::gltf::LoadModelWithSource(config_.modelPath);
@@ -454,6 +559,125 @@ void SceneManager::loadGltfAssets() {
   indices_ = model_.indices();
   updateModelBounds();
   indexType_ = VK_INDEX_TYPE_UINT32;
+}
+
+void SceneManager::loadDefaultTestSceneAssets() {
+  std::vector<container::geometry::Mesh> mergedMeshes;
+  mergedMeshes.reserve(container::app::kDefaultSceneModelRelativePaths.size());
+
+  const std::array<glm::mat4, 3> transforms = {{
+      makeDefaultSceneTransform(glm::vec3(-2.4f, 0.0f, 0.0f), 1.3f),
+      makeDefaultSceneTransform(glm::vec3(0.0f, 0.0f, 0.0f), 1.0f),
+      makeDefaultSceneTransform(glm::vec3(2.4f, 0.0f, 0.0f), 1.25f),
+  }};
+
+  container::material::Material sphereMaterial{};
+  sphereMaterial.baseColor = glm::vec4(0.90f, 0.92f, 1.0f, 1.0f);
+  sphereMaterial.metallicFactor = 0.0f;
+  sphereMaterial.roughnessFactor = 0.45f;
+  const int32_t proceduralSphereMaterialIndex = static_cast<int32_t>(
+      materialManager_.createMaterial(sphereMaterial));
+
+  for (size_t i = 0; i < container::app::kDefaultSceneModelRelativePaths.size(); ++i) {
+    const auto entry = container::app::kDefaultSceneModelRelativePaths[i];
+    if (isProceduralSphereEntry(entry)) {
+      appendModelMeshes(container::geometry::Model::MakeSphere(), transforms[i],
+                        proceduralSphereMaterialIndex, mergedMeshes);
+      continue;
+    }
+
+    const std::filesystem::path assetPath =
+        resolveSceneAssetPath(entry);
+    appendSceneAsset(assetPath, transforms[i], mergedMeshes);
+  }
+
+  if (mergedMeshes.empty()) {
+    throw std::runtime_error("failed to build default test scene from triangle/cube/sphere assets");
+  }
+
+  model_ = container::geometry::Model::FromMeshes(std::move(mergedMeshes));
+  gltfModel_ = tinygltf::Model{};
+}
+
+void SceneManager::appendSceneAsset(
+    const std::filesystem::path& assetPath,
+    const glm::mat4& transform,
+    std::vector<container::geometry::Mesh>& mergedMeshes) {
+  auto result = container::geometry::gltf::LoadModelWithSource(assetPath.string());
+
+  const auto imageToTexture = materialXBridge_.loadTexturesForGltf(
+      result.gltfModel, assetPath.parent_path(), textureManager_,
+      [this](const std::string& path) {
+        return allocationManager_->createTextureFromFile(path);
+      });
+
+  const uint32_t fallbackMaterialIndex = defaultMaterialIndex_;
+  const uint32_t materialBaseIndex =
+      static_cast<uint32_t>(materialManager_.materialCount());
+  materialXBridge_.loadMaterialsForGltf(
+      result.gltfModel, imageToTexture, materialManager_, defaultMaterialIndex_);
+  defaultMaterialIndex_ = fallbackMaterialIndex;
+
+  std::vector<uint32_t> primitiveBaseByMesh(result.gltfModel.meshes.size(), 0);
+  uint32_t primitiveBase = 0;
+  for (size_t meshIndex = 0; meshIndex < result.gltfModel.meshes.size(); ++meshIndex) {
+    primitiveBaseByMesh[meshIndex] = primitiveBase;
+    primitiveBase +=
+        static_cast<uint32_t>(result.gltfModel.meshes[meshIndex].primitives.size());
+  }
+
+  uint32_t meshCursor = 0;
+  for (size_t nodeIndex = 0; nodeIndex < result.gltfModel.nodes.size(); ++nodeIndex) {
+    const auto& node = result.gltfModel.nodes[nodeIndex];
+    if (node.mesh < 0 ||
+        node.mesh >= static_cast<int>(result.gltfModel.meshes.size())) {
+      continue;
+    }
+
+    const glm::mat4 nodeTransform =
+        transform * composeNodeWorldTransform(result.gltfModel, static_cast<int>(nodeIndex));
+    const auto& meshDef = result.gltfModel.meshes[node.mesh];
+    for (size_t primitiveIndex = 0; primitiveIndex < meshDef.primitives.size(); ++primitiveIndex) {
+      if (meshCursor >= result.model.meshes().size()) {
+        break;
+      }
+      const auto& mesh = result.model.meshes()[meshCursor++];
+      const uint32_t primitiveGlobalIndex =
+          primitiveBaseByMesh[node.mesh] + static_cast<uint32_t>(primitiveIndex);
+      int32_t sourceMaterialIndex = mesh.materialIndex();
+      if (primitiveGlobalIndex < result.model.primitiveRanges().size()) {
+        sourceMaterialIndex = result.model.primitiveRanges()[primitiveGlobalIndex].materialIndex;
+      }
+      const int32_t materialIndex = sourceMaterialIndex >= 0
+          ? static_cast<int32_t>(materialBaseIndex) + sourceMaterialIndex
+          : -1;
+      mergedMeshes.push_back(transformMesh(mesh, nodeTransform, materialIndex));
+    }
+  }
+
+  while (meshCursor < result.model.meshes().size()) {
+    const auto& mesh = result.model.meshes()[meshCursor++];
+    const int32_t materialIndex = mesh.materialIndex() >= 0
+        ? static_cast<int32_t>(materialBaseIndex) + mesh.materialIndex()
+        : -1;
+    mergedMeshes.push_back(transformMesh(mesh, transform, materialIndex));
+  }
+}
+
+std::filesystem::path SceneManager::resolveSceneAssetPath(
+    std::string_view relativePath) const {
+  const std::filesystem::path exeRelative =
+      container::util::executableDirectory() / std::filesystem::path(relativePath);
+  if (std::filesystem::exists(exeRelative)) {
+    return exeRelative;
+  }
+
+  const std::filesystem::path workspaceRelative = std::filesystem::path(relativePath);
+  if (std::filesystem::exists(workspaceRelative)) {
+    return workspaceRelative;
+  }
+
+  return exeRelative;
 }
 
 void SceneManager::updateModelBounds() {

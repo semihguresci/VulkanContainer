@@ -4,6 +4,13 @@ static const uint MAX_OIT_NODES_PER_PIXEL = 64u;
 struct PushConstants
 {
     uint outputMode;
+    uint bloomEnabled;
+    float bloomIntensity;
+    float cameraNear;
+    float cameraFar;
+    float cascadeSplits[4];
+    uint tileCountX;
+    uint totalLights;
 };
 
 struct TransparentNode
@@ -28,7 +35,17 @@ struct OitMetadataBuffer
 [[vk::binding(3, 0)]] Texture2D<float4> gNormalTexture;
 [[vk::binding(4, 0)]] Texture2D<float4> gMaterialTexture;
 [[vk::binding(5, 0)]] Texture2D<float4> gEmissiveTexture;
-[[vk::binding(6, 0)]] Texture2D<float4> gPositionTexture;
+[[vk::binding(6, 0)]] Texture2D<float> gDepthTexture;
+[[vk::binding(7, 0)]] Texture2D<float4> gBloomTexture;
+[[vk::binding(8, 0)]] SamplerState bloomSampler;
+
+struct TileLightGrid
+{
+    uint offset;
+    uint count;
+};
+
+[[vk::binding(9, 0)]] StructuredBuffer<TileLightGrid> uTileGrid;
 [[vk::binding(0, 1)]] RWTexture2D<uint> headPointerImage;
 [[vk::binding(1, 1)]] StructuredBuffer<TransparentNode> transparentNodes;
 [[vk::binding(2, 1)]] StructuredBuffer<uint> nodeCounter;
@@ -141,14 +158,17 @@ float3 NormalVisual(float4 encodedNormal)
     return normal * 0.5 + 0.5;
 }
 
-float3 PositionVisual(float4 position)
+float3 DepthVisual(float depth)
 {
-    if (position.w <= 0.0)
+    if (depth == 0.0)
     {
         return 0.0.xxx;
     }
-    float3 absPos = abs(position.xyz);
-    return absPos / (1.0 + absPos);
+    float n = pc.cameraNear;
+    float f = pc.cameraFar;
+    float linearDepth = (n * f) / (depth * (f - n) + n);
+    float normalizedDepth = saturate((linearDepth - n) / max(f - n, 1e-6));
+    return normalizedDepth.xxx;
 }
 
 [shader("vertex")]
@@ -182,12 +202,12 @@ float4 fragMain(VSOutput input) : SV_Target0
     pixelCoord = min(pixelCoord, uint2(max(width, 1u) - 1u, max(height, 1u) - 1u));
     float2 screenUV = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
 
-    float4 sceneColor = sceneColorTexture.SampleLevel(gBufferSampler, screenUV, 0.0);
-    float4 albedo = gAlbedoTexture.SampleLevel(gBufferSampler, screenUV, 0.0);
-    float4 normal = gNormalTexture.SampleLevel(gBufferSampler, screenUV, 0.0);
-    float4 material = gMaterialTexture.SampleLevel(gBufferSampler, screenUV, 0.0);
-    float4 emissive = gEmissiveTexture.SampleLevel(gBufferSampler, screenUV, 0.0);
-    float4 position = gPositionTexture.SampleLevel(gBufferSampler, screenUV, 0.0);
+    float4 sceneColor = sceneColorTexture.Load(int3(pixelCoord, 0));
+    float4 albedo = gAlbedoTexture.Load(int3(pixelCoord, 0));
+    float4 normal = gNormalTexture.Load(int3(pixelCoord, 0));
+    float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
+    float4 emissive = gEmissiveTexture.Load(int3(pixelCoord, 0));
+    float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
 
     float3 transparentColor = 0.0.xxx;
     float3 compositedColor = sceneColor.rgb;
@@ -245,8 +265,7 @@ float4 fragMain(VSOutput input) : SV_Target0
 
     if (pc.outputMode == 4)
     {
-        float depthVisual = 1.0 - exp(-position.w * 0.02);
-        return float4(depthVisual.xxx, 1.0);
+        return float4(DepthVisual(depthSample), 1.0);
     }
 
     if (pc.outputMode == 5)
@@ -272,7 +291,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         Rect normalRect = { float2(0.82, 0.68), float2(0.98, 0.92) };
         Rect materialRect = { float2(0.02, 0.08), float2(0.18, 0.32) };
         Rect emissiveRect = { float2(0.82, 0.08), float2(0.98, 0.32) };
-        Rect positionRect = { float2(0.82, 0.36), float2(0.98, 0.64) };
+        Rect depthRect = { float2(0.82, 0.36), float2(0.98, 0.64) };
 
         const float panelPadding = 0.006;
         const float3 panelBorderColor = float3(0.60, 0.62, 0.66);
@@ -284,7 +303,7 @@ float4 fragMain(VSOutput input) : SV_Target0
             IsPanelBorder(screenUV, normalRect, panelPadding) ||
             IsPanelBorder(screenUV, materialRect, panelPadding) ||
             IsPanelBorder(screenUV, emissiveRect, panelPadding) ||
-            IsPanelBorder(screenUV, positionRect, panelPadding))
+            IsPanelBorder(screenUV, depthRect, panelPadding))
         {
             return float4(panelBorderColor, 1.0);
         }
@@ -294,7 +313,7 @@ float4 fragMain(VSOutput input) : SV_Target0
         Rect normalInner = InsetRect(normalRect, panelPadding);
         Rect materialInner = InsetRect(materialRect, panelPadding);
         Rect emissiveInner = InsetRect(emissiveRect, panelPadding);
-        Rect positionInner = InsetRect(positionRect, panelPadding);
+        Rect depthInner = InsetRect(depthRect, panelPadding);
 
         if (InRect(screenUV, centerRect))
         {
@@ -397,15 +416,15 @@ float4 fragMain(VSOutput input) : SV_Target0
             return float4(pow(mappedEmissive, 1.0 / 2.2), 1.0);
         }
 
-        if (InRect(screenUV, positionRect))
+        if (InRect(screenUV, depthRect))
         {
-            if (!InRect(screenUV, positionInner))
+            if (!InRect(screenUV, depthInner))
             {
                 return float4(panelTileBackgroundColor, 1.0);
             }
-            float2 panelUV = RectUV(screenUV, positionInner);
-            float4 panelPosition = gPositionTexture.SampleLevel(gBufferSampler, panelUV, 0.0);
-            return float4(PositionVisual(panelPosition), 1.0);
+            float2 panelUV = RectUV(screenUV, depthInner);
+            float panelDepth = gDepthTexture.SampleLevel(gBufferSampler, panelUV, 0.0);
+            return float4(DepthVisual(panelDepth), 1.0);
         }
 
         return float4(screenBackgroundColor, 1.0);
@@ -416,8 +435,133 @@ float4 fragMain(VSOutput input) : SV_Target0
         return float4(sceneColor.rgb, 1.0);
     }
 
+    // Shadow cascade debug view: color-code pixels by cascade index.
+    if (pc.outputMode == 11)
+    {
+        if (depthSample == 0.0)
+        {
+            return float4(0.0, 0.0, 0.0, 1.0);
+        }
+
+        // Linearize reverse-Z depth to positive view-space distance.
+        // With perspectiveRH_ReverseZ: near maps to depth=1, far maps to depth=0.
+        //   viewZ = (near * far) / (depth * (far - near) + near)
+        float n = pc.cameraNear;
+        float f = pc.cameraFar;
+        float viewZ = (n * f) / (depthSample * (f - n) + n);
+
+        static const float3 cascadeColors[4] = {
+            float3(0.2, 0.8, 0.2),   // green  — cascade 0 (nearest)
+            float3(0.2, 0.5, 0.9),   // blue   — cascade 1
+            float3(0.9, 0.7, 0.1),   // yellow — cascade 2
+            float3(0.9, 0.2, 0.2),   // red    — cascade 3 (farthest)
+        };
+
+        uint cascadeIndex = 3;
+        for (uint i = 0; i < 3; ++i)
+        {
+            if (viewZ < pc.cascadeSplits[i])
+            {
+                cascadeIndex = i;
+                break;
+            }
+        }
+
+        // Blend zone visualization: brighten pixels in the transition overlap.
+        float blendIndicator = 0.0;
+        if (cascadeIndex < 3)
+        {
+            float splitDepth = pc.cascadeSplits[cascadeIndex];
+            float prevSplit = (cascadeIndex == 0) ? 0.0 : pc.cascadeSplits[cascadeIndex - 1];
+            float cascadeRange = splitDepth - prevSplit;
+            float blendZone = cascadeRange * 0.1;
+            float blendStart = splitDepth - blendZone;
+            if (viewZ > blendStart)
+            {
+                blendIndicator = saturate((viewZ - blendStart) / max(blendZone, 1e-6));
+            }
+        }
+
+        float3 color = cascadeColors[cascadeIndex];
+        // Mix with next cascade color in blend zone for visual verification.
+        if (blendIndicator > 0.0 && cascadeIndex < 3)
+        {
+            color = lerp(color, cascadeColors[cascadeIndex + 1], blendIndicator);
+        }
+
+        // Overlay on dimmed scene for context.
+        float3 sceneGray = dot(sceneColor.rgb, float3(0.299, 0.587, 0.114)).xxx;
+        float3 dimScene = sceneGray * 0.15;
+        float3 result = dimScene + color * 0.5;
+        return float4(result, 1.0);
+    }
+
+    // Tile light heat map: color-code pixels by per-tile light count.
+    if (pc.outputMode == 12)
+    {
+        static const uint TILE_SIZE = 16u;
+
+        uint2 tileCoord = pixelCoord / TILE_SIZE;
+        uint tileIndex = tileCoord.y * pc.tileCountX + tileCoord.x;
+        uint lightCount = uTileGrid[tileIndex].count;
+
+        // Heat map: black (0) → blue → cyan → green → yellow → red → white.
+        float maxLights = max(float(pc.totalLights), 1.0);
+        float t = saturate(float(lightCount) / maxLights);
+
+        float3 heatColor;
+        if (t < 0.2)
+        {
+            float s = t / 0.2;
+            heatColor = lerp(float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 1.0), s);
+        }
+        else if (t < 0.4)
+        {
+            float s = (t - 0.2) / 0.2;
+            heatColor = lerp(float3(0.0, 0.0, 1.0), float3(0.0, 1.0, 1.0), s);
+        }
+        else if (t < 0.6)
+        {
+            float s = (t - 0.4) / 0.2;
+            heatColor = lerp(float3(0.0, 1.0, 1.0), float3(0.0, 1.0, 0.0), s);
+        }
+        else if (t < 0.8)
+        {
+            float s = (t - 0.6) / 0.2;
+            heatColor = lerp(float3(0.0, 1.0, 0.0), float3(1.0, 1.0, 0.0), s);
+        }
+        else
+        {
+            float s = (t - 0.8) / 0.2;
+            heatColor = lerp(float3(1.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), s);
+        }
+
+        // Show tile grid lines for visual clarity.
+        bool onTileBorder = (pixelCoord.x % TILE_SIZE == 0) || (pixelCoord.y % TILE_SIZE == 0);
+
+        // Overlay on dimmed scene.
+        float3 sceneGray = dot(sceneColor.rgb, float3(0.299, 0.587, 0.114)).xxx;
+        float3 dimScene = sceneGray * 0.15;
+        float3 result = dimScene + heatColor * 0.65;
+
+        if (onTileBorder)
+        {
+            result = lerp(result, float3(0.3, 0.3, 0.3), 0.5);
+        }
+
+        return float4(result, 1.0);
+    }
+
+    // Add bloom contribution before tone mapping.
+    float3 finalHdr = compositedColor;
+    if (pc.bloomEnabled != 0)
+    {
+        float3 bloom = gBloomTexture.Sample(bloomSampler, screenUV).rgb;
+        finalHdr += bloom * pc.bloomIntensity;
+    }
+
     const float exposure = 0.25;
-    float3 mapped = ToneMapACES(compositedColor * exposure);
+    float3 mapped = ToneMapACES(finalHdr * exposure);
     mapped = pow(mapped, 1.0 / 2.2);
     return float4(mapped, 1.0);
 }

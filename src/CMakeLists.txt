@@ -12,6 +12,7 @@ add_library(VulkanContainer_renderer
     renderer/SceneController.cpp
     renderer/CameraController.cpp
     renderer/LightingManager.cpp
+    renderer/EnvironmentManager.cpp
     renderer/GraphicsPipelineBuilder.cpp
     renderer/FrameRecorder.cpp
     renderer/RenderGraph.cpp
@@ -19,6 +20,9 @@ add_library(VulkanContainer_renderer
     renderer/WindowInputBridge.cpp
     renderer/CommandBufferManager.cpp
     renderer/RendererFrontend.cpp
+    renderer/ShadowManager.cpp
+    renderer/GpuCullManager.cpp
+    renderer/BloomManager.cpp
     renderer/VulkanContext.cpp
 )
 
