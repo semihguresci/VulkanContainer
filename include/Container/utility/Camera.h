@@ -57,9 +57,7 @@ class BaseCamera {
   [[nodiscard]] glm::mat4 viewMatrix() const {
     const glm::vec3 front = frontVector();
     const glm::vec3 up = upVector(front);
-    const glm::mat4 view =
-        container::math::lookAt(position_, position_ + front, up);
-    return glm::scale(glm::mat4(1.0f), 1.0f / scale_) * view;
+    return container::math::lookAt(position_, position_ + front, up);
   }
 
   [[nodiscard]] glm::mat4 viewProjection(float aspectRatio) const {

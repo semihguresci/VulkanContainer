@@ -1,5 +1,6 @@
 #include "Container/app/AppConfig.h"
 #include "Container/common/CommonMath.h"
+#include "Container/utility/Camera.h"
 
 #include <gtest/gtest.h>
 
@@ -278,6 +279,23 @@ TEST(RenderingConventionTests, NegativeSceneViewportFlipsFramebufferWinding) {
   EXPECT_GT(ndcArea, 0.0f);
   EXPECT_LT(sceneFramebufferArea, 0.0f);
   EXPECT_GT(shadowFramebufferArea, 0.0f);
+}
+
+TEST(RenderingConventionTests, PerspectiveViewMatrixIgnoresCameraScale) {
+  container::scene::PerspectiveCamera camera;
+  camera.setPosition({1.0f, 2.0f, 3.0f});
+  camera.setYawPitch(90.0f, -10.0f);
+
+  const glm::mat4 viewAtUnitScale = camera.viewMatrix();
+  camera.setScale({500.0f, 500.0f, 500.0f});
+  const glm::mat4 viewAtLargeScale = camera.viewMatrix();
+
+  for (int column = 0; column < 4; ++column) {
+    for (int row = 0; row < 4; ++row) {
+      EXPECT_FLOAT_EQ(viewAtUnitScale[column][row],
+                      viewAtLargeScale[column][row]);
+    }
+  }
 }
 
 TEST(RenderingConventionTests, FrustumPlaneExtractionUsesSlangRowIndexing) {

@@ -156,7 +156,11 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
             // is occluded.
             float conservativeHiZ = min(min(hizDepth, hizDepth01),
                                         min(hizDepth10, hizDepth11));
-            if (closestDepth < conservativeHiZ)
+            // Keep the test biased toward visibility. A strict comparison can
+            // falsely reject thin reliefs or objects embedded near a wall after
+            // the depth prepass has populated Hi-Z with nearby surfaces.
+            const float visibilityBias = 0.001;
+            if (closestDepth + visibilityBias < conservativeHiZ)
             {
                 visible = false;
             }

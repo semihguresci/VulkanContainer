@@ -204,12 +204,15 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   sceneRaster.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
   sceneRaster.polygonMode = VK_POLYGON_MODE_FILL;
   sceneRaster.lineWidth   = 1.0f;
-  sceneRaster.cullMode    = VK_CULL_MODE_BACK_BIT;
-  // glTF authors geometry with counter-clockwise front faces in world space.
-  // Although the scene pass uses a negative-height viewport, we keep the
-  // front-face convention as CCW here (matching the source data); this has
-  // been verified to produce correct back-face culling in practice.
-  sceneRaster.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+  // Match Blender's material preview behavior for imported scenes. Some glTF
+  // assets include thin wall-mounted reliefs whose effective winding does not
+  // survive the full projection/viewport path consistently; culling them makes
+  // whole details, such as Sponza's lion reliefs, disappear.
+  sceneRaster.cullMode    = VK_CULL_MODE_NONE;
+  // glTF authors geometry with counter-clockwise front faces in clip/NDC
+  // space. Scene passes use a negative-height viewport, which flips Y during
+  // viewport transform, so those faces are clockwise in framebuffer space.
+  sceneRaster.frontFace   = VK_FRONT_FACE_CLOCKWISE;
 
   VkPipelineRasterizationStateCreateInfo noCullRaster = sceneRaster;
   noCullRaster.cullMode = VK_CULL_MODE_NONE;
@@ -307,7 +310,12 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
 
   VkPipelineDepthStencilStateCreateInfo gBufDS     = depthPrepassDS;
   gBufDS.depthWriteEnable = VK_FALSE;
-  gBufDS.depthCompareOp   = VK_COMPARE_OP_EQUAL;
+  // Replaying geometry after the depth prepass with an exact compare can
+  // drop fragments on detailed meshes due to tiny rasterization/precision
+  // differences between passes. Reverse-Z keeps nearer fragments at larger
+  // depth values, so GREATER_OR_EQUAL preserves the prepass rejection while
+  // allowing numerically equivalent fragments to shade.
+  gBufDS.depthCompareOp   = VK_COMPARE_OP_GREATER_OR_EQUAL;
 
   VkPipelineDepthStencilStateCreateInfo noDS{};
   noDS.sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO;

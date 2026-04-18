@@ -2,6 +2,7 @@
 #include <array>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <print>
 #include <stdexcept>
 #include <utility>
@@ -693,19 +694,123 @@ void SceneManager::updateModelBounds() {
     return;
   }
 
-  glm::vec3 minBounds = vertices_.front().position;
-  glm::vec3 maxBounds = vertices_.front().position;
+  auto forEachRenderedPoint =
+      [this](const std::function<void(const glm::vec3&)>& visit) {
+        auto emitPrimitive = [&](uint32_t primitiveIndex,
+                                 const glm::mat4& transform) {
+          if (primitiveIndex >= model_.primitiveRanges().size()) {
+            return;
+          }
 
-  for (const auto& vertex : vertices_) {
-    minBounds = glm::min(minBounds, vertex.position);
-    maxBounds = glm::max(maxBounds, vertex.position);
+          const auto& primitive = model_.primitiveRanges()[primitiveIndex];
+          const uint32_t endIndex = primitive.firstIndex + primitive.indexCount;
+          for (uint32_t i = primitive.firstIndex;
+               i < endIndex && i < indices_.size(); ++i) {
+            const uint32_t vertexIndex = indices_[i];
+            if (vertexIndex >= vertices_.size()) {
+              continue;
+            }
+            visit(glm::vec3(transform *
+                            glm::vec4(vertices_[vertexIndex].position, 1.0f)));
+          }
+        };
+
+        if (!gltfModel_.nodes.empty() && !gltfModel_.meshes.empty()) {
+          std::vector<uint32_t> meshPrimitiveBase(gltfModel_.meshes.size(), 0);
+          uint32_t primitiveOffset = 0;
+          for (size_t meshIndex = 0; meshIndex < gltfModel_.meshes.size();
+               ++meshIndex) {
+            meshPrimitiveBase[meshIndex] = primitiveOffset;
+            primitiveOffset += static_cast<uint32_t>(
+                gltfModel_.meshes[meshIndex].primitives.size());
+          }
+
+          std::function<void(int, const glm::mat4&)> traverseNode =
+              [&](int gltfNodeIndex, const glm::mat4& parentTransform) {
+                if (gltfNodeIndex < 0 ||
+                    gltfNodeIndex >= static_cast<int>(gltfModel_.nodes.size())) {
+                  return;
+                }
+
+                const auto& node = gltfModel_.nodes[gltfNodeIndex];
+                const glm::mat4 worldTransform =
+                    parentTransform * nodeLocalTransform(node);
+
+                if (node.mesh >= 0 &&
+                    node.mesh < static_cast<int>(gltfModel_.meshes.size())) {
+                  const auto& mesh = gltfModel_.meshes[node.mesh];
+                  const uint32_t basePrimitiveIndex =
+                      meshPrimitiveBase[node.mesh];
+                  for (size_t primitiveInMesh = 0;
+                       primitiveInMesh < mesh.primitives.size();
+                       ++primitiveInMesh) {
+                    emitPrimitive(
+                        basePrimitiveIndex +
+                            static_cast<uint32_t>(primitiveInMesh),
+                        worldTransform);
+                  }
+                }
+
+                for (int childIndex : node.children) {
+                  traverseNode(childIndex, worldTransform);
+                }
+              };
+
+          if (!gltfModel_.scenes.empty()) {
+            int sceneIndex = gltfModel_.defaultScene;
+            if (sceneIndex < 0 ||
+                sceneIndex >= static_cast<int>(gltfModel_.scenes.size())) {
+              sceneIndex = 0;
+            }
+
+            for (int rootNodeIndex : gltfModel_.scenes[sceneIndex].nodes) {
+              traverseNode(rootNodeIndex, glm::mat4(1.0f));
+            }
+            return;
+          }
+
+          std::vector<bool> hasParent(gltfModel_.nodes.size(), false);
+          for (const auto& node : gltfModel_.nodes) {
+            for (int childIndex : node.children) {
+              if (childIndex >= 0 &&
+                  childIndex < static_cast<int>(hasParent.size())) {
+                hasParent[childIndex] = true;
+              }
+            }
+          }
+
+          for (size_t nodeIndex = 0; nodeIndex < gltfModel_.nodes.size();
+               ++nodeIndex) {
+            if (!hasParent[nodeIndex]) {
+              traverseNode(static_cast<int>(nodeIndex), glm::mat4(1.0f));
+            }
+          }
+          return;
+        }
+
+        for (const auto& vertex : vertices_) {
+          visit(vertex.position);
+        }
+      };
+
+  bool hasPoint = false;
+  glm::vec3 minBounds(std::numeric_limits<float>::max());
+  glm::vec3 maxBounds(std::numeric_limits<float>::lowest());
+  forEachRenderedPoint([&](const glm::vec3& point) {
+    hasPoint = true;
+    minBounds = glm::min(minBounds, point);
+    maxBounds = glm::max(maxBounds, point);
+  });
+
+  if (!hasPoint) {
+    return;
   }
 
   const glm::vec3 center = 0.5f * (minBounds + maxBounds);
   float radius = 0.0f;
-  for (const auto& vertex : vertices_) {
-    radius = std::max(radius, glm::length(vertex.position - center));
-  }
+  forEachRenderedPoint([&](const glm::vec3& point) {
+    radius = std::max(radius, glm::length(point - center));
+  });
 
   modelBounds_.min = minBounds;
   modelBounds_.max = maxBounds;

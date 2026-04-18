@@ -417,8 +417,8 @@ void GpuCullManager::dispatchHiZGenerate(VkCommandBuffer cmd,
     vkCmdPushConstants(cmd, hizPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(HiZPushConstants), &hpc);
 
-    const uint32_t dstW = std::max(srcW >> 1, 1u);
-    const uint32_t dstH = std::max(srcH >> 1, 1u);
+    const uint32_t dstW = (mip == 0) ? srcW : std::max(srcW >> 1, 1u);
+    const uint32_t dstH = (mip == 0) ? srcH : std::max(srcH >> 1, 1u);
     vkCmdDispatch(cmd, (dstW + 7) / 8, (dstH + 7) / 8, 1);
 
     // Barrier between mip levels.
