@@ -103,10 +103,40 @@ void CameraController::resetCameraForScene() {
     perspective->setNearFar(kDefaultNearPlane, farPlane);
 
     if (hasBounds) {
-      camera_->setYawPitch(kDefaultYaw, kDefaultPitch);
-      const float    distance = boundsRadius * 2.5f + kDefaultNearPlane;
-      const glm::vec3 front   = camera_->frontVector();
-      camera_->setPosition(boundsCenter - front * distance);
+      // For elongated scenes (e.g. Sponza), frame the camera at the far end of
+      // the longest horizontal axis looking toward the center so the whole
+      // hall is visible. For roughly cubic scenes, fall back to the default
+      // three-quarter view.
+      const auto& bounds = sceneManager_->modelBounds();
+      const glm::vec3 sz = bounds.size;
+      const float horizExtent = std::max(sz.x, sz.z);
+      const bool elongated = sz.x > 2.0f * std::max(sz.y, sz.z) ||
+                             sz.z > 2.0f * std::max(sz.y, sz.x);
+
+      if (elongated) {
+        const bool xIsLong = sz.x >= sz.z;
+        // RH: front.x = cos(yaw)cos(pitch), front.z = -sin(yaw)cos(pitch).
+        // Look +X => yaw = 180; -X => 0; -Z => 90; +Z => -90.
+        const float yaw = xIsLong ? 180.0f : 90.0f;
+        camera_->setYawPitch(yaw, 0.0f);
+        const float eyeHeight =
+            boundsCenter.y + sz.y * 0.15f;
+        const float halfLong = 0.5f * (xIsLong ? sz.x : sz.z);
+        // Position at the far end plus a small offset to include the end wall.
+        glm::vec3 eye = boundsCenter;
+        eye.y = eyeHeight;
+        if (xIsLong) {
+          eye.x = bounds.max.x + horizExtent * 0.05f;
+        } else {
+          eye.z = bounds.max.z + horizExtent * 0.05f;
+        }
+        camera_->setPosition(eye);
+      } else {
+        camera_->setYawPitch(kDefaultYaw, kDefaultPitch);
+        const float    distance = boundsRadius * 2.5f + kDefaultNearPlane;
+        const glm::vec3 front   = camera_->frontVector();
+        camera_->setPosition(boundsCenter - front * distance);
+      }
       inputManager_.setMoveSpeed(
           std::max(kDefaultMoveSpeed, boundsRadius * 0.5f));
     } else {

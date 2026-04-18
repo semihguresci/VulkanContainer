@@ -35,6 +35,14 @@ class EnvironmentManager {
   // Must be called once after construction.
   void createResources(const std::filesystem::path& shaderDir);
 
+  // Load an equirectangular HDR (.exr) environment map, convert to a cubemap,
+  // and generate the diffuse-irradiance and pre-filtered specular cubemaps.
+  // Replaces the placeholder cubemaps created by createResources().
+  // Returns true on success. On failure (missing file, unsupported format,
+  // etc.) the placeholder cubemaps remain untouched.
+  bool loadHdrEnvironment(const std::filesystem::path& shaderDir,
+                          const std::filesystem::path& hdrPath);
+
   // Create GTAO resources: AO textures, blur texture, compute pipelines.
   void createGtaoResources(const std::filesystem::path& shaderDir,
                            uint32_t fullWidth, uint32_t fullHeight);
@@ -83,6 +91,7 @@ class EnvironmentManager {
   void createGtaoPipelines(const std::filesystem::path& shaderDir);
   void createGtaoTextures(uint32_t halfWidth, uint32_t halfHeight);
   void destroyGtaoTextures();
+  void destroyEnvironmentCubemaps();
 
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager&            allocationManager_;

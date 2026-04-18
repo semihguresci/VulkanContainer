@@ -123,7 +123,9 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
     uint idx = dtid.x;
     if (idx >= pc.objectCount) return;
 
-    ObjectBuffer obj = uObjects[idx];
+    DrawIndexedIndirectCommand draw = uInputDraws[idx];
+    uint objectIndex = draw.firstInstance;
+    ObjectBuffer obj = uObjects[objectIndex];
     float4 bs = obj.boundingSphere;
     float3 center = bs.xyz;
     float  radius = bs.w;
@@ -137,6 +139,6 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
     {
         uint outIdx;
         InterlockedAdd(uDrawCount[0], 1, outIdx);
-        uOutputDraws[outIdx] = uInputDraws[idx];
+        uOutputDraws[outIdx] = draw;
     }
 }

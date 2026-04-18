@@ -123,7 +123,7 @@ void AllocationManager::destroyBuffer(AllocatedBuffer& buffer) {
 }
 
 container::material::TextureResource AllocationManager::createTextureFromFile(
-    const std::string& texturePath) {
+    const std::string& texturePath, VkFormat format) {
   int texWidth, texHeight, texChannels;
   stbi_uc* pixels = stbi_load(texturePath.c_str(), &texWidth, &texHeight,
                               &texChannels, STBI_rgb_alpha);
@@ -144,7 +144,7 @@ container::material::TextureResource AllocationManager::createTextureFromFile(
   VkImageCreateInfo imageInfo{};
   imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   imageInfo.imageType = VK_IMAGE_TYPE_2D;
-  imageInfo.format = VK_FORMAT_R8G8B8A8_SRGB;
+  imageInfo.format = format;
   imageInfo.extent = {static_cast<uint32_t>(texWidth),
                       static_cast<uint32_t>(texHeight), 1};
   imageInfo.mipLevels = 1;

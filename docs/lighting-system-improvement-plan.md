@@ -111,8 +111,8 @@ The point light loop in `FrameRecorder::recordLightingPass()` (lines 304–326) 
 
 | Gap | Severity | Impact | Status |
 |---|---|---|---|
-| ~~BRDF code duplicated in 4 shaders~~ | ~~**Medium**~~ | ~~Bug fixes / improvements must be applied 4 times~~ | ✅ Resolved (Phase 1) |
-| `LightingData` struct layout shared between C++ and Slang via convention only | **Low** | No compile-time layout verification | ⬜ |
+| ~~BRDF code duplicated in 4 shaders~~ | ~~**Medium**~~ | ~~Bug fixes / improvements must be applied 4 times~~ | ✅ Resolved (Phase 1, extended to `forward_transparent.slang`) |
+| ~~`LightingData` struct layout shared between C++ and Slang via convention only~~ | ~~**Low**~~ | ~~No compile-time layout verification~~ | ✅ Resolved (static_asserts in `SceneData.h` for `CameraData`, `LightingData`, `PointLightData`, `ShadowCascadeData`, `ShadowData`, `ObjectData`) |
 
 ---
 
@@ -566,7 +566,7 @@ DepthPrepass → GBuffer → OitClear → ShadowCascade0..3
 
 ### Future Enhancements
 
-- HDR environment map loading (`.hdr` equirectangular → cubemap → irradiance/prefiltered via compute)
+- HDR environment map loading (`.hdr`/`.exr` equirectangular → cubemap → irradiance/prefiltered via compute) ✅ **Implemented** — `EnvironmentManager::loadHdrEnvironment()` loads `.exr` via tinyexr, runs `equirect_to_cubemap`, `irradiance_convolution`, and `prefilter_specular` compute shaders. Default HDR loaded at startup: `hdr/citrus_orchard_road_puresky_4k.exr` (see `AppConfig::kDefaultEnvironmentHdrRelativePath`).
 - GUI controls: AO radius, intensity, sample count, on/off toggle
 - GUI controls: IBL intensity, environment map selection
 - Temporal GTAO for reduced noise

@@ -17,13 +17,19 @@ inline constexpr std::array<std::string_view, 3> kDefaultSceneModelRelativePaths
     "__procedural_uv_sphere__",
 }};
 
+inline constexpr std::string_view kDefaultEnvironmentHdrRelativePath =
+    "hdr/citrus_orchard_road_puresky_4k.exr";
+
+inline constexpr std::string_view kDefaultModelRelativePath =
+    "models/glTF-Sample-Models/2.0/Sponza/glTF/Sponza.gltf";
+
 struct AppConfig {
   uint32_t windowWidth{800};
   uint32_t windowHeight{600};
   uint32_t maxFramesInFlight{2};
-  uint32_t maxSceneObjects{16};
+  uint32_t maxSceneObjects{4096};
   bool enableValidationLayers{true};
-  std::string modelPath{std::string(kDefaultSceneModelToken)};
+  std::string modelPath{std::string(kDefaultModelRelativePath)};
   std::vector<const char*> validationLayers{"VK_LAYER_KHRONOS_validation"};
   std::vector<const char*> deviceExtensions{
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,

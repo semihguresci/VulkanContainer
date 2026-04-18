@@ -220,6 +220,17 @@ void RendererFrontend::initialize() {
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       svc_.commandBufferManager.pool());
   subs_.environmentManager->createResources(container::util::executableDirectory());
+  {
+    const auto exeDir = container::util::executableDirectory();
+    const std::filesystem::path hdrPath =
+        exeDir / container::app::kDefaultEnvironmentHdrRelativePath;
+    if (std::filesystem::exists(hdrPath)) {
+      subs_.environmentManager->loadHdrEnvironment(exeDir, hdrPath);
+    } else {
+      std::println(stderr, "[HDR] Default environment not found: {}",
+                   hdrPath.string());
+    }
+  }
   subs_.gpuCullManager = std::make_unique<GpuCullManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
   subs_.gpuCullManager->createResources(container::util::executableDirectory());

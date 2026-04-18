@@ -13,6 +13,7 @@ add_library(VulkanContainer_renderer
     renderer/CameraController.cpp
     renderer/LightingManager.cpp
     renderer/EnvironmentManager.cpp
+    renderer/TinyExrImpl.cpp
     renderer/GraphicsPipelineBuilder.cpp
     renderer/FrameRecorder.cpp
     renderer/RenderGraph.cpp
@@ -34,6 +35,7 @@ target_include_directories(VulkanContainer_renderer PUBLIC
 target_link_libraries(VulkanContainer_renderer PUBLIC
     Dep_VulkanCore
     Dep_Math
+    Dep_SceneIO
     VulkanContainer_log
     VulkanContainer_vulkan_device
     VulkanContainer_gpu_resource

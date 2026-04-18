@@ -130,6 +130,17 @@ bool pointInsideFrustum(const FrustumPlanes& planes, const glm::vec3& point) {
   return true;
 }
 
+bool sphereInsideFrustum(const FrustumPlanes& planes,
+                         const glm::vec3& center,
+                         float radius) {
+  for (const glm::vec4& plane : planes) {
+    if (glm::dot(glm::vec3(plane), center) + plane.w < -radius) {
+      return false;
+    }
+  }
+  return true;
+}
+
 bool pointInsideClipVolume(const glm::mat4& viewProj, const glm::vec3& point) {
   const glm::vec4 clip = viewProj * glm::vec4(point, 1.0f);
   if (clip.w <= 0.0f) {
@@ -304,6 +315,35 @@ TEST(RenderingConventionTests, FrustumPlaneExtractionUsesSlangRowIndexing) {
 
   EXPECT_EQ(correctMismatchCount, 0);
   EXPECT_GT(wrongMismatchCount, 0);
+}
+
+TEST(RenderingConventionTests, FrustumCullUsesDrawFirstInstanceForObjectBounds) {
+  struct Bounds {
+    glm::vec3 center{};
+    float radius{0.0f};
+  };
+  struct IndirectDraw {
+    uint32_t firstInstance{0};
+  };
+
+  const FrustumPlanes planes =
+      extractFrustumPlanesUsingSlangRows(glm::mat4(1.0f));
+  const std::array<Bounds, 2> objectBounds = {{
+      {{5.0f, 0.0f, 0.5f}, 0.1f},
+      {{0.0f, 0.0f, 0.5f}, 0.1f},
+  }};
+  const std::array<IndirectDraw, 1> compactedDrawList = {{{1u}}};
+
+  const uint32_t drawListIndex = 0;
+  const uint32_t correctObjectIndex =
+      compactedDrawList[drawListIndex].firstInstance;
+
+  EXPECT_FALSE(sphereInsideFrustum(
+      planes, objectBounds[drawListIndex].center,
+      objectBounds[drawListIndex].radius));
+  EXPECT_TRUE(sphereInsideFrustum(
+      planes, objectBounds[correctObjectIndex].center,
+      objectBounds[correctObjectIndex].radius));
 }
 
 TEST(RenderingConventionTests, OcclusionCullSphereBoundsNeedProjectionScale) {

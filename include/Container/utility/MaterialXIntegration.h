@@ -50,7 +50,7 @@ class SlangMaterialXBridge {
         const tinygltf::Model& model, const std::filesystem::path& baseDir,
         container::material::TextureManager& textureManager,
         const std::function<container::material::TextureResource(
-            const std::string&)>& textureLoader) const;
+            const std::string&, bool /*isSrgb*/)>& textureLoader) const;
 
     void loadMaterialsForGltf(
         const tinygltf::Model& model,

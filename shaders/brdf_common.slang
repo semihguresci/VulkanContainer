@@ -1,5 +1,6 @@
 // brdf_common.slang — Shared PBR BRDF utilities.
 // Included by deferred_directional, point_light, gbuffer_composite, etc.
+#pragma once
 
 static const float PI = 3.14159265359;
 

@@ -76,6 +76,13 @@ float3 ToneMapACES(float3 color)
     return saturate((color * (a * color + b)) / (color * (c * color + d) + e));
 }
 
+float3 ToSwapchainLinear(float3 color)
+{
+    // The swapchain is created with an sRGB format, so Vulkan performs the
+    // final linear-to-sRGB conversion when this fragment output is stored.
+    return saturate(color);
+}
+
 float4 CompositeFrontToBack(float3 sceneColor, uint sortedIndices[MAX_OIT_NODES_PER_PIXEL], uint nodeCount,
                             out float3 transparentColor, out float revealage)
 {
@@ -271,7 +278,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     if (pc.outputMode == 5)
     {
         float3 mappedEmissive = ToneMapACES(emissive.rgb * 2.0);
-        return float4(pow(mappedEmissive, 1.0 / 2.2), 1.0);
+        return float4(ToSwapchainLinear(mappedEmissive), 1.0);
     }
 
     if (pc.outputMode == 6)
@@ -368,8 +375,7 @@ float4 fragMain(VSOutput input) : SV_Target0
             }
 
             float3 mappedCenter = ToneMapACES(panelCompositedColor);
-            mappedCenter = pow(mappedCenter, 1.0 / 2.2);
-            return float4(mappedCenter, 1.0);
+            return float4(ToSwapchainLinear(mappedCenter), 1.0);
         }
 
         if (InRect(screenUV, albedoRect))
@@ -413,7 +419,7 @@ float4 fragMain(VSOutput input) : SV_Target0
             float2 panelUV = RectUV(screenUV, emissiveInner);
             float3 panelEmissive = gEmissiveTexture.SampleLevel(gBufferSampler, panelUV, 0.0).rgb;
             float3 mappedEmissive = ToneMapACES(panelEmissive * 2.0);
-            return float4(pow(mappedEmissive, 1.0 / 2.2), 1.0);
+            return float4(ToSwapchainLinear(mappedEmissive), 1.0);
         }
 
         if (InRect(screenUV, depthRect))
@@ -562,6 +568,5 @@ float4 fragMain(VSOutput input) : SV_Target0
 
     const float exposure = 0.25;
     float3 mapped = ToneMapACES(finalHdr * exposure);
-    mapped = pow(mapped, 1.0 / 2.2);
-    return float4(mapped, 1.0);
+    return float4(ToSwapchainLinear(mapped), 1.0);
 }

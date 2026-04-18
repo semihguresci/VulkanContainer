@@ -127,6 +127,28 @@ if(NOT tinygltf_FOUND)
     endif()
 endif()
 
+find_package(tinyexr CONFIG QUIET)
+find_package(miniz CONFIG QUIET)
+if(tinyexr_FOUND)
+    if(TARGET unofficial::tinyexr::tinyexr AND NOT TARGET tinyexr::tinyexr)
+        add_library(tinyexr::tinyexr ALIAS unofficial::tinyexr::tinyexr)
+    endif()
+    message(STATUS "✅ TinyEXR found (config)")
+else()
+    find_path(TINYEXR_INCLUDE_DIRS "tinyexr.h")
+    find_path(MINIZ_INCLUDE_DIRS "miniz.h" PATH_SUFFIXES miniz)
+    if(TINYEXR_INCLUDE_DIRS)
+        add_library(tinyexr INTERFACE)
+        target_include_directories(tinyexr INTERFACE
+            ${TINYEXR_INCLUDE_DIRS}
+            $<$<BOOL:${MINIZ_INCLUDE_DIRS}>:${MINIZ_INCLUDE_DIRS}>)
+        add_library(tinyexr::tinyexr ALIAS tinyexr)
+        message(STATUS "✅ TinyEXR found (manual): ${TINYEXR_INCLUDE_DIRS}")
+    else()
+        message(WARNING "⚠️ TinyEXR not found - HDR environment loading will be disabled")
+    endif()
+endif()
+
 find_path(STB_INCLUDE_DIRS stb_image.h PATH_SUFFIXES stb)
 if(STB_INCLUDE_DIRS)
     add_library(stb INTERFACE)
@@ -186,10 +208,12 @@ add_library(Dep_SceneIO INTERFACE)
 target_include_directories(Dep_SceneIO INTERFACE
     $<IF:$<TARGET_EXISTS:tinygltf::tinygltf>,${TINYGLTF_INCLUDE_DIRS},"">
     $<IF:$<TARGET_EXISTS:stb::stb>,${STB_INCLUDE_DIRS},"">
+    $<IF:$<TARGET_EXISTS:tinyexr::tinyexr>,${TINYEXR_INCLUDE_DIRS},"">
 )
 target_link_libraries(Dep_SceneIO INTERFACE
     $<IF:$<TARGET_EXISTS:tinygltf::tinygltf>,tinygltf::tinygltf,"">
     $<IF:$<TARGET_EXISTS:stb::stb>,stb::stb,"">
+    $<IF:$<TARGET_EXISTS:tinyexr::tinyexr>,tinyexr::tinyexr,"">
 )
 
 # -- Dep_Material: MaterialX --------------------------------------------------

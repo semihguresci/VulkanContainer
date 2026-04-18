@@ -1,13 +1,7 @@
-static const float PI = 3.14159265359;
-static const uint MAX_POINT_LIGHTS = 4u;
-static const uint INVALID_NODE_INDEX = 0xffffffffu;
+#include "brdf_common.slang"
+#include "lighting_structs.slang"
 
-struct CameraBuffer
-{
-    column_major float4x4 viewProj;
-    column_major float4x4 inverseViewProj;
-    float4 cameraWorldPosition;
-};
+static const uint INVALID_NODE_INDEX = 0xffffffffu;
 
 struct ObjectBuffer
 {
@@ -27,21 +21,6 @@ struct ObjectBuffer
     uint metallicRoughnessTextureIndex;
     uint flags;
     float4 boundingSphere;
-};
-
-struct PointLightData
-{
-    float4 positionRadius;
-    float4 colorIntensity;
-};
-
-struct LightingBuffer
-{
-    float4 directionalDirection;
-    float4 directionalColorIntensity;
-    uint pointLightCount;
-    float3 padding;
-    PointLightData pointLights[MAX_POINT_LIGHTS];
 };
 
 struct TransparentNode
@@ -114,34 +93,6 @@ struct VSOutput
     [[vk::location(15)]] float3 worldNormal;
     [[vk::location(16)]] float4 worldTangent;
 };
-
-float DistributionGGX(float3 N, float3 H, float roughness)
-{
-    float a = roughness * roughness;
-    float a2 = a * a;
-    float NdotH = saturate(dot(N, H));
-    float NdotH2 = NdotH * NdotH;
-    float denom = NdotH2 * (a2 - 1.0) + 1.0;
-    return a2 / max(PI * denom * denom, 1e-4);
-}
-
-float GeometrySchlickGGX(float NdotV, float roughness)
-{
-    float r = roughness + 1.0;
-    float k = (r * r) / 8.0;
-    return NdotV / max(NdotV * (1.0 - k) + k, 1e-4);
-}
-
-float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
-{
-    return GeometrySchlickGGX(saturate(dot(N, V)), roughness) *
-           GeometrySchlickGGX(saturate(dot(N, L)), roughness);
-}
-
-float3 FresnelSchlick(float cosTheta, float3 F0)
-{
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
-}
 
 float3 EvaluateLight(float3 albedo, float3 normal, float3 V, float3 L,
                      float3 radiance, float metallic, float roughness)

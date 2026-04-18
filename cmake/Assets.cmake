@@ -70,3 +70,14 @@ list(APPEND GENERATE_MODEL_OUTPUTS "${GLTF_SAMPLE_MODELS_STAMP}")
 add_custom_target(generate_models ALL
     DEPENDS ${GENERATE_MODEL_OUTPUTS}
 )
+
+# --- HDR environment maps -----------------------------------------------
+
+if(EXISTS "${CMAKE_SOURCE_DIR}/hdr")
+    add_custom_target(copy_hdr ALL
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                ${CMAKE_SOURCE_DIR}/hdr
+                ${CMAKE_BINARY_DIR}/hdr
+        COMMENT "Copying HDR environment maps to build directory"
+    )
+endif()

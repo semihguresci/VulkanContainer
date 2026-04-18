@@ -1,5 +1,6 @@
 // shadow_common.slang — Shared shadow sampling functions.
 // Included by deferred_directional.slang for CSM shadow evaluation.
+#pragma once
 
 #include "lighting_structs.slang"
 

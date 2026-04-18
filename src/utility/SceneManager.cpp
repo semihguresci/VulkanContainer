@@ -531,17 +531,22 @@ void SceneManager::loadGltfAssets() {
 
   if (!config_.modelPath.empty()) {
     try {
-      auto result = container::geometry::gltf::LoadModelWithSource(config_.modelPath);
+      std::filesystem::path resolvedPath(config_.modelPath);
+      if (resolvedPath.is_relative() && !std::filesystem::exists(resolvedPath)) {
+        resolvedPath = resolveSceneAssetPath(config_.modelPath);
+      }
+      auto result = container::geometry::gltf::LoadModelWithSource(resolvedPath.string());
       gltfModel_ = std::move(result.gltfModel);
       model_ = std::move(result.model);
 
-      const auto baseDir =
-          std::filesystem::path(config_.modelPath).parent_path();
+      const auto baseDir = resolvedPath.parent_path();
 
       auto imageToTexture = materialXBridge_.loadTexturesForGltf(
           gltfModel_, baseDir, textureManager_,
-          [this](const std::string& path) {
-            return allocationManager_->createTextureFromFile(path);
+          [this](const std::string& path, bool isSrgb) {
+            return allocationManager_->createTextureFromFile(
+                path, isSrgb ? VK_FORMAT_R8G8B8A8_SRGB
+                             : VK_FORMAT_R8G8B8A8_UNORM);
           });
 
       const uint32_t fallbackMaterialIndex = defaultMaterialIndex_;
@@ -607,8 +612,10 @@ void SceneManager::appendSceneAsset(
 
   const auto imageToTexture = materialXBridge_.loadTexturesForGltf(
       result.gltfModel, assetPath.parent_path(), textureManager_,
-      [this](const std::string& path) {
-        return allocationManager_->createTextureFromFile(path);
+      [this](const std::string& path, bool isSrgb) {
+        return allocationManager_->createTextureFromFile(
+            path, isSrgb ? VK_FORMAT_R8G8B8A8_SRGB
+                         : VK_FORMAT_R8G8B8A8_UNORM);
       });
 
   const uint32_t fallbackMaterialIndex = defaultMaterialIndex_;

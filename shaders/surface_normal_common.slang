@@ -1,3 +1,6 @@
+#pragma once
+#include "brdf_common.slang"
+
 struct SurfaceNormalState
 {
     float3 geometricNormal;
@@ -5,16 +8,6 @@ struct SurfaceNormalState
     float3 tangent;
     float3 bitangent;
 };
-
-float3 SafeNormalize(float3 v, float3 fallback)
-{
-    float lenSq = dot(v, v);
-    if (!all(isfinite(v)) || lenSq < 1e-8)
-    {
-        return fallback;
-    }
-    return v * rsqrt(lenSq);
-}
 
 float3 FallbackTangent(float3 normal)
 {

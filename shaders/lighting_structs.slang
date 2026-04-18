@@ -1,5 +1,6 @@
 // lighting_structs.slang — Shared lighting / camera struct definitions.
 // Must match the C++ LightingData and CameraData layouts exactly.
+#pragma once
 
 static const uint MAX_POINT_LIGHTS = 4u;
 static const uint MAX_CLUSTERED_LIGHTS = 4096u;

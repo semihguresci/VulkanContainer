@@ -67,7 +67,15 @@ float4 fragMain(VSOutput input) : SV_Target0
 
     if (depth == 0.0 || albedo.a <= 0.0)
     {
-        return float4(emissive, 1.0);
+        // Background pixel: no opaque geometry (sky, wall holes, frame cutouts,
+        // etc.). Sample the environment cubemap along the view ray so we get a
+        // proper sky color instead of a black hole. Using mip 0 of the
+        // prefiltered cubemap gives the sharpest (lowest-roughness) sky.
+        float3 nearWorld = ReconstructWorldPosition(uv, 1.0, uCamera.inverseViewProj);
+        float3 farWorld  = ReconstructWorldPosition(uv, 1e-4, uCamera.inverseViewProj);
+        float3 viewDir = SafeNormalize(farWorld - nearWorld, float3(0.0, 0.0, -1.0));
+        float3 skyColor = gPrefilteredCubemap.SampleLevel(envSampler, viewDir, 0.0).rgb;
+        return float4(skyColor + emissive, 1.0);
     }
 
     float metallic = saturate(material.x);

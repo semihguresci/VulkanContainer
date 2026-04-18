@@ -3,6 +3,7 @@
 #include <glm/glm.hpp>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 
@@ -136,6 +137,106 @@ struct HiZPushConstants {
   uint32_t dstMipLevel{0};
   uint32_t pad0{0};
 };
+
+// ---------------------------------------------------------------------------
+// Compile-time layout verification.
+//
+// These asserts guard the host <-> shader struct layout contract. The shader
+// counterparts live in `shaders/lighting_structs.slang` (LightingBuffer,
+// ShadowBuffer, CameraBuffer, PointLightData, ShadowCascadeData) and in the
+// per-shader `ObjectBuffer` declarations (gbuffer.slang, depth_prepass.slang,
+// shadow_depth.slang, forward_transparent.slang, etc.).
+//
+// If any field is added/removed or an `alignas` is changed, the shader side
+// must be updated in lockstep and these numbers re-derived. The sizes below
+// are the std140-compatible layouts used when these structs are uploaded to
+// uniform or storage buffers.
+// ---------------------------------------------------------------------------
+
+static_assert(sizeof(CameraData) == 144,
+              "CameraData size mismatch with shaders/lighting_structs.slang "
+              "CameraBuffer. Update shader layout in lockstep.");
+static_assert(alignof(CameraData) == 16, "CameraData must be 16-byte aligned.");
+static_assert(offsetof(CameraData, viewProj) == 0, "CameraData.viewProj offset");
+static_assert(offsetof(CameraData, inverseViewProj) == 64,
+              "CameraData.inverseViewProj offset");
+static_assert(offsetof(CameraData, cameraWorldPosition) == 128,
+              "CameraData.cameraWorldPosition offset");
+
+static_assert(sizeof(PointLightData) == 32,
+              "PointLightData size mismatch with shader PointLightData.");
+static_assert(alignof(PointLightData) == 16,
+              "PointLightData must be 16-byte aligned.");
+static_assert(offsetof(PointLightData, positionRadius) == 0,
+              "PointLightData.positionRadius offset");
+static_assert(offsetof(PointLightData, colorIntensity) == 16,
+              "PointLightData.colorIntensity offset");
+
+static_assert(sizeof(LightingData) == 176,
+              "LightingData size mismatch with shaders/lighting_structs.slang "
+              "LightingBuffer. Update shader layout in lockstep.");
+static_assert(alignof(LightingData) == 16,
+              "LightingData must be 16-byte aligned.");
+static_assert(offsetof(LightingData, directionalDirection) == 0,
+              "LightingData.directionalDirection offset");
+static_assert(offsetof(LightingData, directionalColorIntensity) == 16,
+              "LightingData.directionalColorIntensity offset");
+static_assert(offsetof(LightingData, pointLightCount) == 32,
+              "LightingData.pointLightCount offset");
+static_assert(offsetof(LightingData, featureFlags) == 36,
+              "LightingData.featureFlags offset");
+static_assert(offsetof(LightingData, pointLights) == 48,
+              "LightingData.pointLights offset");
+
+static_assert(sizeof(ShadowCascadeData) == 80,
+              "ShadowCascadeData size mismatch with shader ShadowCascadeData.");
+static_assert(alignof(ShadowCascadeData) == 16,
+              "ShadowCascadeData must be 16-byte aligned.");
+static_assert(offsetof(ShadowCascadeData, viewProj) == 0,
+              "ShadowCascadeData.viewProj offset");
+static_assert(offsetof(ShadowCascadeData, splitDepth) == 64,
+              "ShadowCascadeData.splitDepth offset");
+
+static_assert(sizeof(ShadowData) == 80 * kShadowCascadeCount,
+              "ShadowData size mismatch with shaders/lighting_structs.slang "
+              "ShadowBuffer. Update shader layout in lockstep.");
+static_assert(alignof(ShadowData) == 16, "ShadowData must be 16-byte aligned.");
+
+static_assert(sizeof(ObjectData) == 224,
+              "ObjectData size mismatch with shader ObjectBuffer (see "
+              "gbuffer.slang, depth_prepass.slang, shadow_depth.slang, etc.). "
+              "Update all shader ObjectBuffer declarations in lockstep.");
+static_assert(alignof(ObjectData) == 16,
+              "ObjectData must be 16-byte aligned.");
+static_assert(offsetof(ObjectData, model) == 0, "ObjectData.model offset");
+static_assert(offsetof(ObjectData, normalMatrix) == 64,
+              "ObjectData.normalMatrix offset");
+static_assert(offsetof(ObjectData, color) == 128, "ObjectData.color offset");
+static_assert(offsetof(ObjectData, emissiveColor) == 144,
+              "ObjectData.emissiveColor offset");
+static_assert(offsetof(ObjectData, emissiveStrength) == 156,
+              "ObjectData.emissiveStrength offset");
+static_assert(offsetof(ObjectData, metallicRoughness) == 160,
+              "ObjectData.metallicRoughness offset");
+static_assert(offsetof(ObjectData, alphaCutoff) == 168,
+              "ObjectData.alphaCutoff offset");
+static_assert(offsetof(ObjectData, normalTextureScale) == 172,
+              "ObjectData.normalTextureScale offset");
+static_assert(offsetof(ObjectData, occlusionStrength) == 176,
+              "ObjectData.occlusionStrength offset");
+static_assert(offsetof(ObjectData, baseColorTextureIndex) == 180,
+              "ObjectData.baseColorTextureIndex offset");
+static_assert(offsetof(ObjectData, normalTextureIndex) == 184,
+              "ObjectData.normalTextureIndex offset");
+static_assert(offsetof(ObjectData, occlusionTextureIndex) == 188,
+              "ObjectData.occlusionTextureIndex offset");
+static_assert(offsetof(ObjectData, emissiveTextureIndex) == 192,
+              "ObjectData.emissiveTextureIndex offset");
+static_assert(offsetof(ObjectData, metallicRoughnessTextureIndex) == 196,
+              "ObjectData.metallicRoughnessTextureIndex offset");
+static_assert(offsetof(ObjectData, flags) == 200, "ObjectData.flags offset");
+static_assert(offsetof(ObjectData, boundingSphere) == 208,
+              "ObjectData.boundingSphere offset");
 
 }  // namespace container::gpu
 
