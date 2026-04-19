@@ -20,8 +20,41 @@ namespace container::ui {
 
 using container::gpu::kMaxDeferredPointLights;
 using container::gpu::LightingData;
+using container::gpu::LightingSettings;
 
 namespace {
+
+constexpr std::array<const char*, 4> kLightingPresetLabels = {{
+    "Sponza", "Interior", "Exterior", "Custom",
+}};
+
+LightingSettings LightingPreset(uint32_t preset) {
+  LightingSettings settings{};
+  settings.preset = preset;
+  switch (preset) {
+    case 1:
+      settings.density = 1.8f;
+      settings.radiusScale = 1.25f;
+      settings.intensityScale = 1.35f;
+      settings.directionalIntensity = 1.15f;
+      break;
+    case 2:
+      settings.density = 0.55f;
+      settings.radiusScale = 1.8f;
+      settings.intensityScale = 0.65f;
+      settings.directionalIntensity = 3.25f;
+      break;
+    case 0:
+    default:
+      settings.preset = 0u;
+      settings.density = 1.0f;
+      settings.radiusScale = 1.0f;
+      settings.intensityScale = 1.0f;
+      settings.directionalIntensity = 2.0f;
+      break;
+  }
+  return settings;
+}
 
 void CheckVkResult(VkResult result) {
   if (result != VK_SUCCESS) {
@@ -369,6 +402,51 @@ void GuiManager::drawSceneControls(
   }
 
   if (ImGui::TreeNode("Lights")) {
+    ImGui::Text("Generator");
+    int presetIndex = static_cast<int>(
+        std::min<uint32_t>(lightingSettings_.preset,
+                           static_cast<uint32_t>(kLightingPresetLabels.size() - 1u)));
+    if (ImGui::Combo("Lighting Preset", &presetIndex,
+                     kLightingPresetLabels.data(),
+                     static_cast<int>(kLightingPresetLabels.size()))) {
+      if (presetIndex < static_cast<int>(kLightingPresetLabels.size() - 1u)) {
+        lightingSettings_ = LightingPreset(static_cast<uint32_t>(presetIndex));
+      } else {
+        lightingSettings_.preset =
+            static_cast<uint32_t>(kLightingPresetLabels.size() - 1u);
+      }
+    }
+
+    bool lightSliderChanged = false;
+    lightSliderChanged |= ImGui::SliderFloat(
+        "Light Density", &lightingSettings_.density, 0.1f, 16.0f, "%.2f");
+    lightSliderChanged |= ImGui::SliderFloat(
+        "Light Radius Scale", &lightingSettings_.radiusScale, 0.05f, 8.0f, "%.2f");
+    lightSliderChanged |= ImGui::SliderFloat(
+        "Light Intensity Scale", &lightingSettings_.intensityScale, 0.0f, 16.0f, "%.2f");
+    lightSliderChanged |= ImGui::SliderFloat(
+        "Directional Intensity", &lightingSettings_.directionalIntensity, 0.0f, 16.0f, "%.2f");
+    if (lightSliderChanged) {
+      lightingSettings_.preset =
+          static_cast<uint32_t>(kLightingPresetLabels.size() - 1u);
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Cluster Stats");
+    ImGui::BulletText("Submitted lights: %u", lightCullingStats_.submittedLights);
+    ImGui::BulletText("Active clusters: %u / %u",
+                      lightCullingStats_.activeClusters,
+                      lightCullingStats_.totalClusters);
+    ImGui::BulletText("Max lights per cluster: %u",
+                      lightCullingStats_.maxLightsPerCluster);
+    ImGui::BulletText("Dropped light refs: %u",
+                      lightCullingStats_.droppedLightReferences);
+    ImGui::BulletText("Cluster cull GPU: %.3f ms",
+                      lightCullingStats_.clusterCullMs);
+    ImGui::BulletText("Clustered lighting GPU: %.3f ms",
+                      lightCullingStats_.clusteredLightingMs);
+
+    ImGui::Separator();
     ImGui::Text("Directional");
     ImGui::BulletText("Position: (%.2f, %.2f, %.2f)", directionalLightPosition.x,
                       directionalLightPosition.y, directionalLightPosition.z);
@@ -377,9 +455,13 @@ void GuiManager::drawSceneControls(
                       lightingData.directionalDirection.y,
                       lightingData.directionalDirection.z);
 
-    const uint32_t pointLightCount =
+    const uint32_t visiblePointLightCount =
         std::min(lightingData.pointLightCount, kMaxDeferredPointLights);
-    for (uint32_t i = 0; i < pointLightCount; ++i) {
+    ImGui::Text("Point lights: %u total", lightingData.pointLightCount);
+    if (lightingData.pointLightCount > visiblePointLightCount) {
+      ImGui::Text("Showing first %u UBO fallback lights", visiblePointLightCount);
+    }
+    for (uint32_t i = 0; i < visiblePointLightCount; ++i) {
       const auto& light = lightingData.pointLights[i];
       ImGui::Separator();
       ImGui::Text("Point Light %u", i);
@@ -461,6 +543,16 @@ void GuiManager::setCullStats(uint32_t total, uint32_t frustumPassed,
   cullStatsTotal_     = total;
   cullStatsFrustum_   = frustumPassed;
   cullStatsOcclusion_ = occlusionPassed;
+}
+
+void GuiManager::setLightCullingStats(
+    const container::gpu::LightCullingStats& stats) {
+  lightCullingStats_ = stats;
+}
+
+void GuiManager::setLightingSettings(
+    const container::gpu::LightingSettings& settings) {
+  lightingSettings_ = settings;
 }
 
 void GuiManager::setFreezeCulling(bool frozen) {

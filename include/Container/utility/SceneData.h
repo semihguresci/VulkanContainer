@@ -53,12 +53,31 @@ inline constexpr uint32_t kObjectFlagAlphaMask = 1u << 0;
 inline constexpr uint32_t kObjectFlagAlphaBlend = 1u << 1;
 inline constexpr uint32_t kObjectFlagDoubleSided = 1u << 2;
 
-inline constexpr uint32_t kMaxDeferredPointLights = 4;
-inline constexpr uint32_t kMaxClusteredLights     = 4096;
+inline constexpr uint32_t kMaxDeferredPointLights = 12;
+inline constexpr uint32_t kMaxClusteredLights     = 8192;
 inline constexpr uint32_t kTileSize               = 16;   // pixels
-inline constexpr uint32_t kMaxLightsPerTile       = 256;
+inline constexpr uint32_t kClusterDepthSlices     = 16;
+inline constexpr uint32_t kMaxLightsPerTile       = 128;
 inline constexpr uint32_t kShadowCascadeCount = 4;
 inline constexpr uint32_t kShadowMapResolution = 2048;
+
+struct LightingSettings {
+  uint32_t preset{0};
+  float density{1.0f};
+  float radiusScale{1.0f};
+  float intensityScale{1.0f};
+  float directionalIntensity{2.0f};
+};
+
+struct LightCullingStats {
+  uint32_t submittedLights{0};
+  uint32_t activeClusters{0};
+  uint32_t totalClusters{0};
+  uint32_t maxLightsPerCluster{0};
+  uint32_t droppedLightReferences{0};
+  float clusterCullMs{0.0f};
+  float clusteredLightingMs{0.0f};
+};
 
 struct ShadowCascadeData {
   alignas(16) glm::mat4 viewProj{1.0f};
@@ -89,6 +108,7 @@ struct PostProcessPushConstants {
   float    cascadeSplits[kShadowCascadeCount]{};
   uint32_t tileCountX{0};
   uint32_t totalLights{0};
+  uint32_t depthSliceCount{kClusterDepthSlices};
 };
 
 struct LightingData {
@@ -107,12 +127,17 @@ struct TileLightGrid {
 struct TileCullPushConstants {
   uint32_t tileCountX{0};
   uint32_t tileCountY{0};
+  uint32_t depthSliceCount{kClusterDepthSlices};
   uint32_t totalLights{0};
-  uint32_t pad0{0};
+  float cameraNear{0.1f};
+  float cameraFar{100.0f};
 };
 
 struct TiledLightingPushConstants {
   uint32_t tileCountX{0};
+  uint32_t depthSliceCount{kClusterDepthSlices};
+  float cameraNear{0.1f};
+  float cameraFar{100.0f};
 };
 
 // GPU-driven rendering: matches VkDrawIndexedIndirectCommand layout.
@@ -172,7 +197,7 @@ static_assert(offsetof(PointLightData, positionRadius) == 0,
 static_assert(offsetof(PointLightData, colorIntensity) == 16,
               "PointLightData.colorIntensity offset");
 
-static_assert(sizeof(LightingData) == 176,
+static_assert(sizeof(LightingData) == 432,
               "LightingData size mismatch with shaders/lighting_structs.slang "
               "LightingBuffer. Update shader layout in lockstep.");
 static_assert(alignof(LightingData) == 16,

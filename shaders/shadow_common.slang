@@ -43,7 +43,8 @@ float SampleCascadeShadow(
 
     float2 shadowUV = ShadowNdcToUv(shadowNDC.xy);
 
-    if (any(shadowUV < 0.0) || any(shadowUV > 1.0))
+    if (any(shadowUV < 0.0) || any(shadowUV > 1.0) ||
+        shadowNDC.z < 0.0 || shadowNDC.z > 1.0)
     {
         return 1.0;
     }

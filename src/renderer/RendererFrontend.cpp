@@ -244,7 +244,8 @@ void RendererFrontend::initialize() {
   subs_.frameResourceManager->createDescriptorSetLayouts();
   subs_.frameResourceManager->createGBufferSampler();
   subs_.lightingManager->createDescriptorResources();
-  subs_.lightingManager->createTiledResources(container::util::executableDirectory());
+  subs_.lightingManager->createTiledResources(
+      container::util::executableDirectory(), svc_.swapChainManager.extent());
   createGraphicsPipelines();
   svc_.swapChainManager.createFramebuffers(resources_.renderPasses.postProcess);
 
@@ -287,6 +288,8 @@ bool RendererFrontend::drawFrame(bool& framebufferResized) {
   // Collect culling statistics from the previous frame (now safe after fence).
   if (subs_.gpuCullManager)
     subs_.gpuCullManager->collectStats();
+  if (subs_.lightingManager)
+    subs_.lightingManager->collectStats();
 
   uint32_t imageIndex = 0;
   VkResult result = vkAcquireNextImageKHR(
@@ -606,6 +609,9 @@ void RendererFrontend::createGeometryBuffers() {
 }
 
 void RendererFrontend::createFrameResources() {
+  if (subs_.lightingManager) {
+    subs_.lightingManager->resizeTiledResources(svc_.swapChainManager.extent());
+  }
   subs_.frameResourceManager->create(
       resources_.gBufferFormats,
       resources_.renderPasses.depthPrepass, resources_.renderPasses.gBuffer,
@@ -653,11 +659,7 @@ void RendererFrontend::updateFrameDescriptorSets() {
     VkImageView  shadowView    = VK_NULL_HANDLE;
     VkSampler    shadowSampler = VK_NULL_HANDLE;
     const container::gpu::AllocatedBuffer* shadowUbo = nullptr;
-    if (subs_.shadowManager &&
-        (isRenderPassEnabled(subs_.frameRecorder.get(), "ShadowCascade0") ||
-         isRenderPassEnabled(subs_.frameRecorder.get(), "ShadowCascade1") ||
-         isRenderPassEnabled(subs_.frameRecorder.get(), "ShadowCascade2") ||
-         isRenderPassEnabled(subs_.frameRecorder.get(), "ShadowCascade3"))) {
+    if (subs_.shadowManager) {
       shadowView    = subs_.shadowManager->shadowAtlasArrayView();
       shadowSampler = subs_.shadowManager->shadowSampler();
       shadowUbo     = &subs_.shadowManager->shadowUbo();
@@ -734,6 +736,12 @@ void RendererFrontend::presentSceneControls() {
     subs_.guiManager->setCullStats(stats.totalInputCount,
                                    stats.frustumPassedCount,
                                    stats.occlusionPassedCount);
+  }
+  if (subs_.lightingManager) {
+    subs_.guiManager->setLightCullingStats(
+        subs_.lightingManager->lightCullingStats());
+    subs_.guiManager->setLightingSettings(
+        subs_.lightingManager->lightingSettings());
   }
 
   // Sync freeze-culling: push debug state into GUI before rendering.
@@ -818,6 +826,23 @@ void RendererFrontend::presentSceneControls() {
     subs_.bloomManager->knee()         = subs_.guiManager->bloomKnee();
     subs_.bloomManager->intensity()    = subs_.guiManager->bloomIntensity();
     subs_.bloomManager->filterRadius() = subs_.guiManager->bloomRadius();
+  }
+
+  if (subs_.lightingManager) {
+    const auto& guiLightingSettings = subs_.guiManager->lightingSettings();
+    const auto& currentLightingSettings =
+        subs_.lightingManager->lightingSettings();
+    const bool lightingSettingsChanged =
+        guiLightingSettings.preset != currentLightingSettings.preset ||
+        guiLightingSettings.density != currentLightingSettings.density ||
+        guiLightingSettings.radiusScale != currentLightingSettings.radiusScale ||
+        guiLightingSettings.intensityScale != currentLightingSettings.intensityScale ||
+        guiLightingSettings.directionalIntensity !=
+            currentLightingSettings.directionalIntensity;
+    if (lightingSettingsChanged) {
+      subs_.lightingManager->setLightingSettings(guiLightingSettings);
+      subs_.lightingManager->updateLightingData();
+    }
   }
 
   // Sync render pass toggles: pull GUI toggle states back into the render graph.

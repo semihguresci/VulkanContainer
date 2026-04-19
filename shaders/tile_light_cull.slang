@@ -1,7 +1,6 @@
-// tile_light_cull.slang — Compute shader for tiled light culling.
-// One workgroup per screen tile (TILE_SIZE × TILE_SIZE pixels).
-// Each workgroup tests all lights against the tile frustum and builds a
-// compact light index list.
+// Clustered light cull.
+// One workgroup per screen tile and depth slice. Each group builds a compact
+// light list for a 16x16xZ screen-space cluster.
 
 #include "lighting_structs.slang"
 
@@ -9,8 +8,10 @@ struct TileCullPushConstants
 {
     uint tileCountX;
     uint tileCountY;
+    uint depthSliceCount;
     uint totalLights;
-    uint pad0;
+    float cameraNear;
+    float cameraFar;
 };
 
 [[vk::push_constant]]
@@ -22,35 +23,18 @@ ConstantBuffer<TileCullPushConstants> pc;
 [[vk::binding(0, 1)]] StructuredBuffer<PointLightData> uLights;
 [[vk::binding(0, 2)]] RWStructuredBuffer<TileLightGrid> uTileGrid;
 [[vk::binding(1, 2)]] RWStructuredBuffer<uint>          uLightIndexList;
+[[vk::binding(2, 2)]] RWStructuredBuffer<uint>          uLightStats;
 
-groupshared uint sharedMinDepthBits;
-groupshared uint sharedMaxDepthBits;
+groupshared uint sharedVisiblePixelCount;
 groupshared uint sharedLightCount;
 groupshared uint sharedLightIndices[MAX_LIGHTS_PER_TILE];
 groupshared uint sharedGlobalOffset;
 
-// Reconstruct view-space Z from reverse-Z depth (near=1, far=0).
-// We linearize by applying the inverse projection.
-float LinearizeDepth(float depth, float4x4 invViewProj)
+bool SphereIntersectsAabb(float3 center, float radius, float3 aabbMin, float3 aabbMax)
 {
-    float4 clip = float4(0.0, 0.0, depth, 1.0);
-    float4 world = mul(invViewProj, clip);
-    return world.z / max(world.w, 1e-6);
-}
-
-// Build a frustum plane from two screen-space points and the camera origin.
-// The plane normal points inward (towards the tile interior).
-float4 BuildPlane(float3 p0, float3 p1, float3 eye)
-{
-    float3 n = normalize(cross(p1 - eye, p0 - eye));
-    return float4(n, -dot(n, eye));
-}
-
-// Test a sphere against a plane. Returns true if the sphere is on the
-// positive (inside) half-space or intersects the plane.
-bool SpherePlaneTest(float4 plane, float3 center, float radius)
-{
-    return dot(plane.xyz, center) + plane.w > -radius;
+    float3 closest = clamp(center, aabbMin, aabbMax);
+    float3 diff = center - closest;
+    return dot(diff, diff) <= radius * radius;
 }
 
 [shader("compute")]
@@ -62,76 +46,78 @@ void computeMain(
 {
     uint tileX = groupId.x;
     uint tileY = groupId.y;
+    uint sliceZ = groupId.z;
 
-    // Screen dimensions from depth texture.
     uint screenWidth = 0u;
     uint screenHeight = 0u;
     gDepthTexture.GetDimensions(screenWidth, screenHeight);
 
-    // Pixel coordinate for this thread.
+    uint safeDepthSliceCount = max(pc.depthSliceCount, 1u);
+    uint clusterIndex =
+        (sliceZ * pc.tileCountY + tileY) * pc.tileCountX + tileX;
+
+    if (localIndex == 0)
+    {
+        sharedVisiblePixelCount = 0u;
+        sharedLightCount = 0u;
+        sharedGlobalOffset = clusterIndex * MAX_LIGHTS_PER_TILE;
+        uTileGrid[clusterIndex].offset = sharedGlobalOffset;
+        uTileGrid[clusterIndex].count = 0u;
+        if (clusterIndex == 0u)
+        {
+            uLightStats[3] = pc.totalLights;
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+
     uint2 pixel = uint2(tileX * TILE_SIZE + localId.x,
                         tileY * TILE_SIZE + localId.y);
 
-    // Initialize shared memory.
-    if (localIndex == 0)
-    {
-        sharedMinDepthBits = 0x7f7fffff; // FLT_MAX as uint
-        sharedMaxDepthBits = 0;
-        sharedLightCount   = 0;
-    }
-    GroupMemoryBarrierWithGroupSync();
-
-    // Sample depth and compute tile min/max depth range.
-    float depth = 0.0;
     if (pixel.x < screenWidth && pixel.y < screenHeight)
     {
-        float2 uv = (float2(pixel) + 0.5) / float2(screenWidth, screenHeight);
-        depth = gDepthTexture.SampleLevel(gDepthSampler, uv, 0.0);
-    }
-
-    // Reverse-Z: near = 1.0, far = 0.0. Skip background pixels (depth == 0).
-    if (depth > 0.0)
-    {
-        uint depthBits = asuint(depth);
-        InterlockedMin(sharedMinDepthBits, depthBits);
-        InterlockedMax(sharedMaxDepthBits, depthBits);
+        float2 uv = (float2(pixel) + 0.5.xx) /
+                    float2(max(screenWidth, 1u), max(screenHeight, 1u));
+        float depth = gDepthTexture.SampleLevel(gDepthSampler, uv, 0.0);
+        if (depth > 0.0 &&
+            DepthToClusterSlice(depth, pc.cameraNear, pc.cameraFar,
+                                safeDepthSliceCount) == sliceZ)
+        {
+            uint ignored;
+            InterlockedAdd(sharedVisiblePixelCount, 1u, ignored);
+        }
     }
     GroupMemoryBarrierWithGroupSync();
 
-    float tileMinDepth = asfloat(sharedMinDepthBits);
-    float tileMaxDepth = asfloat(sharedMaxDepthBits);
-
-    // If no geometry in this tile, no lights to cull.
-    if (tileMinDepth > tileMaxDepth)
+    if (sharedVisiblePixelCount == 0u)
     {
-        if (localIndex == 0)
-        {
-            uint tileIndex = tileY * pc.tileCountX + tileX;
-            uTileGrid[tileIndex].offset = 0;
-            uTileGrid[tileIndex].count  = 0;
-        }
         return;
     }
 
-    // Build tile frustum planes in NDC space for a simple AABB test.
-    // Tile boundaries in NDC [-1, 1].
-    // Negative-height viewport: framebuffer Y is inverted relative to NDC Y.
-    float tileLeft   = float(tileX * TILE_SIZE) / float(screenWidth)  * 2.0 - 1.0;
-    float tileRight  = float(min((tileX + 1) * TILE_SIZE, screenWidth)) / float(screenWidth) * 2.0 - 1.0;
-    float tileTop    = -(float(tileY * TILE_SIZE) / float(screenHeight) * 2.0 - 1.0);
-    float tileBottom = -(float(min((tileY + 1) * TILE_SIZE, screenHeight)) / float(screenHeight) * 2.0 - 1.0);
+    float tileLeft =
+        float(tileX * TILE_SIZE) / float(max(screenWidth, 1u)) * 2.0 - 1.0;
+    float tileRight =
+        float(min((tileX + 1u) * TILE_SIZE, screenWidth)) /
+            float(max(screenWidth, 1u)) * 2.0 - 1.0;
+    float tileTop =
+        -(float(tileY * TILE_SIZE) / float(max(screenHeight, 1u)) * 2.0 - 1.0);
+    float tileBottom =
+        -(float(min((tileY + 1u) * TILE_SIZE, screenHeight)) /
+              float(max(screenHeight, 1u)) * 2.0 - 1.0);
 
-    // Reconstruct tile frustum corners in world space.
-    // Use min/max depth values for near/far planes of the tile.
+    float sliceNearDepth = ClusterSliceBoundaryDepth(
+        sliceZ, pc.cameraNear, pc.cameraFar, safeDepthSliceCount);
+    float sliceFarDepth = ClusterSliceBoundaryDepth(
+        sliceZ + 1u, pc.cameraNear, pc.cameraFar, safeDepthSliceCount);
+
     float4 corners[8];
-    corners[0] = float4(tileLeft,  tileTop,    tileMinDepth, 1.0);
-    corners[1] = float4(tileRight, tileTop,    tileMinDepth, 1.0);
-    corners[2] = float4(tileLeft,  tileBottom, tileMinDepth, 1.0);
-    corners[3] = float4(tileRight, tileBottom, tileMinDepth, 1.0);
-    corners[4] = float4(tileLeft,  tileTop,    tileMaxDepth, 1.0);
-    corners[5] = float4(tileRight, tileTop,    tileMaxDepth, 1.0);
-    corners[6] = float4(tileLeft,  tileBottom, tileMaxDepth, 1.0);
-    corners[7] = float4(tileRight, tileBottom, tileMaxDepth, 1.0);
+    corners[0] = float4(tileLeft,  tileTop,    sliceNearDepth, 1.0);
+    corners[1] = float4(tileRight, tileTop,    sliceNearDepth, 1.0);
+    corners[2] = float4(tileLeft,  tileBottom, sliceNearDepth, 1.0);
+    corners[3] = float4(tileRight, tileBottom, sliceNearDepth, 1.0);
+    corners[4] = float4(tileLeft,  tileTop,    sliceFarDepth, 1.0);
+    corners[5] = float4(tileRight, tileTop,    sliceFarDepth, 1.0);
+    corners[6] = float4(tileLeft,  tileBottom, sliceFarDepth, 1.0);
+    corners[7] = float4(tileRight, tileBottom, sliceFarDepth, 1.0);
 
     float3 worldCorners[8];
     for (int c = 0; c < 8; ++c)
@@ -140,8 +126,6 @@ void computeMain(
         worldCorners[c] = w.xyz / max(w.w, 1e-6);
     }
 
-    // Build an AABB around the world-space frustum corners for a fast
-    // sphere-vs-AABB test.
     float3 aabbMin = worldCorners[0];
     float3 aabbMax = worldCorners[0];
     for (int c = 1; c < 8; ++c)
@@ -150,27 +134,16 @@ void computeMain(
         aabbMax = max(aabbMax, worldCorners[c]);
     }
 
-    // Each thread tests a subset of lights.
-    uint threadsPerTile = TILE_SIZE * TILE_SIZE;
-    for (uint i = localIndex; i < pc.totalLights; i += threadsPerTile)
+    uint threadsPerCluster = TILE_SIZE * TILE_SIZE;
+    for (uint i = localIndex; i < pc.totalLights; i += threadsPerCluster)
     {
         float3 lightPos = uLights[i].positionRadius.xyz;
-        float  lightRadius = uLights[i].positionRadius.w;
+        float lightRadius = uLights[i].positionRadius.w * 1.03;
 
-        // Conservative padding: expand light radius slightly to prevent
-        // light popping at tile boundaries due to AABB approximation.
-        float conservativePadding = lightRadius * 0.05;
-        float testRadius = lightRadius + conservativePadding;
-
-        // Sphere-vs-AABB test.
-        float3 closest = clamp(lightPos, aabbMin, aabbMax);
-        float3 diff = lightPos - closest;
-        float distSq = dot(diff, diff);
-
-        if (distSq <= testRadius * testRadius)
+        if (SphereIntersectsAabb(lightPos, lightRadius, aabbMin, aabbMax))
         {
             uint idx;
-            InterlockedAdd(sharedLightCount, 1, idx);
+            InterlockedAdd(sharedLightCount, 1u, idx);
             if (idx < MAX_LIGHTS_PER_TILE)
             {
                 sharedLightIndices[idx] = i;
@@ -180,24 +153,20 @@ void computeMain(
     GroupMemoryBarrierWithGroupSync();
 
     uint lightCount = min(sharedLightCount, MAX_LIGHTS_PER_TILE);
-
-    // Thread 0 allocates space in the global light index list.
     if (localIndex == 0)
     {
-        // Simple allocation via atomic counter at uLightIndexList[0].
-        // We store a running counter in the first element of the grid buffer
-        // as a side channel. Actually, we use an atomic on a dedicated counter.
-        // For simplicity, use offset = tileIndex * MAX_LIGHTS_PER_TILE
-        // (fixed stride per tile — wastes memory but avoids atomic contention).
-        uint tileIndex = tileY * pc.tileCountX + tileX;
-        sharedGlobalOffset = tileIndex * MAX_LIGHTS_PER_TILE;
-        uTileGrid[tileIndex].offset = sharedGlobalOffset;
-        uTileGrid[tileIndex].count  = lightCount;
+        uTileGrid[clusterIndex].count = lightCount;
+        uint dropped = sharedLightCount > MAX_LIGHTS_PER_TILE
+                           ? sharedLightCount - MAX_LIGHTS_PER_TILE
+                           : 0u;
+        uint ignored;
+        InterlockedMax(uLightStats[0], lightCount, ignored);
+        InterlockedAdd(uLightStats[1], dropped, ignored);
+        InterlockedAdd(uLightStats[2], 1u, ignored);
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // Write light indices to global list.
-    for (uint i = localIndex; i < lightCount; i += threadsPerTile)
+    for (uint i = localIndex; i < lightCount; i += threadsPerCluster)
     {
         uLightIndexList[sharedGlobalOffset + i] = sharedLightIndices[i];
     }

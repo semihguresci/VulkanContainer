@@ -121,6 +121,11 @@ class GuiManager {
   }
   void setWireframeCapabilities(bool supported, bool wideLineSupported);
   void setCullStats(uint32_t total, uint32_t frustumPassed, uint32_t occlusionPassed);
+  void setLightCullingStats(const container::gpu::LightCullingStats& stats);
+  void setLightingSettings(const container::gpu::LightingSettings& settings);
+  [[nodiscard]] const container::gpu::LightingSettings& lightingSettings() const {
+    return lightingSettings_;
+  }
   void setFreezeCulling(bool frozen);
   [[nodiscard]] bool freezeCullingRequested() const { return freezeCulling_; }
 
@@ -157,6 +162,8 @@ class GuiManager {
   uint32_t cullStatsTotal_{0};
   uint32_t cullStatsFrustum_{0};
   uint32_t cullStatsOcclusion_{0};
+  container::gpu::LightCullingStats lightCullingStats_{};
+  container::gpu::LightingSettings lightingSettings_{};
   bool freezeCulling_{false};
   bool  bloomEnabled_{true};
   float bloomThreshold_{1.0f};

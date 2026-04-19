@@ -103,32 +103,30 @@ void CameraController::resetCameraForScene() {
     perspective->setNearFar(kDefaultNearPlane, farPlane);
 
     if (hasBounds) {
-      // For elongated scenes (e.g. Sponza), frame the camera at the far end of
-      // the longest horizontal axis looking toward the center so the whole
-      // hall is visible. For roughly cubic scenes, fall back to the default
-      // three-quarter view.
+      // For hall-like scenes (e.g. Sponza), start inside the volume looking
+      // down the longest horizontal axis. For roughly cubic scenes, fall back
+      // to the default three-quarter overview.
       const auto& bounds = sceneManager_->modelBounds();
       const glm::vec3 sz = bounds.size;
-      const float horizExtent = std::max(sz.x, sz.z);
-      const bool elongated = sz.x > 2.0f * std::max(sz.y, sz.z) ||
-                             sz.z > 2.0f * std::max(sz.y, sz.x);
+      const bool xIsLong = sz.x >= sz.z;
+      const float longExtent = xIsLong ? sz.x : sz.z;
+      const float crossExtent = xIsLong ? sz.z : sz.x;
+      const bool hallLike = longExtent > 1.25f * crossExtent &&
+                            longExtent > 1.5f * sz.y;
 
-      if (elongated) {
-        const bool xIsLong = sz.x >= sz.z;
+      if (hallLike) {
         // RH: front.x = cos(yaw)cos(pitch), front.z = -sin(yaw)cos(pitch).
-        // Look +X => yaw = 180; -X => 0; -Z => 90; +Z => -90.
+        // Look +X => yaw = 0; -X => 180; -Z => 90; +Z => -90.
         const float yaw = xIsLong ? 180.0f : 90.0f;
         camera_->setYawPitch(yaw, 0.0f);
-        const float eyeHeight =
-            boundsCenter.y + sz.y * 0.15f;
-        const float halfLong = 0.5f * (xIsLong ? sz.x : sz.z);
-        // Position at the far end plus a small offset to include the end wall.
+        const float eyeHeight = bounds.min.y + sz.y * 0.32f;
+        const float endInset = longExtent * 0.10f;
         glm::vec3 eye = boundsCenter;
         eye.y = eyeHeight;
         if (xIsLong) {
-          eye.x = bounds.max.x + horizExtent * 0.05f;
+          eye.x = bounds.max.x - endInset;
         } else {
-          eye.z = bounds.max.z + horizExtent * 0.05f;
+          eye.z = bounds.max.z - endInset;
         }
         camera_->setPosition(eye);
       } else {
@@ -138,7 +136,8 @@ void CameraController::resetCameraForScene() {
         camera_->setPosition(boundsCenter - front * distance);
       }
       inputManager_.setMoveSpeed(
-          std::max(kDefaultMoveSpeed, boundsRadius * 0.5f));
+          std::max(kDefaultMoveSpeed,
+                   hallLike ? longExtent * 0.08f : boundsRadius * 0.5f));
     } else {
       camera_->setYawPitch(90.0f, 0.0f);
       camera_->setPosition(glm::vec3(0.0f, 0.0f, 3.0f));

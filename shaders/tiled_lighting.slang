@@ -22,6 +22,9 @@
 struct PushConstants
 {
     uint tileCountX;
+    uint depthSliceCount;
+    float cameraNear;
+    float cameraFar;
 };
 
 [[vk::push_constant]]
@@ -81,10 +84,15 @@ float4 fragMain(VSOutput input) : SV_Target0
     float roughness = clamp(material.y, 0.045, 1.0);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
 
-    // Look up the tile for this pixel.
+    // Look up the screen/depth cluster for this pixel.
     uint2 tileCoord = pixelCoord / TILE_SIZE;
-    uint tileIndex = tileCoord.y * pc.tileCountX + tileCoord.x;
-    TileLightGrid tile = uTileGrid[tileIndex];
+    uint safeDepthSliceCount = max(pc.depthSliceCount, 1u);
+    uint tileCountY = (height + TILE_SIZE - 1u) / TILE_SIZE;
+    uint sliceZ = DepthToClusterSlice(depth, pc.cameraNear, pc.cameraFar,
+                                      safeDepthSliceCount);
+    uint clusterIndex =
+        (sliceZ * tileCountY + tileCoord.y) * pc.tileCountX + tileCoord.x;
+    TileLightGrid tile = uTileGrid[clusterIndex];
 
     float3 totalLighting = 0.0.xxx;
 

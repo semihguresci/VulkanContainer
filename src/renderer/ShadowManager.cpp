@@ -288,6 +288,23 @@ glm::mat4 ShadowManager::computeCascadeViewProj(
     maxBounds = glm::max(maxBounds, lightSpaceCorner);
   }
 
+  const float orthoWidth = std::max(maxBounds.x - minBounds.x, 1e-3f);
+  const float orthoHeight = std::max(maxBounds.y - minBounds.y, 1e-3f);
+  const float texelSizeX =
+      orthoWidth / static_cast<float>(kShadowMapResolution);
+  const float texelSizeY =
+      orthoHeight / static_cast<float>(kShadowMapResolution);
+  glm::vec2 orthoCenter{
+      (minBounds.x + maxBounds.x) * 0.5f,
+      (minBounds.y + maxBounds.y) * 0.5f,
+  };
+  orthoCenter.x = std::floor(orthoCenter.x / texelSizeX) * texelSizeX;
+  orthoCenter.y = std::floor(orthoCenter.y / texelSizeY) * texelSizeY;
+  minBounds.x = orthoCenter.x - orthoWidth * 0.5f;
+  maxBounds.x = orthoCenter.x + orthoWidth * 0.5f;
+  minBounds.y = orthoCenter.y - orthoHeight * 0.5f;
+  maxBounds.y = orthoCenter.y + orthoHeight * 0.5f;
+
   // Extend away from the light so off-frustum casters can still project into
   // the cascade. The reverse-Z ortho helper expects positive near/far
   // distances, so convert the signed light-view Z bounds after expansion.

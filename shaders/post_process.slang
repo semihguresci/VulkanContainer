@@ -11,6 +11,7 @@ struct PushConstants
     float cascadeSplits[4];
     uint tileCountX;
     uint totalLights;
+    uint depthSliceCount;
 };
 
 struct TransparentNode
@@ -29,6 +30,25 @@ struct OitMetadataBuffer
     uint reserved;
 };
 
+struct CameraBuffer
+{
+    column_major float4x4 viewProj;
+    column_major float4x4 inverseViewProj;
+    float4 cameraWorldPosition;
+};
+
+struct ShadowCascadeData
+{
+    column_major float4x4 viewProj;
+    float splitDepth;
+    float3 padding;
+};
+
+struct ShadowBuffer
+{
+    ShadowCascadeData cascades[4];
+};
+
 [[vk::binding(0, 0)]] SamplerState gBufferSampler;
 [[vk::binding(1, 0)]] Texture2D<float4> sceneColorTexture;
 [[vk::binding(2, 0)]] Texture2D<float4> gAlbedoTexture;
@@ -38,12 +58,33 @@ struct OitMetadataBuffer
 [[vk::binding(6, 0)]] Texture2D<float> gDepthTexture;
 [[vk::binding(7, 0)]] Texture2D<float4> gBloomTexture;
 [[vk::binding(8, 0)]] SamplerState bloomSampler;
+[[vk::binding(10, 0)]] ConstantBuffer<CameraBuffer> uCamera;
+[[vk::binding(11, 0)]] ConstantBuffer<ShadowBuffer> uShadow;
+[[vk::binding(12, 0)]] Texture2DArray<float> gShadowAtlas;
 
 struct TileLightGrid
 {
     uint offset;
     uint count;
 };
+
+float LinearizeReverseZDepth(float depth, float nearPlane, float farPlane)
+{
+    float n = max(nearPlane, 1e-4);
+    float f = max(farPlane, n + 1e-3);
+    return (n * f) / (saturate(depth) * (f - n) + n);
+}
+
+uint DepthToClusterSlice(float depth, float nearPlane, float farPlane, uint depthSliceCount)
+{
+    uint safeSliceCount = max(depthSliceCount, 1u);
+    float n = max(nearPlane, 1e-4);
+    float f = max(farPlane, n + 1e-3);
+    float viewDepth = clamp(LinearizeReverseZDepth(depth, n, f), n, f);
+    float normalized = log2(viewDepth / n) / max(log2(f / n), 1e-6);
+    uint slice = uint(saturate(normalized) * float(safeSliceCount));
+    return min(slice, safeSliceCount - 1u);
+}
 
 [[vk::binding(9, 0)]] StructuredBuffer<TileLightGrid> uTileGrid;
 [[vk::binding(0, 1)]] RWTexture2D<uint> headPointerImage;
@@ -176,6 +217,21 @@ float3 DepthVisual(float depth)
     float linearDepth = (n * f) / (depth * (f - n) + n);
     float normalizedDepth = saturate((linearDepth - n) / max(f - n, 1e-6));
     return normalizedDepth.xxx;
+}
+
+float3 ReconstructWorldPosition(float2 texCoord, float depth,
+                                column_major float4x4 inverseViewProj)
+{
+    float2 ndcXY = texCoord * 2.0 - 1.0;
+    ndcXY.y = -ndcXY.y;
+    float4 clipPosition = float4(ndcXY, depth, 1.0);
+    float4 worldPosition = mul(inverseViewProj, clipPosition);
+    return worldPosition.xyz / max(worldPosition.w, 1e-6);
+}
+
+float EdgeDistance01(float2 uv)
+{
+    return min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
 }
 
 [shader("vertex")]
@@ -508,8 +564,13 @@ float4 fragMain(VSOutput input) : SV_Target0
         static const uint TILE_SIZE = 16u;
 
         uint2 tileCoord = pixelCoord / TILE_SIZE;
-        uint tileIndex = tileCoord.y * pc.tileCountX + tileCoord.x;
-        uint lightCount = uTileGrid[tileIndex].count;
+        uint safeDepthSliceCount = max(pc.depthSliceCount, 1u);
+        uint tileCountY = (height + TILE_SIZE - 1u) / TILE_SIZE;
+        uint sliceZ = DepthToClusterSlice(depthSample, pc.cameraNear, pc.cameraFar,
+                                          safeDepthSliceCount);
+        uint clusterIndex =
+            (sliceZ * tileCountY + tileCoord.y) * pc.tileCountX + tileCoord.x;
+        uint lightCount = uTileGrid[clusterIndex].count;
 
         // Heat map: black (0) → blue → cyan → green → yellow → red → white.
         float maxLights = max(float(pc.totalLights), 1.0);

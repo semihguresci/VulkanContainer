@@ -483,7 +483,10 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   // Shadow cascades render with a positive-height viewport, so they preserve
   // glTF's native CCW winding in framebuffer space.
   shadowRaster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-  shadowRaster.cullMode = VK_CULL_MODE_FRONT_BIT;
+  // Keep shadow caster winding policy aligned with the scene passes. Imported
+  // assets can contain reliefs and thin surfaces with mixed effective winding;
+  // culling them in the shadow pass makes those details stop casting.
+  shadowRaster.cullMode = VK_CULL_MODE_NONE;
   shadowRaster.depthBiasEnable         = VK_TRUE;
   // Negative bias for reverse-Z: pushes stored depth towards far (0.0),
   // making the shadow surface appear slightly farther from the light

@@ -67,7 +67,7 @@ void FrameResourceManager::createDescriptorSetLayouts() {
   }
 
   if (postProcessLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 10> b = {{
+    const std::array<VkDescriptorSetLayoutBinding, 13> b = {{
         {0, VK_DESCRIPTOR_TYPE_SAMPLER,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -78,6 +78,9 @@ void FrameResourceManager::createDescriptorSetLayouts() {
         {7, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // bloom texture
         {8, VK_DESCRIPTOR_TYPE_SAMPLER,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // bloom sampler
         {9, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // tile grid SSBO
+        {10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // camera UBO
+        {11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // shadow UBO
+        {12, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // shadow atlas
     }};
     const std::vector<VkDescriptorBindingFlags> flags(b.size(), 0);
     postProcessLayout_ = pipelineMgr_->createDescriptorSetLayout(
@@ -204,10 +207,11 @@ void FrameResourceManager::create(
       throw std::runtime_error("failed to create lighting descriptor pool");
   }
   {
-    std::array<VkDescriptorPoolSize, 3> sizes = {{
+    std::array<VkDescriptorPoolSize, 4> sizes = {{
         {VK_DESCRIPTOR_TYPE_SAMPLER, n * 2},          // gBuffer sampler + bloom sampler
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 7},    // sceneColor + 4 gbuf + depth + bloom
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 8},    // sceneColor + 4 gbuf + depth + bloom + shadow atlas
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, n * 1},   // tile grid SSBO
+        {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, n * 2},   // camera + shadow UBO
     }};
     VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     ci.maxSets       = n;
@@ -551,8 +555,14 @@ void FrameResourceManager::updateDescriptorSets(
 
     // Post-process set
     {
-      std::array<VkWriteDescriptorSet, 10> w{};
+      std::array<VkWriteDescriptorSet, 13> w{};
       auto set = f.postProcessDescriptorSet;
+      auto buf = [&](int b, VkDescriptorType t, const VkDescriptorBufferInfo* i) {
+        w[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+        w[b].dstSet = set; w[b].dstBinding = b;
+        w[b].descriptorCount = 1; w[b].descriptorType = t;
+        w[b].pBufferInfo = i;
+      };
       auto img = [&](int b, VkDescriptorType t, const VkDescriptorImageInfo* i) {
         w[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         w[b].dstSet = set; w[b].dstBinding = b;
@@ -596,6 +606,24 @@ void FrameResourceManager::updateDescriptorSets(
       w[9].descriptorCount = 1;
       w[9].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
       w[9].pBufferInfo = &tileGridInfo;
+
+      buf(10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &camInfo);
+
+      VkDescriptorBufferInfo postShadowUboInfo{};
+      if (shadowUbo && shadowUbo->buffer != VK_NULL_HANDLE) {
+        postShadowUboInfo = {shadowUbo->buffer, 0, sizeof(container::gpu::ShadowData)};
+      } else {
+        postShadowUboInfo = camInfo;
+      }
+      buf(11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &postShadowUboInfo);
+
+      VkDescriptorImageInfo postShadowAtlasInfo{};
+      postShadowAtlasInfo.imageView = shadowAtlasView;
+      postShadowAtlasInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      if (shadowAtlasView == VK_NULL_HANDLE) {
+        postShadowAtlasInfo = depthPostProcess;
+      }
+      img(12, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &postShadowAtlasInfo);
 
       vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
     }

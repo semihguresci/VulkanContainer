@@ -194,10 +194,14 @@ void FrameRecorder::buildGraph() {
   graph_.addPass("TileCull", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     if (lightingManager_ && lightingManager_->isTiledLightingReady() &&
         p.frame && p.frame->depthSamplingView != VK_NULL_HANDLE) {
+      lightingManager_->resetGpuTimers(cmd, p.imageIndex);
+      lightingManager_->beginClusterCullTimer(cmd);
       lightingManager_->dispatchTileCull(
           cmd, swapChainManager_.extent(),
           p.cameraBuffer, p.cameraBufferSize,
-          p.frame->depthSamplingView, p.gBufferSampler);
+          p.frame->depthSamplingView, p.gBufferSampler,
+          p.cameraNear, p.cameraFar);
+      lightingManager_->endClusterCullTimer(cmd);
     }
   });
 
@@ -624,8 +628,12 @@ void FrameRecorder::recordLightingPass(
   stencilClearRect.layerCount     = 1;
 
   if (!wireframeFullMode && !showObjectSpaceNormals && !p.debugDirectionalOnly) {
+    const bool tileCullEnabled = graph_.findPass("TileCull") != nullptr &&
+                                 graph_.findPass("TileCull")->enabled;
     const bool useTiled =
+        tileCullEnabled &&
         lightingManager_ && lightingManager_->isTiledLightingReady() &&
+        p.frame && p.frame->depthSamplingView != VK_NULL_HANDLE &&
         p.pipelines.tiledPointLight != VK_NULL_HANDLE &&
         p.tiledDescriptorSet != VK_NULL_HANDLE;
 
@@ -643,10 +651,15 @@ void FrameRecorder::recordLightingPass(
           (swapChainManager_.extent().width + kTileSize - 1) / kTileSize;
       TiledLightingPushConstants tlpc{};
       tlpc.tileCountX = tileCountX;
+      tlpc.depthSliceCount = container::gpu::kClusterDepthSlices;
+      tlpc.cameraNear = p.cameraNear;
+      tlpc.cameraFar = p.cameraFar;
       vkCmdPushConstants(cmd, p.layouts.tiledLighting,
                          VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                          sizeof(TiledLightingPushConstants), &tlpc);
+      lightingManager_->beginClusteredLightingTimer(cmd);
       vkCmdDraw(cmd, 3, 1, 0, 0);
+      lightingManager_->endClusteredLightingTimer(cmd);
     } else {
       // Fallback: per-light stencil loop.
       const VkPipeline activePointPipeline =
@@ -839,9 +852,11 @@ void FrameRecorder::recordPostProcessPass(
     const auto extent = swapChainManager_.extent();
     ppPc.tileCountX  = (extent.width + container::gpu::kTileSize - 1) / container::gpu::kTileSize;
     ppPc.totalLights = static_cast<uint32_t>(lightingManager_->pointLightsSsbo().size());
+    ppPc.depthSliceCount = container::gpu::kClusterDepthSlices;
   } else {
     ppPc.tileCountX = 1u;
     ppPc.totalLights = 0u;
+    ppPc.depthSliceCount = 1u;
   }
   if (!gtaoEnabled && displayMode == GBufferViewMode::TileLightHeatMap) {
     ppPc.totalLights = 0u;
