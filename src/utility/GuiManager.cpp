@@ -292,8 +292,8 @@ void GuiManager::drawSceneControls(
   ImGui::Separator();
   ImGui::Text("Wireframe Debug");
   ImGui::TextDisabled("Backend: %s",
-                      wireframeWideLineSupported_ ? "Native raster line"
-                                                 : "Shader fallback");
+                      wireframeRasterModeSupported_ ? "Native raster line"
+                                                    : "Shader fallback");
   if (!wireframeSupported_) {
     ImGui::BeginDisabled();
   }
@@ -527,8 +527,11 @@ bool GuiManager::isCapturingInput() const {
   return io.WantCaptureMouse || io.WantCaptureKeyboard;
 }
 
-void GuiManager::setWireframeCapabilities(bool supported, bool wideLineSupported) {
+void GuiManager::setWireframeCapabilities(bool supported,
+                                          bool rasterModeSupported,
+                                          bool wideLineSupported) {
   wireframeSupported_ = supported;
+  wireframeRasterModeSupported_ = supported && rasterModeSupported;
   wireframeWideLineSupported_ = wideLineSupported;
   if (!wireframeSupported_) {
     wireframeSettings_.enabled = false;

@@ -19,8 +19,7 @@ class GraphicsPipelineBuilder {
  public:
   GraphicsPipelineBuilder(
       std::shared_ptr<container::gpu::VulkanDevice> device,
-      container::gpu::PipelineManager&            pipelineManager,
-      bool                                           wireframeRasterModeSupported);
+      container::gpu::PipelineManager&            pipelineManager);
 
   ~GraphicsPipelineBuilder() = default;
   GraphicsPipelineBuilder(const GraphicsPipelineBuilder&) = delete;
@@ -36,7 +35,6 @@ class GraphicsPipelineBuilder {
  private:
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::PipelineManager&            pipelineManager_;
-  bool                                           wireframeRasterModeSupported_;
 };
 
 }  // namespace container::renderer

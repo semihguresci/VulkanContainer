@@ -119,7 +119,8 @@ class GuiManager {
   void setStatusMessage(std::string status) {
     statusMessage_ = std::move(status);
   }
-  void setWireframeCapabilities(bool supported, bool wideLineSupported);
+  void setWireframeCapabilities(bool supported, bool rasterModeSupported,
+                                bool wideLineSupported);
   void setCullStats(uint32_t total, uint32_t frustumPassed, uint32_t occlusionPassed);
   void setLightCullingStats(const container::gpu::LightCullingStats& stats);
   void setLightingSettings(const container::gpu::LightingSettings& settings);
@@ -151,6 +152,7 @@ class GuiManager {
   bool showLightGizmos_{true};
   bool showNormalDiagCube_{false};
   bool wireframeSupported_{false};
+  bool wireframeRasterModeSupported_{false};
   bool wireframeWideLineSupported_{false};
   GBufferViewMode gBufferViewMode_{GBufferViewMode::Overview};
   WireframeSettings wireframeSettings_{};

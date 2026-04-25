@@ -58,7 +58,7 @@ struct VSOutput
 VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
 {
     VSOutput output;
-    uint objectIndex = instanceID;
+    uint objectIndex = pc.objectIndex;
     ObjectBuffer obj = uObjects[objectIndex];
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);

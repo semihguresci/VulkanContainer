@@ -543,6 +543,9 @@ void FrameRecorder::recordLightingPass(
       wireframeEnabled && wireframeSettings.mode == WireframeMode::Full;
   const bool wireframeOverlayMode =
       wireframeEnabled && wireframeSettings.mode == WireframeMode::Overlay;
+  const float wireframeIntensity = wireframeFullMode
+                                       ? 1.0f
+                                       : wireframeSettings.overlayIntensity;
   const VkPipeline activeWireframePipeline =
       wireframeSettings.depthTest ? p.pipelines.wireframeDepth : p.pipelines.wireframeNoDepth;
   const bool showNormalValidation =
@@ -566,18 +569,20 @@ void FrameRecorder::recordLightingPass(
 
   if (wireframeFullMode) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeWireframePipeline);
+    if (p.wireframeRasterModeSupported) {
+      const float lineWidth = p.wireframeWideLinesSupported
+                                  ? wireframeSettings.lineWidth
+                                  : 1.0f;
+      vkCmdSetLineWidth(cmd, lineWidth);
+    }
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             p.layouts.wireframe, 0, 1, &p.sceneDescriptorSet, 0, nullptr);
-    if (p.wireframeRasterModeSupported) {
-      const float lw = p.wireframeWideLinesSupported ? wireframeSettings.lineWidth : 1.0f;
-      vkCmdSetLineWidth(cmd, lw);
-    }
     bindSceneGeometryBuffers(cmd, p.vertexSlice, p.indexSlice, p.indexType);
     debugOverlay_.drawWireframe(cmd, p.layouts.wireframe, *p.opaqueDrawCommands,
-                                wireframeSettings.color, wireframeSettings.overlayIntensity,
+                                 wireframeSettings.color, wireframeIntensity,
                                 wireframeSettings.lineWidth, *p.pushConstants.wireframe);
     debugOverlay_.drawWireframe(cmd, p.layouts.wireframe, *p.transparentDrawCommands,
-                                wireframeSettings.color, wireframeSettings.overlayIntensity,
+                                 wireframeSettings.color, wireframeIntensity,
                                 wireframeSettings.lineWidth, *p.pushConstants.wireframe);
     drawDiagnosticCube(cmd, p.layouts.wireframe, p.diagCubeObjectIndex,
                        *p.pushConstants.bindless);
@@ -770,18 +775,20 @@ void FrameRecorder::recordLightingPass(
 
   if (wireframeOverlayMode && activeWireframePipeline != VK_NULL_HANDLE) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeWireframePipeline);
+    if (p.wireframeRasterModeSupported) {
+      const float lineWidth = p.wireframeWideLinesSupported
+                                  ? wireframeSettings.lineWidth
+                                  : 1.0f;
+      vkCmdSetLineWidth(cmd, lineWidth);
+    }
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             p.layouts.wireframe, 0, 1, &p.sceneDescriptorSet, 0, nullptr);
-    if (p.wireframeRasterModeSupported) {
-      const float lw = p.wireframeWideLinesSupported ? wireframeSettings.lineWidth : 1.0f;
-      vkCmdSetLineWidth(cmd, lw);
-    }
     bindSceneGeometryBuffers(cmd, p.vertexSlice, p.indexSlice, p.indexType);
     debugOverlay_.drawWireframe(cmd, p.layouts.wireframe, *p.opaqueDrawCommands,
-                                wireframeSettings.color, wireframeSettings.overlayIntensity,
+                                wireframeSettings.color, wireframeIntensity,
                                 wireframeSettings.lineWidth, *p.pushConstants.wireframe);
     debugOverlay_.drawWireframe(cmd, p.layouts.wireframe, *p.transparentDrawCommands,
-                                wireframeSettings.color, wireframeSettings.overlayIntensity,
+                                wireframeSettings.color, wireframeIntensity,
                                 wireframeSettings.lineWidth, *p.pushConstants.wireframe);
   }
 

@@ -359,7 +359,9 @@ float4 fragMain(VSOutput input) : SV_Target0
         const float panelPadding = 0.006;
         const float3 panelBorderColor = float3(0.60, 0.62, 0.66);
         const float3 panelTileBackgroundColor = float3(0.12, 0.12, 0.13);
-        const float3 screenBackgroundColor = float3(0.02, 0.02, 0.025);
+        float3 overviewBackground = ToneMapACES(compositedColor * 0.25);
+        overviewBackground = ToSwapchainLinear(overviewBackground);
+        overviewBackground = lerp(overviewBackground, panelTileBackgroundColor, 0.35);
 
         if (IsPanelBorder(screenUV, centerRect, panelPadding) ||
             IsPanelBorder(screenUV, albedoRect, panelPadding) ||
@@ -489,7 +491,7 @@ float4 fragMain(VSOutput input) : SV_Target0
             return float4(DepthVisual(panelDepth), 1.0);
         }
 
-        return float4(screenBackgroundColor, 1.0);
+        return float4(overviewBackground, 1.0);
     }
 
     if (pc.outputMode == 10)

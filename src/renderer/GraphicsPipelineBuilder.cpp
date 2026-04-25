@@ -20,11 +20,9 @@ using container::gpu::TiledLightingPushConstants;
 
 GraphicsPipelineBuilder::GraphicsPipelineBuilder(
     std::shared_ptr<container::gpu::VulkanDevice> device,
-    container::gpu::PipelineManager&            pipelineManager,
-    bool                                           wireframeRasterModeSupported)
+    container::gpu::PipelineManager&            pipelineManager)
     : device_(std::move(device))
-    , pipelineManager_(pipelineManager)
-    , wireframeRasterModeSupported_(wireframeRasterModeSupported) {
+    , pipelineManager_(pipelineManager) {
 }
 
 PipelineBuildResult GraphicsPipelineBuilder::build(
@@ -223,13 +221,26 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkPipelineRasterizationStateCreateInfo normalLineRaster = sceneRaster;
   normalLineRaster.cullMode = VK_CULL_MODE_NONE;
 
+  VkPipelineRasterizationStateCreateInfo wfFbRaster = sceneRaster;
+  wfFbRaster.cullMode = VK_CULL_MODE_NONE;
+
   VkPipelineRasterizationStateCreateInfo wfRaster = sceneRaster;
   wfRaster.polygonMode = VK_POLYGON_MODE_LINE;
   wfRaster.cullMode    = VK_CULL_MODE_NONE;
   wfRaster.lineWidth   = 1.0f;
 
-  VkPipelineRasterizationStateCreateInfo wfFbRaster = sceneRaster;
-  wfFbRaster.cullMode = VK_CULL_MODE_NONE;
+  VkPipelineRasterizationStateCreateInfo wfDepthRaster = wfRaster;
+  // Wireframe lines are rendered against the filled depth prepass. With
+  // reverse-Z, a small positive depth bias pulls the line fragments slightly
+  // toward the camera so precision differences do not reject almost all edges.
+  wfDepthRaster.depthBiasEnable         = VK_TRUE;
+  wfDepthRaster.depthBiasConstantFactor = 1.0f;
+  wfDepthRaster.depthBiasSlopeFactor    = 1.0f;
+
+  VkPipelineRasterizationStateCreateInfo wfFbDepthRaster = wfFbRaster;
+  wfFbDepthRaster.depthBiasEnable         = VK_TRUE;
+  wfFbDepthRaster.depthBiasConstantFactor = 1.0f;
+  wfFbDepthRaster.depthBiasSlopeFactor    = 1.0f;
 
   // ---- multisample ----------------------------------------------------------
   VkPipelineMultisampleStateCreateInfo msaa{};
@@ -289,17 +300,19 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
 
   // ---- dynamic states -------------------------------------------------------
   std::array<VkDynamicState, 2> dynStates     = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
-  std::array<VkDynamicState, 3> wfDynStates   = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR,
-                                                   VK_DYNAMIC_STATE_LINE_WIDTH};
+  std::array<VkDynamicState, 3> lineDynStates = {
+      VK_DYNAMIC_STATE_VIEWPORT,
+      VK_DYNAMIC_STATE_SCISSOR,
+      VK_DYNAMIC_STATE_LINE_WIDTH};
   VkPipelineDynamicStateCreateInfo dynState{};
   dynState.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
   dynState.dynamicStateCount = static_cast<uint32_t>(dynStates.size());
   dynState.pDynamicStates    = dynStates.data();
 
-  VkPipelineDynamicStateCreateInfo wfDynState{};
-  wfDynState.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
-  wfDynState.dynamicStateCount = static_cast<uint32_t>(wfDynStates.size());
-  wfDynState.pDynamicStates    = wfDynStates.data();
+  VkPipelineDynamicStateCreateInfo lineDynState{};
+  lineDynState.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  lineDynState.dynamicStateCount = static_cast<uint32_t>(lineDynStates.size());
+  lineDynState.pDynamicStates    = lineDynStates.data();
 
   // ---- depth/stencil states -------------------------------------------------
   VkPipelineDepthStencilStateCreateInfo depthPrepassDS{};
@@ -591,26 +604,34 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       nvPCI, "normal_validation_pipeline");
 
   // Wireframe depth + wireframe no-depth
+  const bool useNativeWireframe =
+      device_->enabledFeatures().fillModeNonSolid == VK_TRUE;
+
   VkGraphicsPipelineCreateInfo wfPCI = meshPCI;
   wfPCI.pInputAssemblyState = &triAssembly;
   wfPCI.pColorBlendState    = &overlayBlend;
   wfPCI.layout              = layouts.wireframe;
   wfPCI.renderPass          = renderPasses.lighting;
-
-  if (wireframeRasterModeSupported_) {
-    wfPCI.stageCount         = static_cast<uint32_t>(wfStages.size());
-    wfPCI.pStages            = wfStages.data();
-    wfPCI.pRasterizationState = &wfRaster;
-    wfPCI.pDynamicState      = &wfDynState;
+  if (useNativeWireframe) {
+    wfPCI.stageCount          = static_cast<uint32_t>(wfStages.size());
+    wfPCI.pStages             = wfStages.data();
+    wfPCI.pRasterizationState = &wfDepthRaster;
+    wfPCI.pDynamicState       = &lineDynState;
   } else {
-    wfPCI.stageCount         = static_cast<uint32_t>(wfFbStages.size());
-    wfPCI.pStages            = wfFbStages.data();
-    wfPCI.pRasterizationState = &wfFbRaster;
-    wfPCI.pDynamicState      = &dynState;
+    wfPCI.stageCount          = static_cast<uint32_t>(wfFbStages.size());
+    wfPCI.pStages             = wfFbStages.data();
+    wfPCI.pRasterizationState = &wfFbDepthRaster;
+    wfPCI.pDynamicState       = &dynState;
   }
   wfPCI.pDepthStencilState = &wfDepthDS;
   pipelines.wireframeDepth = pipelineManager_.createGraphicsPipeline(
       wfPCI, "wireframe_depth_pipeline");
+
+  if (useNativeWireframe) {
+    wfPCI.pRasterizationState = &wfRaster;
+  } else {
+    wfPCI.pRasterizationState = &wfFbRaster;
+  }
 
   wfPCI.pDepthStencilState = &wfNoDepthDS;
   pipelines.wireframeNoDepth = pipelineManager_.createGraphicsPipeline(
@@ -625,7 +646,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   snPCI.pRasterizationState  = &normalLineRaster;
   snPCI.pColorBlendState     = &overlayBlend;
   snPCI.pDepthStencilState   = &normalLineDS;
-  snPCI.pDynamicState        = &wfDynState;
+  snPCI.pDynamicState        = &dynState;
   snPCI.layout               = layouts.surfaceNormal;
   snPCI.renderPass           = renderPasses.lighting;
   pipelines.surfaceNormalLine = pipelineManager_.createGraphicsPipeline(

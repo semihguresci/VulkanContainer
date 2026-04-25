@@ -261,7 +261,8 @@ void RendererFrontend::initialize() {
       static_cast<uint32_t>(svc_.swapChainManager.imageCount()),
       svc_.nativeWindow, svc_.config.modelPath);
   subs_.guiManager->setWireframeCapabilities(svc_.ctx.wireframeSupported,
-                                        svc_.ctx.wireframeWideLinesSupported);
+                                             svc_.ctx.wireframeRasterModeSupported,
+                                             svc_.ctx.wireframeWideLinesSupported);
   if (subs_.sceneController) subs_.sceneController->setGuiManager(subs_.guiManager.get());
 
   subs_.frameRecorder = std::make_unique<FrameRecorder>(
@@ -524,8 +525,7 @@ void RendererFrontend::createRenderPasses() {
 void RendererFrontend::createGraphicsPipelines() {
   if (!subs_.pipelineBuilder) {
     subs_.pipelineBuilder = std::make_unique<GraphicsPipelineBuilder>(
-        svc_.ctx.deviceWrapper, svc_.pipelineManager,
-        svc_.ctx.wireframeRasterModeSupported);
+        svc_.ctx.deviceWrapper, svc_.pipelineManager);
   }
   const PipelineDescriptorLayouts descLayouts{
       subs_.sceneManager->descriptorSetLayout(),
