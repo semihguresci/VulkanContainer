@@ -31,7 +31,11 @@ class Model {
   Model& operator=(Model&&) noexcept = default;
 
   static Model LoadFromGltf(const std::string& path);
+  static Model FromMeshes(std::vector<Mesh> meshes);
   static Model MakeCube();
+  static Model MakeSphere(uint32_t latitudeSegments = 16,
+                          uint32_t longitudeSegments = 24,
+                          float radius = 0.5f);
 
   const std::vector<Mesh>& meshes() const { return meshes_; }
   const std::vector<Vertex>& vertices() const { return vertices_; }

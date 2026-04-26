@@ -321,8 +321,7 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
         "vector3");
     normalMap->addInput("in", "vector3")->setConnectedNode(normalImage);
     float normalScale = static_cast<float>(gltfMaterial.normalTexture.scale);
-    normalMap->addInput("scale", "float")
-        ->setValue(normalScale == 0.0f ? 1.0f : normalScale);
+    normalMap->addInput("scale", "float")->setValue(normalScale);
 
     auto normalInput = shader->addInput("normal", "vector3");
     normalInput->setConnectedNode(normalMap);
@@ -352,9 +351,6 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
 
     auto occlusionInput = shader->addInput("occlusion", "float");
     float strength = static_cast<float>(gltfMaterial.occlusionTexture.strength);
-    if (strength == 0.0f) {
-      strength = 1.0f;
-    }
     auto strengthMultiply = document->addNode(
         "multiply",
         (materialName.empty() ? "occlusion_strength"
@@ -452,10 +448,45 @@ std::vector<MaterialX::DocumentPtr> SlangMaterialXBridge::loadGltfMaterials(
 std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
     const tinygltf::Model& model, const std::filesystem::path& baseDir,
     container::material::TextureManager& textureManager,
-    const std::function<container::material::TextureResource(const std::string&)>&
-        textureLoader) const {
+    const std::function<container::material::TextureResource(
+        const std::string&, bool)>& textureLoader) const {
   std::vector<uint32_t> imageToTexture(model.images.size(),
                                        std::numeric_limits<uint32_t>::max());
+
+  // Classify each glTF image by how materials reference it. Color data
+  // (base color, emissive) must be sRGB so sampling yields linear light;
+  // data textures (normal, metallic-roughness, occlusion) must be UNORM or
+  // the sRGB decode will corrupt their encoded values.
+  std::vector<bool> imageIsSrgb(model.images.size(), true);
+  std::vector<bool> imageClassified(model.images.size(), false);
+
+  auto markImage = [&](int textureIndex, bool isSrgb) {
+    if (textureIndex < 0 ||
+        textureIndex >= static_cast<int>(model.textures.size())) {
+      return;
+    }
+    const int source = model.textures[textureIndex].source;
+    if (source < 0 || source >= static_cast<int>(model.images.size())) {
+      return;
+    }
+    if (!imageClassified[source]) {
+      imageIsSrgb[source] = isSrgb;
+      imageClassified[source] = true;
+    } else if (!isSrgb) {
+      // If the same image is used as both color and data, prefer data/UNORM
+      // because an sRGB normal map is visually broken while an "sRGB" albedo
+      // sampled from a UNORM texture is only a minor tonal shift.
+      imageIsSrgb[source] = false;
+    }
+  };
+
+  for (const auto& mat : model.materials) {
+    markImage(mat.pbrMetallicRoughness.baseColorTexture.index, true);
+    markImage(mat.emissiveTexture.index, true);
+    markImage(mat.normalTexture.index, false);
+    markImage(mat.occlusionTexture.index, false);
+    markImage(mat.pbrMetallicRoughness.metallicRoughnessTexture.index, false);
+  }
 
   for (size_t i = 0; i < model.images.size(); ++i) {
     const auto& image = model.images[i];
@@ -469,7 +500,7 @@ std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
     }
 
     try {
-      auto resource = textureLoader(fullPath);
+      auto resource = textureLoader(fullPath, imageIsSrgb[i]);
       imageToTexture[i] = textureManager.registerTexture(resource);
     } catch (const std::exception& exc) {
       std::println(stderr, "Texture load failed for {}: {}", fullPath, exc.what());
@@ -521,6 +552,10 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
     material.roughnessFactor =
         static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
     material.alphaCutoff = static_cast<float>(mat.alphaCutoff);
+    material.normalTextureScale =
+        static_cast<float>(mat.normalTexture.scale);
+    material.occlusionStrength =
+        static_cast<float>(mat.occlusionTexture.strength);
     material.doubleSided = mat.doubleSided;
     if (mat.alphaMode == "MASK") {
       material.alphaMode = AlphaMode::Mask;
@@ -540,7 +575,15 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
         i < materialDocs.size() ? materialDocs[i] : nullptr;
 
     if (materialDoc) {
-      material.baseColor = extractBaseColor(materialDoc);
+      // NOTE: We intentionally do NOT overwrite material.baseColor from the
+      // MaterialX document here. The glTF factor (already set above from
+      // pbrMetallicRoughness.baseColorFactor) is the authoritative source for
+      // the per-material tint. extractBaseColor() reads getValue() on the
+      // MaterialX input, which returns nullptr once the input is connected to
+      // an image node (as done in createDocumentFromGltfMaterial). In that case
+      // parseColorOrDefault falls back to Color3() = (0,0,0), which would
+      // stomp the real factor and produce pitch-black albedo in the G-buffer
+      // even though textures are sampled correctly.
       material.emissiveColor = extractColorInput(materialDoc, "emission_color",
                                                  material.emissiveColor);
       material.metallicFactor =

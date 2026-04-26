@@ -38,8 +38,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
                                VkFormat albedoFormat,
                                VkFormat normalFormat,
                                VkFormat materialFormat,
-                               VkFormat emissiveFormat,
-                               VkFormat positionFormat) {
+                               VkFormat emissiveFormat) {
   VkDevice dev = device_->device();
 
   // ---- Depth Prepass ----
@@ -94,21 +93,21 @@ void RenderPassManager::create(VkFormat swapchainFormat,
 
   VkAttachmentDescription gbDs = ds;
   gbDs.loadOp        = VK_ATTACHMENT_LOAD_OP_LOAD;
-  gbDs.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  gbDs.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  gbDs.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   gbDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-  std::array<VkAttachmentDescription, 6> gbAttachments = {
+  std::array<VkAttachmentDescription, 5> gbAttachments = {
       makeColor(albedoFormat), makeColor(normalFormat), makeColor(materialFormat),
-      makeColor(emissiveFormat), makeColor(positionFormat), gbDs};
+      makeColor(emissiveFormat), gbDs};
 
-  std::array<VkAttachmentReference, 5> colorRefs = {{
+  std::array<VkAttachmentReference, 4> colorRefs = {{
       {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
-      {4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
   }};
-  VkAttachmentReference gbDsRef{5, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference gbDsRef{4, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
   VkSubpassDescription gbSubpass{};
   gbSubpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -117,17 +116,21 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   gbSubpass.pDepthStencilAttachment = &gbDsRef;
 
   std::array<VkSubpassDependency, 2> gbDeps{};
+  // Entry: depth prepass wrote depth (late fragment tests), then Hi-Z compute
+  // read it.  We must wait for both before the GBuffer starts.
   gbDeps[0] = {VK_SUBPASS_EXTERNAL, 0,
-               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+               VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-               VK_ACCESS_SHADER_READ_BIT,
-               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, 0};
+               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, 0};
+  // Exit: GBuffer colors → shader read (lighting pass),
+  //       depth → compute shader read (TileCull, GTAO) + attachment read (lighting).
   gbDeps[1] = {0, VK_SUBPASS_EXTERNAL,
                VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT |
-                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT, 0};
+               VK_ACCESS_SHADER_READ_BIT, 0};
 
   rpInfo.attachmentCount = static_cast<uint32_t>(gbAttachments.size());
   rpInfo.pAttachments    = gbAttachments.data();
@@ -150,12 +153,17 @@ void RenderPassManager::create(VkFormat swapchainFormat,
 
   VkAttachmentDescription lightDs = ds;
   lightDs.loadOp        = VK_ATTACHMENT_LOAD_OP_LOAD;
-  lightDs.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
-  lightDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  // Stencil is cleared per-light-volume via vkCmdClearAttachments; no need to
+  // preserve stale values from the GBuffer pass.
+  lightDs.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  // After GBuffer, depth is transitioned to DEPTH_READ_ONLY_STENCIL_ATTACHMENT
+  // for TileCull/GTAO compute reads; the lighting pass picks it up in that layout.
+  lightDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+  lightDs.finalLayout   = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
 
   std::array<VkAttachmentDescription, 2> lightAttachments = {lightColor, lightDs};
   VkAttachmentReference lightColorRef{0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
-  VkAttachmentReference lightDsRef{1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference lightDsRef{1, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL};
 
   VkSubpassDescription lightSubpass{};
   lightSubpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -164,16 +172,23 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   lightSubpass.pDepthStencilAttachment = &lightDsRef;
 
   std::array<VkSubpassDependency, 2> lightDeps{};
+  // Entry: preceding GBuffer wrote colors/depth, and TileCull/GTAO compute
+  // shaders read depth + wrote tile grids and AO.  We need all of those to
+  // complete before the lighting subpass begins.
   lightDeps[0] = {VK_SUBPASS_EXTERNAL, 0,
-                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
+                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+                      VK_ACCESS_SHADER_WRITE_BIT,
                   VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, 0};
+                      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT, 0};
   lightDeps[1] = {0, VK_SUBPASS_EXTERNAL,
-                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, 0};
+                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                  VK_ACCESS_SHADER_READ_BIT, 0};
 
   rpInfo.attachmentCount = static_cast<uint32_t>(lightAttachments.size());
   rpInfo.pAttachments    = lightAttachments.data();
@@ -182,6 +197,45 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   rpInfo.pDependencies   = lightDeps.data();
   if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.lighting) != VK_SUCCESS)
     throw std::runtime_error("failed to create lighting render pass");
+
+  // ---- Shadow Depth ----
+  // Depth-only render pass for shadow map cascades. Uses the same depth format
+  // as the main scene but renders into a 2D array layer per cascade.
+  VkAttachmentDescription shadowDs{};
+  shadowDs.format         = depthStencilFormat;
+  shadowDs.samples        = VK_SAMPLE_COUNT_1_BIT;
+  shadowDs.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  shadowDs.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+  shadowDs.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  shadowDs.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  shadowDs.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+  shadowDs.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  VkAttachmentReference shadowDsRef{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  VkSubpassDescription shadowSubpass{};
+  shadowSubpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  shadowSubpass.pDepthStencilAttachment = &shadowDsRef;
+
+  std::array<VkSubpassDependency, 2> shadowDeps{};
+  shadowDeps[0] = {VK_SUBPASS_EXTERNAL, 0,
+                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                   VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+                   VK_ACCESS_SHADER_READ_BIT,
+                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, 0};
+  shadowDeps[1] = {0, VK_SUBPASS_EXTERNAL,
+                   VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+                   VK_ACCESS_SHADER_READ_BIT, 0};
+
+  rpInfo.attachmentCount = 1;
+  rpInfo.pAttachments    = &shadowDs;
+  rpInfo.subpassCount    = 1;
+  rpInfo.pSubpasses      = &shadowSubpass;
+  rpInfo.dependencyCount = static_cast<uint32_t>(shadowDeps.size());
+  rpInfo.pDependencies   = shadowDeps.data();
+  if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.shadow) != VK_SUCCESS)
+    throw std::runtime_error("failed to create shadow render pass");
 
   // ---- Post Process ----
   VkAttachmentDescription swapAttachment{};
@@ -208,7 +262,8 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   postDeps[1] = {0, VK_SUBPASS_EXTERNAL,
                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
                  VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0, 0};
+                 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                 VK_ACCESS_MEMORY_READ_BIT, 0};
 
   rpInfo.attachmentCount = 1;
   rpInfo.pAttachments    = &swapAttachment;
@@ -229,6 +284,7 @@ void RenderPassManager::destroy() {
   };
   destroyPass(passes_.depthPrepass);
   destroyPass(passes_.gBuffer);
+  destroyPass(passes_.shadow);
   destroyPass(passes_.lighting);
   destroyPass(passes_.postProcess);
 }

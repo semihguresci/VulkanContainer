@@ -15,6 +15,7 @@
     "vulkan-memory-allocator",
     "shader-slang",
     "tinygltf",
+    "tinyexr",
     "stb",
     "spdlog",
     "entt",

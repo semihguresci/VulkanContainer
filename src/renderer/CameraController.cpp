@@ -103,12 +103,41 @@ void CameraController::resetCameraForScene() {
     perspective->setNearFar(kDefaultNearPlane, farPlane);
 
     if (hasBounds) {
-      camera_->setYawPitch(kDefaultYaw, kDefaultPitch);
-      const float    distance = boundsRadius * 2.5f + kDefaultNearPlane;
-      const glm::vec3 front   = camera_->frontVector();
-      camera_->setPosition(boundsCenter - front * distance);
+      // For hall-like scenes (e.g. Sponza), start inside the volume looking
+      // down the longest horizontal axis. For roughly cubic scenes, fall back
+      // to the default three-quarter overview.
+      const auto& bounds = sceneManager_->modelBounds();
+      const glm::vec3 sz = bounds.size;
+      const bool xIsLong = sz.x >= sz.z;
+      const float longExtent = xIsLong ? sz.x : sz.z;
+      const float crossExtent = xIsLong ? sz.z : sz.x;
+      const bool hallLike = longExtent > 1.25f * crossExtent &&
+                            longExtent > 1.5f * sz.y;
+
+      if (hallLike) {
+        // RH: front.x = cos(yaw)cos(pitch), front.z = -sin(yaw)cos(pitch).
+        // Look +X => yaw = 0; -X => 180; -Z => 90; +Z => -90.
+        const float yaw = xIsLong ? 180.0f : 90.0f;
+        camera_->setYawPitch(yaw, 0.0f);
+        const float eyeHeight = bounds.min.y + sz.y * 0.32f;
+        const float endInset = longExtent * 0.10f;
+        glm::vec3 eye = boundsCenter;
+        eye.y = eyeHeight;
+        if (xIsLong) {
+          eye.x = bounds.max.x - endInset;
+        } else {
+          eye.z = bounds.max.z - endInset;
+        }
+        camera_->setPosition(eye);
+      } else {
+        camera_->setYawPitch(kDefaultYaw, kDefaultPitch);
+        const float    distance = boundsRadius * 2.5f + kDefaultNearPlane;
+        const glm::vec3 front   = camera_->frontVector();
+        camera_->setPosition(boundsCenter - front * distance);
+      }
       inputManager_.setMoveSpeed(
-          std::max(kDefaultMoveSpeed, boundsRadius * 0.5f));
+          std::max(kDefaultMoveSpeed,
+                   hallLike ? longExtent * 0.08f : boundsRadius * 0.5f));
     } else {
       camera_->setYawPitch(90.0f, 0.0f);
       camera_->setPosition(glm::vec3(0.0f, 0.0f, 3.0f));

@@ -18,17 +18,22 @@ struct DrawCommand {
 
 struct WireframePushConstants {
   alignas(4) uint32_t objectIndex{0};
-  alignas(4) uint32_t padding0{0};
-  alignas(4) uint32_t padding1{0};
-  alignas(4) uint32_t padding2{0};
-  alignas(16) glm::vec4 colorIntensity{0.0f, 1.0f, 0.0f, 1.0f};
-  alignas(4) float lineWidth{1.0f};
+  alignas(4) float padding0{0.0f};
+  alignas(4) float padding1{0.0f};
+  alignas(4) float padding2{0.0f};
   alignas(4) float padding3{0.0f};
   alignas(4) float padding4{0.0f};
   alignas(4) float padding5{0.0f};
+  alignas(4) float padding6{0.0f};
+  alignas(16) glm::vec4 colorIntensity{0.0f, 1.0f, 0.0f, 1.0f};
+  alignas(4) float lineWidth{1.0f};
+  alignas(4) float padding7{0.0f};
+  alignas(4) float padding8{0.0f};
+  alignas(4) float padding9{0.0f};
 };
-static_assert(offsetof(WireframePushConstants, colorIntensity) == 16);
-static_assert(offsetof(WireframePushConstants, lineWidth) == 32);
+static_assert(offsetof(WireframePushConstants, colorIntensity) == 32);
+static_assert(offsetof(WireframePushConstants, lineWidth) == 48);
+static_assert(sizeof(WireframePushConstants) == 64);
 
 struct NormalValidationPushConstants {
   alignas(4) uint32_t objectIndex{0};

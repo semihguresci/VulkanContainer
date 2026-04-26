@@ -19,9 +19,14 @@ class VulkanDevice;
 
 // Forward declarations — full headers only needed in FrameRecorder.cpp.
 namespace container::renderer {
+class BloomManager;
+class EnvironmentManager;
+class GpuCullManager;
 class LightingManager;
 class OitManager;
 class SceneController;
+class ShadowCullManager;
+class ShadowManager;
 struct LightPushConstants;
 }  // namespace container::renderer
 
@@ -47,15 +52,28 @@ struct FrameRecordParams {
   VkIndexType                       indexType{VK_INDEX_TYPE_UINT32};
   const std::vector<DrawCommand>*   opaqueDrawCommands{nullptr};
   const std::vector<DrawCommand>*   transparentDrawCommands{nullptr};
+  const std::vector<DrawCommand>*   opaqueSingleSidedDrawCommands{nullptr};
+  const std::vector<DrawCommand>*   opaqueDoubleSidedDrawCommands{nullptr};
+  const std::vector<DrawCommand>*   transparentSingleSidedDrawCommands{nullptr};
+  const std::vector<DrawCommand>*   transparentDoubleSidedDrawCommands{nullptr};
+  const std::vector<container::gpu::ObjectData>* objectData{nullptr};
 
   // Descriptor sets
   VkDescriptorSet                   sceneDescriptorSet{VK_NULL_HANDLE};
   VkDescriptorSet                   lightDescriptorSet{VK_NULL_HANDLE};
+  VkDescriptorSet                   shadowDescriptorSet{VK_NULL_HANDLE};
+  VkDescriptorSet                   tiledDescriptorSet{VK_NULL_HANDLE};
+
+  // Tiled culling resources
+  VkBuffer                          cameraBuffer{VK_NULL_HANDLE};
+  VkDeviceSize                      cameraBufferSize{0};
+  VkSampler                         gBufferSampler{VK_NULL_HANDLE};
 
   // Render passes
   struct RenderPassHandles {
     VkRenderPass depthPrepass{VK_NULL_HANDLE};
     VkRenderPass gBuffer{VK_NULL_HANDLE};
+    VkRenderPass shadow{VK_NULL_HANDLE};
     VkRenderPass lighting{VK_NULL_HANDLE};
     VkRenderPass postProcess{VK_NULL_HANDLE};
   };
@@ -68,6 +86,7 @@ struct FrameRecordParams {
   // Debug flags
   bool                              debugDirectionalOnly{false};
   bool                              debugVisualizePointLightStencil{false};
+  bool                              debugFreezeCulling{false};
   bool                              wireframeRasterModeSupported{false};
   bool                              wireframeWideLinesSupported{false};
 
@@ -81,11 +100,32 @@ struct FrameRecordParams {
   };
   PushConstantState                 pushConstants{};
 
+  // Camera near/far planes (for depth linearization)
+  float                             cameraNear{0.1f};
+  float                             cameraFar{100.0f};
+
+  // Shadow cascade framebuffers (kShadowCascadeCount entries)
+  const VkFramebuffer*              shadowFramebuffers{nullptr};
+  container::gpu::ShadowPushConstants*  shadowPushConstants{nullptr};
+  const container::gpu::ShadowData*     shadowData{nullptr};
+  bool                                 useGpuShadowCull{false};
+  ShadowCullManager*                   shadowCullManager{nullptr};
+  std::array<VkBuffer, container::gpu::kShadowCascadeCount> shadowCullIndirectBuffers{};
+  std::array<VkBuffer, container::gpu::kShadowCascadeCount> shadowCullCountBuffers{};
+  uint32_t                             shadowCullMaxDrawCount{0};
+  const ShadowManager*                  shadowManager{nullptr};
+
   // Swapchain framebuffers (for post-process pass)
   const std::vector<VkFramebuffer>* swapChainFramebuffers{nullptr};
 
   // Diagnostic cube object index (max uint32 = disabled)
   uint32_t                          diagCubeObjectIndex{std::numeric_limits<uint32_t>::max()};
+
+  // GPU-driven culling
+  GpuCullManager*                   gpuCullManager{nullptr};
+  BloomManager*                      bloomManager{nullptr};
+  VkBuffer                          objectBuffer{VK_NULL_HANDLE};
+  VkDeviceSize                      objectBufferSize{0};
 };
 
 // Records a complete frame into a command buffer.
@@ -97,7 +137,10 @@ class FrameRecorder {
                 container::gpu::SwapChainManager&                      swapChainManager,
                 const OitManager&                               oitManager,
                 const LightingManager*                          lightingManager,
+                const EnvironmentManager*                       environmentManager,
                 const SceneController*                          sceneController,
+                GpuCullManager*                                 gpuCullManager,
+                BloomManager*                                   bloomManager,
                 const container::scene::BaseCamera*              camera,
                 container::ui::GuiManager*                        guiManager);
 
@@ -133,6 +176,12 @@ class FrameRecorder {
                          const FrameRecordParams& p,
                          VkDescriptorSet sceneSet) const;
 
+  void recordShadowPass(VkCommandBuffer cmd,
+                        const FrameRecordParams& p,
+                        uint32_t cascadeIndex) const;
+
+  void prepareShadowCascadeDrawCommands(const FrameRecordParams& p) const;
+
   void recordLightingPass(VkCommandBuffer cmd,
                           const FrameRecordParams& p,
                           VkDescriptorSet sceneSet,
@@ -147,12 +196,19 @@ class FrameRecorder {
   container::gpu::SwapChainManager&                      swapChainManager_;
   const OitManager&                               oitManager_;
   const LightingManager*                          lightingManager_;
+  const EnvironmentManager*                       environmentManager_;
   const SceneController*                          sceneController_;
+  GpuCullManager*                                 gpuCullManager_;
+  BloomManager*                                    bloomManager_;
   const container::scene::BaseCamera*              camera_;
   container::ui::GuiManager*                  guiManager_;
 
   DebugOverlayRenderer debugOverlay_;
   RenderGraph          graph_;
+  mutable std::array<std::vector<DrawCommand>, container::gpu::kShadowCascadeCount>
+      shadowCascadeSingleSidedDrawCommands_;
+  mutable std::array<std::vector<DrawCommand>, container::gpu::kShadowCascadeCount>
+      shadowCascadeDoubleSidedDrawCommands_;
 };
 
 }  // namespace container::renderer

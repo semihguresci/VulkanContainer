@@ -2,12 +2,15 @@
 #include <array>
 #include <filesystem>
 #include <functional>
+#include <limits>
 #include <print>
 #include <stdexcept>
 #include <utility>
 
 #include "Container/geometry/GltfModelLoader.h"
+#include "Container/geometry/Mesh.h"
 #include "Container/utility/AllocationManager.h"
+#include "Container/utility/Platform.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/SceneGraph.h"
@@ -62,6 +65,80 @@ glm::mat4 nodeLocalTransform(const tinygltf::Node& node) {
   return transform;
 }
 
+bool isDefaultSceneRequest(std::string_view path) {
+  return path == container::app::kDefaultSceneModelToken;
+}
+
+bool isProceduralSphereEntry(std::string_view entry) {
+  return entry == "__procedural_uv_sphere__";
+}
+
+glm::mat4 makeDefaultSceneTransform(const glm::vec3& translation, float uniformScale) {
+  glm::mat4 transform = glm::translate(glm::mat4(1.0f), translation);
+  return glm::scale(transform, glm::vec3(uniformScale));
+}
+
+glm::mat4 composeNodeWorldTransform(const tinygltf::Model& model, int nodeIndex) {
+  glm::mat4 worldTransform(1.0f);
+  if (nodeIndex < 0 || nodeIndex >= static_cast<int>(model.nodes.size())) {
+    return worldTransform;
+  }
+
+  std::vector<int> parentByNode(model.nodes.size(), -1);
+  for (size_t parentIndex = 0; parentIndex < model.nodes.size(); ++parentIndex) {
+    for (int childIndex : model.nodes[parentIndex].children) {
+      if (childIndex >= 0 && childIndex < static_cast<int>(model.nodes.size())) {
+        parentByNode[childIndex] = static_cast<int>(parentIndex);
+      }
+    }
+  }
+
+  std::vector<int> chain;
+  for (int current = nodeIndex; current >= 0; current = parentByNode[current]) {
+    chain.push_back(current);
+  }
+  for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+    worldTransform *= nodeLocalTransform(model.nodes[*it]);
+  }
+  return worldTransform;
+}
+
+container::geometry::Mesh transformMesh(const container::geometry::Mesh& mesh,
+                                        const glm::mat4& transform,
+                                        int32_t materialIndex) {
+  std::vector<container::geometry::Vertex> vertices = mesh.vertices();
+  const glm::mat3 modelMatrix = glm::mat3(transform);
+  const glm::mat3 normalMatrix = glm::transpose(glm::inverse(modelMatrix));
+
+  for (auto& vertex : vertices) {
+    vertex.position = glm::vec3(transform * glm::vec4(vertex.position, 1.0f));
+
+    glm::vec3 worldNormal = normalMatrix * vertex.normal;
+    if (glm::dot(worldNormal, worldNormal) > 1e-8f) {
+      vertex.normal = glm::normalize(worldNormal);
+    }
+
+    glm::vec3 worldTangent = modelMatrix * glm::vec3(vertex.tangent);
+    worldTangent -= vertex.normal * glm::dot(vertex.normal, worldTangent);
+    if (glm::dot(worldTangent, worldTangent) > 1e-8f) {
+      vertex.tangent = glm::vec4(glm::normalize(worldTangent), vertex.tangent.w);
+    }
+  }
+
+  return container::geometry::Mesh(vertices, mesh.indices(), materialIndex);
+}
+
+void appendModelMeshes(const container::geometry::Model& model,
+                       const glm::mat4& transform,
+                       int32_t materialIndex,
+                       std::vector<container::geometry::Mesh>& mergedMeshes) {
+  for (const auto& mesh : model.meshes()) {
+    const int32_t resolvedMaterialIndex =
+        materialIndex >= 0 ? materialIndex : mesh.materialIndex();
+    mergedMeshes.push_back(transformMesh(mesh, transform, resolvedMaterialIndex));
+  }
+}
+
 }  // namespace
 
 SceneManager::SceneManager(
@@ -77,7 +154,7 @@ SceneManager::SceneManager(
 SceneManager::~SceneManager() {
   resetLoadedAssets();
 
-  descriptorSet_ = VK_NULL_HANDLE;
+  descriptorSets_.clear();
   descriptorPool_ = VK_NULL_HANDLE;
   descriptorSetLayout_ = VK_NULL_HANDLE;
 
@@ -106,7 +183,8 @@ uint32_t SceneManager::resolveLoadedMaterialIndex(int32_t materialIndex) const {
   return gltfMaterialBaseIndex_ + static_cast<uint32_t>(materialIndex);
 }
 
-void SceneManager::initialize(const std::string& initialModelPath) {
+void SceneManager::initialize(const std::string& initialModelPath,
+                              uint32_t descriptorSetCount) {
   textureDescriptorCapacity_ = queryTextureDescriptorCapacity();
   createDescriptorSetLayout();
   createSampler();
@@ -114,7 +192,11 @@ void SceneManager::initialize(const std::string& initialModelPath) {
 
   config_.modelPath = initialModelPath;
   loadGltfAssets();
-  allocateDescriptorSet();
+  allocateDescriptorSets(descriptorSetCount);
+}
+
+bool SceneManager::isDefaultTestSceneActive() const {
+  return isDefaultSceneRequest(config_.modelPath);
 }
 
 void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
@@ -219,7 +301,7 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
 
 bool SceneManager::reloadModel(
     const std::string& path,
-    const container::gpu::AllocatedBuffer& cameraBuffer,
+    std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
   resetLoadedAssets();
   loadMaterialXMaterial();
@@ -232,7 +314,7 @@ bool SceneManager::reloadModel(
 
   try {
     loadGltfAssets();
-    writeDescriptorSetContents(cameraBuffer, objectBuffer);
+    updateDescriptorSets(cameraBuffers, objectBuffer);
     return true;
   } catch (...) {
     materialManager_ = container::material::MaterialManager{};
@@ -244,10 +326,19 @@ bool SceneManager::reloadModel(
   }
 }
 
-void SceneManager::updateDescriptorSet(
-    const container::gpu::AllocatedBuffer& cameraBuffer,
+void SceneManager::updateDescriptorSets(
+    std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
-  writeDescriptorSetContents(cameraBuffer, objectBuffer);
+  if (cameraBuffers.empty() || descriptorSets_.empty()) return;
+
+  if (descriptorSets_.size() != cameraBuffers.size()) {
+    allocateDescriptorSets(static_cast<uint32_t>(cameraBuffers.size()));
+  }
+
+  const size_t descriptorCount = std::min(descriptorSets_.size(), cameraBuffers.size());
+  for (size_t i = 0; i < descriptorCount; ++i) {
+    writeDescriptorSetContents(descriptorSets_[i], cameraBuffers[i], objectBuffer);
+  }
 }
 
 /* ---------- Material resolution ---------- */
@@ -290,12 +381,28 @@ uint32_t SceneManager::resolveMaterialNormalTexture(
   return std::numeric_limits<uint32_t>::max();
 }
 
+float SceneManager::resolveMaterialNormalTextureScale(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->normalTextureScale;
+  }
+  return 1.0f;
+}
+
 uint32_t SceneManager::resolveMaterialOcclusionTexture(
     uint32_t materialIndex) const {
   if (const auto* m = materialManager_.getMaterial(materialIndex)) {
     return m->occlusionTextureIndex;
   }
   return std::numeric_limits<uint32_t>::max();
+}
+
+float SceneManager::resolveMaterialOcclusionStrength(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->occlusionStrength;
+  }
+  return 1.0f;
 }
 
 uint32_t SceneManager::resolveMaterialEmissiveTexture(
@@ -424,19 +531,33 @@ void SceneManager::loadGltfAssets() {
   model_ = container::geometry::Model{};
   gltfModel_ = tinygltf::Model{};
 
+   if (isDefaultSceneRequest(config_.modelPath)) {
+    loadDefaultTestSceneAssets();
+    vertices_ = model_.vertices();
+    indices_ = model_.indices();
+    updateModelBounds();
+    indexType_ = VK_INDEX_TYPE_UINT32;
+    return;
+  }
+
   if (!config_.modelPath.empty()) {
     try {
-      auto result = container::geometry::gltf::LoadModelWithSource(config_.modelPath);
+      std::filesystem::path resolvedPath(config_.modelPath);
+      if (resolvedPath.is_relative() && !std::filesystem::exists(resolvedPath)) {
+        resolvedPath = resolveSceneAssetPath(config_.modelPath);
+      }
+      auto result = container::geometry::gltf::LoadModelWithSource(resolvedPath.string());
       gltfModel_ = std::move(result.gltfModel);
       model_ = std::move(result.model);
 
-      const auto baseDir =
-          std::filesystem::path(config_.modelPath).parent_path();
+      const auto baseDir = resolvedPath.parent_path();
 
       auto imageToTexture = materialXBridge_.loadTexturesForGltf(
           gltfModel_, baseDir, textureManager_,
-          [this](const std::string& path) {
-            return allocationManager_->createTextureFromFile(path);
+          [this](const std::string& path, bool isSrgb) {
+            return allocationManager_->createTextureFromFile(
+                path, isSrgb ? VK_FORMAT_R8G8B8A8_SRGB
+                             : VK_FORMAT_R8G8B8A8_UNORM);
           });
 
       const uint32_t fallbackMaterialIndex = defaultMaterialIndex_;
@@ -456,25 +577,250 @@ void SceneManager::loadGltfAssets() {
   indexType_ = VK_INDEX_TYPE_UINT32;
 }
 
+void SceneManager::loadDefaultTestSceneAssets() {
+  std::vector<container::geometry::Mesh> mergedMeshes;
+  mergedMeshes.reserve(container::app::kDefaultSceneModelRelativePaths.size());
+
+  const std::array<glm::mat4, 3> transforms = {{
+      makeDefaultSceneTransform(glm::vec3(-2.4f, 0.0f, 0.0f), 1.3f),
+      makeDefaultSceneTransform(glm::vec3(0.0f, 0.0f, 0.0f), 1.0f),
+      makeDefaultSceneTransform(glm::vec3(2.4f, 0.0f, 0.0f), 1.25f),
+  }};
+
+  container::material::Material sphereMaterial{};
+  sphereMaterial.baseColor = glm::vec4(0.90f, 0.92f, 1.0f, 1.0f);
+  sphereMaterial.metallicFactor = 0.0f;
+  sphereMaterial.roughnessFactor = 0.45f;
+  const int32_t proceduralSphereMaterialIndex = static_cast<int32_t>(
+      materialManager_.createMaterial(sphereMaterial));
+
+  for (size_t i = 0; i < container::app::kDefaultSceneModelRelativePaths.size(); ++i) {
+    const auto entry = container::app::kDefaultSceneModelRelativePaths[i];
+    if (isProceduralSphereEntry(entry)) {
+      appendModelMeshes(container::geometry::Model::MakeSphere(), transforms[i],
+                        proceduralSphereMaterialIndex, mergedMeshes);
+      continue;
+    }
+
+    const std::filesystem::path assetPath =
+        resolveSceneAssetPath(entry);
+    appendSceneAsset(assetPath, transforms[i], mergedMeshes);
+  }
+
+  if (mergedMeshes.empty()) {
+    throw std::runtime_error("failed to build default test scene from triangle/cube/sphere assets");
+  }
+
+  model_ = container::geometry::Model::FromMeshes(std::move(mergedMeshes));
+  gltfModel_ = tinygltf::Model{};
+}
+
+void SceneManager::appendSceneAsset(
+    const std::filesystem::path& assetPath,
+    const glm::mat4& transform,
+    std::vector<container::geometry::Mesh>& mergedMeshes) {
+  auto result = container::geometry::gltf::LoadModelWithSource(assetPath.string());
+
+  const auto imageToTexture = materialXBridge_.loadTexturesForGltf(
+      result.gltfModel, assetPath.parent_path(), textureManager_,
+      [this](const std::string& path, bool isSrgb) {
+        return allocationManager_->createTextureFromFile(
+            path, isSrgb ? VK_FORMAT_R8G8B8A8_SRGB
+                         : VK_FORMAT_R8G8B8A8_UNORM);
+      });
+
+  const uint32_t fallbackMaterialIndex = defaultMaterialIndex_;
+  const uint32_t materialBaseIndex =
+      static_cast<uint32_t>(materialManager_.materialCount());
+  materialXBridge_.loadMaterialsForGltf(
+      result.gltfModel, imageToTexture, materialManager_, defaultMaterialIndex_);
+  defaultMaterialIndex_ = fallbackMaterialIndex;
+
+  std::vector<uint32_t> primitiveBaseByMesh(result.gltfModel.meshes.size(), 0);
+  uint32_t primitiveBase = 0;
+  for (size_t meshIndex = 0; meshIndex < result.gltfModel.meshes.size(); ++meshIndex) {
+    primitiveBaseByMesh[meshIndex] = primitiveBase;
+    primitiveBase +=
+        static_cast<uint32_t>(result.gltfModel.meshes[meshIndex].primitives.size());
+  }
+
+  uint32_t meshCursor = 0;
+  for (size_t nodeIndex = 0; nodeIndex < result.gltfModel.nodes.size(); ++nodeIndex) {
+    const auto& node = result.gltfModel.nodes[nodeIndex];
+    if (node.mesh < 0 ||
+        node.mesh >= static_cast<int>(result.gltfModel.meshes.size())) {
+      continue;
+    }
+
+    const glm::mat4 nodeTransform =
+        transform * composeNodeWorldTransform(result.gltfModel, static_cast<int>(nodeIndex));
+    const auto& meshDef = result.gltfModel.meshes[node.mesh];
+    for (size_t primitiveIndex = 0; primitiveIndex < meshDef.primitives.size(); ++primitiveIndex) {
+      if (meshCursor >= result.model.meshes().size()) {
+        break;
+      }
+      const auto& mesh = result.model.meshes()[meshCursor++];
+      const uint32_t primitiveGlobalIndex =
+          primitiveBaseByMesh[node.mesh] + static_cast<uint32_t>(primitiveIndex);
+      int32_t sourceMaterialIndex = mesh.materialIndex();
+      if (primitiveGlobalIndex < result.model.primitiveRanges().size()) {
+        sourceMaterialIndex = result.model.primitiveRanges()[primitiveGlobalIndex].materialIndex;
+      }
+      const int32_t materialIndex = sourceMaterialIndex >= 0
+          ? static_cast<int32_t>(materialBaseIndex) + sourceMaterialIndex
+          : -1;
+      mergedMeshes.push_back(transformMesh(mesh, nodeTransform, materialIndex));
+    }
+  }
+
+  while (meshCursor < result.model.meshes().size()) {
+    const auto& mesh = result.model.meshes()[meshCursor++];
+    const int32_t materialIndex = mesh.materialIndex() >= 0
+        ? static_cast<int32_t>(materialBaseIndex) + mesh.materialIndex()
+        : -1;
+    mergedMeshes.push_back(transformMesh(mesh, transform, materialIndex));
+  }
+}
+
+std::filesystem::path SceneManager::resolveSceneAssetPath(
+    std::string_view relativePath) const {
+  const std::filesystem::path exeRelative =
+      container::util::executableDirectory() / std::filesystem::path(relativePath);
+  if (std::filesystem::exists(exeRelative)) {
+    return exeRelative;
+  }
+
+  const std::filesystem::path workspaceRelative = std::filesystem::path(relativePath);
+  if (std::filesystem::exists(workspaceRelative)) {
+    return workspaceRelative;
+  }
+
+  return exeRelative;
+}
+
 void SceneManager::updateModelBounds() {
   modelBounds_ = ModelBounds{};
   if (vertices_.empty()) {
     return;
   }
 
-  glm::vec3 minBounds = vertices_.front().position;
-  glm::vec3 maxBounds = vertices_.front().position;
+  auto forEachRenderedPoint =
+      [this](const std::function<void(const glm::vec3&)>& visit) {
+        auto emitPrimitive = [&](uint32_t primitiveIndex,
+                                 const glm::mat4& transform) {
+          if (primitiveIndex >= model_.primitiveRanges().size()) {
+            return;
+          }
 
-  for (const auto& vertex : vertices_) {
-    minBounds = glm::min(minBounds, vertex.position);
-    maxBounds = glm::max(maxBounds, vertex.position);
+          const auto& primitive = model_.primitiveRanges()[primitiveIndex];
+          const uint32_t endIndex = primitive.firstIndex + primitive.indexCount;
+          for (uint32_t i = primitive.firstIndex;
+               i < endIndex && i < indices_.size(); ++i) {
+            const uint32_t vertexIndex = indices_[i];
+            if (vertexIndex >= vertices_.size()) {
+              continue;
+            }
+            visit(glm::vec3(transform *
+                            glm::vec4(vertices_[vertexIndex].position, 1.0f)));
+          }
+        };
+
+        if (!gltfModel_.nodes.empty() && !gltfModel_.meshes.empty()) {
+          std::vector<uint32_t> meshPrimitiveBase(gltfModel_.meshes.size(), 0);
+          uint32_t primitiveOffset = 0;
+          for (size_t meshIndex = 0; meshIndex < gltfModel_.meshes.size();
+               ++meshIndex) {
+            meshPrimitiveBase[meshIndex] = primitiveOffset;
+            primitiveOffset += static_cast<uint32_t>(
+                gltfModel_.meshes[meshIndex].primitives.size());
+          }
+
+          std::function<void(int, const glm::mat4&)> traverseNode =
+              [&](int gltfNodeIndex, const glm::mat4& parentTransform) {
+                if (gltfNodeIndex < 0 ||
+                    gltfNodeIndex >= static_cast<int>(gltfModel_.nodes.size())) {
+                  return;
+                }
+
+                const auto& node = gltfModel_.nodes[gltfNodeIndex];
+                const glm::mat4 worldTransform =
+                    parentTransform * nodeLocalTransform(node);
+
+                if (node.mesh >= 0 &&
+                    node.mesh < static_cast<int>(gltfModel_.meshes.size())) {
+                  const auto& mesh = gltfModel_.meshes[node.mesh];
+                  const uint32_t basePrimitiveIndex =
+                      meshPrimitiveBase[node.mesh];
+                  for (size_t primitiveInMesh = 0;
+                       primitiveInMesh < mesh.primitives.size();
+                       ++primitiveInMesh) {
+                    emitPrimitive(
+                        basePrimitiveIndex +
+                            static_cast<uint32_t>(primitiveInMesh),
+                        worldTransform);
+                  }
+                }
+
+                for (int childIndex : node.children) {
+                  traverseNode(childIndex, worldTransform);
+                }
+              };
+
+          if (!gltfModel_.scenes.empty()) {
+            int sceneIndex = gltfModel_.defaultScene;
+            if (sceneIndex < 0 ||
+                sceneIndex >= static_cast<int>(gltfModel_.scenes.size())) {
+              sceneIndex = 0;
+            }
+
+            for (int rootNodeIndex : gltfModel_.scenes[sceneIndex].nodes) {
+              traverseNode(rootNodeIndex, glm::mat4(1.0f));
+            }
+            return;
+          }
+
+          std::vector<bool> hasParent(gltfModel_.nodes.size(), false);
+          for (const auto& node : gltfModel_.nodes) {
+            for (int childIndex : node.children) {
+              if (childIndex >= 0 &&
+                  childIndex < static_cast<int>(hasParent.size())) {
+                hasParent[childIndex] = true;
+              }
+            }
+          }
+
+          for (size_t nodeIndex = 0; nodeIndex < gltfModel_.nodes.size();
+               ++nodeIndex) {
+            if (!hasParent[nodeIndex]) {
+              traverseNode(static_cast<int>(nodeIndex), glm::mat4(1.0f));
+            }
+          }
+          return;
+        }
+
+        for (const auto& vertex : vertices_) {
+          visit(vertex.position);
+        }
+      };
+
+  bool hasPoint = false;
+  glm::vec3 minBounds(std::numeric_limits<float>::max());
+  glm::vec3 maxBounds(std::numeric_limits<float>::lowest());
+  forEachRenderedPoint([&](const glm::vec3& point) {
+    hasPoint = true;
+    minBounds = glm::min(minBounds, point);
+    maxBounds = glm::max(maxBounds, point);
+  });
+
+  if (!hasPoint) {
+    return;
   }
 
   const glm::vec3 center = 0.5f * (minBounds + maxBounds);
   float radius = 0.0f;
-  for (const auto& vertex : vertices_) {
-    radius = std::max(radius, glm::length(vertex.position - center));
-  }
+  forEachRenderedPoint([&](const glm::vec3& point) {
+    radius = std::max(radius, glm::length(point - center));
+  });
 
   modelBounds_.min = minBounds;
   modelBounds_.max = maxBounds;
@@ -486,9 +832,15 @@ void SceneManager::updateModelBounds() {
 
 /* ---------- Descriptor sets ---------- */
 
-void SceneManager::allocateDescriptorSet() {
+void SceneManager::allocateDescriptorSets(uint32_t descriptorSetCount) {
   const uint32_t textureDescriptorCount =
       std::max<uint32_t>(1u, static_cast<uint32_t>(textureManager_.textureCount()));
+  const uint32_t setCount = std::max(1u, descriptorSetCount);
+
+  if (descriptorPool_ != VK_NULL_HANDLE) {
+    pipelineManager_->destroyDescriptorPool(descriptorPool_);
+  }
+  descriptorSets_.clear();
 
   if (textureDescriptorCount > textureDescriptorCapacity_) {
     throw std::runtime_error("Model requires more sampled-image descriptors than "
@@ -496,35 +848,43 @@ void SceneManager::allocateDescriptorSet() {
   }
 
   std::vector<VkDescriptorPoolSize> poolSizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, textureDescriptorCount},
-      {VK_DESCRIPTOR_TYPE_SAMPLER, 1},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+       textureDescriptorCapacity_ * setCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, setCount},
   };
 
-  descriptorPool_ = pipelineManager_->createDescriptorPool(poolSizes, 1, 0);
+  descriptorPool_ = pipelineManager_->createDescriptorPool(poolSizes, setCount, 0);
 
   VkDescriptorSetAllocateInfo allocInfo{};
   allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   allocInfo.descriptorPool = descriptorPool_;
-  allocInfo.descriptorSetCount = 1;
-  allocInfo.pSetLayouts = &descriptorSetLayout_;
+  allocInfo.descriptorSetCount = setCount;
+
+  std::vector<VkDescriptorSetLayout> layouts(setCount, descriptorSetLayout_);
+  allocInfo.pSetLayouts = layouts.data();
 
   VkDescriptorSetVariableDescriptorCountAllocateInfo countInfo{};
   countInfo.sType =
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
-  countInfo.descriptorSetCount = 1;
-  countInfo.pDescriptorCounts = &textureDescriptorCount;
+  countInfo.descriptorSetCount = setCount;
+  std::vector<uint32_t> descriptorCounts(setCount, textureDescriptorCapacity_);
+  countInfo.pDescriptorCounts = descriptorCounts.data();
   allocInfo.pNext = &countInfo;
 
-  vkAllocateDescriptorSets(deviceWrapper_->device(), &allocInfo,
-                           &descriptorSet_);
+  descriptorSets_.assign(setCount, VK_NULL_HANDLE);
+  if (vkAllocateDescriptorSets(deviceWrapper_->device(), &allocInfo,
+                               descriptorSets_.data()) != VK_SUCCESS) {
+    throw std::runtime_error("failed to allocate scene descriptor sets");
+  }
 }
 
 void SceneManager::writeDescriptorSetContents(
+    VkDescriptorSet descriptorSet,
     const container::gpu::AllocatedBuffer& cameraBuffer,
     const container::gpu::AllocatedBuffer& objectBuffer) {
-  if (descriptorSet_ == VK_NULL_HANDLE) return;
+  if (descriptorSet == VK_NULL_HANDLE) return;
 
   VkDescriptorBufferInfo cameraInfo{cameraBuffer.buffer, 0, sizeof(container::gpu::CameraData)};
   VkDescriptorBufferInfo objectInfo{
@@ -534,7 +894,7 @@ void SceneManager::writeDescriptorSetContents(
 
   VkWriteDescriptorSet cameraWrite{};
   cameraWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  cameraWrite.dstSet = descriptorSet_;
+  cameraWrite.dstSet = descriptorSet;
   cameraWrite.dstBinding = 0;
   cameraWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   cameraWrite.descriptorCount = 1;
@@ -543,7 +903,7 @@ void SceneManager::writeDescriptorSetContents(
 
   VkWriteDescriptorSet objectWrite{};
   objectWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  objectWrite.dstSet = descriptorSet_;
+  objectWrite.dstSet = descriptorSet;
   objectWrite.dstBinding = 1;
   objectWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   objectWrite.descriptorCount = 1;
@@ -567,7 +927,7 @@ void SceneManager::writeDescriptorSetContents(
   if (!imageInfos.empty()) {
     VkWriteDescriptorSet imageWrite{};
     imageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    imageWrite.dstSet = descriptorSet_;
+    imageWrite.dstSet = descriptorSet;
     imageWrite.dstBinding = 3;
     imageWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     imageWrite.descriptorCount = static_cast<uint32_t>(imageInfos.size());
@@ -580,7 +940,7 @@ void SceneManager::writeDescriptorSetContents(
 
   VkWriteDescriptorSet samplerWrite{};
   samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  samplerWrite.dstSet = descriptorSet_;
+  samplerWrite.dstSet = descriptorSet;
   samplerWrite.dstBinding = 2;
   samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
   samplerWrite.descriptorCount = 1;

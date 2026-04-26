@@ -24,6 +24,10 @@ function(add_custom_test TARGET_NAME SOURCE_FILE SHADER_DIR TEST_RESULTS_DIR)
         GTest::gtest_main
     )
 
+    target_include_directories(${TARGET_NAME} PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+    )
+
     set_target_properties(${TARGET_NAME} PROPERTIES
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/tests
         RUNTIME_OUTPUT_DIRECTORY_DEBUG ${CMAKE_BINARY_DIR}/tests
@@ -59,16 +63,6 @@ add_custom_test(glm_tests
     Dep_Math
 )
 
-add_custom_test(rendering_convention_tests
-    ${TESTS_DIR}/rendering_convention_tests.cpp  ""  ${TEST_RESULTS_DIR}
-    VulkanContainer_geometry
-)
-
-add_custom_test(renderer_struct_tests
-    ${TESTS_DIR}/renderer_struct_tests.cpp  ""  ${TEST_RESULTS_DIR}
-    VulkanContainer_renderer
-)
-
 add_custom_test(ecs_tests
     ${TESTS_DIR}/ecs_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanContainer_ecs  VulkanContainer_scene
@@ -77,6 +71,11 @@ add_custom_test(ecs_tests
 add_custom_test(scene_graph_tests
     ${TESTS_DIR}/scene_graph_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanContainer_scene
+)
+
+add_custom_test(rendering_convention_tests
+    ${TESTS_DIR}/rendering_convention_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    Dep_Math
 )
 
 # ── Tests that need Vulkan / windowing runtime ───────────────────────────────

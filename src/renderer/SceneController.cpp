@@ -66,6 +66,15 @@ void SceneController::writeToBuffer(
   }
 
   std::memcpy(mapped, data, size);
+  if (vmaFlushAllocation(allocationManager.memoryManager()->allocator(),
+                         buffer.allocation, 0,
+                         static_cast<VkDeviceSize>(size)) != VK_SUCCESS) {
+    if (mappedHere) {
+      vmaUnmapMemory(allocationManager.memoryManager()->allocator(),
+                     buffer.allocation);
+    }
+    throw std::runtime_error("failed to flush buffer after writing");
+  }
 
   if (mappedHere) {
     vmaUnmapMemory(allocationManager.memoryManager()->allocator(),
@@ -163,10 +172,18 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
   objectData_.clear();
   opaqueDrawCommands_.clear();
   transparentDrawCommands_.clear();
+  opaqueSingleSidedDrawCommands_.clear();
+  opaqueDoubleSidedDrawCommands_.clear();
+  transparentSingleSidedDrawCommands_.clear();
+  transparentDoubleSidedDrawCommands_.clear();
   const uint32_t renderableCount = world_->renderableCount();
   objectData_.reserve(renderableCount);
   opaqueDrawCommands_.reserve(renderableCount);
   transparentDrawCommands_.reserve(renderableCount);
+  opaqueSingleSidedDrawCommands_.reserve(renderableCount);
+  opaqueDoubleSidedDrawCommands_.reserve(renderableCount);
+  transparentSingleSidedDrawCommands_.reserve(renderableCount);
+  transparentDoubleSidedDrawCommands_.reserve(renderableCount);
 
   world_->forEachRenderable(
       [this](const container::ecs::TransformComponent& transform,
@@ -200,8 +217,12 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
             sceneManager_.resolveMaterialTextureIndex(materialIndex);
         object.normalTextureIndex =
             sceneManager_.resolveMaterialNormalTexture(materialIndex);
+        object.normalTextureScale =
+            sceneManager_.resolveMaterialNormalTextureScale(materialIndex);
         object.occlusionTextureIndex =
             sceneManager_.resolveMaterialOcclusionTexture(materialIndex);
+        object.occlusionStrength =
+            sceneManager_.resolveMaterialOcclusionStrength(materialIndex);
         object.emissiveTextureIndex =
             sceneManager_.resolveMaterialEmissiveTexture(materialIndex);
         object.metallicRoughnessTextureIndex =
@@ -217,6 +238,35 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         if (sceneManager_.isMaterialDoubleSided(materialIndex))
           object.flags |= kObjectFlagDoubleSided;
 
+        // Compute world-space bounding sphere from primitive vertices.
+        {
+          const auto& verts   = sceneManager_.vertices();
+          const auto& indices = sceneManager_.indices();
+          glm::vec3 localMin(std::numeric_limits<float>::max());
+          glm::vec3 localMax(std::numeric_limits<float>::lowest());
+          const uint32_t endIdx = primitive.firstIndex + primitive.indexCount;
+          for (uint32_t i = primitive.firstIndex; i < endIdx && i < indices.size(); ++i) {
+            const glm::vec3& pos = verts[indices[i]].position;
+            localMin = glm::min(localMin, pos);
+            localMax = glm::max(localMax, pos);
+          }
+          if (primitive.indexCount > 0) {
+            const glm::vec3 localCenter = (localMin + localMax) * 0.5f;
+            float localRadius = 0.0f;
+            for (uint32_t i = primitive.firstIndex; i < endIdx && i < indices.size(); ++i) {
+              localRadius = std::max(localRadius,
+                  glm::length(verts[indices[i]].position - localCenter));
+            }
+            const glm::vec3 worldCenter =
+                glm::vec3(transform.worldTransform * glm::vec4(localCenter, 1.0f));
+            const float scaleMax = std::max({
+                glm::length(glm::vec3(transform.worldTransform[0])),
+                glm::length(glm::vec3(transform.worldTransform[1])),
+                glm::length(glm::vec3(transform.worldTransform[2]))});
+            object.boundingSphere = glm::vec4(worldCenter, localRadius * scaleMax);
+          }
+        }
+
         const uint32_t objectIndex =
             static_cast<uint32_t>(objectData_.size());
         objectData_.push_back(object);
@@ -228,8 +278,18 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
 
         if ((object.flags & kObjectFlagAlphaBlend) != 0u) {
           transparentDrawCommands_.push_back(drawCommand);
+          if ((object.flags & kObjectFlagDoubleSided) != 0u) {
+            transparentDoubleSidedDrawCommands_.push_back(drawCommand);
+          } else {
+            transparentSingleSidedDrawCommands_.push_back(drawCommand);
+          }
         } else {
           opaqueDrawCommands_.push_back(drawCommand);
+          if ((object.flags & kObjectFlagDoubleSided) != 0u) {
+            opaqueDoubleSidedDrawCommands_.push_back(drawCommand);
+          } else {
+            opaqueSingleSidedDrawCommands_.push_back(drawCommand);
+          }
         }
       });
 
@@ -349,8 +409,10 @@ bool SceneController::reloadSceneModel(
     uint32_t&                               outSelectedMeshNode,
     uint32_t&                               outCubeNode) {
   vkDeviceWaitIdle(device_->device());
+  const std::array<container::gpu::AllocatedBuffer, 1> cameraBuffers = {
+      cameraBuffer};
   const bool result =
-      sceneManager_.reloadModel(path, cameraBuffer, objectBuffer);
+      sceneManager_.reloadModel(path, cameraBuffers, objectBuffer);
   outIndexType = sceneManager_.indexType();
   buildSceneGraph(outRootNode, outSelectedMeshNode, outCubeNode);
   ensureObjectBufferCapacity(allocationManager_, objectBuffer,

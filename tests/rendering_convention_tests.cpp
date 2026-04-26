@@ -1,417 +1,417 @@
-// rendering_convention_tests.cpp
-//
-// Validates the full winding + projection + depth convention chain used by the
-// Vulkan renderer.  All tests are CPU-only (no GPU required) and operate on the
-// same math the renderer uses at runtime.
-//
-// Convention contract being tested
-// ---------------------------------
-// World space  : right-handed, glTF native (+Y up, -Z forward for camera)
-// View matrix  : glm::lookAt   (RH, camera looks down -Z)
-// Projection   : explicit RH reverse-Z matrix
-//                near→1, far→0
-// Y-flip       : proj[1][1] *= -1  (Vulkan NDC has Y-down)
-// Front-face   : VK_FRONT_FACE_COUNTER_CLOCKWISE
-//   Reason     : the Y-flip inverts the perceived winding in NDC; with the current positive-height viewport configuration,
-//                scene geometry keeps CCW as front-facing in framebuffer
-//                space.
-// Depth        : cleared to 0.0f, compare GREATER_OR_EQUAL (reverse-Z)
+#include "Container/app/AppConfig.h"
+#include "Container/common/CommonMath.h"
+#include "Container/utility/Camera.h"
 
 #include <gtest/gtest.h>
-#include <glm/glm.hpp>
-#include <glm/gtc/matrix_transform.hpp>
-#include <glm/vec3.hpp>
-#include <glm/vec4.hpp>
-#include <glm/mat4x4.hpp>
 
-#include "Container/common/CommonMath.h"
-#include "Container/geometry/Model.h"
-#include "Container/utility/Camera.h"
+#include <algorithm>
+#include <array>
+#include <glm/glm.hpp>
 
 namespace {
 
-// Tolerance for floating-point comparisons.
-constexpr float kEps = 1e-4f;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-// Transform a world-space triangle through full VP and return the 2-D signed
-// area in NDC (positive = CCW, negative = CW).
-float ndcSignedArea(glm::vec3 w0, glm::vec3 w1, glm::vec3 w2,
-                    const glm::mat4& viewProj) {
-    auto project = [&](glm::vec3 w) -> glm::vec2 {
-        glm::vec4 clip = viewProj * glm::vec4(w, 1.0f);
-        return glm::vec2(clip) / clip.w;  // perspective divide → NDC xy
-    };
-    glm::vec2 p0 = project(w0);
-    glm::vec2 p1 = project(w1);
-    glm::vec2 p2 = project(w2);
-    // 2D cross product (signed area * 2)
-    return (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
+glm::vec3 clipToNdc(const glm::vec4& clip) {
+  return glm::vec3(clip) / clip.w;
 }
 
-// Build the view-projection matrix exactly as the renderer does.
-glm::mat4 makeTestViewProj(glm::vec3 eye, glm::vec3 target,
-                            float fovDeg = 60.0f, float aspect = 1.0f,
-                            float zNear = 0.05f, float zFar = 500.0f) {
-    glm::mat4 view = container::math::lookAt(eye, target, {0, 1, 0});
-    glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
-        glm::radians(fovDeg), aspect, zNear, zFar);
-    proj[1][1] *= -1.0f;  // Vulkan Y-flip
-    return proj * view;
+glm::vec2 sceneUvToNdc(const glm::vec2& uv) {
+  return {uv.x * 2.0f - 1.0f, 1.0f - uv.y * 2.0f};
 }
 
-glm::vec4 simulateShaderColumnMajorMul(const glm::mat4& uploadedMatrix,
-                                       const glm::vec4& vector) {
-    // Slang column-major: mul(M, v) = M * v.
-    // GLM column-major data uploaded as-is is read directly as the same matrix.
-    return uploadedMatrix * vector;
+glm::vec2 sceneNdcToUv(const glm::vec2& ndc) {
+  return {ndc.x * 0.5f + 0.5f, 0.5f - ndc.y * 0.5f};
+}
+
+glm::vec2 shadowNdcToUv(const glm::vec2& ndc) {
+  return ndc * 0.5f + 0.5f;
+}
+
+glm::vec2 sceneNdcToFramebuffer(const glm::vec2& ndc) {
+  return {(ndc.x + 1.0f) * 0.5f, (1.0f - ndc.y) * 0.5f};
+}
+
+glm::vec2 shadowNdcToFramebuffer(const glm::vec2& ndc) {
+  return (ndc + 1.0f) * 0.5f;
+}
+
+float linearizeReverseZPerspectiveDepth(float depth, float nearPlane, float farPlane) {
+  return (nearPlane * farPlane) / (depth * (farPlane - nearPlane) + nearPlane);
+}
+
+glm::vec3 applyGlTfNormalScale(glm::vec3 decodedNormal, float scale) {
+  decodedNormal.x *= scale;
+  decodedNormal.y *= scale;
+  return glm::normalize(decodedNormal);
+}
+
+float applyOcclusionStrength(float sampledOcclusion, float strength) {
+  return 1.0f + (sampledOcclusion - 1.0f) * strength;
+}
+
+float signedArea(const std::array<glm::vec2, 3>& triangle) {
+  const glm::vec2 ab = triangle[1] - triangle[0];
+  const glm::vec2 ac = triangle[2] - triangle[0];
+  return ab.x * ac.y - ab.y * ac.x;
+}
+
+float slangMatrixAt(const glm::mat4& matrix, int row, int column) {
+  return matrix[column][row];
+}
+
+glm::vec4 slangMatrixRow(const glm::mat4& matrix, int row) {
+  return {
+      slangMatrixAt(matrix, row, 0),
+      slangMatrixAt(matrix, row, 1),
+      slangMatrixAt(matrix, row, 2),
+      slangMatrixAt(matrix, row, 3),
+  };
+}
+
+glm::vec4 normalizePlane(glm::vec4 plane) {
+  const float lengthSq = glm::dot(glm::vec3(plane), glm::vec3(plane));
+  if (lengthSq <= 1e-8f) {
+    return plane;
+  }
+  return plane / std::sqrt(lengthSq);
+}
+
+using FrustumPlanes = std::array<glm::vec4, 6>;
+
+FrustumPlanes extractFrustumPlanesUsingSlangRows(const glm::mat4& matrix) {
+  const glm::vec4 row0 = slangMatrixRow(matrix, 0);
+  const glm::vec4 row1 = slangMatrixRow(matrix, 1);
+  const glm::vec4 row2 = slangMatrixRow(matrix, 2);
+  const glm::vec4 row3 = slangMatrixRow(matrix, 3);
+
+  return {{
+      normalizePlane(row3 + row0),
+      normalizePlane(row3 - row0),
+      normalizePlane(row3 + row1),
+      normalizePlane(row3 - row1),
+      normalizePlane(row2),
+      normalizePlane(row3 - row2),
+  }};
+}
+
+FrustumPlanes extractFrustumPlanesUsingWrongColumnAccess(const glm::mat4& matrix) {
+  return {{
+      normalizePlane({slangMatrixAt(matrix, 0, 3) + slangMatrixAt(matrix, 0, 0),
+                      slangMatrixAt(matrix, 1, 3) + slangMatrixAt(matrix, 1, 0),
+                      slangMatrixAt(matrix, 2, 3) + slangMatrixAt(matrix, 2, 0),
+                      slangMatrixAt(matrix, 3, 3) + slangMatrixAt(matrix, 3, 0)}),
+      normalizePlane({slangMatrixAt(matrix, 0, 3) - slangMatrixAt(matrix, 0, 0),
+                      slangMatrixAt(matrix, 1, 3) - slangMatrixAt(matrix, 1, 0),
+                      slangMatrixAt(matrix, 2, 3) - slangMatrixAt(matrix, 2, 0),
+                      slangMatrixAt(matrix, 3, 3) - slangMatrixAt(matrix, 3, 0)}),
+      normalizePlane({slangMatrixAt(matrix, 0, 3) + slangMatrixAt(matrix, 0, 1),
+                      slangMatrixAt(matrix, 1, 3) + slangMatrixAt(matrix, 1, 1),
+                      slangMatrixAt(matrix, 2, 3) + slangMatrixAt(matrix, 2, 1),
+                      slangMatrixAt(matrix, 3, 3) + slangMatrixAt(matrix, 3, 1)}),
+      normalizePlane({slangMatrixAt(matrix, 0, 3) - slangMatrixAt(matrix, 0, 1),
+                      slangMatrixAt(matrix, 1, 3) - slangMatrixAt(matrix, 1, 1),
+                      slangMatrixAt(matrix, 2, 3) - slangMatrixAt(matrix, 2, 1),
+                      slangMatrixAt(matrix, 3, 3) - slangMatrixAt(matrix, 3, 1)}),
+      normalizePlane({slangMatrixAt(matrix, 0, 2),
+                      slangMatrixAt(matrix, 1, 2),
+                      slangMatrixAt(matrix, 2, 2),
+                      slangMatrixAt(matrix, 3, 2)}),
+      normalizePlane({slangMatrixAt(matrix, 0, 3) - slangMatrixAt(matrix, 0, 2),
+                      slangMatrixAt(matrix, 1, 3) - slangMatrixAt(matrix, 1, 2),
+                      slangMatrixAt(matrix, 2, 3) - slangMatrixAt(matrix, 2, 2),
+                      slangMatrixAt(matrix, 3, 3) - slangMatrixAt(matrix, 3, 2)}),
+  }};
+}
+
+bool pointInsideFrustum(const FrustumPlanes& planes, const glm::vec3& point) {
+  for (const glm::vec4& plane : planes) {
+    if (glm::dot(glm::vec3(plane), point) + plane.w < 0.0f) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool sphereInsideFrustum(const FrustumPlanes& planes,
+                         const glm::vec3& center,
+                         float radius) {
+  for (const glm::vec4& plane : planes) {
+    if (glm::dot(glm::vec3(plane), center) + plane.w < -radius) {
+      return false;
+    }
+  }
+  return true;
+}
+
+bool pointInsideClipVolume(const glm::mat4& viewProj, const glm::vec3& point) {
+  const glm::vec4 clip = viewProj * glm::vec4(point, 1.0f);
+  if (clip.w <= 0.0f) {
+    return false;
+  }
+
+  return clip.x >= -clip.w && clip.x <= clip.w &&
+         clip.y >= -clip.w && clip.y <= clip.w &&
+         clip.z >= 0.0f && clip.z <= clip.w;
+}
+
+float rowXyzLength(const glm::mat4& matrix, int row) {
+  const glm::vec4 r = slangMatrixRow(matrix, row);
+  return glm::length(glm::vec3(r));
 }
 
 }  // namespace
 
-// ---------------------------------------------------------------------------
-// 1. Projection depth range
-//    near plane vertex must map to NDC z ≈ 1 (reverse-Z)
-//    far  plane vertex must map to NDC z ≈ 0 (reverse-Z)
-// ---------------------------------------------------------------------------
-TEST(RenderingConvention, ReverseZ_NearMapsToOne) {
-    constexpr float zNear = 0.05f;
-    constexpr float zFar  = 500.0f;
+TEST(RenderingConventionTests, PerspectiveReverseZMapsNearAndFarToOneAndZero) {
+  constexpr float kNear = 0.1f;
+  constexpr float kFar = 100.0f;
 
-    glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
-        glm::radians(60.0f), 1.0f, zNear, zFar);
+  const glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
+      glm::radians(60.0f), 16.0f / 9.0f, kNear, kFar);
 
-    // A point exactly at the near plane in RH view space has view_z = -zNear
-    glm::vec4 nearClip = proj * glm::vec4(0.0f, 0.0f, -zNear, 1.0f);
-    float ndcZ = nearClip.z / nearClip.w;
-    EXPECT_NEAR(ndcZ, 1.0f, kEps) << "Near plane should map to NDC z=1 (reverse-Z)";
+  const glm::vec3 nearNdc = clipToNdc(proj * glm::vec4(0.0f, 0.0f, -kNear, 1.0f));
+  const glm::vec3 farNdc = clipToNdc(proj * glm::vec4(0.0f, 0.0f, -kFar, 1.0f));
+
+  EXPECT_NEAR(nearNdc.z, 1.0f, 1e-5f);
+  EXPECT_NEAR(farNdc.z, 0.0f, 1e-5f);
 }
 
-TEST(RenderingConvention, ReverseZ_FarMapsToZero) {
-    constexpr float zNear = 0.05f;
-    constexpr float zFar  = 500.0f;
+TEST(RenderingConventionTests, OrthoReverseZMapsNearAndFarToOneAndZero) {
+  constexpr float kNear = 2.0f;
+  constexpr float kFar = 10.0f;
 
-    glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
-        glm::radians(60.0f), 1.0f, zNear, zFar);
+  const glm::mat4 proj = container::math::orthoRH_ReverseZ(
+      -4.0f, 4.0f, -3.0f, 3.0f, kNear, kFar);
 
-    // A point at the far plane in RH view space has view_z = -zFar
-    glm::vec4 farClip = proj * glm::vec4(0.0f, 0.0f, -zFar, 1.0f);
-    float ndcZ = farClip.z / farClip.w;
-    EXPECT_NEAR(ndcZ, 0.0f, kEps) << "Far plane should map to NDC z=0 (reverse-Z)";
+  const glm::vec3 nearNdc = clipToNdc(proj * glm::vec4(0.0f, 0.0f, -kNear, 1.0f));
+  const glm::vec3 farNdc = clipToNdc(proj * glm::vec4(0.0f, 0.0f, -kFar, 1.0f));
+
+  EXPECT_NEAR(nearNdc.z, 1.0f, 1e-5f);
+  EXPECT_NEAR(farNdc.z, 0.0f, 1e-5f);
 }
 
-TEST(RenderingConvention, CloserObjectHasHigherDepth) {
-    constexpr float zNear = 0.05f;
-    constexpr float zFar  = 500.0f;
+TEST(RenderingConventionTests, ReverseZPerspectiveLinearizationRecoversViewDistance) {
+  constexpr float kNear = 0.1f;
+  constexpr float kFar = 100.0f;
+  constexpr float kMid = 12.5f;
 
-    glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
-        glm::radians(60.0f), 1.0f, zNear, zFar);
+  const glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
+      glm::radians(60.0f), 16.0f / 9.0f, kNear, kFar);
 
-    // Near object at view_z = -1
-    glm::vec4 nearClip = proj * glm::vec4(0.0f, 0.0f, -1.0f, 1.0f);
-    float nearNdcZ = nearClip.z / nearClip.w;
+  const float nearDepth = clipToNdc(proj * glm::vec4(0.0f, 0.0f, -kNear, 1.0f)).z;
+  const float midDepth = clipToNdc(proj * glm::vec4(0.0f, 0.0f, -kMid, 1.0f)).z;
+  const float farDepth = clipToNdc(proj * glm::vec4(0.0f, 0.0f, -kFar, 1.0f)).z;
 
-    // Far object at view_z = -100
-    glm::vec4 farClip = proj * glm::vec4(0.0f, 0.0f, -100.0f, 1.0f);
-    float farNdcZ = farClip.z / farClip.w;
-
-    EXPECT_GT(nearNdcZ, farNdcZ)
-        << "Closer object must have higher depth value (GREATER_OR_EQUAL wins)";
+  EXPECT_NEAR(linearizeReverseZPerspectiveDepth(nearDepth, kNear, kFar), kNear, 1e-5f);
+  EXPECT_NEAR(linearizeReverseZPerspectiveDepth(midDepth, kNear, kFar), kMid, 1e-4f);
+  EXPECT_NEAR(linearizeReverseZPerspectiveDepth(farDepth, kNear, kFar), kFar, 1e-3f);
 }
 
-// ---------------------------------------------------------------------------
-// 2. Winding convention
-//    A CCW-in-world-space triangle still appears CW in NDC after the Y-flip,
-//    but the pipeline now intentionally treats CCW as front-facing.
-// ---------------------------------------------------------------------------
-TEST(RenderingConvention, CCWWorldTriangle_IsCWInNDC_AfterYFlip) {
-    glm::mat4 vp = makeTestViewProj({0, 0, 3}, {0, 0, 0});
+TEST(RenderingConventionTests, GlTfNormalScaleOnlyScalesTangentSpaceXY) {
+  const glm::vec3 decodedNormal = glm::normalize(glm::vec3(0.4f, -0.3f, 1.0f));
 
-    glm::vec3 v0(-1, -1, 0);
-    glm::vec3 v1( 1, -1, 0);
-    glm::vec3 v2( 0,  1, 0);
+  const glm::vec3 flattened = applyGlTfNormalScale(decodedNormal, 0.0f);
+  const glm::vec3 boosted = applyGlTfNormalScale(decodedNormal, 2.0f);
 
-    const float area = ndcSignedArea(v0, v1, v2, vp);
-    EXPECT_LT(area, 0.0f)
-        << "CCW world-space triangle must still become CW in NDC after Y-flip.";
+  EXPECT_NEAR(flattened.x, 0.0f, 1e-6f);
+  EXPECT_NEAR(flattened.y, 0.0f, 1e-6f);
+  EXPECT_NEAR(flattened.z, 1.0f, 1e-6f);
+  EXPECT_GT(std::abs(boosted.x), std::abs(decodedNormal.x));
+  EXPECT_GT(std::abs(boosted.y), std::abs(decodedNormal.y));
+  EXPECT_LT(boosted.z, decodedNormal.z);
 }
 
-TEST(RenderingConvention, CWWorldTriangle_IsCCWInNDC_AfterYFlip) {
-    glm::mat4 vp = makeTestViewProj({0, 0, 3}, {0, 0, 0});
+TEST(RenderingConventionTests, GlTfOcclusionStrengthInterpolatesFromOneToTexture) {
+  constexpr float kSampledOcclusion = 0.35f;
 
-    glm::vec3 v0(-1, -1, 0);
-    glm::vec3 v1( 0,  1, 0);
-    glm::vec3 v2( 1, -1, 0);
-
-    const float area = ndcSignedArea(v0, v1, v2, vp);
-    EXPECT_GT(area, 0.0f)
-        << "CW world-space triangle must still become CCW in NDC after Y-flip.";
+  EXPECT_NEAR(applyOcclusionStrength(kSampledOcclusion, 0.0f), 1.0f, 1e-6f);
+  EXPECT_NEAR(applyOcclusionStrength(kSampledOcclusion, 1.0f), kSampledOcclusion, 1e-6f);
+  EXPECT_NEAR(applyOcclusionStrength(kSampledOcclusion, 0.25f), 0.8375f, 1e-6f);
 }
 
-TEST(RenderingConvention, Pipeline_FrontFaceIsCounterClockwise_InFramebufferConvention) {
-    // After projection Y-flip, CCW world winding appears CW in NDC. Vulkan front-face
-    // classification is effectively in framebuffer convention (Y-down), where that
-    // same triangle is CCW and therefore front-facing with VK_FRONT_FACE_COUNTER_CLOCKWISE.
-    glm::mat4 vp = makeTestViewProj({0, 0, 3}, {0, 0, 0});
+TEST(RenderingConventionTests, SceneViewportUvAndNdcRoundTripFlipsY) {
+  const glm::vec2 topLeftNdc = sceneUvToNdc({0.0f, 0.0f});
+  const glm::vec2 bottomLeftNdc = sceneUvToNdc({0.0f, 1.0f});
 
-    glm::vec3 ccw0(-1, -1, 0);
-    glm::vec3 ccw1( 1, -1, 0);
-    glm::vec3 ccw2( 0,  1, 0);
-    glm::vec3 cw0(-1, -1, 0);
-    glm::vec3 cw1( 0,  1, 0);
-    glm::vec3 cw2( 1, -1, 0);
+  EXPECT_NEAR(topLeftNdc.x, -1.0f, 1e-6f);
+  EXPECT_NEAR(topLeftNdc.y, 1.0f, 1e-6f);
+  EXPECT_NEAR(bottomLeftNdc.x, -1.0f, 1e-6f);
+  EXPECT_NEAR(bottomLeftNdc.y, -1.0f, 1e-6f);
 
-    const float ccwAreaNdc = ndcSignedArea(ccw0, ccw1, ccw2, vp);
-    const float cwAreaNdc = ndcSignedArea(cw0, cw1, cw2, vp);
+  const glm::vec2 uv = {0.27f, 0.81f};
+  const glm::vec2 roundTrip = sceneNdcToUv(sceneUvToNdc(uv));
 
-    // Convert NDC signed area to framebuffer (Y-down) signed area by flipping sign.
-    const float ccwAreaFramebuffer = -ccwAreaNdc;
-    const float cwAreaFramebuffer = -cwAreaNdc;
-
-    EXPECT_GT(ccwAreaFramebuffer, 0.0f)
-        << "CCW world winding should be front-facing with VK_FRONT_FACE_COUNTER_CLOCKWISE.";
-    EXPECT_LT(cwAreaFramebuffer, 0.0f)
-        << "CW world winding should be back-facing with VK_FRONT_FACE_COUNTER_CLOCKWISE.";
+  EXPECT_NEAR(roundTrip.x, uv.x, 1e-6f);
+  EXPECT_NEAR(roundTrip.y, uv.y, 1e-6f);
 }
 
-// ---------------------------------------------------------------------------
-// 3. Cube geometry
-//    For each face: geometric normal from vertex order must match the assigned
-//    normal (outward-pointing).
-// ---------------------------------------------------------------------------
-TEST(RenderingConvention, CubeFaces_GeometricNormalMatchesAssignedNormal) {
-    const container::geometry::Model cube = container::geometry::Model::MakeCube();
-    const auto& verts   = cube.vertices();
-    const auto& indices = cube.indices();
+TEST(RenderingConventionTests, ShadowViewportUsesPositiveHeightMapping) {
+  const glm::vec2 topLeftUv = shadowNdcToUv({-1.0f, -1.0f});
+  const glm::vec2 bottomRightUv = shadowNdcToUv({1.0f, 1.0f});
 
-    ASSERT_EQ(verts.size(), 24u)   << "Expected 24 vertices (4 per face)";
-    ASSERT_EQ(indices.size(), 36u) << "Expected 36 indices (6 per face)";
+  EXPECT_NEAR(topLeftUv.x, 0.0f, 1e-6f);
+  EXPECT_NEAR(topLeftUv.y, 0.0f, 1e-6f);
+  EXPECT_NEAR(bottomRightUv.x, 1.0f, 1e-6f);
+  EXPECT_NEAR(bottomRightUv.y, 1.0f, 1e-6f);
 
-    constexpr float kDotThreshold = 0.99f;  // must be nearly identical direction
+  const glm::vec2 shadowUv = shadowNdcToUv({0.25f, 0.75f});
+  const glm::vec2 sceneUv = sceneNdcToUv({0.25f, 0.75f});
+  EXPECT_GT(shadowUv.y, sceneUv.y);
+}
 
-    for (size_t tri = 0; tri + 2 < indices.size(); tri += 3) {
-        const auto& v0 = verts[indices[tri]];
-        const auto& v1 = verts[indices[tri + 1]];
-        const auto& v2 = verts[indices[tri + 2]];
+TEST(RenderingConventionTests, NegativeSceneViewportFlipsFramebufferWinding) {
+  const std::array<glm::vec2, 3> ccwNdcTriangle = {{
+      {-0.5f, -0.5f},
+      {0.5f, -0.5f},
+      {0.0f, 0.5f},
+  }};
 
-        glm::vec3 geomNormal = glm::normalize(
-            glm::cross(v1.position - v0.position,
-                       v2.position - v0.position));
+  const float ndcArea = signedArea(ccwNdcTriangle);
+  const float sceneFramebufferArea = signedArea({{
+      sceneNdcToFramebuffer(ccwNdcTriangle[0]),
+      sceneNdcToFramebuffer(ccwNdcTriangle[1]),
+      sceneNdcToFramebuffer(ccwNdcTriangle[2]),
+  }});
+  const float shadowFramebufferArea = signedArea({{
+      shadowNdcToFramebuffer(ccwNdcTriangle[0]),
+      shadowNdcToFramebuffer(ccwNdcTriangle[1]),
+      shadowNdcToFramebuffer(ccwNdcTriangle[2]),
+  }});
 
-        // All three vertices of a flat face share the same assigned normal.
-        glm::vec3 assignedNormal = glm::normalize(v0.normal);
+  EXPECT_GT(ndcArea, 0.0f);
+  EXPECT_LT(sceneFramebufferArea, 0.0f);
+  EXPECT_GT(shadowFramebufferArea, 0.0f);
+}
 
-        float dot = glm::dot(geomNormal, assignedNormal);
-        EXPECT_GT(dot, kDotThreshold)
-            << "Triangle " << tri / 3
-            << ": geometric normal " << geomNormal.x << "," << geomNormal.y << "," << geomNormal.z
-            << " does not match assigned normal " << assignedNormal.x << "," << assignedNormal.y << "," << assignedNormal.z
-            << " (dot=" << dot << "). Face is inside-out or normal is wrong.";
+TEST(RenderingConventionTests, PerspectiveViewMatrixIgnoresCameraScale) {
+  container::scene::PerspectiveCamera camera;
+  camera.setPosition({1.0f, 2.0f, 3.0f});
+  camera.setYawPitch(90.0f, -10.0f);
+
+  const glm::mat4 viewAtUnitScale = camera.viewMatrix();
+  camera.setScale({500.0f, 500.0f, 500.0f});
+  const glm::mat4 viewAtLargeScale = camera.viewMatrix();
+
+  for (int column = 0; column < 4; ++column) {
+    for (int row = 0; row < 4; ++row) {
+      EXPECT_FLOAT_EQ(viewAtUnitScale[column][row],
+                      viewAtLargeScale[column][row]);
     }
+  }
 }
 
-// ---------------------------------------------------------------------------
-// 4. Cube face normals point away from origin (outward)
-// ---------------------------------------------------------------------------
-TEST(RenderingConvention, CubeFaces_NormalsPointOutward) {
-    const container::geometry::Model cube = container::geometry::Model::MakeCube();
-    const auto& verts   = cube.vertices();
-    const auto& indices = cube.indices();
+TEST(RenderingConventionTests, FrustumPlaneExtractionUsesSlangRowIndexing) {
+  const glm::mat4 view = container::math::lookAt(
+      glm::vec3(3.0f, 2.0f, 5.0f),
+      glm::vec3(0.0f, 0.0f, 0.0f),
+      glm::vec3(0.0f, 1.0f, 0.0f));
+  const glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
+      glm::radians(55.0f), 16.0f / 9.0f, 0.1f, 100.0f);
+  const glm::mat4 viewProj = proj * view;
 
-    for (size_t tri = 0; tri + 2 < indices.size(); tri += 3) {
-        const auto& v0 = verts[indices[tri]];
-        const auto& v1 = verts[indices[tri + 1]];
-        const auto& v2 = verts[indices[tri + 2]];
+  const FrustumPlanes correctPlanes = extractFrustumPlanesUsingSlangRows(viewProj);
+  const FrustumPlanes wrongPlanes =
+      extractFrustumPlanesUsingWrongColumnAccess(viewProj);
 
-        glm::vec3 centroid = (v0.position + v1.position + v2.position) / 3.0f;
-        glm::vec3 normal   = glm::normalize(v0.normal);
-
-        // The centroid of an outward face is on the same side as its normal
-        // (dot > 0 when measured from origin).
-        float dot = glm::dot(normal, centroid);
-        EXPECT_GT(dot, 0.0f)
-            << "Triangle " << tri / 3
-            << ": face normal points inward (dot=" << dot << ").";
+  int correctMismatchCount = 0;
+  int wrongMismatchCount = 0;
+  for (int x = -8; x <= 8; x += 2) {
+    for (int y = -8; y <= 8; y += 2) {
+      for (int z = -8; z <= 8; z += 2) {
+        const glm::vec3 point(
+            static_cast<float>(x),
+            static_cast<float>(y),
+            static_cast<float>(z));
+        const bool clipInside = pointInsideClipVolume(viewProj, point);
+        if (pointInsideFrustum(correctPlanes, point) != clipInside) {
+          ++correctMismatchCount;
+        }
+        if (pointInsideFrustum(wrongPlanes, point) != clipInside) {
+          ++wrongMismatchCount;
+        }
+      }
     }
+  }
+
+  EXPECT_EQ(correctMismatchCount, 0);
+  EXPECT_GT(wrongMismatchCount, 0);
 }
 
-TEST(RenderingConvention, CubeVertexTangents_AreOrthogonalToNormals) {
-    const container::geometry::Model cube = container::geometry::Model::MakeCube();
-    const auto& verts = cube.vertices();
+TEST(RenderingConventionTests, FrustumCullUsesDrawFirstInstanceForObjectBounds) {
+  struct Bounds {
+    glm::vec3 center{};
+    float radius{0.0f};
+  };
+  struct IndirectDraw {
+    uint32_t firstInstance{0};
+  };
 
-    for (size_t i = 0; i < verts.size(); ++i) {
-        const glm::vec3 normal = glm::normalize(verts[i].normal);
-        const glm::vec3 tangent = glm::normalize(glm::vec3(verts[i].tangent));
-        const float tangentLength = glm::length(glm::vec3(verts[i].tangent));
+  const FrustumPlanes planes =
+      extractFrustumPlanesUsingSlangRows(glm::mat4(1.0f));
+  const std::array<Bounds, 2> objectBounds = {{
+      {{5.0f, 0.0f, 0.5f}, 0.1f},
+      {{0.0f, 0.0f, 0.5f}, 0.1f},
+  }};
+  const std::array<IndirectDraw, 1> compactedDrawList = {{{1u}}};
 
-        EXPECT_TRUE(std::isfinite(tangentLength));
-        EXPECT_NEAR(tangentLength, 1.0f, kEps)
-            << "Vertex " << i << " tangent must stay unit length.";
-        EXPECT_NEAR(glm::dot(normal, tangent), 0.0f, kEps)
-            << "Vertex " << i << " tangent must be orthogonal to the normal.";
-        EXPECT_TRUE(std::isfinite(verts[i].tangent.w));
-    }
+  const uint32_t drawListIndex = 0;
+  const uint32_t correctObjectIndex =
+      compactedDrawList[drawListIndex].firstInstance;
+
+  EXPECT_FALSE(sphereInsideFrustum(
+      planes, objectBounds[drawListIndex].center,
+      objectBounds[drawListIndex].radius));
+  EXPECT_TRUE(sphereInsideFrustum(
+      planes, objectBounds[correctObjectIndex].center,
+      objectBounds[correctObjectIndex].radius));
 }
 
-// ---------------------------------------------------------------------------
-// 5. Cube front-face winding in NDC
-//    With the renderer's VP, a vertex in front of the +Z face must have
-//    a positive (non-zero) clip-w and produce a CW triangle in NDC.
-// ---------------------------------------------------------------------------
-TEST(RenderingConvention, CubePlusZFace_IsVisibleAndCWInNDC) {
-    // Camera at (0,0,3) looking toward origin - exactly the diagnostic setup.
-    glm::mat4 vp = makeTestViewProj({0, 0, 3}, {0, 0, 0});
+TEST(RenderingConventionTests, OcclusionCullSphereBoundsNeedProjectionScale) {
+  const glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
+      glm::radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f);
 
-    // +Z face: v0=(-0.5,-0.5,0.5), v1=(0.5,-0.5,0.5), v2=(0.5,0.5,0.5)
-    // (first triangle of the +Z face as authored in MakeCube)
-    glm::vec3 v0(-0.5f, -0.5f, 0.5f);
-    glm::vec3 v1( 0.5f, -0.5f, 0.5f);
-    glm::vec3 v2( 0.5f,  0.5f, 0.5f);
+  constexpr float kSphereRadius = 1.0f;
+  constexpr float kSphereViewDepth = 5.0f;
+  const glm::vec4 topPointClip =
+      proj * glm::vec4(0.0f, kSphereRadius, -kSphereViewDepth, 1.0f);
+  const float actualNdcYExtent = std::abs(clipToNdc(topPointClip).y);
 
-    // Vertices must be in front of the camera (positive clip-w).
-    auto clipW = [&](glm::vec3 w) {
-        return (vp * glm::vec4(w, 1.0f)).w;
-    };
-    EXPECT_GT(clipW(v0), 0.0f) << "+Z face v0 behind camera";
-    EXPECT_GT(clipW(v1), 0.0f) << "+Z face v1 behind camera";
-    EXPECT_GT(clipW(v2), 0.0f) << "+Z face v2 behind camera";
+  const float oldProjectedRadius = kSphereRadius / kSphereViewDepth;
+  const float conservativeProjectedRadius =
+      rowXyzLength(proj, 1) * kSphereRadius / (kSphereViewDepth - kSphereRadius);
 
-    // Must be CW in NDC (negative area). NDC winding remains CW after projection Y-flip.
-    float area = ndcSignedArea(v0, v1, v2, vp);
-    EXPECT_LT(area, 0.0f)
-        << "+Z face is expected to be CW in NDC after projection Y-flip.";
+  EXPECT_LT(oldProjectedRadius, actualNdcYExtent);
+  EXPECT_GE(conservativeProjectedRadius, actualNdcYExtent);
 }
 
-// ---------------------------------------------------------------------------
-// 6. Depth clear value is correct for reverse-Z
-// ---------------------------------------------------------------------------
-TEST(RenderingConvention, DepthClear_IsZero_ForReverseZ) {
-    // In reverse-Z: near=1, far=0. An empty pixel that was never drawn has
-    // depth=0 (far). The clear value must be 0.0f.
-    constexpr float kExpectedClearDepth = 0.0f;
-    // This test documents the required constant — if someone changes the clear
-    // value the companion pipeline change (LESS vs GREATER) must also change.
-    EXPECT_FLOAT_EQ(kExpectedClearDepth, 0.0f)
-        << "Reverse-Z depth clear must be 0.0f (far=0 convention).";
+TEST(RenderingConventionTests, OcclusionCullSphereDepthUsesNearestPointProjection) {
+  const glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
+      glm::radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f);
+
+  constexpr float kSphereRadius = 2.0f;
+  constexpr float kSphereCenterDepth = 10.0f;
+  const glm::vec4 centerClip =
+      proj * glm::vec4(0.0f, 0.0f, -kSphereCenterDepth, 1.0f);
+  const float oldMixedDepth =
+      clipToNdc(centerClip).z + (kSphereRadius / centerClip.w);
+
+  const glm::vec4 nearestPointClip =
+      proj * glm::vec4(0.0f, 0.0f, -(kSphereCenterDepth - kSphereRadius), 1.0f);
+  const float exactClosestDepth = clipToNdc(nearestPointClip).z;
+
+  EXPECT_GT(oldMixedDepth, exactClosestDepth);
+  EXPECT_NEAR(exactClosestDepth, clipToNdc(nearestPointClip).z, 1e-6f);
 }
 
-// ---------------------------------------------------------------------------
-// 7. Camera::viewMatrix() basis vectors (RH)
-//    With yaw=90/pitch=0 the camera looks straight down -Z.
-//    Cube at origin from (0,0,3) must project symmetrically to NDC.
-// ---------------------------------------------------------------------------
-TEST(RenderingConvention, Camera_FrontVector_Yaw90_Pitch0_IsNegativeZ) {
-    container::scene::PerspectiveCamera cam;
-    cam.setYawPitch(90.0f, 0.0f);
-    glm::vec3 front = cam.frontVector();
-    EXPECT_NEAR(front.x, 0.0f,  kEps) << "front.x should be 0 for yaw=90";
-    EXPECT_NEAR(front.y, 0.0f,  kEps) << "front.y should be 0 for pitch=0";
-    EXPECT_NEAR(front.z, -1.0f, kEps) << "front.z should be -1 (RH -Z forward)";
+TEST(RenderingConventionTests, DefaultSceneUsesCompositeTestSceneToken) {
+  const auto config = container::app::DefaultAppConfig();
+
+  EXPECT_EQ(config.modelPath, container::app::kDefaultSceneModelToken);
 }
 
-TEST(RenderingConvention, Camera_UpVector_IsWorldUp_WhenLookingDownNegZ) {
-    container::scene::PerspectiveCamera cam;
-    cam.setYawPitch(90.0f, 0.0f);
-    glm::vec3 front = cam.frontVector();
-    glm::vec3 up    = cam.upVector(front);
-    EXPECT_NEAR(up.x, 0.0f, kEps) << "up.x should be 0";
-    EXPECT_NEAR(up.y, 1.0f, kEps) << "up.y should be 1 (world up)";
-    EXPECT_NEAR(up.z, 0.0f, kEps) << "up.z should be 0";
+TEST(RenderingConventionTests, DefaultSceneModelListContainsTriangleCubeAndSphere) {
+  const auto& modelPaths = container::app::kDefaultSceneModelRelativePaths;
+
+  ASSERT_EQ(modelPaths.size(), 3u);
+  EXPECT_NE(modelPaths[0].find("Triangle"), std::string_view::npos);
+  EXPECT_NE(modelPaths[1].find("Cube"), std::string_view::npos);
+  EXPECT_EQ(modelPaths[2], std::string_view("__procedural_uv_sphere__"));
 }
-
-TEST(RenderingConvention, Camera_CubeAtOrigin_ProjectsSymmetrically) {
-    // Camera at (0,0,3) looking at origin — diagnostic cube setup.
-    container::scene::PerspectiveCamera cam;
-    cam.setYawPitch(90.0f, 0.0f);
-    cam.setPosition({0.0f, 0.0f, 3.0f});
-
-    constexpr float aspect = 16.0f / 9.0f;
-    glm::mat4 vp = cam.viewProjection(aspect);
-
-    // Cube corners at x=+/-0.5, y=+/-0.5 must be symmetric in NDC.
-    auto ndcXY = [&](glm::vec3 w) -> glm::vec2 {
-        glm::vec4 clip = vp * glm::vec4(w, 1.0f);
-        return glm::vec2(clip) / clip.w;
-    };
-
-    glm::vec2 ppp = ndcXY({ 0.5f,  0.5f, 0.0f});
-    glm::vec2 pmm = ndcXY({ 0.5f, -0.5f, 0.0f});
-    glm::vec2 mpp = ndcXY({-0.5f,  0.5f, 0.0f});
-
-    // x must be symmetric: (+0.5,y,z) -> +x_ndc, (-0.5,y,z) -> -x_ndc
-    EXPECT_NEAR(ppp.x, -mpp.x, kEps) << "Cube should be centred: +x and -x NDC must be symmetric";
-    // y must be symmetric: (x,+0.5,z) -> y_ndc, (x,-0.5,z) -> -y_ndc (Y-flipped)
-    EXPECT_NEAR(ppp.y, -pmm.y, kEps) << "Cube should be centred: +y and -y NDC must be symmetric";
-    // Centre of cube (0,0,0) must project to NDC (0,0)
-    glm::vec2 centre = ndcXY({0.0f, 0.0f, 0.0f});
-    EXPECT_NEAR(centre.x, 0.0f, kEps) << "Cube centre must project to NDC x=0";
-    EXPECT_NEAR(centre.y, 0.0f, kEps) << "Cube centre must project to NDC y=0";
-}
-
-TEST(RenderingConvention, ReverseZOrtho_NearMapsToOne_AndFarMapsToZero) {
-    constexpr float zNear = 0.05f;
-    constexpr float zFar  = 500.0f;
-
-    glm::mat4 proj = container::math::orthoRH_ReverseZ(
-        -2.0f, 2.0f, -2.0f, 2.0f, zNear, zFar);
-
-    glm::vec4 nearClip = proj * glm::vec4(0.0f, 0.0f, -zNear, 1.0f);
-    glm::vec4 farClip  = proj * glm::vec4(0.0f, 0.0f, -zFar, 1.0f);
-
-    EXPECT_NEAR(nearClip.z, 1.0f, kEps);
-    EXPECT_NEAR(farClip.z, 0.0f, kEps);
-}
-
-TEST(RenderingConvention, ShaderBoundary_DirectUploadsMatchCpuColumnVectorMath) {
-    const glm::mat4 model =
-        glm::translate(glm::mat4(1.0f), {1.25f, -0.75f, 0.5f}) *
-        glm::rotate(glm::mat4(1.0f), glm::radians(37.0f),
-                    glm::normalize(glm::vec3(0.3f, 1.0f, -0.2f))) *
-        glm::scale(glm::mat4(1.0f), {1.5f, 0.75f, 2.0f});
-    const glm::mat4 viewProj =
-        makeTestViewProj({1.5f, 2.0f, 4.0f}, {0.25f, -0.1f, 0.0f}, 57.0f, 16.0f / 9.0f);
-    const glm::vec4 position{0.4f, -0.2f, 0.7f, 1.0f};
-
-    const glm::vec4 expectedClip = viewProj * model * position;
-
-    // Upload GLM matrices directly (no transpose) for column-major Slang.
-    const glm::vec4 shaderWorld =
-        simulateShaderColumnMajorMul(model, position);
-    const glm::vec4 shaderClip =
-        simulateShaderColumnMajorMul(viewProj, shaderWorld);
-
-    EXPECT_NEAR(shaderClip.x, expectedClip.x, kEps);
-    EXPECT_NEAR(shaderClip.y, expectedClip.y, kEps);
-    EXPECT_NEAR(shaderClip.z, expectedClip.z, kEps);
-    EXPECT_NEAR(shaderClip.w, expectedClip.w, kEps);
-}
-
-TEST(RenderingConvention, ShaderBoundary_TransposedUploadsDoNotMatchCpuMath) {
-    const glm::mat4 model =
-        glm::translate(glm::mat4(1.0f), {1.25f, -0.75f, 0.5f}) *
-        glm::rotate(glm::mat4(1.0f), glm::radians(37.0f),
-                    glm::normalize(glm::vec3(0.3f, 1.0f, -0.2f))) *
-        glm::scale(glm::mat4(1.0f), {1.5f, 0.75f, 2.0f});
-    const glm::mat4 viewProj =
-        makeTestViewProj({1.5f, 2.0f, 4.0f}, {0.25f, -0.1f, 0.0f}, 57.0f, 16.0f / 9.0f);
-    const glm::vec4 position{0.4f, -0.2f, 0.7f, 1.0f};
-
-    const glm::vec4 expectedClip = viewProj * model * position;
-
-    // Transposing before upload should produce wrong results with column-major Slang.
-    const glm::mat4 uploadedModel = glm::transpose(model);
-    const glm::mat4 uploadedViewProj = glm::transpose(viewProj);
-    const glm::vec4 shaderWorld =
-        simulateShaderColumnMajorMul(uploadedModel, position);
-    const glm::vec4 shaderClip =
-        simulateShaderColumnMajorMul(uploadedViewProj, shaderWorld);
-
-    const float delta = glm::length(shaderClip - expectedClip);
-    EXPECT_GT(delta, 1.0f)
-        << "Transposing CPU column-vector matrices before upload should "
-           "not match the column-major shader math.";
-}
-

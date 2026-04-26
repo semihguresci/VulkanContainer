@@ -38,6 +38,22 @@ set(SLANG_SPIRV_FLAGS
 
 file(GLOB SLANG_SOURCES CONFIGURE_DEPENDS "${SHADERS_DIR}/*.slang")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/surface_normal_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/brdf_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/lighting_structs\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/shadow_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/tile_light_cull\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/brdf_lut\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/equirect_to_cubemap\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/irradiance_convolution\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/prefilter_specular\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/gtao\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/gtao_blur\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/frustum_cull\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/hiz_generate\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/occlusion_cull\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/shadow_cull\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/bloom_downsample\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/bloom_upsample\\.slang$")
 
 if(NOT SLANG_SOURCES)
     message(WARNING "No Slang shaders found in ${SHADERS_DIR}")
@@ -107,6 +123,98 @@ if(EXISTS "${NORMAL_VALIDATION_SOURCE}")
     set(NORMAL_VALIDATION_GEOM_OUTPUT "${COMPILED_SHADERS_DIR}/normal_validation.geom.spv")
     append_slang_compile_step(
         SHADER_BUILD_SCRIPT_CONTENT "${NORMAL_VALIDATION_SOURCE}" "geomMain" "${NORMAL_VALIDATION_GEOM_OUTPUT}")
+endif()
+
+# Compute shaders.
+set(TILE_LIGHT_CULL_SOURCE "${SHADERS_DIR}/tile_light_cull.slang")
+if(EXISTS "${TILE_LIGHT_CULL_SOURCE}")
+    set(TILE_LIGHT_CULL_OUTPUT "${COMPILED_SHADERS_DIR}/tile_light_cull.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${TILE_LIGHT_CULL_SOURCE}" "computeMain" "${TILE_LIGHT_CULL_OUTPUT}")
+endif()
+
+set(BRDF_LUT_SOURCE "${SHADERS_DIR}/brdf_lut.slang")
+if(EXISTS "${BRDF_LUT_SOURCE}")
+    set(BRDF_LUT_OUTPUT "${COMPILED_SHADERS_DIR}/brdf_lut.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${BRDF_LUT_SOURCE}" "computeMain" "${BRDF_LUT_OUTPUT}")
+endif()
+
+set(EQUIRECT_TO_CUBEMAP_SOURCE "${SHADERS_DIR}/equirect_to_cubemap.slang")
+if(EXISTS "${EQUIRECT_TO_CUBEMAP_SOURCE}")
+    set(EQUIRECT_TO_CUBEMAP_OUTPUT "${COMPILED_SHADERS_DIR}/equirect_to_cubemap.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${EQUIRECT_TO_CUBEMAP_SOURCE}" "computeMain" "${EQUIRECT_TO_CUBEMAP_OUTPUT}")
+endif()
+
+set(IRRADIANCE_CONV_SOURCE "${SHADERS_DIR}/irradiance_convolution.slang")
+if(EXISTS "${IRRADIANCE_CONV_SOURCE}")
+    set(IRRADIANCE_CONV_OUTPUT "${COMPILED_SHADERS_DIR}/irradiance_convolution.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${IRRADIANCE_CONV_SOURCE}" "computeMain" "${IRRADIANCE_CONV_OUTPUT}")
+endif()
+
+set(PREFILTER_SPEC_SOURCE "${SHADERS_DIR}/prefilter_specular.slang")
+if(EXISTS "${PREFILTER_SPEC_SOURCE}")
+    set(PREFILTER_SPEC_OUTPUT "${COMPILED_SHADERS_DIR}/prefilter_specular.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${PREFILTER_SPEC_SOURCE}" "computeMain" "${PREFILTER_SPEC_OUTPUT}")
+endif()
+
+set(GTAO_SOURCE "${SHADERS_DIR}/gtao.slang")
+if(EXISTS "${GTAO_SOURCE}")
+    set(GTAO_OUTPUT "${COMPILED_SHADERS_DIR}/gtao.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${GTAO_SOURCE}" "computeMain" "${GTAO_OUTPUT}")
+endif()
+
+set(GTAO_BLUR_SOURCE "${SHADERS_DIR}/gtao_blur.slang")
+if(EXISTS "${GTAO_BLUR_SOURCE}")
+    set(GTAO_BLUR_OUTPUT "${COMPILED_SHADERS_DIR}/gtao_blur.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${GTAO_BLUR_SOURCE}" "computeMain" "${GTAO_BLUR_OUTPUT}")
+endif()
+
+set(FRUSTUM_CULL_SOURCE "${SHADERS_DIR}/frustum_cull.slang")
+if(EXISTS "${FRUSTUM_CULL_SOURCE}")
+    set(FRUSTUM_CULL_OUTPUT "${COMPILED_SHADERS_DIR}/frustum_cull.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${FRUSTUM_CULL_SOURCE}" "computeMain" "${FRUSTUM_CULL_OUTPUT}")
+endif()
+
+set(HIZ_GENERATE_SOURCE "${SHADERS_DIR}/hiz_generate.slang")
+if(EXISTS "${HIZ_GENERATE_SOURCE}")
+    set(HIZ_GENERATE_OUTPUT "${COMPILED_SHADERS_DIR}/hiz_generate.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${HIZ_GENERATE_SOURCE}" "computeMain" "${HIZ_GENERATE_OUTPUT}")
+endif()
+
+set(OCCLUSION_CULL_SOURCE "${SHADERS_DIR}/occlusion_cull.slang")
+if(EXISTS "${OCCLUSION_CULL_SOURCE}")
+    set(OCCLUSION_CULL_OUTPUT "${COMPILED_SHADERS_DIR}/occlusion_cull.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${OCCLUSION_CULL_SOURCE}" "computeMain" "${OCCLUSION_CULL_OUTPUT}")
+endif()
+
+set(SHADOW_CULL_SOURCE "${SHADERS_DIR}/shadow_cull.slang")
+if(EXISTS "${SHADOW_CULL_SOURCE}")
+    set(SHADOW_CULL_OUTPUT "${COMPILED_SHADERS_DIR}/shadow_cull.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${SHADOW_CULL_SOURCE}" "computeMain" "${SHADOW_CULL_OUTPUT}")
+endif()
+
+set(BLOOM_DOWNSAMPLE_SOURCE "${SHADERS_DIR}/bloom_downsample.slang")
+if(EXISTS "${BLOOM_DOWNSAMPLE_SOURCE}")
+    set(BLOOM_DOWNSAMPLE_OUTPUT "${COMPILED_SHADERS_DIR}/bloom_downsample.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${BLOOM_DOWNSAMPLE_SOURCE}" "computeMain" "${BLOOM_DOWNSAMPLE_OUTPUT}")
+endif()
+
+set(BLOOM_UPSAMPLE_SOURCE "${SHADERS_DIR}/bloom_upsample.slang")
+if(EXISTS "${BLOOM_UPSAMPLE_SOURCE}")
+    set(BLOOM_UPSAMPLE_OUTPUT "${COMPILED_SHADERS_DIR}/bloom_upsample.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${BLOOM_UPSAMPLE_SOURCE}" "computeMain" "${BLOOM_UPSAMPLE_OUTPUT}")
 endif()
 
 file(WRITE "${SHADER_BUILD_SCRIPT}" "${SHADER_BUILD_SCRIPT_CONTENT}")

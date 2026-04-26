@@ -9,6 +9,8 @@ struct PipelineLayouts {
   VkPipelineLayout scene{VK_NULL_HANDLE};
   VkPipelineLayout transparent{VK_NULL_HANDLE};
   VkPipelineLayout lighting{VK_NULL_HANDLE};
+  VkPipelineLayout tiledLighting{VK_NULL_HANDLE};
+  VkPipelineLayout shadow{VK_NULL_HANDLE};
   VkPipelineLayout postProcess{VK_NULL_HANDLE};
   VkPipelineLayout wireframe{VK_NULL_HANDLE};
   VkPipelineLayout normalValidation{VK_NULL_HANDLE};
@@ -18,12 +20,18 @@ struct PipelineLayouts {
 // All Vulkan pipelines created by GraphicsPipelineBuilder.
 struct GraphicsPipelines {
   VkPipeline depthPrepass{VK_NULL_HANDLE};
+  VkPipeline depthPrepassNoCull{VK_NULL_HANDLE};
   VkPipeline gBuffer{VK_NULL_HANDLE};
+  VkPipeline gBufferNoCull{VK_NULL_HANDLE};
+  VkPipeline shadowDepth{VK_NULL_HANDLE};
+  VkPipeline shadowDepthNoCull{VK_NULL_HANDLE};
   VkPipeline directionalLight{VK_NULL_HANDLE};
   VkPipeline stencilVolume{VK_NULL_HANDLE};
   VkPipeline pointLight{VK_NULL_HANDLE};
   VkPipeline pointLightStencilDebug{VK_NULL_HANDLE};
+  VkPipeline tiledPointLight{VK_NULL_HANDLE};
   VkPipeline transparent{VK_NULL_HANDLE};
+  VkPipeline transparentNoCull{VK_NULL_HANDLE};
   VkPipeline postProcess{VK_NULL_HANDLE};
   VkPipeline geometryDebug{VK_NULL_HANDLE};
   VkPipeline normalValidation{VK_NULL_HANDLE};
@@ -31,6 +39,7 @@ struct GraphicsPipelines {
   VkPipeline wireframeNoDepth{VK_NULL_HANDLE};
   VkPipeline surfaceNormalLine{VK_NULL_HANDLE};
   VkPipeline objectNormalDebug{VK_NULL_HANDLE};
+  VkPipeline objectNormalDebugNoCull{VK_NULL_HANDLE};
   VkPipeline lightGizmo{VK_NULL_HANDLE};
 };
 
@@ -39,6 +48,8 @@ struct PipelineDescriptorLayouts {
   VkDescriptorSetLayout scene{VK_NULL_HANDLE};
   VkDescriptorSetLayout lighting{VK_NULL_HANDLE};
   VkDescriptorSetLayout light{VK_NULL_HANDLE};
+  VkDescriptorSetLayout tiled{VK_NULL_HANDLE};
+  VkDescriptorSetLayout shadow{VK_NULL_HANDLE};
   VkDescriptorSetLayout postProcess{VK_NULL_HANDLE};
   VkDescriptorSetLayout oit{VK_NULL_HANDLE};
 };
@@ -47,6 +58,7 @@ struct PipelineDescriptorLayouts {
 struct PipelineRenderPasses {
   VkRenderPass depthPrepass{VK_NULL_HANDLE};
   VkRenderPass gBuffer{VK_NULL_HANDLE};
+  VkRenderPass shadow{VK_NULL_HANDLE};
   VkRenderPass lighting{VK_NULL_HANDLE};
   VkRenderPass postProcess{VK_NULL_HANDLE};
 };

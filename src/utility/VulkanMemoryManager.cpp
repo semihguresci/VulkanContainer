@@ -81,6 +81,11 @@ void StagingBuffer::upload(std::span<const std::byte> bytes) {
 
   void* dst = data();
   std::memcpy(dst, bytes.data(), bytes.size_bytes());
+  if (vmaFlushAllocation(manager_->allocator(), buffer_.allocation, 0,
+                         static_cast<VkDeviceSize>(bytes.size_bytes())) !=
+      VK_SUCCESS) {
+    throw std::runtime_error("Failed to flush staging buffer upload");
+  }
 }
 
 /* ===================== VulkanMemoryManager ====================== */

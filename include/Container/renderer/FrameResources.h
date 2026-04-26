@@ -20,8 +20,8 @@ struct FrameResources {
   AttachmentImage normal{};
   AttachmentImage material{};
   AttachmentImage emissive{};
-  AttachmentImage position{};
   AttachmentImage depthStencil{};
+  VkImageView     depthSamplingView{VK_NULL_HANDLE};
   AttachmentImage sceneColor{};
   AttachmentImage oitHeadPointers{};
   container::gpu::AllocatedBuffer oitNodeBuffer{};

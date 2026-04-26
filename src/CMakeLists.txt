@@ -12,6 +12,8 @@ add_library(VulkanContainer_renderer
     renderer/SceneController.cpp
     renderer/CameraController.cpp
     renderer/LightingManager.cpp
+    renderer/EnvironmentManager.cpp
+    renderer/TinyExrImpl.cpp
     renderer/GraphicsPipelineBuilder.cpp
     renderer/FrameRecorder.cpp
     renderer/RenderGraph.cpp
@@ -19,6 +21,10 @@ add_library(VulkanContainer_renderer
     renderer/WindowInputBridge.cpp
     renderer/CommandBufferManager.cpp
     renderer/RendererFrontend.cpp
+    renderer/ShadowManager.cpp
+    renderer/ShadowCullManager.cpp
+    renderer/GpuCullManager.cpp
+    renderer/BloomManager.cpp
     renderer/VulkanContext.cpp
 )
 
@@ -30,6 +36,7 @@ target_include_directories(VulkanContainer_renderer PUBLIC
 target_link_libraries(VulkanContainer_renderer PUBLIC
     Dep_VulkanCore
     Dep_Math
+    Dep_SceneIO
     VulkanContainer_log
     VulkanContainer_vulkan_device
     VulkanContainer_gpu_resource

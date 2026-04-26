@@ -14,13 +14,15 @@ struct ObjectBuffer
     float emissiveStrength;
     float2 metallicRoughness;
     float alphaCutoff;
+    float normalTextureScale;
+    float occlusionStrength;
     uint baseColorTextureIndex;
     uint normalTextureIndex;
     uint occlusionTextureIndex;
     uint emissiveTextureIndex;
     uint metallicRoughnessTextureIndex;
     uint flags;
-    float2 padding;
+    float4 boundingSphere;
 };
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
@@ -55,10 +57,11 @@ struct GSOutput
 };
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
 {
     VSOutput output;
-    ObjectBuffer obj = uObjects[pc.objectIndex];
+    uint objectIndex = instanceID;
+    ObjectBuffer obj = uObjects[objectIndex];
     float4 world = mul(obj.model, float4(input.inPosition, 1.0));
     output.worldPos = world.xyz;
     output.pos = mul(uCamera.viewProj, world);
@@ -82,7 +85,15 @@ void geomMain(triangle VSOutput input[3], inout TriangleStream<GSOutput> stream)
     {
         const float3 faceNormal = normalize(faceCross);
         const float3 centroid = (p0 + p1 + p2) / 3.0;
-        const float3 viewDir = normalize(uCamera.cameraWorldPosition.xyz - centroid);
+        float3 viewDir = uCamera.cameraWorldPosition.xyz - centroid;
+        if (!all(isfinite(viewDir)) || length(viewDir) < 1e-6)
+        {
+            viewDir = faceNormal;
+        }
+        else
+        {
+            viewDir = normalize(viewDir);
+        }
         const bool correct = dot(faceNormal, viewDir) > 0.0;
         baseColor = correct ? float3(0.0, 0.2, 1.0) : float3(1.0, 0.0, 0.0);
     }

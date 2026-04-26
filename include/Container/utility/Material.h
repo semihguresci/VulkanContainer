@@ -15,6 +15,8 @@ struct Material {
   float metallicFactor{1.0f};
   float roughnessFactor{1.0f};
   float alphaCutoff{0.5f};
+  float normalTextureScale{1.0f};
+  float occlusionStrength{1.0f};
   uint32_t baseColorTextureIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t normalTextureIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t occlusionTextureIndex{std::numeric_limits<uint32_t>::max()};

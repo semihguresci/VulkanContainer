@@ -14,13 +14,15 @@ struct ObjectBuffer
     float emissiveStrength;
     float2 metallicRoughness;
     float alphaCutoff;
+    float normalTextureScale;
+    float occlusionStrength;
     uint baseColorTextureIndex;
     uint normalTextureIndex;
     uint occlusionTextureIndex;
     uint emissiveTextureIndex;
     uint metallicRoughnessTextureIndex;
     uint flags;
-    float2 padding;
+    float4 boundingSphere;
 };
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
@@ -28,9 +30,11 @@ struct ObjectBuffer
 
 struct PushConstants
 {
-    [[vk::offset(0)]] uint objectIndex;
-    [[vk::offset(16)]] float4 colorIntensity;
-    [[vk::offset(32)]] float lineWidth;
+    uint objectIndex;
+    float3 _pad0;
+    float4 colorIntensity;
+    float lineWidth;
+    float3 _pad1;
 };
 
 [[vk::push_constant]]
@@ -53,14 +57,15 @@ struct VSOutput
 struct GSOutput
 {
     float4 pos : SV_Position;
-    [[vk::location(0)]] float3 bary;
+    noperspective [[vk::location(0)]] float3 bary;
 };
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
 {
     VSOutput output;
-    ObjectBuffer obj = uObjects[pc.objectIndex];
+    uint objectIndex = pc.objectIndex;
+    ObjectBuffer obj = uObjects[objectIndex];
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);
     return output;
@@ -95,11 +100,9 @@ float4 fragMain(GSOutput input) : SV_Target0
     deriv = max(deriv, float3(1e-6, 1e-6, 1e-6));
 
     float widthPx = max(pc.lineWidth, 1.0);
-    float edgeMetric = min(min(input.bary.x / deriv.x,
-                               input.bary.y / deriv.y),
-                           input.bary.z / deriv.z);
-
-    float edgeAlpha = 1.0 - smoothstep(widthPx - 1.0, widthPx + 1.0, edgeMetric);
+    float3 edgeDistance = input.bary / deriv;
+    float edgeMetric = min(min(edgeDistance.x, edgeDistance.y), edgeDistance.z);
+    float edgeAlpha = 1.0 - smoothstep(0.0, widthPx, edgeMetric);
     float alpha = saturate(pc.colorIntensity.a) * saturate(edgeAlpha);
     if (alpha <= 0.001)
     {

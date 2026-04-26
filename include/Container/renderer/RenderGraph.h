@@ -56,6 +56,10 @@ class RenderGraph {
   // Number of currently enabled passes.
   [[nodiscard]] uint32_t enabledPassCount() const;
 
+  // Direct access to the pass list for iteration.
+  [[nodiscard]] std::vector<RenderPassNode>&       passes()       { return passes_; }
+  [[nodiscard]] const std::vector<RenderPassNode>& passes() const { return passes_; }
+
   // Remove all passes.
   void clear();
 

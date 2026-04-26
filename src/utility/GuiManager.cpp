@@ -20,8 +20,41 @@ namespace container::ui {
 
 using container::gpu::kMaxDeferredPointLights;
 using container::gpu::LightingData;
+using container::gpu::LightingSettings;
 
 namespace {
+
+constexpr std::array<const char*, 4> kLightingPresetLabels = {{
+    "Sponza", "Interior", "Exterior", "Custom",
+}};
+
+LightingSettings LightingPreset(uint32_t preset) {
+  LightingSettings settings{};
+  settings.preset = preset;
+  switch (preset) {
+    case 1:
+      settings.density = 1.8f;
+      settings.radiusScale = 1.25f;
+      settings.intensityScale = 1.35f;
+      settings.directionalIntensity = 1.15f;
+      break;
+    case 2:
+      settings.density = 0.55f;
+      settings.radiusScale = 1.8f;
+      settings.intensityScale = 0.65f;
+      settings.directionalIntensity = 3.25f;
+      break;
+    case 0:
+    default:
+      settings.preset = 0u;
+      settings.density = 1.0f;
+      settings.radiusScale = 1.0f;
+      settings.intensityScale = 1.0f;
+      settings.directionalIntensity = 2.0f;
+      break;
+  }
+  return settings;
+}
 
 void CheckVkResult(VkResult result) {
   if (result != VK_SUCCESS) {
@@ -42,6 +75,47 @@ bool DrawTransformControls(const char* label,
     ImGui::TreePop();
   }
   return changed;
+}
+
+void DrawRenderPassToggleEntry(RenderPassToggle& pass) {
+  if (pass.locked) {
+    ImGui::BeginDisabled();
+    ImGui::Checkbox(pass.name.c_str(), &pass.enabled);
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::TextDisabled("core");
+    return;
+  }
+
+  ImGui::Checkbox(pass.name.c_str(), &pass.enabled);
+  if (pass.autoDisabled) {
+    ImGui::SameLine();
+    ImGui::TextDisabled("%s", pass.dependencyNote.empty()
+                                  ? "disabled by dependency"
+                                  : pass.dependencyNote.c_str());
+  }
+}
+
+std::string_view RenderPassSectionName(std::string_view passName) {
+  if (passName == "FrustumCull" || passName == "DepthPrepass" ||
+      passName == "HiZGenerate" || passName == "OcclusionCull" ||
+      passName == "CullStatsReadback" || passName == "GBuffer" ||
+      passName == "DepthToReadOnly") {
+    return "Culling";
+  }
+
+  if (passName == "ShadowCascade0" || passName == "ShadowCascade1" ||
+      passName == "ShadowCascade2" || passName == "ShadowCascade3") {
+    return "Shadows";
+  }
+
+  if (passName == "OitClear" || passName == "TileCull" ||
+      passName == "GTAO" || passName == "Lighting" ||
+      passName == "OitResolve") {
+    return "Lighting";
+  }
+
+  return "Post-process";
 }
 
 }  // namespace
@@ -164,7 +238,8 @@ void GuiManager::drawSceneControls(
       "Lit",       "Albedo",      "Normals", "Material",
       "Depth",     "Emissive",    "Transparency",
       "Revealage", "Overview",    "Surface Normals",
-      "Object Normals"};
+      "Object Normals", "Shadow Cascades",
+      "Tile Light Heat Map"};
 
   ImGui::Begin("Scene Controls");
   ImGui::InputText("glTF path", &gltfPathInput_);
@@ -179,8 +254,8 @@ void GuiManager::drawSceneControls(
 
   if (ImGui::Button("Reload Default")) {
     const bool success = reloadDefault();
-    statusMessage_ = success ? "Loaded default model: " + defaultModelPath_
-                             : "Failed to load default model";
+    statusMessage_ = success ? "Loaded default test scene"
+                             : "Failed to load default test scene";
     gltfPathInput_ = defaultModelPath_;
   }
 
@@ -217,8 +292,8 @@ void GuiManager::drawSceneControls(
   ImGui::Separator();
   ImGui::Text("Wireframe Debug");
   ImGui::TextDisabled("Backend: %s",
-                      wireframeWideLineSupported_ ? "Native raster line"
-                                                 : "Shader fallback");
+                      wireframeRasterModeSupported_ ? "Native raster line"
+                                                    : "Shader fallback");
   if (!wireframeSupported_) {
     ImGui::BeginDisabled();
   }
@@ -252,6 +327,70 @@ void GuiManager::drawSceneControls(
   ImGui::Text("Renderable primitives: %zu",
               sceneGraph.renderableNodes().size());
 
+  if (cullStatsTotal_ > 0) {
+    ImGui::Separator();
+    ImGui::Text("GPU Culling");
+    ImGui::Checkbox("Freeze culling camera (F8)", &freezeCulling_);
+    if (freezeCulling_)
+      ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f), "CULLING FROZEN");
+    ImGui::BulletText("Input: %u", cullStatsTotal_);
+    ImGui::BulletText("Frustum passed: %u", cullStatsFrustum_);
+    ImGui::BulletText("Occlusion passed: %u", cullStatsOcclusion_);
+    ImGui::BulletText("Frustum culled: %u", cullStatsTotal_ - cullStatsFrustum_);
+    if (cullStatsFrustum_ > 0)
+      ImGui::BulletText("Occlusion culled: %u", cullStatsFrustum_ - cullStatsOcclusion_);
+  }
+
+  if (!renderPassToggles_.empty()) {
+    ImGui::Separator();
+    if (ImGui::TreeNode("Render Passes")) {
+      if (ImGui::SmallButton("Enable All")) {
+        for (auto& p : renderPassToggles_) p.enabled = true;
+      }
+      ImGui::SameLine();
+      if (ImGui::SmallButton("Disable All")) {
+        // Keep PostProcess always on so the UI remains visible.
+        for (auto& p : renderPassToggles_) {
+          p.enabled = p.locked;
+        }
+      }
+
+      auto drawRenderPassSection = [&](std::string_view sectionName) {
+        if (!ImGui::TreeNode(std::string(sectionName).c_str())) {
+          return;
+        }
+
+        for (auto& p : renderPassToggles_) {
+          if (RenderPassSectionName(p.name) == sectionName) {
+            DrawRenderPassToggleEntry(p);
+          }
+        }
+
+        ImGui::TreePop();
+      };
+
+      drawRenderPassSection("Culling");
+      drawRenderPassSection("Shadows");
+      drawRenderPassSection("Lighting");
+      drawRenderPassSection("Post-process");
+
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip("Protected passes are shown as locked. Optional passes may be auto-disabled when a dependency is off.");
+      }
+      ImGui::TreePop();
+    }
+  }
+
+  ImGui::Separator();
+  ImGui::Text("Bloom");
+  ImGui::Checkbox("Bloom Enabled", &bloomEnabled_);
+  if (bloomEnabled_) {
+    ImGui::SliderFloat("Bloom Threshold", &bloomThreshold_, 0.0f, 5.0f);
+    ImGui::SliderFloat("Bloom Knee", &bloomKnee_, 0.0f, 1.0f);
+    ImGui::SliderFloat("Bloom Intensity", &bloomIntensity_, 0.0f, 2.0f);
+    ImGui::SliderFloat("Bloom Radius", &bloomRadius_, 0.1f, 3.0f);
+  }
+
   TransformControls editableCameraTransform = cameraTransform;
   if (DrawTransformControls("Camera", editableCameraTransform)) {
     applyCameraTransform(editableCameraTransform);
@@ -263,6 +402,51 @@ void GuiManager::drawSceneControls(
   }
 
   if (ImGui::TreeNode("Lights")) {
+    ImGui::Text("Generator");
+    int presetIndex = static_cast<int>(
+        std::min<uint32_t>(lightingSettings_.preset,
+                           static_cast<uint32_t>(kLightingPresetLabels.size() - 1u)));
+    if (ImGui::Combo("Lighting Preset", &presetIndex,
+                     kLightingPresetLabels.data(),
+                     static_cast<int>(kLightingPresetLabels.size()))) {
+      if (presetIndex < static_cast<int>(kLightingPresetLabels.size() - 1u)) {
+        lightingSettings_ = LightingPreset(static_cast<uint32_t>(presetIndex));
+      } else {
+        lightingSettings_.preset =
+            static_cast<uint32_t>(kLightingPresetLabels.size() - 1u);
+      }
+    }
+
+    bool lightSliderChanged = false;
+    lightSliderChanged |= ImGui::SliderFloat(
+        "Light Density", &lightingSettings_.density, 0.1f, 16.0f, "%.2f");
+    lightSliderChanged |= ImGui::SliderFloat(
+        "Light Radius Scale", &lightingSettings_.radiusScale, 0.05f, 8.0f, "%.2f");
+    lightSliderChanged |= ImGui::SliderFloat(
+        "Light Intensity Scale", &lightingSettings_.intensityScale, 0.0f, 16.0f, "%.2f");
+    lightSliderChanged |= ImGui::SliderFloat(
+        "Directional Intensity", &lightingSettings_.directionalIntensity, 0.0f, 16.0f, "%.2f");
+    if (lightSliderChanged) {
+      lightingSettings_.preset =
+          static_cast<uint32_t>(kLightingPresetLabels.size() - 1u);
+    }
+
+    ImGui::Separator();
+    ImGui::Text("Cluster Stats");
+    ImGui::BulletText("Submitted lights: %u", lightCullingStats_.submittedLights);
+    ImGui::BulletText("Active clusters: %u / %u",
+                      lightCullingStats_.activeClusters,
+                      lightCullingStats_.totalClusters);
+    ImGui::BulletText("Max lights per cluster: %u",
+                      lightCullingStats_.maxLightsPerCluster);
+    ImGui::BulletText("Dropped light refs: %u",
+                      lightCullingStats_.droppedLightReferences);
+    ImGui::BulletText("Cluster cull GPU: %.3f ms",
+                      lightCullingStats_.clusterCullMs);
+    ImGui::BulletText("Clustered lighting GPU: %.3f ms",
+                      lightCullingStats_.clusteredLightingMs);
+
+    ImGui::Separator();
     ImGui::Text("Directional");
     ImGui::BulletText("Position: (%.2f, %.2f, %.2f)", directionalLightPosition.x,
                       directionalLightPosition.y, directionalLightPosition.z);
@@ -271,9 +455,13 @@ void GuiManager::drawSceneControls(
                       lightingData.directionalDirection.y,
                       lightingData.directionalDirection.z);
 
-    const uint32_t pointLightCount =
+    const uint32_t visiblePointLightCount =
         std::min(lightingData.pointLightCount, kMaxDeferredPointLights);
-    for (uint32_t i = 0; i < pointLightCount; ++i) {
+    ImGui::Text("Point lights: %u total", lightingData.pointLightCount);
+    if (lightingData.pointLightCount > visiblePointLightCount) {
+      ImGui::Text("Showing first %u UBO fallback lights", visiblePointLightCount);
+    }
+    for (uint32_t i = 0; i < visiblePointLightCount; ++i) {
       const auto& light = lightingData.pointLights[i];
       ImGui::Separator();
       ImGui::Text("Point Light %u", i);
@@ -330,6 +518,12 @@ void GuiManager::drawSceneControls(
     ImGui::TextWrapped("%s", statusMessage_.c_str());
   }
 
+  if (!environmentStatus_.empty()) {
+    ImGui::Separator();
+    ImGui::Text("Environment");
+    ImGui::TextWrapped("%s", environmentStatus_.c_str());
+  }
+
   ImGui::End();
 }
 
@@ -339,8 +533,11 @@ bool GuiManager::isCapturingInput() const {
   return io.WantCaptureMouse || io.WantCaptureKeyboard;
 }
 
-void GuiManager::setWireframeCapabilities(bool supported, bool wideLineSupported) {
+void GuiManager::setWireframeCapabilities(bool supported,
+                                          bool rasterModeSupported,
+                                          bool wideLineSupported) {
   wireframeSupported_ = supported;
+  wireframeRasterModeSupported_ = supported && rasterModeSupported;
   wireframeWideLineSupported_ = wideLineSupported;
   if (!wireframeSupported_) {
     wireframeSettings_.enabled = false;
@@ -348,6 +545,60 @@ void GuiManager::setWireframeCapabilities(bool supported, bool wideLineSupported
   if (!wireframeWideLineSupported_) {
     wireframeSettings_.lineWidth = 1.0f;
   }
+}
+
+void GuiManager::setCullStats(uint32_t total, uint32_t frustumPassed,
+                              uint32_t occlusionPassed) {
+  cullStatsTotal_     = total;
+  cullStatsFrustum_   = frustumPassed;
+  cullStatsOcclusion_ = occlusionPassed;
+}
+
+void GuiManager::setLightCullingStats(
+    const container::gpu::LightCullingStats& stats) {
+  lightCullingStats_ = stats;
+}
+
+void GuiManager::setLightingSettings(
+    const container::gpu::LightingSettings& settings) {
+  lightingSettings_ = settings;
+}
+
+void GuiManager::setFreezeCulling(bool frozen) {
+  freezeCulling_ = frozen;
+}
+
+void GuiManager::setBloomSettings(bool enabled, float threshold, float knee,
+                                  float intensity, float radius) {
+  bloomEnabled_   = enabled;
+  bloomThreshold_ = threshold;
+  bloomKnee_      = knee;
+  bloomIntensity_ = intensity;
+  bloomRadius_    = radius;
+}
+
+void GuiManager::setRenderPassList(const std::vector<RenderPassToggle>& passes) {
+  // Rebuild the toggle list, preserving existing enabled states by name.
+  std::vector<RenderPassToggle> updated;
+  updated.reserve(passes.size());
+  for (const auto& incoming : passes) {
+    bool found = false;
+    for (const auto& existing : renderPassToggles_) {
+      if (existing.name == incoming.name) {
+        RenderPassToggle merged = existing;
+        merged.locked = incoming.locked;
+        merged.autoDisabled = incoming.autoDisabled;
+        merged.dependencyNote = incoming.dependencyNote;
+        updated.push_back(std::move(merged));
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      updated.push_back(incoming);
+    }
+  }
+  renderPassToggles_ = std::move(updated);
 }
 
 void GuiManager::ensureInitialized() const {

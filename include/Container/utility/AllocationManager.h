@@ -44,7 +44,8 @@ class AllocationManager {
   void destroyBuffer(AllocatedBuffer& buffer);
 
   container::material::TextureResource createTextureFromFile(
-      const std::string& texturePath);
+      const std::string& texturePath,
+      VkFormat format = VK_FORMAT_R8G8B8A8_SRGB);
 
   void resetTextureAllocations();
 

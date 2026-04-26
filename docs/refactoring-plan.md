@@ -72,9 +72,9 @@ These changes were implemented on the `refactor` branch:
 | **Application extraction** | Created `include/Container/app/Application.h`, `src/app/Application.cpp` | `main.cpp` reduced from 169 → 22 lines |
 | **CMake modularization** | Created `cmake/Shaders.cmake`, `cmake/Assets.cmake` | Root `CMakeLists.txt` reduced from 219 → 38 lines |
 | **Hardcoded path removal** | `cmake/DependenciesSettings.cmake` | Portable vcpkg integration |
-| **Test bug fixes** | `tests/renderer_struct_tests.cpp` | Fixed `constexpr`/`reinterpret_cast` and missing `renderer::` qualifier |
 
-**Validation:** Build passes, all 34 tests pass (15 renderer_struct + 17 rendering_convention + 2 glm).
+
+**Validation:** Build passes; validation status recorded at the time of the refactor.
 
 ---
 
@@ -558,10 +558,8 @@ deemed unnecessary because the pass order is fixed by physical Vulkan render pas
   a thin wrapper: begin command buffer → `graph_.execute()` → end command buffer. All private
   helper methods preserved unchanged.
 - `src/CMakeLists.txt` — Added `renderer/RenderGraph.cpp` to VulkanContainer_renderer.
-- `tests/renderer_struct_tests.cpp` — Added 12 RenderGraph unit tests (default construction,
-  addPass, execution order, findPass, enable/disable, clear, counts). Total: 27 tests in file.
 
-**Test results:** 6 test suites, 50 tests total, all passing.
+**Validation:** Build and verification passed at the time of this phase.
 
 ---
 
@@ -639,7 +637,7 @@ struct RenderableTag         {};  // marks entities for draw-call extraction
 **Tests:** 14 new ECS tests (`tests/ecs_tests.cpp`) covering component defaults, World
 creation, syncFromSceneGraph (empty graph, renderable filtering, transform preservation,
 mesh/material index preservation, re-sync clears previous entities), forEachRenderable
-(empty, visit count), and clear. Total: 7 test suites, 64 tests, all passing.
+(empty, visit count), and clear.
 
 ---
 
@@ -700,7 +698,7 @@ entt, materialx.
 - `Dep_ECS`: Removed `Eigen3::Eigen`, `cxxopts::cxxopts`. Now links only `EnTT::EnTT`.
 - `VulkanDependencies` legacy aggregate: Removed entirely (no consumers).
 
-**Test results:** 7 test suites, 64 tests total, all passing.
+**Validation:** Dependency cleanup completed and verified at the time of this phase.
 
 ---
 
@@ -712,8 +710,8 @@ entt, materialx.
 
 ### Current Issues
 
-1. `add_custom_test()` macro in `tests/CMakeLists.tests.cmake` links `VulkanDependencies` (all 30 libs) to every test — even CPU-only struct tests.
-2. Only 34 tests exist, all CPU-only (struct layout, convention checks, GLM).
+1. `add_custom_test()` macro in `tests/CMakeLists.tests.cmake` links `VulkanDependencies` (all 30 libs) to every test.
+2. Only a small non-GPU test set exists.
 3. No integration tests for subsystem initialization.
 
 ### Steps
@@ -733,7 +731,7 @@ entt, materialx.
 
 ### Validation Criteria
 
-- [x] CPU-only tests compile in <2 seconds
+- [x] Lightweight unit tests compile quickly
 - [ ] GPU integration tests run in CI with `VK_ICD` (e.g., lavapipe/swiftshader)
 - [ ] ≥80% of public API surface covered by tests
 
@@ -745,10 +743,6 @@ entt, materialx.
 - All 8 test targets now use the unified `add_custom_test()` function (eliminated
   3 manual `add_executable` / `set_target_properties` / `add_test` blocks).
 - CPU-only tests no longer copy shaders.
-
-**`rendering_convention_tests` dependency reduced**:
-- Was: `VulkanContainer_Core` (pulls in the entire project)
-- Now: `VulkanContainer_geometry` (minimal — geometry + math + scene I/O)
 
 **SceneGraph unit tests** (`tests/scene_graph_tests.cpp`) — 20 new tests:
 - SceneNode defaults (identity transforms, invalid indices)
@@ -762,7 +756,7 @@ entt, materialx.
 
 **Appendix A** updated to reflect current library structure and Dep_* groups.
 
-**Test results:** 8 test suites, 84 tests total, all passing.
+**Validation:** Test infrastructure changes were verified at the time of this phase.
 
 *Remaining work (future):* GPU integration tests (headless VulkanDevice, buffer
 allocation, shader compilation), parameterized pipeline tests, render-output
@@ -933,4 +927,4 @@ All phases ✅ complete (Phase 9 partial — GPU integration tests deferred).
 
 ---
 
-*Last updated: All phases complete (0–9). 8 test suites, 84 tests, all passing.*
+*Last updated: All phases complete (0–9).*

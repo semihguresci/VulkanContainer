@@ -1,3 +1,6 @@
+#pragma once
+#include "brdf_common.slang"
+
 struct SurfaceNormalState
 {
     float3 geometricNormal;
@@ -5,16 +8,6 @@ struct SurfaceNormalState
     float3 tangent;
     float3 bitangent;
 };
-
-float3 SafeNormalize(float3 v, float3 fallback)
-{
-    float lenSq = dot(v, v);
-    if (!all(isfinite(v)) || lenSq < 1e-8)
-    {
-        return fallback;
-    }
-    return v * rsqrt(lenSq);
-}
 
 float3 FallbackTangent(float3 normal)
 {
@@ -48,7 +41,8 @@ float4 BuildWorldTangent(float3x3 modelMatrix, float3 worldNormal,
 }
 
 SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent,
-                                         float2 texCoord, uint normalTextureIndex)
+                                         float2 texCoord, uint normalTextureIndex,
+                                         float normalTextureScale)
 {
     SurfaceNormalState state;
     state.geometricNormal = SafeNormalize(worldNormal, float3(0.0, 1.0, 0.0));
@@ -73,6 +67,8 @@ SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent
         uint texIndex = NonUniformResourceIndex(normalTextureIndex);
         float3 normalSample =
             materialTextures[texIndex].Sample(baseSampler, texCoord).xyz * 2.0 - 1.0;
+        normalSample.xy *= normalTextureScale;
+        normalSample = SafeNormalize(normalSample, float3(0.0, 0.0, 1.0));
         state.shadingNormal = SafeNormalize(
             tangent * normalSample.x + bitangent * normalSample.y +
                 state.geometricNormal * normalSample.z,

@@ -10,10 +10,10 @@
 #include <glm/vec4.hpp>
 
 // Right-handed coordinate system throughout (glTF native).
-// Vulkan clip space: Y-down, depth [0,1].
-//   - Y flip:    proj[1][1] *= -1 (done in Camera::viewProjection)
-//   - Reverse-Z: depth cleared to 0, compare GREATER_OR_EQUAL.
-//                The helpers below map near -> 1 and far -> 0 explicitly.
+// Projection helpers target Vulkan's clip/depth conventions:
+//   - clip/NDC depth range [0, 1]
+//   - reverse-Z mapping (near -> 1, far -> 0)
+//   - no Y flip in the matrix; scene passes flip Y with a negative viewport
 
 namespace container::math {
 
