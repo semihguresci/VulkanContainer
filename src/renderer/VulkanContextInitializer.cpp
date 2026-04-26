@@ -94,6 +94,7 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.enabledFeatures.samplerAnisotropy       = VK_TRUE;
     ci.enabledFeatures.fragmentStoresAndAtomics = VK_TRUE;
     ci.enabledFeatures.geometryShader          = VK_TRUE;
+    ci.optionalFeatures.drawIndirectFirstInstance = VK_TRUE;
     ci.optionalFeatures.fillModeNonSolid       = VK_TRUE;
     ci.optionalFeatures.wideLines              = VK_TRUE;
 

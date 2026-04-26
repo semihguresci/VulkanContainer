@@ -173,7 +173,7 @@ void FrameResourceManager::create(
     VkRenderPass                             depthPrepassPass,
     VkRenderPass                             gBufferPass,
     VkRenderPass                             lightingPass,
-    const container::gpu::AllocatedBuffer& cameraBuffer,
+    std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
   destroy();
 
@@ -360,7 +360,7 @@ void FrameResourceManager::create(
     }
   }
 
-  updateDescriptorSets(cameraBuffer, objectBuffer);
+  updateDescriptorSets(cameraBuffers, objectBuffer);
 }
 
 // -----------------------------------------------------------------------
@@ -408,11 +408,11 @@ void FrameResourceManager::destroy() {
 
 // -----------------------------------------------------------------------
 void FrameResourceManager::updateDescriptorSets(
-    const container::gpu::AllocatedBuffer& cameraBuffer,
+    std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer,
     VkImageView shadowAtlasView,
     VkSampler   shadowSampler,
-    const container::gpu::AllocatedBuffer* shadowUbo,
+    std::span<const container::gpu::AllocatedBuffer> shadowUbos,
     VkImageView irradianceView,
     VkImageView prefilteredView,
     VkImageView brdfLutView,
@@ -425,11 +425,16 @@ void FrameResourceManager::updateDescriptorSets(
     VkBuffer    tileGridBuffer,
     VkDeviceSize tileGridBufferSize) {
   (void)objectBuffer;  // reserved for future per-frame object buffer binding
-  if (cameraBuffer.buffer == VK_NULL_HANDLE) return;
+  if (cameraBuffers.empty()) return;
 
   VkDevice dev = device_->device();
 
-  for (auto& f : frames_) {
+  for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
+    auto& f = frames_[frameIndex];
+    const auto& cameraBuffer =
+        cameraBuffers[std::min(frameIndex, cameraBuffers.size() - 1)];
+    if (cameraBuffer.buffer == VK_NULL_HANDLE) continue;
+
     VkDescriptorBufferInfo camInfo{cameraBuffer.buffer, 0, sizeof(container::gpu::CameraData)};
     VkDescriptorImageInfo  sampInfo{};
     sampInfo.sampler = gBufferSampler_;
@@ -473,8 +478,11 @@ void FrameResourceManager::updateDescriptorSets(
 
       // Shadow bindings (7=UBO, 8=atlas, 9=sampler)
       VkDescriptorBufferInfo shadowUboInfo{};
-      if (shadowUbo && shadowUbo->buffer != VK_NULL_HANDLE) {
-        shadowUboInfo = {shadowUbo->buffer, 0, sizeof(container::gpu::ShadowData)};
+      const auto& shadowUbo = shadowUbos.empty()
+                                  ? container::gpu::AllocatedBuffer{}
+                                  : shadowUbos[std::min(frameIndex, shadowUbos.size() - 1)];
+      if (shadowUbo.buffer != VK_NULL_HANDLE) {
+        shadowUboInfo = {shadowUbo.buffer, 0, sizeof(container::gpu::ShadowData)};
       } else {
         shadowUboInfo = camInfo;  // fallback to avoid null descriptor
       }
@@ -610,8 +618,11 @@ void FrameResourceManager::updateDescriptorSets(
       buf(10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &camInfo);
 
       VkDescriptorBufferInfo postShadowUboInfo{};
-      if (shadowUbo && shadowUbo->buffer != VK_NULL_HANDLE) {
-        postShadowUboInfo = {shadowUbo->buffer, 0, sizeof(container::gpu::ShadowData)};
+      const auto& postShadowUbo = shadowUbos.empty()
+                                      ? container::gpu::AllocatedBuffer{}
+                                      : shadowUbos[std::min(frameIndex, shadowUbos.size() - 1)];
+      if (postShadowUbo.buffer != VK_NULL_HANDLE) {
+        postShadowUboInfo = {postShadowUbo.buffer, 0, sizeof(container::gpu::ShadowData)};
       } else {
         postShadowUboInfo = camInfo;
       }
@@ -746,6 +757,14 @@ void FrameResourceManager::writeOitMetadata(FrameResources& frame) const {
     mappedHere = true;
   }
   std::memcpy(mapped, &meta, sizeof(meta));
+  if (vmaFlushAllocation(allocationMgr_->memoryManager()->allocator(),
+                         frame.oitMetadataBuffer.allocation, 0,
+                         sizeof(meta)) != VK_SUCCESS) {
+    if (mappedHere)
+      vmaUnmapMemory(allocationMgr_->memoryManager()->allocator(),
+                     frame.oitMetadataBuffer.allocation);
+    throw std::runtime_error("failed to flush OIT metadata buffer");
+  }
   if (mappedHere)
     vmaUnmapMemory(allocationMgr_->memoryManager()->allocator(),
                    frame.oitMetadataBuffer.allocation);

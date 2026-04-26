@@ -5,6 +5,7 @@
 #include "Container/renderer/LightingManager.h"
 #include "Container/renderer/OitManager.h"
 #include "Container/renderer/SceneController.h"
+#include "Container/renderer/ShadowCullManager.h"
 #include "Container/renderer/ShadowManager.h"
 #include "Container/utility/Camera.h"
 #include "Container/utility/GuiManager.h"
@@ -161,6 +162,21 @@ void FrameRecorder::buildGraph() {
   });
 
   for (uint32_t i = 0; i < kShadowCascadeCount; ++i) {
+    graph_.addPass("ShadowCullCascade" + std::to_string(i),
+        [this, i](VkCommandBuffer cmd, const FrameRecordParams& p) {
+      if (!p.useGpuShadowCull || p.shadowCullManager == nullptr ||
+          !p.shadowCullManager->isReady() ||
+          p.opaqueSingleSidedDrawCommands == nullptr) {
+        return;
+      }
+
+      const uint32_t drawCount = static_cast<uint32_t>(
+          p.opaqueSingleSidedDrawCommands->size());
+      if (drawCount == 0u) return;
+
+      p.shadowCullManager->dispatchCascadeCull(cmd, p.imageIndex, i, drawCount);
+    });
+
     graph_.addPass("ShadowCascade" + std::to_string(i),
         [this, i](VkCommandBuffer cmd, const FrameRecordParams& p) {
       recordShadowPass(cmd, p, i);
@@ -275,6 +291,15 @@ void FrameRecorder::record(VkCommandBuffer commandBuffer,
     throw std::runtime_error("FrameRecordParams::frame is null");
   }
 
+  if (p.useGpuShadowCull && p.shadowCullManager != nullptr &&
+      p.shadowCullManager->isReady() &&
+      p.opaqueSingleSidedDrawCommands != nullptr) {
+    p.shadowCullManager->ensureBufferCapacity(static_cast<uint32_t>(
+        p.opaqueSingleSidedDrawCommands->size()));
+    p.shadowCullManager->uploadDrawCommands(*p.opaqueSingleSidedDrawCommands);
+  }
+
+  prepareShadowCascadeDrawCommands(p);
   graph_.execute(commandBuffer, p);
 
   if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
@@ -284,6 +309,80 @@ void FrameRecorder::record(VkCommandBuffer commandBuffer,
 // ---------------------------------------------------------------------------
 // Private helpers
 // ---------------------------------------------------------------------------
+
+void FrameRecorder::prepareShadowCascadeDrawCommands(
+    const FrameRecordParams& p) const {
+  for (uint32_t cascadeIndex = 0; cascadeIndex < kShadowCascadeCount;
+       ++cascadeIndex) {
+    shadowCascadeSingleSidedDrawCommands_[cascadeIndex].clear();
+    shadowCascadeDoubleSidedDrawCommands_[cascadeIndex].clear();
+  }
+
+  const auto distributeCommands = [this](
+                                      const std::vector<DrawCommand>* source,
+                                      auto& destination) {
+    if (source == nullptr) return;
+
+    for (uint32_t cascadeIndex = 0; cascadeIndex < kShadowCascadeCount;
+         ++cascadeIndex) {
+      destination[cascadeIndex].reserve(source->size());
+    }
+
+    for (const DrawCommand& command : *source) {
+      for (uint32_t cascadeIndex = 0; cascadeIndex < kShadowCascadeCount;
+           ++cascadeIndex) {
+        destination[cascadeIndex].push_back(command);
+      }
+    }
+  };
+
+  if (p.shadowManager == nullptr || p.objectData == nullptr) {
+    distributeCommands(p.opaqueSingleSidedDrawCommands,
+                       shadowCascadeSingleSidedDrawCommands_);
+    distributeCommands(p.opaqueDoubleSidedDrawCommands,
+                       shadowCascadeDoubleSidedDrawCommands_);
+    return;
+  }
+
+  const auto filterCommands = [this, &p](
+                                  const std::vector<DrawCommand>* source,
+                                  auto& destination) {
+    if (source == nullptr) return;
+
+    for (uint32_t cascadeIndex = 0; cascadeIndex < kShadowCascadeCount;
+         ++cascadeIndex) {
+      destination[cascadeIndex].reserve(source->size());
+    }
+
+    for (const DrawCommand& command : *source) {
+      if (command.objectIndex >= p.objectData->size()) {
+        for (uint32_t cascadeIndex = 0; cascadeIndex < kShadowCascadeCount;
+             ++cascadeIndex) {
+          destination[cascadeIndex].push_back(command);
+        }
+        continue;
+      }
+
+      const glm::vec4 boundingSphere =
+          (*p.objectData)[command.objectIndex].boundingSphere;
+      const bool hasValidBounds = boundingSphere.w > 0.0f;
+
+      for (uint32_t cascadeIndex = 0; cascadeIndex < kShadowCascadeCount;
+           ++cascadeIndex) {
+        if (!hasValidBounds ||
+            p.shadowManager->cascadeIntersectsSphere(cascadeIndex,
+                                                     boundingSphere)) {
+          destination[cascadeIndex].push_back(command);
+        }
+      }
+    }
+  };
+
+  filterCommands(p.opaqueSingleSidedDrawCommands,
+                 shadowCascadeSingleSidedDrawCommands_);
+  filterCommands(p.opaqueDoubleSidedDrawCommands,
+                 shadowCascadeDoubleSidedDrawCommands_);
+}
 
 void FrameRecorder::setViewportAndScissor(VkCommandBuffer cmd) const {
   VkViewport viewport{};
@@ -497,27 +596,60 @@ void FrameRecorder::recordShadowPass(VkCommandBuffer cmd,
           ? p.pipelines.shadowDepthNoCull
           : p.pipelines.shadowDepth;
 
-  const bool frustumCullEnabled = graph_.findPass("FrustumCull") != nullptr &&
-                                  graph_.findPass("FrustumCull")->enabled;
-  if (gpuCullManager_ && gpuCullManager_->isReady() && frustumCullEnabled &&
-      p.opaqueSingleSidedDrawCommands &&
-      !p.opaqueSingleSidedDrawCommands->empty()) {
+  const VkBuffer gpuShadowIndirectBuffer =
+      (p.shadowCullManager != nullptr &&
+       cascadeIndex < container::gpu::kShadowCascadeCount)
+          ? p.shadowCullManager->indirectDrawBuffer(cascadeIndex)
+          : VK_NULL_HANDLE;
+  const VkBuffer gpuShadowCountBuffer =
+      (p.shadowCullManager != nullptr &&
+       cascadeIndex < container::gpu::kShadowCascadeCount)
+          ? p.shadowCullManager->drawCountBuffer(cascadeIndex)
+          : VK_NULL_HANDLE;
+  const uint32_t gpuShadowMaxDrawCount =
+      p.shadowCullManager != nullptr ? p.shadowCullManager->maxDrawCount() : 0u;
+  const RenderPassNode* shadowCullPass =
+      graph_.findPass("ShadowCullCascade" + std::to_string(cascadeIndex));
+  const bool shadowCullPassEnabled =
+      shadowCullPass != nullptr && shadowCullPass->enabled;
+
+  const bool useGpuShadowCull = p.useGpuShadowCull &&
+                                shadowCullPassEnabled &&
+                                p.shadowCullManager != nullptr &&
+                                p.shadowCullManager->isReady() &&
+                                p.opaqueSingleSidedDrawCommands != nullptr &&
+                                !p.opaqueSingleSidedDrawCommands->empty() &&
+                                cascadeIndex < container::gpu::kShadowCascadeCount &&
+                                gpuShadowIndirectBuffer != VK_NULL_HANDLE &&
+                                gpuShadowCountBuffer != VK_NULL_HANDLE &&
+                                gpuShadowMaxDrawCount > 0;
+
+  if (useGpuShadowCull) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipelines.shadowDepth);
     spc.objectIndex = 0;
     vkCmdPushConstants(cmd, p.layouts.shadow,
                        VK_SHADER_STAGE_VERTEX_BIT,
                        0, sizeof(ShadowPushConstants), &spc);
-    gpuCullManager_->drawIndirect(cmd);
-  } else if (p.opaqueSingleSidedDrawCommands &&
-             !p.opaqueSingleSidedDrawCommands->empty()) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipelines.shadowDepth);
-    drawShadowList(p.opaqueSingleSidedDrawCommands);
+    vkCmdDrawIndexedIndirectCount(
+        cmd,
+        gpuShadowIndirectBuffer, 0,
+        gpuShadowCountBuffer, 0,
+        gpuShadowMaxDrawCount,
+        sizeof(container::gpu::GpuDrawIndexedIndirectCommand));
   }
 
-  if (p.opaqueDoubleSidedDrawCommands &&
-      !p.opaqueDoubleSidedDrawCommands->empty()) {
+  const auto& singleSidedCommands =
+      shadowCascadeSingleSidedDrawCommands_[cascadeIndex];
+  if (!useGpuShadowCull && !singleSidedCommands.empty()) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipelines.shadowDepth);
+    drawShadowList(&singleSidedCommands);
+  }
+
+  const auto& doubleSidedCommands =
+      shadowCascadeDoubleSidedDrawCommands_[cascadeIndex];
+  if (!doubleSidedCommands.empty()) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowNoCullPipeline);
-    drawShadowList(p.opaqueDoubleSidedDrawCommands);
+    drawShadowList(&doubleSidedCommands);
   }
 
   vkCmdEndRenderPass(cmd);

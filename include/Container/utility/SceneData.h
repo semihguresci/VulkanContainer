@@ -89,6 +89,30 @@ struct ShadowData {
   ShadowCascadeData cascades[kShadowCascadeCount];
 };
 
+struct ShadowCascadeCullData {
+  alignas(16) glm::mat4 viewProj{1.0f};
+  alignas(16) glm::mat4 lightView{1.0f};
+  alignas(16) glm::vec4 receiverMinBounds{0.0f};
+  alignas(16) glm::vec4 receiverMaxBounds{0.0f};
+  alignas(16) glm::vec4 casterMinBounds{0.0f};
+  alignas(16) glm::vec4 casterMaxBounds{0.0f};
+};
+
+struct ShadowCullData {
+  ShadowCascadeCullData cascades[kShadowCascadeCount];
+};
+
+struct ShadowCullPushConstants {
+  uint32_t drawCount{0};
+  uint32_t cascadeIndex{0};
+  uint32_t outputOffset{0};
+  uint32_t pad0{0};
+};
+
+struct ShadowCullCountData {
+  std::array<uint32_t, kShadowCascadeCount> visibleCounts{};
+};
+
 struct ShadowPushConstants {
   uint32_t objectIndex{0};
   uint32_t cascadeIndex{0};
@@ -226,6 +250,34 @@ static_assert(sizeof(ShadowData) == 80 * kShadowCascadeCount,
               "ShadowData size mismatch with shaders/lighting_structs.slang "
               "ShadowBuffer. Update shader layout in lockstep.");
 static_assert(alignof(ShadowData) == 16, "ShadowData must be 16-byte aligned.");
+
+static_assert(sizeof(ShadowCascadeCullData) == 192,
+              "ShadowCascadeCullData size mismatch with shaders/lighting_structs.slang "
+              "ShadowCascadeCullData. Update shader layout in lockstep.");
+static_assert(alignof(ShadowCascadeCullData) == 16,
+              "ShadowCascadeCullData must be 16-byte aligned.");
+static_assert(offsetof(ShadowCascadeCullData, viewProj) == 0,
+              "ShadowCascadeCullData.viewProj offset");
+static_assert(offsetof(ShadowCascadeCullData, lightView) == 64,
+              "ShadowCascadeCullData.lightView offset");
+static_assert(offsetof(ShadowCascadeCullData, receiverMinBounds) == 128,
+              "ShadowCascadeCullData.receiverMinBounds offset");
+static_assert(offsetof(ShadowCascadeCullData, receiverMaxBounds) == 144,
+              "ShadowCascadeCullData.receiverMaxBounds offset");
+static_assert(offsetof(ShadowCascadeCullData, casterMinBounds) == 160,
+              "ShadowCascadeCullData.casterMinBounds offset");
+static_assert(offsetof(ShadowCascadeCullData, casterMaxBounds) == 176,
+              "ShadowCascadeCullData.casterMaxBounds offset");
+
+static_assert(sizeof(ShadowCullData) == sizeof(ShadowCascadeCullData) * kShadowCascadeCount,
+              "ShadowCullData size mismatch with shaders/lighting_structs.slang "
+              "ShadowCullData. Update shader layout in lockstep.");
+static_assert(alignof(ShadowCullData) == 16,
+              "ShadowCullData must be 16-byte aligned.");
+static_assert(sizeof(ShadowCullPushConstants) == 16,
+              "ShadowCullPushConstants must remain 16 bytes.");
+static_assert(sizeof(ShadowCullCountData) == sizeof(uint32_t) * kShadowCascadeCount,
+              "ShadowCullCountData stores one visible count per shadow cascade.");
 
 static_assert(sizeof(ObjectData) == 224,
               "ObjectData size mismatch with shader ObjectBuffer (see "

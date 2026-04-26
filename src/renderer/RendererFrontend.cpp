@@ -10,6 +10,7 @@
 #include "Container/renderer/LightingManager.h"
 #include "Container/renderer/OitManager.h"
 #include "Container/renderer/SceneController.h"
+#include "Container/renderer/ShadowCullManager.h"
 #include "Container/renderer/ShadowManager.h"
 #include "Container/renderer/VulkanContextInitializer.h"
 #include "Container/utility/AllocationManager.h"
@@ -203,7 +204,9 @@ void RendererFrontend::initialize() {
 
   subs_.sceneManager = std::make_unique<container::scene::SceneManager>(
       svc_.allocationManager, svc_.pipelineManager, svc_.ctx.deviceWrapper, svc_.config);
-  subs_.sceneManager->initialize(svc_.config.modelPath);
+  subs_.sceneManager->initialize(
+      svc_.config.modelPath,
+      static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   sceneState_.indexType = subs_.sceneManager->indexType();
 
   subs_.sceneController = std::make_unique<SceneController>(
@@ -214,8 +217,15 @@ void RendererFrontend::initialize() {
       subs_.sceneManager.get(), sceneGraph_);
   subs_.shadowManager = std::make_unique<ShadowManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
-  subs_.shadowManager->createResources(resources_.gBufferFormats.depthStencil);
+  subs_.shadowManager->createResources(
+      resources_.gBufferFormats.depthStencil,
+      static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   subs_.shadowManager->createFramebuffers(resources_.renderPasses.shadow);
+  subs_.shadowCullManager = std::make_unique<ShadowCullManager>(
+      svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
+  subs_.shadowCullManager->createResources(
+      container::util::executableDirectory(),
+      static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   subs_.environmentManager = std::make_unique<EnvironmentManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       svc_.commandBufferManager.pool());
@@ -226,9 +236,6 @@ void RendererFrontend::initialize() {
         exeDir / container::app::kDefaultEnvironmentHdrRelativePath;
     if (std::filesystem::exists(hdrPath)) {
       subs_.environmentManager->loadHdrEnvironment(exeDir, hdrPath);
-    } else {
-      std::println(stderr, "[HDR] Default environment not found: {}",
-                   hdrPath.string());
     }
   }
   subs_.gpuCullManager = std::make_unique<GpuCullManager>(
@@ -243,7 +250,8 @@ void RendererFrontend::initialize() {
       svc_.swapChainManager, svc_.commandBufferManager.pool());
   subs_.frameResourceManager->createDescriptorSetLayouts();
   subs_.frameResourceManager->createGBufferSampler();
-  subs_.lightingManager->createDescriptorResources();
+  subs_.lightingManager->createDescriptorResources(
+      static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   subs_.lightingManager->createTiledResources(
       container::util::executableDirectory(), svc_.swapChainManager.extent());
   createGraphicsPipelines();
@@ -263,6 +271,10 @@ void RendererFrontend::initialize() {
   subs_.guiManager->setWireframeCapabilities(svc_.ctx.wireframeSupported,
                                              svc_.ctx.wireframeRasterModeSupported,
                                              svc_.ctx.wireframeWideLinesSupported);
+  if (subs_.environmentManager) {
+    subs_.guiManager->setEnvironmentStatus(
+        subs_.environmentManager->environmentStatus());
+  }
   if (subs_.sceneController) subs_.sceneController->setGuiManager(subs_.guiManager.get());
 
   subs_.frameRecorder = std::make_unique<FrameRecorder>(
@@ -284,7 +296,10 @@ void RendererFrontend::initialize() {
 }
 
 bool RendererFrontend::drawFrame(bool& framebufferResized) {
-  subs_.frameSyncManager->waitForFrame(frame_.currentFrame);
+  // Several render subsystems still rewrite shared descriptor sets and cull
+  // buffers during command recording. Keep only one submitted frame live until
+  // those resources are fully per-frame.
+  subs_.frameSyncManager->waitForAllFrames();
 
   // Collect culling statistics from the previous frame (now safe after fence).
   if (subs_.gpuCullManager)
@@ -315,8 +330,9 @@ bool RendererFrontend::drawFrame(bool& framebufferResized) {
   subs_.frameSyncManager->resetFence(frame_.currentFrame);
   frame_.imagesInFlight[imageIndex] = subs_.frameSyncManager->fence(frame_.currentFrame);
 
-  updateObjectBuffer();
   presentSceneControls();
+  updateObjectBuffer();
+  updateCameraBuffer(imageIndex);
 
   if (subs_.lightingManager && subs_.cameraController) {
     subs_.lightingManager->updateLightingData(subs_.cameraController->camera());
@@ -329,8 +345,9 @@ bool RendererFrontend::drawFrame(bool& framebufferResized) {
         static_cast<float>(svc_.swapChainManager.extent().height);
     subs_.shadowManager->update(
         subs_.cameraController->camera(), aspect,
-        glm::vec3(ld.directionalDirection));
+        glm::vec3(ld.directionalDirection), imageIndex);
   }
+  updateFrameDescriptorSets();
 
   vkResetCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), 0);
   recordCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), imageIndex);
@@ -378,6 +395,19 @@ void RendererFrontend::handleResize() {
 
   destroyGBufferResources();
   svc_.swapChainManager.recreate(resources_.renderPasses.postProcess);
+  ensureCameraBuffers();
+  if (subs_.lightingManager) {
+    subs_.lightingManager->createDescriptorResources(
+        static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+  }
+  if (subs_.shadowManager) {
+    subs_.shadowManager->recreatePerFrameResources(
+        static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+  }
+  if (subs_.shadowCullManager) {
+    subs_.shadowCullManager->recreatePerFrameResources(
+        static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+  }
   createFrameResources();
   if (subs_.environmentManager) {
     const VkExtent2D ext = svc_.swapChainManager.extent();
@@ -396,7 +426,10 @@ void RendererFrontend::handleResize() {
   subs_.frameSyncManager->recreateRenderFinishedSemaphores(svc_.swapChainManager.imageCount());
   frame_.imagesInFlight.assign(svc_.swapChainManager.imageCount(), VK_NULL_HANDLE);
 
-  updateCameraBuffer();
+  for (uint32_t imageIndex = 0;
+       imageIndex < static_cast<uint32_t>(buffers_.cameras.size()); ++imageIndex) {
+    updateCameraBuffer(imageIndex);
+  }
   updateObjectBuffer();
   updateFrameDescriptorSets();
 }
@@ -445,14 +478,18 @@ void RendererFrontend::processInput(float deltaTime) {
     return;
   }
 
-  const bool cameraChanged = svc_.inputManager.update(deltaTime);
-  if (cameraChanged) updateCameraBuffer();
+  // Input updates the CPU camera object only. GPU camera buffers are uploaded
+  // in drawFrame() after all in-flight work has completed, so culling, depth,
+  // and G-buffer passes cannot race a previous frame still reading them.
+  (void)svc_.inputManager.update(deltaTime);
 }
 
 bool RendererFrontend::reloadSceneModel(const std::string& path) {
   if (!subs_.sceneController) return false;
   const bool result = subs_.sceneController->reloadSceneModel(
-      path, buffers_.object, buffers_.objectCapacity, buffers_.camera,
+      path, buffers_.object, buffers_.objectCapacity,
+      buffers_.cameras.empty() ? container::gpu::AllocatedBuffer{}
+                               : buffers_.cameras.front(),
       sceneState_.indexType, sceneState_.rootNode,
       sceneState_.selectedMeshNode, sceneState_.cubeNode);
   syncSceneStateFromController();
@@ -463,10 +500,15 @@ bool RendererFrontend::reloadSceneModel(const std::string& path) {
   }
   if (result) {
     if (subs_.cameraController) subs_.cameraController->resetCameraForScene();
-    updateCameraBuffer();
+    for (uint32_t imageIndex = 0;
+         imageIndex < static_cast<uint32_t>(buffers_.cameras.size()); ++imageIndex) {
+      updateCameraBuffer(imageIndex);
+    }
   }
   updateObjectBuffer();
-  if (subs_.sceneManager) subs_.sceneManager->updateDescriptorSet(buffers_.camera, buffers_.object);
+  if (subs_.sceneManager) {
+    subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.object);
+  }
   return result;
 }
 
@@ -492,6 +534,7 @@ void RendererFrontend::shutdown() {
   subs_.sceneController.reset();
   subs_.sceneManager.reset();
   subs_.lightingManager.reset();
+  subs_.shadowCullManager.reset();
   subs_.shadowManager.reset();
   subs_.environmentManager.reset();
   subs_.bloomManager.reset();
@@ -499,8 +542,12 @@ void RendererFrontend::shutdown() {
   subs_.cameraController.reset();
   subs_.pipelineBuilder.reset();
 
-  if (buffers_.camera.buffer != VK_NULL_HANDLE)
-    svc_.allocationManager.destroyBuffer(buffers_.camera);
+  for (auto& cameraBuffer : buffers_.cameras) {
+    if (cameraBuffer.buffer != VK_NULL_HANDLE) {
+      svc_.allocationManager.destroyBuffer(cameraBuffer);
+    }
+  }
+  buffers_.cameras.clear();
   if (buffers_.object.buffer != VK_NULL_HANDLE)
     svc_.allocationManager.destroyBuffer(buffers_.object);
 }
@@ -570,7 +617,8 @@ void RendererFrontend::initializeScene() {
     subs_.bloomManager->createTextures(ext.width, ext.height);
   }
   createGeometryBuffers();
-  subs_.sceneManager->updateDescriptorSet(buffers_.camera, buffers_.object);
+  subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.object);
+  updateFrameDescriptorSets();
 
   container::log::ContainerLogger::instance().renderer()->info(
       "Initializing Vulkan renderer");
@@ -585,19 +633,36 @@ void RendererFrontend::buildSceneGraph() {
   if (subs_.lightingManager) subs_.lightingManager->setRootNode(sceneState_.rootNode);
 }
 
-void RendererFrontend::createSceneBuffers() {
-  if (buffers_.camera.buffer == VK_NULL_HANDLE) {
-    buffers_.camera = svc_.allocationManager.createBuffer(
+void RendererFrontend::ensureCameraBuffers() {
+  const size_t imageCount = svc_.swapChainManager.imageCount();
+  if (buffers_.cameras.size() == imageCount) return;
+
+  for (auto& cameraBuffer : buffers_.cameras) {
+    if (cameraBuffer.buffer != VK_NULL_HANDLE) {
+      svc_.allocationManager.destroyBuffer(cameraBuffer);
+    }
+  }
+
+  buffers_.cameras.assign(imageCount, {});
+  for (auto& cameraBuffer : buffers_.cameras) {
+    cameraBuffer = svc_.allocationManager.createBuffer(
         sizeof(container::gpu::CameraData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VMA_MEMORY_USAGE_AUTO,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
             VMA_ALLOCATION_CREATE_MAPPED_BIT);
   }
+}
+
+void RendererFrontend::createSceneBuffers() {
+  ensureCameraBuffers();
   if (subs_.sceneController) {
-    subs_.sceneController->createSceneBuffers(buffers_.camera, buffers_.object,
+    subs_.sceneController->createSceneBuffers(buffers_.cameras.front(), buffers_.object,
                                          buffers_.objectCapacity);
   }
-  updateCameraBuffer();
+  for (uint32_t imageIndex = 0;
+       imageIndex < static_cast<uint32_t>(buffers_.cameras.size()); ++imageIndex) {
+    updateCameraBuffer(imageIndex);
+  }
   updateObjectBuffer();
   updateFrameDescriptorSets();
 }
@@ -616,7 +681,7 @@ void RendererFrontend::createFrameResources() {
       resources_.gBufferFormats,
       resources_.renderPasses.depthPrepass, resources_.renderPasses.gBuffer,
       resources_.renderPasses.lighting,
-      buffers_.camera, buffers_.object);
+      buffers_.cameras, buffers_.object);
   resources_.frameResources = subs_.frameResourceManager->frames();
 }
 
@@ -624,17 +689,25 @@ void RendererFrontend::createFrameResources() {
 // Per-frame helpers
 // ---------------------------------------------------------------------------
 
-void RendererFrontend::updateCameraBuffer() {
-  if (subs_.cameraController)
-    subs_.cameraController->updateCameraBuffer(buffers_.cameraData, buffers_.camera);
+void RendererFrontend::updateCameraBuffer(uint32_t imageIndex) {
+  if (!subs_.cameraController || imageIndex >= buffers_.cameras.size()) return;
+  subs_.cameraController->updateCameraBuffer(
+      buffers_.cameraData, buffers_.cameras[imageIndex]);
 }
 
 void RendererFrontend::updateObjectBuffer() {
   if (!subs_.sceneController) return;
   const bool recreated = subs_.sceneController->updateObjectBuffer(
-      buffers_.object, buffers_.objectCapacity, buffers_.camera);
+      buffers_.object, buffers_.objectCapacity,
+      buffers_.cameras.empty() ? container::gpu::AllocatedBuffer{}
+                               : buffers_.cameras.front());
   if (recreated && subs_.sceneManager)
-    subs_.sceneManager->updateDescriptorSet(buffers_.camera, buffers_.object);
+    subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.object);
+  if (subs_.shadowCullManager) {
+    subs_.shadowCullManager->updateObjectSsboDescriptor(
+        buffers_.object.buffer,
+        sizeof(container::gpu::ObjectData) * buffers_.objectCapacity);
+  }
   sceneState_.diagCubeObjectIndex = subs_.sceneController->diagCubeObjectIndex();
 }
 
@@ -651,18 +724,23 @@ void RendererFrontend::updateFrameDescriptorSets() {
       lightingData.featureFlags[0] = shadowEnabled ? 1u : 0u;
       lightingData.featureFlags[1] = gtaoEnabled ? 1u : 0u;
       lightingData.featureFlags[2] = tileCullEnabled ? 1u : 0u;
-      SceneController::writeToBuffer(
-          svc_.allocationManager, subs_.lightingManager->lightingBuffer(),
-          &lightingData, sizeof(container::gpu::LightingData));
+      for (const auto& lightingBuffer :
+           subs_.lightingManager->lightingBuffers()) {
+        if (lightingBuffer.buffer != VK_NULL_HANDLE) {
+          SceneController::writeToBuffer(
+              svc_.allocationManager, lightingBuffer,
+              &lightingData, sizeof(container::gpu::LightingData));
+        }
+      }
     }
 
     VkImageView  shadowView    = VK_NULL_HANDLE;
     VkSampler    shadowSampler = VK_NULL_HANDLE;
-    const container::gpu::AllocatedBuffer* shadowUbo = nullptr;
+    std::span<const container::gpu::AllocatedBuffer> shadowUbos{};
     if (subs_.shadowManager) {
       shadowView    = subs_.shadowManager->shadowAtlasArrayView();
       shadowSampler = subs_.shadowManager->shadowSampler();
-      shadowUbo     = &subs_.shadowManager->shadowUbo();
+      shadowUbos    = subs_.shadowManager->shadowUbos();
     }
     VkImageView irradianceView  = VK_NULL_HANDLE;
     VkImageView prefilteredView = VK_NULL_HANDLE;
@@ -697,8 +775,8 @@ void RendererFrontend::updateFrameDescriptorSets() {
       tileGridBufferSize = subs_.lightingManager->tileGridBufferSize();
     }
     subs_.frameResourceManager->updateDescriptorSets(
-        buffers_.camera, buffers_.object,
-        shadowView, shadowSampler, shadowUbo,
+        buffers_.cameras, buffers_.object,
+        shadowView, shadowSampler, shadowUbos,
         irradianceView, prefilteredView, brdfLutView,
         envSampler, brdfLutSampler,
         aoTextureView, aoSampler,
@@ -719,6 +797,7 @@ bool RendererFrontend::growExactOitNodePoolIfNeeded(uint32_t imageIndex) {
   if (grew) {
     vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
     createFrameResources();
+    updateFrameDescriptorSets();
     if (subs_.guiManager) {
       subs_.guiManager->setStatusMessage(
           "Expanded exact OIT node pool to " +
@@ -781,7 +860,14 @@ void RendererFrontend::presentSceneControls() {
                         : container::ui::TransformControls{},
       [this](const container::ui::TransformControls& controls) {
         if (subs_.cameraController)
-          subs_.cameraController->applyCameraTransform(controls, buffers_.cameraData, buffers_.camera);
+          subs_.cameraController->applyCameraTransform(
+              controls, buffers_.cameraData,
+              buffers_.cameras.empty() ? container::gpu::AllocatedBuffer{}
+                                       : buffers_.cameras.front());
+        for (uint32_t imageIndex = 1;
+             imageIndex < static_cast<uint32_t>(buffers_.cameras.size()); ++imageIndex) {
+          updateCameraBuffer(imageIndex);
+        }
       },
       subs_.cameraController ? subs_.cameraController->nodeTransformControls(sceneState_.rootNode)
                         : container::ui::TransformControls{},
@@ -842,7 +928,13 @@ void RendererFrontend::presentSceneControls() {
     if (lightingSettingsChanged) {
       subs_.lightingManager->setLightingSettings(guiLightingSettings);
       subs_.lightingManager->updateLightingData();
+      updateFrameDescriptorSets();
     }
+  }
+
+  if (subs_.guiManager && subs_.environmentManager) {
+    subs_.guiManager->setEnvironmentStatus(
+        subs_.environmentManager->environmentStatus());
   }
 
   // Sync render pass toggles: pull GUI toggle states back into the render graph.
@@ -891,15 +983,18 @@ FrameRecordParams RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) 
       &subs_.sceneController->transparentSingleSidedDrawCommands();
   p.transparentDoubleSidedDrawCommands =
       &subs_.sceneController->transparentDoubleSidedDrawCommands();
-  p.sceneDescriptorSet              = subs_.sceneManager->descriptorSet();
+  p.objectData                       = &subs_.sceneController->objectData();
+  p.sceneDescriptorSet              = subs_.sceneManager->descriptorSet(imageIndex);
   p.lightDescriptorSet              = subs_.lightingManager
-                                        ? subs_.lightingManager->lightDescriptorSet()
+                                        ? subs_.lightingManager->lightDescriptorSet(imageIndex)
                                         : VK_NULL_HANDLE;
   p.tiledDescriptorSet              = (subs_.lightingManager &&
                                        subs_.lightingManager->isTiledLightingReady())
                                         ? subs_.lightingManager->tiledDescriptorSet()
                                         : VK_NULL_HANDLE;
-  p.cameraBuffer                    = buffers_.camera.buffer;
+  p.cameraBuffer                    = imageIndex < buffers_.cameras.size()
+                                          ? buffers_.cameras[imageIndex].buffer
+                                          : VK_NULL_HANDLE;
   p.cameraBufferSize                = sizeof(container::gpu::CameraData);
   p.gBufferSampler                  = subs_.frameResourceManager
                                         ? subs_.frameResourceManager->gBufferSampler()
@@ -929,9 +1024,25 @@ FrameRecordParams RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) 
     }
   }
   if (subs_.shadowManager) {
-    p.shadowDescriptorSet  = subs_.shadowManager->descriptorSet();
+    p.shadowDescriptorSet  = subs_.shadowManager->descriptorSet(imageIndex);
     p.shadowFramebuffers   = subs_.shadowManager->framebuffers().data();
     p.shadowData           = &subs_.shadowManager->shadowData();
+    p.shadowManager        = subs_.shadowManager.get();
+  }
+  if (subs_.shadowCullManager) {
+    if (subs_.shadowManager) {
+      subs_.shadowCullManager->updateShadowCullDescriptor(
+          imageIndex,
+          subs_.shadowManager->shadowCullUbo(imageIndex).buffer,
+          sizeof(container::gpu::ShadowCullData));
+    }
+    p.shadowCullManager   = subs_.shadowCullManager.get();
+    p.useGpuShadowCull    = subs_.shadowCullManager->isReady();
+    p.shadowCullMaxDrawCount = subs_.shadowCullManager->maxDrawCount();
+    for (uint32_t i = 0; i < container::gpu::kShadowCascadeCount; ++i) {
+      p.shadowCullIndirectBuffers[i] = subs_.shadowCullManager->indirectDrawBuffer(i);
+      p.shadowCullCountBuffers[i]    = subs_.shadowCullManager->drawCountBuffer(i);
+    }
   }
   p.gpuCullManager = subs_.gpuCullManager.get();
   p.bloomManager     = subs_.bloomManager.get();

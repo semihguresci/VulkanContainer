@@ -97,3 +97,26 @@ struct ShadowBuffer
 {
     ShadowCascadeData cascades[SHADOW_CASCADE_COUNT];
 };
+
+struct ShadowCascadeCullData
+{
+    column_major float4x4 viewProj;
+    column_major float4x4 lightView;
+    float4 receiverMinBounds;
+    float4 receiverMaxBounds;
+    float4 casterMinBounds;
+    float4 casterMaxBounds;
+};
+
+struct ShadowCullBuffer
+{
+    ShadowCascadeCullData cascades[SHADOW_CASCADE_COUNT];
+};
+
+struct ShadowCullPushConstants
+{
+    uint drawCount;
+    uint cascadeIndex;
+    uint outputOffset;
+    uint pad0;
+};

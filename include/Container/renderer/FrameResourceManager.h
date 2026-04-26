@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace container::gpu {
@@ -78,16 +79,16 @@ class FrameResourceManager {
               VkRenderPass                             depthPrepassPass,
               VkRenderPass                             gBufferPass,
               VkRenderPass                             lightingPass,
-              const container::gpu::AllocatedBuffer& cameraBuffer,
+              std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
               const container::gpu::AllocatedBuffer& objectBuffer);
 
   void destroy();
 
-  void updateDescriptorSets(const container::gpu::AllocatedBuffer& cameraBuffer,
+  void updateDescriptorSets(std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
                             const container::gpu::AllocatedBuffer& objectBuffer,
                             VkImageView shadowAtlasView = VK_NULL_HANDLE,
                             VkSampler   shadowSampler   = VK_NULL_HANDLE,
-                            const container::gpu::AllocatedBuffer* shadowUbo = nullptr,
+                            std::span<const container::gpu::AllocatedBuffer> shadowUbos = {},
                             VkImageView irradianceView    = VK_NULL_HANDLE,
                             VkImageView prefilteredView   = VK_NULL_HANDLE,
                             VkImageView brdfLutView       = VK_NULL_HANDLE,

@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace container::gpu {
@@ -61,7 +62,7 @@ class LightingManager {
 
   // Creates lightDescriptorSetLayout, lightingBuffer, lightDescriptorPool,
   // lightDescriptorSet, and writes the initial descriptor.
-  void createDescriptorResources();
+  void createDescriptorResources(uint32_t descriptorSetCount);
 
   // Creates the tiled light culling compute pipeline, descriptor sets,
   // and SSBO buffers.  Must be called after createDescriptorResources().
@@ -113,9 +114,17 @@ class LightingManager {
 
   // Descriptor set / buffer accessors (valid after createDescriptorResources())
   VkDescriptorSetLayout lightDescriptorSetLayout() const { return lightDescriptorSetLayout_; }
-  VkDescriptorSet       lightDescriptorSet()        const { return lightDescriptorSet_; }
+  VkDescriptorSet       lightDescriptorSet(uint32_t imageIndex) const {
+    return imageIndex < lightDescriptorSets_.size() ? lightDescriptorSets_[imageIndex]
+                                                    : VK_NULL_HANDLE;
+  }
   VkDescriptorPool      lightDescriptorPool()       const { return lightDescriptorPool_; }
-  const container::gpu::AllocatedBuffer& lightingBuffer() const { return lightingBuffer_; }
+  const container::gpu::AllocatedBuffer& lightingBuffer(uint32_t imageIndex) const {
+    return lightingBuffers_[imageIndex];
+  }
+  std::span<const container::gpu::AllocatedBuffer> lightingBuffers() const {
+    return lightingBuffers_;
+  }
 
   SceneLightingAnchor computeSceneLightingAnchor() const;
   glm::vec3           directionalLightPosition()   const;
@@ -154,10 +163,10 @@ class LightingManager {
   uint32_t     rootNode_{container::scene::SceneGraph::kInvalidNode};
 
   // Descriptor resources created by createDescriptorResources()
-  container::gpu::AllocatedBuffer lightingBuffer_{};
+  std::vector<container::gpu::AllocatedBuffer> lightingBuffers_{};
   VkDescriptorSetLayout            lightDescriptorSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool                 lightDescriptorPool_{VK_NULL_HANDLE};
-  VkDescriptorSet                  lightDescriptorSet_{VK_NULL_HANDLE};
+  std::vector<VkDescriptorSet>     lightDescriptorSets_{};
 
   // ---- Tiled light culling ------------------------------------------------
   std::vector<container::gpu::PointLightData> pointLightsSsbo_{};

@@ -51,6 +51,7 @@ list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/gtao_blur\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/frustum_cull\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/hiz_generate\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/occlusion_cull\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/shadow_cull\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/bloom_downsample\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/bloom_upsample\\.slang$")
 
@@ -193,6 +194,13 @@ if(EXISTS "${OCCLUSION_CULL_SOURCE}")
     set(OCCLUSION_CULL_OUTPUT "${COMPILED_SHADERS_DIR}/occlusion_cull.comp.spv")
     append_slang_compile_step(
         SHADER_BUILD_SCRIPT_CONTENT "${OCCLUSION_CULL_SOURCE}" "computeMain" "${OCCLUSION_CULL_OUTPUT}")
+endif()
+
+set(SHADOW_CULL_SOURCE "${SHADERS_DIR}/shadow_cull.slang")
+if(EXISTS "${SHADOW_CULL_SOURCE}")
+    set(SHADOW_CULL_OUTPUT "${COMPILED_SHADERS_DIR}/shadow_cull.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${SHADOW_CULL_SOURCE}" "computeMain" "${SHADOW_CULL_OUTPUT}")
 endif()
 
 set(BLOOM_DOWNSAMPLE_SOURCE "${SHADERS_DIR}/bloom_downsample.slang")

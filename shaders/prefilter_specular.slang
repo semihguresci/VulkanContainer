@@ -10,7 +10,7 @@ struct PrefilterPushConstants
     uint  faceIndex;
     uint  faceSize;     // current mip face size
     float roughness;
-    uint  pad0;
+    uint  sourceMipCount;
 };
 
 [[vk::push_constant]]
@@ -84,6 +84,7 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
 
     float totalWeight = 0.0;
     float3 prefilteredColor = float3(0.0, 0.0, 0.0);
+    float sourceMip = pc.roughness * max(float(pc.sourceMipCount) - 1.0, 0.0);
 
     for (uint i = 0u; i < SAMPLE_COUNT; ++i)
     {
@@ -94,7 +95,7 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
         float NdotL = saturate(dot(N, L));
         if (NdotL > 0.0)
         {
-            prefilteredColor += envCubemap.SampleLevel(envSampler, L, 0.0).rgb * NdotL;
+            prefilteredColor += envCubemap.SampleLevel(envSampler, L, sourceMip).rgb * NdotL;
             totalWeight += NdotL;
         }
     }

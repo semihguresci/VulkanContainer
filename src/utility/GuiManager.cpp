@@ -518,6 +518,12 @@ void GuiManager::drawSceneControls(
     ImGui::TextWrapped("%s", statusMessage_.c_str());
   }
 
+  if (!environmentStatus_.empty()) {
+    ImGui::Separator();
+    ImGui::Text("Environment");
+    ImGui::TextWrapped("%s", environmentStatus_.c_str());
+  }
+
   ImGui::End();
 }
 

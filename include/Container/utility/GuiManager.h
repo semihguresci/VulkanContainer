@@ -116,8 +116,14 @@ class GuiManager {
   }
   [[nodiscard]] bool wireframeSupported() const { return wireframeSupported_; }
   [[nodiscard]] const std::string& statusMessage() const { return statusMessage_; }
+  [[nodiscard]] const std::string& environmentStatus() const {
+    return environmentStatus_;
+  }
   void setStatusMessage(std::string status) {
     statusMessage_ = std::move(status);
+  }
+  void setEnvironmentStatus(std::string status) {
+    environmentStatus_ = std::move(status);
   }
   void setWireframeCapabilities(bool supported, bool rasterModeSupported,
                                 bool wideLineSupported);
@@ -161,6 +167,7 @@ class GuiManager {
   std::string defaultModelPath_{
       };
   std::string statusMessage_{};
+  std::string environmentStatus_{};
   uint32_t cullStatsTotal_{0};
   uint32_t cullStatsFrustum_{0};
   uint32_t cullStatsOcclusion_{0};

@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -50,20 +51,24 @@ class SceneManager {
   SceneManager(const SceneManager&) = delete;
   SceneManager& operator=(const SceneManager&) = delete;
 
-  void initialize(const std::string& initialModelPath);
+  void initialize(const std::string& initialModelPath,
+                  uint32_t descriptorSetCount);
 
   bool reloadModel(const std::string& path,
-                   const container::gpu::AllocatedBuffer& cameraBuffer,
+                   std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
                    const container::gpu::AllocatedBuffer& objectBuffer);
 
-  void updateDescriptorSet(
-      const container::gpu::AllocatedBuffer& cameraBuffer,
+  void updateDescriptorSets(
+      std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
       const container::gpu::AllocatedBuffer& objectBuffer);
 
   VkDescriptorSetLayout descriptorSetLayout() const {
     return descriptorSetLayout_;
   }
-  VkDescriptorSet descriptorSet() const { return descriptorSet_; }
+  VkDescriptorSet descriptorSet(uint32_t imageIndex) const {
+    return imageIndex < descriptorSets_.size() ? descriptorSets_[imageIndex]
+                                               : VK_NULL_HANDLE;
+  }
 
   const std::vector<container::geometry::Vertex>& vertices() const { return vertices_; }
   const std::vector<uint32_t>& indices() const { return indices_; }
@@ -103,8 +108,9 @@ class SceneManager {
   void loadGltfAssets();
   void loadDefaultTestSceneAssets();
   void updateModelBounds();
-  void allocateDescriptorSet();
+  void allocateDescriptorSets(uint32_t descriptorSetCount);
   void writeDescriptorSetContents(
+      VkDescriptorSet descriptorSet,
       const container::gpu::AllocatedBuffer& cameraBuffer,
       const container::gpu::AllocatedBuffer& objectBuffer);
   void resetLoadedAssets();
@@ -138,7 +144,7 @@ class SceneManager {
   VkSampler baseColorSampler_{VK_NULL_HANDLE};
   VkDescriptorSetLayout descriptorSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};
-  VkDescriptorSet descriptorSet_{VK_NULL_HANDLE};
+  std::vector<VkDescriptorSet> descriptorSets_{};
   uint32_t textureDescriptorCapacity_{1};
 };
 

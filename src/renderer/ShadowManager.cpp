@@ -16,6 +16,7 @@ namespace container::renderer {
 
 using container::gpu::kShadowCascadeCount;
 using container::gpu::kShadowMapResolution;
+using container::gpu::ShadowCullData;
 using container::gpu::ShadowData;
 
 ShadowManager::ShadowManager(
@@ -31,7 +32,8 @@ ShadowManager::~ShadowManager() {
 }
 
 // ---------------------------------------------------------------------------
-void ShadowManager::createResources(VkFormat depthFormat) {
+void ShadowManager::createResources(VkFormat depthFormat,
+                                    uint32_t descriptorSetCount) {
   depthFormat_ = depthFormat;
   VkDevice dev = device_->device();
 
@@ -99,13 +101,6 @@ void ShadowManager::createResources(VkFormat depthFormat) {
       throw std::runtime_error("failed to create shadow sampler");
   }
 
-  // ---- Shadow UBO ---------------------------------------------------------
-  shadowUbo_ = allocationManager_.createBuffer(
-      sizeof(ShadowData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-      VMA_MEMORY_USAGE_AUTO,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-          VMA_ALLOCATION_CREATE_MAPPED_BIT);
-
   // ---- Descriptor set layout (shadow UBO only — binding 0) ----------------
   {
     const VkDescriptorSetLayoutBinding binding{
@@ -115,28 +110,65 @@ void ShadowManager::createResources(VkFormat depthFormat) {
         pipelineManager_.createDescriptorSetLayout({binding}, {0});
   }
 
-  // ---- Descriptor pool + set ----------------------------------------------
-  descriptorPool_ = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}}, 1, 0);
+  recreatePerFrameResources(descriptorSetCount);
+}
 
-  {
-    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool     = descriptorPool_;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts        = &descriptorSetLayout_;
-    if (vkAllocateDescriptorSets(dev, &ai, &descriptorSet_) != VK_SUCCESS)
-      throw std::runtime_error("failed to allocate shadow descriptor set");
+void ShadowManager::recreatePerFrameResources(uint32_t descriptorSetCount) {
+  const uint32_t setCount = std::max<uint32_t>(1u, descriptorSetCount);
+  VkDevice dev = device_->device();
+
+  for (auto& shadowUbo : shadowUbos_) {
+    if (shadowUbo.buffer != VK_NULL_HANDLE) {
+      allocationManager_.destroyBuffer(shadowUbo);
+    }
+  }
+  for (auto& shadowCullUbo : shadowCullUbos_) {
+    if (shadowCullUbo.buffer != VK_NULL_HANDLE) {
+      allocationManager_.destroyBuffer(shadowCullUbo);
+    }
+  }
+  shadowUbos_.assign(setCount, {});
+  shadowCullUbos_.assign(setCount, {});
+  for (auto& shadowUbo : shadowUbos_) {
+    shadowUbo = allocationManager_.createBuffer(
+        sizeof(ShadowData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        VMA_MEMORY_USAGE_AUTO,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+            VMA_ALLOCATION_CREATE_MAPPED_BIT);
+  }
+  for (auto& shadowCullUbo : shadowCullUbos_) {
+    shadowCullUbo = allocationManager_.createBuffer(
+        sizeof(ShadowCullData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+        VMA_MEMORY_USAGE_AUTO,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+            VMA_ALLOCATION_CREATE_MAPPED_BIT);
   }
 
-  // Write UBO to the descriptor set.
-  VkDescriptorBufferInfo bufInfo{shadowUbo_.buffer, 0, sizeof(ShadowData)};
-  VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-  write.dstSet          = descriptorSet_;
-  write.dstBinding      = 0;
-  write.descriptorCount = 1;
-  write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  write.pBufferInfo     = &bufInfo;
-  vkUpdateDescriptorSets(dev, 1, &write, 0, nullptr);
+  if (descriptorPool_ != VK_NULL_HANDLE) {
+    pipelineManager_.destroyDescriptorPool(descriptorPool_);
+  }
+  descriptorPool_ = pipelineManager_.createDescriptorPool(
+      {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount}}, setCount, 0);
+
+  descriptorSets_.assign(setCount, VK_NULL_HANDLE);
+  std::vector<VkDescriptorSetLayout> layouts(setCount, descriptorSetLayout_);
+  VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  ai.descriptorPool     = descriptorPool_;
+  ai.descriptorSetCount = setCount;
+  ai.pSetLayouts        = layouts.data();
+  if (vkAllocateDescriptorSets(dev, &ai, descriptorSets_.data()) != VK_SUCCESS)
+    throw std::runtime_error("failed to allocate shadow descriptor sets");
+
+  for (size_t i = 0; i < descriptorSets_.size(); ++i) {
+    VkDescriptorBufferInfo bufInfo{shadowUbos_[i].buffer, 0, sizeof(ShadowData)};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet          = descriptorSets_[i];
+    write.dstBinding      = 0;
+    write.descriptorCount = 1;
+    write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.pBufferInfo     = &bufInfo;
+    vkUpdateDescriptorSets(dev, 1, &write, 0, nullptr);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -195,13 +227,22 @@ void ShadowManager::destroy() {
     shadowAtlasImage_      = VK_NULL_HANDLE;
     shadowAtlasAllocation_ = nullptr;
   }
-  if (shadowUbo_.buffer != VK_NULL_HANDLE) {
-    allocationManager_.destroyBuffer(shadowUbo_);
+  for (auto& shadowUbo : shadowUbos_) {
+    if (shadowUbo.buffer != VK_NULL_HANDLE) {
+      allocationManager_.destroyBuffer(shadowUbo);
+    }
   }
+  shadowUbos_.clear();
+  for (auto& shadowCullUbo : shadowCullUbos_) {
+    if (shadowCullUbo.buffer != VK_NULL_HANDLE) {
+      allocationManager_.destroyBuffer(shadowCullUbo);
+    }
+  }
+  shadowCullUbos_.clear();
 
-  descriptorSet_       = VK_NULL_HANDLE;
   descriptorPool_      = VK_NULL_HANDLE;
   descriptorSetLayout_ = VK_NULL_HANDLE;
+  descriptorSets_.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -218,7 +259,7 @@ void ShadowManager::computeCascadeSplits(float nearPlane, float farPlane) {
 }
 
 // ---------------------------------------------------------------------------
-glm::mat4 ShadowManager::computeCascadeViewProj(
+ShadowManager::CascadeViewProjData ShadowManager::computeCascadeViewProj(
     uint32_t cascadeIndex,
     const glm::vec3& lightDirection,
     const glm::mat4& cameraView,
@@ -305,24 +346,41 @@ glm::mat4 ShadowManager::computeCascadeViewProj(
   minBounds.y = orthoCenter.y - orthoHeight * 0.5f;
   maxBounds.y = orthoCenter.y + orthoHeight * 0.5f;
 
-  // Extend away from the light so off-frustum casters can still project into
-  // the cascade. The reverse-Z ortho helper expects positive near/far
-  // distances, so convert the signed light-view Z bounds after expansion.
+  const glm::vec3 receiverMinBounds = minBounds;
+  const glm::vec3 receiverMaxBounds = maxBounds;
+
+  // Extend toward the light so off-frustum casters between the light and the
+  // receiver slice can still project into this cascade. The reverse-Z ortho
+  // helper expects positive near/far distances, so convert the signed
+  // light-view Z bounds after expansion.
   const float zExtend = std::max(maxBounds.z - minBounds.z, 1.0f);
-  minBounds.z -= zExtend;
+
+  glm::vec3 casterMinBounds = minBounds;
+  glm::vec3 casterMaxBounds = maxBounds;
+  maxBounds.z += zExtend;
+  casterMaxBounds.z += zExtend;
 
   const float nearPlane = std::max(0.01f, -maxBounds.z);
   const float farPlane  = std::max(nearPlane + 0.01f, -minBounds.z);
 
   const glm::mat4 lightProj = container::math::orthoRH_ReverseZ(
       minBounds.x, maxBounds.x, minBounds.y, maxBounds.y, nearPlane, farPlane);
-  return lightProj * lightView;
+
+  CascadeViewProjData result{};
+  result.viewProj = lightProj * lightView;
+  result.cullBounds.lightView = lightView;
+  result.cullBounds.receiverMinBounds = receiverMinBounds;
+  result.cullBounds.receiverMaxBounds = receiverMaxBounds;
+  result.cullBounds.casterMinBounds = casterMinBounds;
+  result.cullBounds.casterMaxBounds = casterMaxBounds;
+  return result;
 }
 
 // ---------------------------------------------------------------------------
 void ShadowManager::update(const container::scene::BaseCamera* camera,
                            float aspectRatio,
-                           const glm::vec3& lightDirection) {
+                           const glm::vec3& lightDirection,
+                           uint32_t imageIndex) {
   if (!camera) return;
 
   // Get near/far from camera (cast to PerspectiveCamera for near/far access).
@@ -337,19 +395,85 @@ void ShadowManager::update(const container::scene::BaseCamera* camera,
   glm::mat4 cameraProj = camera->projectionMatrix(aspectRatio);
 
   for (uint32_t i = 0; i < kShadowCascadeCount; ++i) {
-    shadowData_.cascades[i].viewProj =
+    const CascadeViewProjData cascadeData =
         computeCascadeViewProj(i, lightDirection, cameraView, cameraProj,
                                nearPlane, farPlane);
+    shadowData_.cascades[i].viewProj = cascadeData.viewProj;
     shadowData_.cascades[i].splitDepth = cascadeSplits_[i];
+
+    shadowCullData_.cascades[i].viewProj = cascadeData.viewProj;
+    shadowCullData_.cascades[i].lightView = cascadeData.cullBounds.lightView;
+    shadowCullData_.cascades[i].receiverMinBounds =
+        glm::vec4(cascadeData.cullBounds.receiverMinBounds, 0.0f);
+    shadowCullData_.cascades[i].receiverMaxBounds =
+        glm::vec4(cascadeData.cullBounds.receiverMaxBounds, 0.0f);
+    shadowCullData_.cascades[i].casterMinBounds =
+        glm::vec4(cascadeData.cullBounds.casterMinBounds, 0.0f);
+    shadowCullData_.cascades[i].casterMaxBounds =
+        glm::vec4(cascadeData.cullBounds.casterMaxBounds, 0.0f);
+
+    cascadeCullBounds_[i] = cascadeData.cullBounds;
   }
 
-  // Upload to UBO.
-  if (shadowUbo_.buffer != VK_NULL_HANDLE) {
-    void* mapped = shadowUbo_.allocation_info.pMappedData;
-    if (mapped) {
-      std::memcpy(mapped, &shadowData_, sizeof(ShadowData));
+  const auto uploadMappedUbo = [this](const container::gpu::AllocatedBuffer& buffer,
+                                      const void* data,
+                                      VkDeviceSize size) {
+    if (buffer.buffer == VK_NULL_HANDLE) return;
+    void* mapped = buffer.allocation_info.pMappedData;
+    bool mappedHere = false;
+    if (mapped == nullptr) {
+      if (vmaMapMemory(allocationManager_.memoryManager()->allocator(),
+                       buffer.allocation, &mapped) != VK_SUCCESS) {
+        throw std::runtime_error("failed to map shadow buffer for writing");
+      }
+      mappedHere = true;
     }
+
+    std::memcpy(mapped, data, static_cast<size_t>(size));
+    if (vmaFlushAllocation(allocationManager_.memoryManager()->allocator(),
+                           buffer.allocation, 0, size) != VK_SUCCESS) {
+      if (mappedHere) {
+        vmaUnmapMemory(allocationManager_.memoryManager()->allocator(),
+                       buffer.allocation);
+      }
+      throw std::runtime_error("failed to flush shadow buffer after writing");
+    }
+
+    if (mappedHere) {
+      vmaUnmapMemory(allocationManager_.memoryManager()->allocator(),
+                     buffer.allocation);
+    }
+  };
+
+  if (imageIndex < shadowUbos_.size()) {
+    uploadMappedUbo(shadowUbos_[imageIndex], &shadowData_, sizeof(ShadowData));
   }
+  if (imageIndex < shadowCullUbos_.size()) {
+    uploadMappedUbo(shadowCullUbos_[imageIndex], &shadowCullData_,
+                    sizeof(ShadowCullData));
+  }
+}
+
+bool ShadowManager::cascadeIntersectsSphere(
+    uint32_t cascadeIndex,
+    const glm::vec4& boundingSphere) const {
+  if (cascadeIndex >= kShadowCascadeCount) return false;
+
+  const auto& cascadeBounds = cascadeCullBounds_[cascadeIndex];
+  const glm::vec3 sphereCenter = glm::vec3(boundingSphere);
+  const float     sphereRadius = std::max(boundingSphere.w, 0.0f);
+  const glm::vec3 lightSpaceCenter = glm::vec3(
+      cascadeBounds.lightView * glm::vec4(sphereCenter, 1.0f));
+
+  const glm::vec3 sphereMin = lightSpaceCenter - glm::vec3(sphereRadius);
+  const glm::vec3 sphereMax = lightSpaceCenter + glm::vec3(sphereRadius);
+
+  return sphereMax.x >= cascadeBounds.casterMinBounds.x &&
+         sphereMin.x <= cascadeBounds.casterMaxBounds.x &&
+         sphereMax.y >= cascadeBounds.casterMinBounds.y &&
+         sphereMin.y <= cascadeBounds.casterMaxBounds.y &&
+         sphereMax.z >= cascadeBounds.casterMinBounds.z &&
+         sphereMin.z <= cascadeBounds.casterMaxBounds.z;
 }
 
 }  // namespace container::renderer

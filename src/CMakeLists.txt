@@ -22,6 +22,7 @@ add_library(VulkanContainer_renderer
     renderer/CommandBufferManager.cpp
     renderer/RendererFrontend.cpp
     renderer/ShadowManager.cpp
+    renderer/ShadowCullManager.cpp
     renderer/GpuCullManager.cpp
     renderer/BloomManager.cpp
     renderer/VulkanContext.cpp

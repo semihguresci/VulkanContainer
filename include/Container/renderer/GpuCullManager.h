@@ -85,7 +85,7 @@ class GpuCullManager {
   VkBuffer drawCountBuffer() const { return drawCountBuffer_.buffer; }
   uint32_t maxDrawCount() const { return maxObjectCount_; }
 
-  bool isReady() const { return frustumCullPipeline_ != VK_NULL_HANDLE; }
+  [[nodiscard]] bool isReady() const;
 
   // Update the object SSBO descriptor (binding 1) to point at the scene's
   // object buffer.  Call whenever the object buffer is recreated.

@@ -20,6 +20,7 @@ class FrameSyncManager {
   [[nodiscard]] VkFence fence(size_t frameIndex) const;
 
   void waitForFrame(size_t frameIndex) const;
+  void waitForAllFrames() const;
   void resetFence(size_t frameIndex) const;
 
   void recreateRenderFinishedSemaphores(size_t swapChainImageCount);

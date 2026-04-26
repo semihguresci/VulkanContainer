@@ -9,6 +9,8 @@
 #include <array>
 #include <cstdint>
 #include <memory>
+#include <span>
+#include <vector>
 
 namespace container::gpu {
 class AllocationManager;
@@ -21,6 +23,18 @@ class BaseCamera;
 }
 
 namespace container::renderer {
+
+struct ShadowCascadeCullBounds {
+  glm::mat4 lightView{1.0f};
+  glm::vec3 receiverMinBounds{0.0f};
+  float     padding0{0.0f};
+  glm::vec3 receiverMaxBounds{0.0f};
+  float     padding1{0.0f};
+  glm::vec3 casterMinBounds{0.0f};
+  float     padding2{0.0f};
+  glm::vec3 casterMaxBounds{0.0f};
+  float     padding3{0.0f};
+};
 
 class ShadowManager {
  public:
@@ -35,7 +49,8 @@ class ShadowManager {
 
   // Create shadow atlas image, per-layer views, sampler, UBO, descriptor
   // resources.  Must be called once after construction.
-  void createResources(VkFormat depthFormat);
+  void createResources(VkFormat depthFormat, uint32_t descriptorSetCount);
+  void recreatePerFrameResources(uint32_t descriptorSetCount);
 
   // Destroy all GPU resources.
   void destroy();
@@ -43,21 +58,40 @@ class ShadowManager {
   // Recompute cascade splits and view-projection matrices, upload to UBO.
   void update(const container::scene::BaseCamera* camera,
               float aspectRatio,
-              const glm::vec3& lightDirection);
+              const glm::vec3& lightDirection,
+              uint32_t imageIndex);
 
   // ---- Accessors -----------------------------------------------------------
 
   [[nodiscard]] VkDescriptorSetLayout descriptorSetLayout() const {
     return descriptorSetLayout_;
   }
-  [[nodiscard]] VkDescriptorSet descriptorSet() const {
-    return descriptorSet_;
+  [[nodiscard]] VkDescriptorSet descriptorSet(uint32_t imageIndex) const {
+    return imageIndex < descriptorSets_.size() ? descriptorSets_[imageIndex]
+                                               : VK_NULL_HANDLE;
   }
-  [[nodiscard]] const container::gpu::AllocatedBuffer& shadowUbo() const {
-    return shadowUbo_;
+  [[nodiscard]] const container::gpu::AllocatedBuffer& shadowUbo(uint32_t imageIndex) const {
+    return shadowUbos_[imageIndex];
+  }
+  [[nodiscard]] const container::gpu::AllocatedBuffer& shadowCullUbo(uint32_t imageIndex) const {
+    return shadowCullUbos_[imageIndex];
+  }
+  [[nodiscard]] std::span<const container::gpu::AllocatedBuffer> shadowUbos() const {
+    return shadowUbos_;
+  }
+  [[nodiscard]] std::span<const container::gpu::AllocatedBuffer> shadowCullUbos() const {
+    return shadowCullUbos_;
   }
   [[nodiscard]] const container::gpu::ShadowData& shadowData() const {
     return shadowData_;
+  }
+  [[nodiscard]] const container::gpu::ShadowCullData& shadowCullData() const {
+    return shadowCullData_;
+  }
+  [[nodiscard]] const std::array<ShadowCascadeCullBounds,
+                                 container::gpu::kShadowCascadeCount>&
+      cascadeCullBounds() const {
+    return cascadeCullBounds_;
   }
   [[nodiscard]] VkImageView shadowAtlasArrayView() const {
     return shadowAtlasArrayView_;
@@ -75,9 +109,18 @@ class ShadowManager {
   void createFramebuffers(VkRenderPass shadowRenderPass);
   void destroyFramebuffers();
 
+  [[nodiscard]] bool cascadeIntersectsSphere(
+      uint32_t cascadeIndex,
+      const glm::vec4& boundingSphere) const;
+
  private:
+  struct CascadeViewProjData {
+    glm::mat4               viewProj{1.0f};
+    ShadowCascadeCullBounds cullBounds{};
+  };
+
   void computeCascadeSplits(float nearPlane, float farPlane);
-  glm::mat4 computeCascadeViewProj(
+  CascadeViewProjData computeCascadeViewProj(
       uint32_t cascadeIndex,
       const glm::vec3& lightDirection,
       const glm::mat4& cameraView,
@@ -99,13 +142,17 @@ class ShadowManager {
       framebuffers_{};
   VkSampler     shadowSampler_{VK_NULL_HANDLE};
 
-  container::gpu::AllocatedBuffer shadowUbo_{};
+  std::vector<container::gpu::AllocatedBuffer> shadowUbos_{};
+  std::vector<container::gpu::AllocatedBuffer> shadowCullUbos_{};
   container::gpu::ShadowData      shadowData_{};
+  container::gpu::ShadowCullData  shadowCullData_{};
   std::array<float, container::gpu::kShadowCascadeCount> cascadeSplits_{};
+  std::array<ShadowCascadeCullBounds, container::gpu::kShadowCascadeCount>
+      cascadeCullBounds_{};
 
   VkDescriptorSetLayout descriptorSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool      descriptorPool_{VK_NULL_HANDLE};
-  VkDescriptorSet       descriptorSet_{VK_NULL_HANDLE};
+  std::vector<VkDescriptorSet> descriptorSets_{};
 
   static constexpr float kCascadeLambda = 0.75f;
 };

@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <string>
 
 namespace container::gpu {
 class AllocationManager;
@@ -66,6 +67,12 @@ class EnvironmentManager {
 
   [[nodiscard]] bool isReady()             const { return brdfLutView_ != VK_NULL_HANDLE; }
   [[nodiscard]] bool isGtaoReady()         const { return gtaoBlurredView_ != VK_NULL_HANDLE; }
+  [[nodiscard]] bool usingPlaceholderEnvironment() const {
+    return usingPlaceholderEnvironment_;
+  }
+  [[nodiscard]] const std::string& environmentStatus() const {
+    return environmentStatus_;
+  }
 
   // IBL textures for lighting descriptor binding.
   [[nodiscard]] VkImageView   brdfLutView()           const { return brdfLutView_; }
@@ -151,6 +158,9 @@ class EnvironmentManager {
   float    aoIntensity_{1.5f};
   uint32_t aoSampleCount_{16};
   bool     aoEnabled_{true};
+
+  bool        usingPlaceholderEnvironment_{true};
+  std::string environmentStatus_{"Environment: not initialized"};
 };
 
 }  // namespace container::renderer

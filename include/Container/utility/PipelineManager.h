@@ -23,14 +23,20 @@ class PipelineManager {
       const std::vector<VkDescriptorBindingFlags>& bindingFlags,
       VkDescriptorSetLayoutCreateFlags flags = 0, const void* next = nullptr);
 
+  void destroyDescriptorSetLayout(VkDescriptorSetLayout& layout);
+
   VkDescriptorPool createDescriptorPool(
       const std::vector<VkDescriptorPoolSize>& poolSizes, uint32_t maxSets,
       VkDescriptorPoolCreateFlags flags = 0);
+
+  void destroyDescriptorPool(VkDescriptorPool& pool);
 
   VkPipelineLayout createPipelineLayout(
       const std::vector<VkDescriptorSetLayout>& setLayouts,
       const std::vector<VkPushConstantRange>& pushConstantRanges,
       const void* next = nullptr);
+
+  void destroyPipelineLayout(VkPipelineLayout& layout);
 
   VkPipelineCache getOrCreatePipelineCache(
       const std::string& cacheKey,
@@ -43,6 +49,8 @@ class PipelineManager {
   VkPipeline createComputePipeline(
       const VkComputePipelineCreateInfo& pipelineInfo,
       const std::string& cacheKey);
+
+  void destroyPipeline(VkPipeline& pipeline);
 
   void destroyManagedResources();
 

@@ -94,6 +94,19 @@ void FrameSyncManager::waitForFrame(size_t frameIndex) const {
   }
 }
 
+void FrameSyncManager::waitForAllFrames() const {
+  if (inFlightFences_.empty()) return;
+
+  VkResult res = vkWaitForFences(
+      device_, static_cast<uint32_t>(inFlightFences_.size()),
+      inFlightFences_.data(), VK_TRUE,
+      std::numeric_limits<uint64_t>::max());
+
+  if (res != VK_SUCCESS) {
+    throw std::runtime_error("Failed to wait for all in-flight fences!");
+  }
+}
+
 void FrameSyncManager::resetFence(size_t frameIndex) const {
   VkFence f = inFlightFences_.at(frameIndex);
   VkResult res = vkResetFences(device_, 1, &f);

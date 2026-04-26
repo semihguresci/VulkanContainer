@@ -25,6 +25,7 @@ class GpuCullManager;
 class LightingManager;
 class OitManager;
 class SceneController;
+class ShadowCullManager;
 class ShadowManager;
 struct LightPushConstants;
 }  // namespace container::renderer
@@ -55,6 +56,7 @@ struct FrameRecordParams {
   const std::vector<DrawCommand>*   opaqueDoubleSidedDrawCommands{nullptr};
   const std::vector<DrawCommand>*   transparentSingleSidedDrawCommands{nullptr};
   const std::vector<DrawCommand>*   transparentDoubleSidedDrawCommands{nullptr};
+  const std::vector<container::gpu::ObjectData>* objectData{nullptr};
 
   // Descriptor sets
   VkDescriptorSet                   sceneDescriptorSet{VK_NULL_HANDLE};
@@ -106,6 +108,12 @@ struct FrameRecordParams {
   const VkFramebuffer*              shadowFramebuffers{nullptr};
   container::gpu::ShadowPushConstants*  shadowPushConstants{nullptr};
   const container::gpu::ShadowData*     shadowData{nullptr};
+  bool                                 useGpuShadowCull{false};
+  ShadowCullManager*                   shadowCullManager{nullptr};
+  std::array<VkBuffer, container::gpu::kShadowCascadeCount> shadowCullIndirectBuffers{};
+  std::array<VkBuffer, container::gpu::kShadowCascadeCount> shadowCullCountBuffers{};
+  uint32_t                             shadowCullMaxDrawCount{0};
+  const ShadowManager*                  shadowManager{nullptr};
 
   // Swapchain framebuffers (for post-process pass)
   const std::vector<VkFramebuffer>* swapChainFramebuffers{nullptr};
@@ -172,6 +180,8 @@ class FrameRecorder {
                         const FrameRecordParams& p,
                         uint32_t cascadeIndex) const;
 
+  void prepareShadowCascadeDrawCommands(const FrameRecordParams& p) const;
+
   void recordLightingPass(VkCommandBuffer cmd,
                           const FrameRecordParams& p,
                           VkDescriptorSet sceneSet,
@@ -195,6 +205,10 @@ class FrameRecorder {
 
   DebugOverlayRenderer debugOverlay_;
   RenderGraph          graph_;
+  mutable std::array<std::vector<DrawCommand>, container::gpu::kShadowCascadeCount>
+      shadowCascadeSingleSidedDrawCommands_;
+  mutable std::array<std::vector<DrawCommand>, container::gpu::kShadowCascadeCount>
+      shadowCascadeDoubleSidedDrawCommands_;
 };
 
 }  // namespace container::renderer

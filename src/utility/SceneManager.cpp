@@ -154,7 +154,7 @@ SceneManager::SceneManager(
 SceneManager::~SceneManager() {
   resetLoadedAssets();
 
-  descriptorSet_ = VK_NULL_HANDLE;
+  descriptorSets_.clear();
   descriptorPool_ = VK_NULL_HANDLE;
   descriptorSetLayout_ = VK_NULL_HANDLE;
 
@@ -183,7 +183,8 @@ uint32_t SceneManager::resolveLoadedMaterialIndex(int32_t materialIndex) const {
   return gltfMaterialBaseIndex_ + static_cast<uint32_t>(materialIndex);
 }
 
-void SceneManager::initialize(const std::string& initialModelPath) {
+void SceneManager::initialize(const std::string& initialModelPath,
+                              uint32_t descriptorSetCount) {
   textureDescriptorCapacity_ = queryTextureDescriptorCapacity();
   createDescriptorSetLayout();
   createSampler();
@@ -191,7 +192,7 @@ void SceneManager::initialize(const std::string& initialModelPath) {
 
   config_.modelPath = initialModelPath;
   loadGltfAssets();
-  allocateDescriptorSet();
+  allocateDescriptorSets(descriptorSetCount);
 }
 
 bool SceneManager::isDefaultTestSceneActive() const {
@@ -300,7 +301,7 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
 
 bool SceneManager::reloadModel(
     const std::string& path,
-    const container::gpu::AllocatedBuffer& cameraBuffer,
+    std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
   resetLoadedAssets();
   loadMaterialXMaterial();
@@ -313,7 +314,7 @@ bool SceneManager::reloadModel(
 
   try {
     loadGltfAssets();
-    writeDescriptorSetContents(cameraBuffer, objectBuffer);
+    updateDescriptorSets(cameraBuffers, objectBuffer);
     return true;
   } catch (...) {
     materialManager_ = container::material::MaterialManager{};
@@ -325,10 +326,19 @@ bool SceneManager::reloadModel(
   }
 }
 
-void SceneManager::updateDescriptorSet(
-    const container::gpu::AllocatedBuffer& cameraBuffer,
+void SceneManager::updateDescriptorSets(
+    std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
-  writeDescriptorSetContents(cameraBuffer, objectBuffer);
+  if (cameraBuffers.empty() || descriptorSets_.empty()) return;
+
+  if (descriptorSets_.size() != cameraBuffers.size()) {
+    allocateDescriptorSets(static_cast<uint32_t>(cameraBuffers.size()));
+  }
+
+  const size_t descriptorCount = std::min(descriptorSets_.size(), cameraBuffers.size());
+  for (size_t i = 0; i < descriptorCount; ++i) {
+    writeDescriptorSetContents(descriptorSets_[i], cameraBuffers[i], objectBuffer);
+  }
 }
 
 /* ---------- Material resolution ---------- */
@@ -822,9 +832,15 @@ void SceneManager::updateModelBounds() {
 
 /* ---------- Descriptor sets ---------- */
 
-void SceneManager::allocateDescriptorSet() {
+void SceneManager::allocateDescriptorSets(uint32_t descriptorSetCount) {
   const uint32_t textureDescriptorCount =
       std::max<uint32_t>(1u, static_cast<uint32_t>(textureManager_.textureCount()));
+  const uint32_t setCount = std::max(1u, descriptorSetCount);
+
+  if (descriptorPool_ != VK_NULL_HANDLE) {
+    pipelineManager_->destroyDescriptorPool(descriptorPool_);
+  }
+  descriptorSets_.clear();
 
   if (textureDescriptorCount > textureDescriptorCapacity_) {
     throw std::runtime_error("Model requires more sampled-image descriptors than "
@@ -832,35 +848,43 @@ void SceneManager::allocateDescriptorSet() {
   }
 
   std::vector<VkDescriptorPoolSize> poolSizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1},
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, textureDescriptorCount},
-      {VK_DESCRIPTOR_TYPE_SAMPLER, 1},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+       textureDescriptorCapacity_ * setCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, setCount},
   };
 
-  descriptorPool_ = pipelineManager_->createDescriptorPool(poolSizes, 1, 0);
+  descriptorPool_ = pipelineManager_->createDescriptorPool(poolSizes, setCount, 0);
 
   VkDescriptorSetAllocateInfo allocInfo{};
   allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
   allocInfo.descriptorPool = descriptorPool_;
-  allocInfo.descriptorSetCount = 1;
-  allocInfo.pSetLayouts = &descriptorSetLayout_;
+  allocInfo.descriptorSetCount = setCount;
+
+  std::vector<VkDescriptorSetLayout> layouts(setCount, descriptorSetLayout_);
+  allocInfo.pSetLayouts = layouts.data();
 
   VkDescriptorSetVariableDescriptorCountAllocateInfo countInfo{};
   countInfo.sType =
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_VARIABLE_DESCRIPTOR_COUNT_ALLOCATE_INFO;
-  countInfo.descriptorSetCount = 1;
-  countInfo.pDescriptorCounts = &textureDescriptorCount;
+  countInfo.descriptorSetCount = setCount;
+  std::vector<uint32_t> descriptorCounts(setCount, textureDescriptorCapacity_);
+  countInfo.pDescriptorCounts = descriptorCounts.data();
   allocInfo.pNext = &countInfo;
 
-  vkAllocateDescriptorSets(deviceWrapper_->device(), &allocInfo,
-                           &descriptorSet_);
+  descriptorSets_.assign(setCount, VK_NULL_HANDLE);
+  if (vkAllocateDescriptorSets(deviceWrapper_->device(), &allocInfo,
+                               descriptorSets_.data()) != VK_SUCCESS) {
+    throw std::runtime_error("failed to allocate scene descriptor sets");
+  }
 }
 
 void SceneManager::writeDescriptorSetContents(
+    VkDescriptorSet descriptorSet,
     const container::gpu::AllocatedBuffer& cameraBuffer,
     const container::gpu::AllocatedBuffer& objectBuffer) {
-  if (descriptorSet_ == VK_NULL_HANDLE) return;
+  if (descriptorSet == VK_NULL_HANDLE) return;
 
   VkDescriptorBufferInfo cameraInfo{cameraBuffer.buffer, 0, sizeof(container::gpu::CameraData)};
   VkDescriptorBufferInfo objectInfo{
@@ -870,7 +894,7 @@ void SceneManager::writeDescriptorSetContents(
 
   VkWriteDescriptorSet cameraWrite{};
   cameraWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  cameraWrite.dstSet = descriptorSet_;
+  cameraWrite.dstSet = descriptorSet;
   cameraWrite.dstBinding = 0;
   cameraWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
   cameraWrite.descriptorCount = 1;
@@ -879,7 +903,7 @@ void SceneManager::writeDescriptorSetContents(
 
   VkWriteDescriptorSet objectWrite{};
   objectWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  objectWrite.dstSet = descriptorSet_;
+  objectWrite.dstSet = descriptorSet;
   objectWrite.dstBinding = 1;
   objectWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
   objectWrite.descriptorCount = 1;
@@ -903,7 +927,7 @@ void SceneManager::writeDescriptorSetContents(
   if (!imageInfos.empty()) {
     VkWriteDescriptorSet imageWrite{};
     imageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    imageWrite.dstSet = descriptorSet_;
+    imageWrite.dstSet = descriptorSet;
     imageWrite.dstBinding = 3;
     imageWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     imageWrite.descriptorCount = static_cast<uint32_t>(imageInfos.size());
@@ -916,7 +940,7 @@ void SceneManager::writeDescriptorSetContents(
 
   VkWriteDescriptorSet samplerWrite{};
   samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  samplerWrite.dstSet = descriptorSet_;
+  samplerWrite.dstSet = descriptorSet;
   samplerWrite.dstBinding = 2;
   samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
   samplerWrite.descriptorCount = 1;

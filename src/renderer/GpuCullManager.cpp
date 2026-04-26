@@ -76,6 +76,11 @@ GpuCullManager::~GpuCullManager() {
     vkDestroyDescriptorSetLayout(dev, occlusionCullSetLayout_, nullptr);
 }
 
+bool GpuCullManager::isReady() const {
+  return frustumCullPipeline_ != VK_NULL_HANDLE &&
+         device_->enabledFeatures().drawIndirectFirstInstance == VK_TRUE;
+}
+
 // ---------------------------------------------------------------------------
 // Resource creation
 // ---------------------------------------------------------------------------

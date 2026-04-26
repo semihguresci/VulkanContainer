@@ -66,6 +66,15 @@ void SceneController::writeToBuffer(
   }
 
   std::memcpy(mapped, data, size);
+  if (vmaFlushAllocation(allocationManager.memoryManager()->allocator(),
+                         buffer.allocation, 0,
+                         static_cast<VkDeviceSize>(size)) != VK_SUCCESS) {
+    if (mappedHere) {
+      vmaUnmapMemory(allocationManager.memoryManager()->allocator(),
+                     buffer.allocation);
+    }
+    throw std::runtime_error("failed to flush buffer after writing");
+  }
 
   if (mappedHere) {
     vmaUnmapMemory(allocationManager.memoryManager()->allocator(),
@@ -400,8 +409,10 @@ bool SceneController::reloadSceneModel(
     uint32_t&                               outSelectedMeshNode,
     uint32_t&                               outCubeNode) {
   vkDeviceWaitIdle(device_->device());
+  const std::array<container::gpu::AllocatedBuffer, 1> cameraBuffers = {
+      cameraBuffer};
   const bool result =
-      sceneManager_.reloadModel(path, cameraBuffer, objectBuffer);
+      sceneManager_.reloadModel(path, cameraBuffers, objectBuffer);
   outIndexType = sceneManager_.indexType();
   buildSceneGraph(outRootNode, outSelectedMeshNode, outCubeNode);
   ensureObjectBufferCapacity(allocationManager_, objectBuffer,

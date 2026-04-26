@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <filesystem>
@@ -40,6 +41,8 @@ void EnvironmentManager::createResources(const std::filesystem::path& shaderDir)
   createSamplers();
   createBrdfLut(shaderDir);
   createPlaceholderCubemaps();
+  usingPlaceholderEnvironment_ = true;
+  environmentStatus_ = "Environment: placeholder cubemaps active";
 }
 
 void EnvironmentManager::createGtaoResources(
@@ -59,6 +62,8 @@ void EnvironmentManager::recreateGtaoTextures(uint32_t fullWidth,
 
 void EnvironmentManager::destroy() {
   VkDevice dev = device_->device();
+  usingPlaceholderEnvironment_ = true;
+  environmentStatus_ = "Environment: destroyed";
 
   destroyGtaoTextures();
 
@@ -282,7 +287,12 @@ void EnvironmentManager::destroyEnvironmentCubemaps() {
 namespace {
 
 struct Face2Push { uint32_t faceIndex; uint32_t faceSize; };
-struct PrefilterPush { uint32_t faceIndex; uint32_t faceSize; float roughness; uint32_t pad0; };
+struct PrefilterPush { uint32_t faceIndex; uint32_t faceSize; float roughness; uint32_t sourceMipCount; };
+
+std::string EnvironmentStatusWithPath(std::string_view state,
+                                      const std::filesystem::path& path) {
+  return std::string(state) + ": " + path.string();
+}
 
 VkShaderModule loadComputeModule(VkDevice dev,
                                   const std::filesystem::path& spv) {
@@ -298,9 +308,26 @@ bool EnvironmentManager::loadHdrEnvironment(
   VkDevice     dev       = device_->device();
   VmaAllocator allocator = allocationManager_.memoryManager()->allocator();
 
+  auto destroyImageView = [&](VkImageView& view) {
+    if (view != VK_NULL_HANDLE) {
+      vkDestroyImageView(dev, view, nullptr);
+      view = VK_NULL_HANDLE;
+    }
+  };
+  auto destroyImage = [&](VkImage& image, VmaAllocation& alloc) {
+    if (image != VK_NULL_HANDLE && alloc != nullptr) {
+      vmaDestroyImage(allocator, image, alloc);
+    }
+    image = VK_NULL_HANDLE;
+    alloc = nullptr;
+  };
+
   // ---- 1. Load EXR -----------------------------------------------------
   if (!std::filesystem::exists(hdrPath)) {
     std::println(stderr, "[HDR] File not found: {}", hdrPath.string());
+    environmentStatus_ =
+        EnvironmentStatusWithPath("Environment HDR missing", hdrPath);
+    usingPlaceholderEnvironment_ = true;
     return false;
   }
 
@@ -312,11 +339,17 @@ bool EnvironmentManager::loadHdrEnvironment(
     std::println(stderr, "[HDR] LoadEXR failed: {} ({})",
                  hdrPath.string(), exrErr ? exrErr : "unknown");
     if (exrErr) FreeEXRErrorMessage(exrErr);
+    environmentStatus_ =
+        EnvironmentStatusWithPath("Environment HDR load failed", hdrPath);
+    usingPlaceholderEnvironment_ = true;
     return false;
   }
   if (!rgba || exrW <= 0 || exrH <= 0) {
     std::println(stderr, "[HDR] Invalid EXR dimensions");
     if (rgba) free(rgba);
+    environmentStatus_ =
+        EnvironmentStatusWithPath("Environment HDR invalid dimensions", hdrPath);
+    usingPlaceholderEnvironment_ = true;
     return false;
   }
 
@@ -381,10 +414,23 @@ bool EnvironmentManager::loadHdrEnvironment(
     std::println(stderr, "[HDR] Staging buffer not mapped");
     free(rgba);
     allocationManager_.destroyBuffer(staging);
+    environmentStatus_ =
+        EnvironmentStatusWithPath("Environment staging buffer mapping failed", hdrPath);
+    usingPlaceholderEnvironment_ = true;
     return false;
   }
   std::memcpy(staging.allocation_info.pMappedData, rgba,
               static_cast<size_t>(equirectBytes));
+  if (vmaFlushAllocation(allocationManager_.memoryManager()->allocator(),
+                         staging.allocation, 0, equirectBytes) != VK_SUCCESS) {
+    std::println(stderr, "[HDR] Failed to flush staging buffer");
+    free(rgba);
+    allocationManager_.destroyBuffer(staging);
+    environmentStatus_ =
+        EnvironmentStatusWithPath("Environment staging buffer flush failed", hdrPath);
+    usingPlaceholderEnvironment_ = true;
+    return false;
+  }
   free(rgba);
   rgba = nullptr;
 
@@ -409,6 +455,9 @@ bool EnvironmentManager::loadHdrEnvironment(
                         &equirectAlloc, nullptr) != VK_SUCCESS) {
       std::println(stderr, "[HDR] Failed to create equirect image");
       allocationManager_.destroyBuffer(staging);
+      environmentStatus_ =
+          EnvironmentStatusWithPath("Environment equirect image creation failed", hdrPath);
+      usingPlaceholderEnvironment_ = true;
       return false;
     }
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -421,11 +470,14 @@ bool EnvironmentManager::loadHdrEnvironment(
 
   // ---- 3. Create the three cubemap targets ----------------------------
   constexpr uint32_t kEnvSize        = 512;
+  const uint32_t     kEnvMips        =
+      static_cast<uint32_t>(std::floor(std::log2(static_cast<float>(kEnvSize)))) + 1u;
   constexpr uint32_t kIrradianceSize = 32;
   constexpr uint32_t kPrefilterSize  = 128;
   constexpr uint32_t kPrefilterMips  = 5;
 
   auto createCube = [&](uint32_t size, uint32_t mips,
+                        VkImageUsageFlags usage,
                         VkImage& image, VmaAllocation& alloc,
                         VkImageView& cubeView) -> bool {
     VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -436,7 +488,7 @@ bool EnvironmentManager::loadHdrEnvironment(
     ii.arrayLayers = 6;
     ii.samples     = VK_SAMPLE_COUNT_1_BIT;
     ii.tiling      = VK_IMAGE_TILING_OPTIMAL;
-    ii.usage       = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ii.usage       = usage;
     ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     ii.flags       = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     VmaAllocationCreateInfo ai{};
@@ -451,18 +503,38 @@ bool EnvironmentManager::loadHdrEnvironment(
     return vkCreateImageView(dev, &vi, nullptr, &cubeView) == VK_SUCCESS;
   };
 
-  // Replace existing placeholder cubemaps.
-  destroyEnvironmentCubemaps();
-
   VkImage       envImage = VK_NULL_HANDLE;
   VmaAllocation envAlloc = nullptr;
   VkImageView   envCubeView = VK_NULL_HANDLE;
-  if (!createCube(kEnvSize, 1, envImage, envAlloc, envCubeView) ||
-      !createCube(kIrradianceSize, 1, irradianceCubeImage_,
-                  irradianceCubeAlloc_, irradianceCubeView_) ||
-      !createCube(kPrefilterSize, kPrefilterMips, prefilteredCubeImage_,
-                  prefilteredCubeAlloc_, prefilteredCubeView_)) {
+  VkImage       newIrradianceImage = VK_NULL_HANDLE;
+  VmaAllocation newIrradianceAlloc = nullptr;
+  VkImageView   newIrradianceView  = VK_NULL_HANDLE;
+  VkImage       newPrefilteredImage = VK_NULL_HANDLE;
+  VmaAllocation newPrefilteredAlloc = nullptr;
+  VkImageView   newPrefilteredView  = VK_NULL_HANDLE;
+  if (!createCube(kEnvSize, kEnvMips,
+                  VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                      VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
+                      VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                  envImage, envAlloc, envCubeView) ||
+      !createCube(kIrradianceSize, 1,
+                  VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                  newIrradianceImage,
+                  newIrradianceAlloc, newIrradianceView) ||
+      !createCube(kPrefilterSize, kPrefilterMips,
+                  VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                  newPrefilteredImage,
+                  newPrefilteredAlloc, newPrefilteredView)) {
+    destroyImageView(envCubeView);
+    destroyImage(envImage, envAlloc);
+    destroyImageView(newIrradianceView);
+    destroyImage(newIrradianceImage, newIrradianceAlloc);
+    destroyImageView(newPrefilteredView);
+    destroyImage(newPrefilteredImage, newPrefilteredAlloc);
     std::println(stderr, "[HDR] Failed to create cubemap images");
+    environmentStatus_ =
+        EnvironmentStatusWithPath("Environment cubemap creation failed", hdrPath);
+    usingPlaceholderEnvironment_ = true;
     return false;
   }
 
@@ -478,10 +550,10 @@ bool EnvironmentManager::loadHdrEnvironment(
   };
 
   VkImageView envStorageView        = makeArrayView(envImage, 0);
-  VkImageView irradianceStorageView = makeArrayView(irradianceCubeImage_, 0);
+  VkImageView irradianceStorageView = makeArrayView(newIrradianceImage, 0);
   std::array<VkImageView, kPrefilterMips> prefilterStorageViews{};
   for (uint32_t m = 0; m < kPrefilterMips; ++m)
-    prefilterStorageViews[m] = makeArrayView(prefilteredCubeImage_, m);
+    prefilterStorageViews[m] = makeArrayView(newPrefilteredImage, m);
 
   // ---- 4. Build the three compute pipelines ---------------------------
   // Descriptor layout shared between the three passes:
@@ -603,11 +675,14 @@ bool EnvironmentManager::loadHdrEnvironment(
   auto barrier = [&](VkImage img, VkImageLayout oldL, VkImageLayout newL,
                       VkAccessFlags srcA, VkAccessFlags dstA,
                       VkPipelineStageFlags srcS, VkPipelineStageFlags dstS,
-                      uint32_t layerCount, uint32_t levelCount) {
+                      uint32_t baseMipLevel, uint32_t levelCount,
+                      uint32_t baseArrayLayer, uint32_t layerCount) {
     VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     b.oldLayout = oldL; b.newLayout = newL;
     b.image = img;
-    b.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levelCount, 0, layerCount};
+    b.subresourceRange = {
+        VK_IMAGE_ASPECT_COLOR_BIT, baseMipLevel, levelCount,
+        baseArrayLayer, layerCount};
     b.srcAccessMask = srcA; b.dstAccessMask = dstA;
     b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -617,7 +692,8 @@ bool EnvironmentManager::loadHdrEnvironment(
   // Equirect upload: UNDEFINED -> TRANSFER_DST -> copy -> SHADER_READ_ONLY
   barrier(equirectImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
           0, VK_ACCESS_TRANSFER_WRITE_BIT,
-          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 1, 1);
+          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+          0, 1, 0, 1);
   {
     VkBufferImageCopy r{};
     r.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -628,19 +704,22 @@ bool EnvironmentManager::loadHdrEnvironment(
   barrier(equirectImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
           VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 1, 1);
+          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          0, 1, 0, 1);
 
   // Transition cubemap targets to GENERAL for storage writes.
   barrier(envImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
           0, VK_ACCESS_SHADER_WRITE_BIT,
-          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 6, 1);
-  barrier(irradianceCubeImage_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
-          0, VK_ACCESS_SHADER_WRITE_BIT,
-          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 6, 1);
-  barrier(prefilteredCubeImage_, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          0, kEnvMips, 0, 6);
+  barrier(newIrradianceImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
           0, VK_ACCESS_SHADER_WRITE_BIT,
           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-          6, kPrefilterMips);
+          0, 1, 0, 6);
+  barrier(newPrefilteredImage, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+          0, VK_ACCESS_SHADER_WRITE_BIT,
+          VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          0, kPrefilterMips, 0, 6);
 
   // -- Equirect -> Env cubemap (dispatch per face) --
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, equirectPipe);
@@ -654,10 +733,47 @@ bool EnvironmentManager::loadHdrEnvironment(
     vkCmdDispatch(cmd, g, g, 1);
   }
 
-  // Env cube: GENERAL -> SHADER_READ_ONLY for sampling by filters.
-  barrier(envImage, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-          VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 6, 1);
+  // Env cube mip chain generation: compute writes mip 0, then blit down the
+  // remaining mip levels face-by-face.
+  barrier(envImage, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+          VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+          0, 1, 0, 6);
+  if (kEnvMips > 1) {
+    barrier(envImage, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            0, VK_ACCESS_TRANSFER_WRITE_BIT,
+            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            1, kEnvMips - 1, 0, 6);
+  }
+
+  for (uint32_t mip = 1; mip < kEnvMips; ++mip) {
+    const int32_t srcSize = static_cast<int32_t>(std::max(1u, kEnvSize >> (mip - 1)));
+    const int32_t dstSize = static_cast<int32_t>(std::max(1u, kEnvSize >> mip));
+    for (uint32_t face = 0; face < 6; ++face) {
+      VkImageBlit blit{};
+      blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip - 1, face, 1};
+      blit.srcOffsets[1]  = {srcSize, srcSize, 1};
+      blit.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, mip, face, 1};
+      blit.dstOffsets[1]  = {dstSize, dstSize, 1};
+      vkCmdBlitImage(cmd,
+                     envImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                     envImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                     1, &blit, VK_FILTER_LINEAR);
+    }
+
+    barrier(envImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+            VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+            VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+            mip, 1, 0, 6);
+  }
+
+  // Env cube: full mip chain -> SHADER_READ_ONLY for sampling by filters.
+  barrier(envImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+          VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
+          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          0, kEnvMips, 0, 6);
 
   // -- Env -> Irradiance --
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, irradiancePipe);
@@ -680,7 +796,7 @@ bool EnvironmentManager::loadHdrEnvironment(
     const float roughness  = (kPrefilterMips <= 1) ? 0.0f :
         static_cast<float>(mip) / static_cast<float>(kPrefilterMips - 1);
     for (uint32_t face = 0; face < 6; ++face) {
-      PrefilterPush push{face, mipSize, roughness, 0};
+      PrefilterPush push{face, mipSize, roughness, kEnvMips};
       vkCmdPushConstants(cmd, prefilterLayout, VK_SHADER_STAGE_COMPUTE_BIT,
                          0, sizeof(push), &push);
       const uint32_t g = (mipSize + 15) / 16;
@@ -689,15 +805,16 @@ bool EnvironmentManager::loadHdrEnvironment(
   }
 
   // Final transitions to SHADER_READ_ONLY for the fragment lighting pass.
-  barrier(irradianceCubeImage_, VK_IMAGE_LAYOUT_GENERAL,
-          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-          VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
-          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 6, 1);
-  barrier(prefilteredCubeImage_, VK_IMAGE_LAYOUT_GENERAL,
+  barrier(newIrradianceImage, VK_IMAGE_LAYOUT_GENERAL,
           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
           VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-          6, kPrefilterMips);
+          0, 1, 0, 6);
+  barrier(newPrefilteredImage, VK_IMAGE_LAYOUT_GENERAL,
+          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+          VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+          0, kPrefilterMips, 0, 6);
 
   vkEndCommandBuffer(cmd);
   VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -726,7 +843,18 @@ bool EnvironmentManager::loadHdrEnvironment(
 
   allocationManager_.destroyBuffer(staging);
 
+  destroyEnvironmentCubemaps();
+  irradianceCubeImage_ = newIrradianceImage;
+  irradianceCubeAlloc_ = newIrradianceAlloc;
+  irradianceCubeView_ = newIrradianceView;
+  prefilteredCubeImage_ = newPrefilteredImage;
+  prefilteredCubeAlloc_ = newPrefilteredAlloc;
+  prefilteredCubeView_ = newPrefilteredView;
+
   std::println("[HDR] IBL generation complete");
+  environmentStatus_ =
+      EnvironmentStatusWithPath("Environment HDR loaded and IBL generated", hdrPath);
+  usingPlaceholderEnvironment_ = false;
   return true;
 }
 
@@ -736,6 +864,8 @@ bool EnvironmentManager::loadHdrEnvironment(
 
 void EnvironmentManager::createPlaceholderCubemaps() {
   VkDevice dev = device_->device();
+  usingPlaceholderEnvironment_ = true;
+  environmentStatus_ = "Environment: placeholder cubemaps active";
 
   auto createCube = [&](uint32_t size, VkImage& image, VmaAllocation& alloc,
                         VkImageView& view) {
@@ -882,7 +1012,7 @@ void EnvironmentManager::createSamplers() {
     si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     si.minLod       = 0.0f;
-    si.maxLod       = 5.0f;  // for mip levels
+    si.maxLod       = 16.0f;  // supports runtime prefiltered sampling and compute-time env mip sampling
     si.maxAnisotropy = 1.0f;
     if (vkCreateSampler(dev, &si, nullptr, &envSampler_) != VK_SUCCESS)
       throw std::runtime_error("failed to create environment sampler");

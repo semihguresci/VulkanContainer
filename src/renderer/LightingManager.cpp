@@ -80,10 +80,15 @@ LightingManager::~LightingManager() {
   allocationManager_.destroyBuffer(lightIndexListSsbo_);
   allocationManager_.destroyBuffer(tileGridSsbo_);
   allocationManager_.destroyBuffer(lightSsbo_);
-  allocationManager_.destroyBuffer(lightingBuffer_);
+  for (auto& lightingBuffer : lightingBuffers_) {
+    allocationManager_.destroyBuffer(lightingBuffer);
+  }
+  lightingBuffers_.clear();
 }
 
-void LightingManager::createDescriptorResources() {
+void LightingManager::createDescriptorResources(uint32_t descriptorSetCount) {
+  const uint32_t setCount = std::max<uint32_t>(1u, descriptorSetCount);
+
   if (lightDescriptorSetLayout_ == VK_NULL_HANDLE) {
     const VkDescriptorSetLayoutBinding binding{
         0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
@@ -92,40 +97,51 @@ void LightingManager::createDescriptorResources() {
         pipelineManager_.createDescriptorSetLayout({binding}, {0});
   }
 
-  if (lightingBuffer_.buffer == VK_NULL_HANDLE) {
-    lightingBuffer_ = allocationManager_.createBuffer(
+  for (auto& buffer : lightingBuffers_) {
+    if (buffer.buffer != VK_NULL_HANDLE) {
+      allocationManager_.destroyBuffer(buffer);
+    }
+  }
+  lightingBuffers_.assign(setCount, {});
+  for (auto& buffer : lightingBuffers_) {
+    buffer = allocationManager_.createBuffer(
         sizeof(container::gpu::LightingData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VMA_MEMORY_USAGE_AUTO,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
             VMA_ALLOCATION_CREATE_MAPPED_BIT);
   }
 
-  if (lightDescriptorPool_ == VK_NULL_HANDLE) {
-    lightDescriptorPool_ = pipelineManager_.createDescriptorPool(
-        {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}}, 1, 0);
+  if (lightDescriptorPool_ != VK_NULL_HANDLE) {
+    pipelineManager_.destroyDescriptorPool(lightDescriptorPool_);
+  }
+  lightDescriptorPool_ = pipelineManager_.createDescriptorPool(
+      {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount}}, setCount, 0);
+
+  lightDescriptorSets_.assign(lightingBuffers_.size(), VK_NULL_HANDLE);
+  std::vector<VkDescriptorSetLayout> layouts(lightingBuffers_.size(),
+                                             lightDescriptorSetLayout_);
+  VkDescriptorSetAllocateInfo allocInfo{};
+  allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+  allocInfo.descriptorPool     = lightDescriptorPool_;
+  allocInfo.descriptorSetCount = static_cast<uint32_t>(layouts.size());
+  allocInfo.pSetLayouts        = layouts.data();
+  if (vkAllocateDescriptorSets(device_->device(), &allocInfo,
+                               lightDescriptorSets_.data()) != VK_SUCCESS) {
+    throw std::runtime_error("failed to allocate light descriptor sets");
   }
 
-  if (lightDescriptorSet_ == VK_NULL_HANDLE) {
-    VkDescriptorSetAllocateInfo allocInfo{};
-    allocInfo.sType              = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo.descriptorPool     = lightDescriptorPool_;
-    allocInfo.descriptorSetCount = 1;
-    allocInfo.pSetLayouts        = &lightDescriptorSetLayout_;
-    if (vkAllocateDescriptorSets(device_->device(), &allocInfo,
-                                 &lightDescriptorSet_) != VK_SUCCESS) {
-      throw std::runtime_error("failed to allocate light descriptor set");
-    }
+  for (size_t i = 0; i < lightingBuffers_.size(); ++i) {
+    VkDescriptorBufferInfo bufInfo{lightingBuffers_[i].buffer, 0,
+                                   sizeof(container::gpu::LightingData)};
+    VkWriteDescriptorSet write{};
+    write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet          = lightDescriptorSets_[i];
+    write.dstBinding      = 0;
+    write.descriptorCount = 1;
+    write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    write.pBufferInfo     = &bufInfo;
+    vkUpdateDescriptorSets(device_->device(), 1, &write, 0, nullptr);
   }
-
-  VkDescriptorBufferInfo bufInfo{lightingBuffer_.buffer, 0, sizeof(container::gpu::LightingData)};
-  VkWriteDescriptorSet   write{};
-  write.sType           = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-  write.dstSet          = lightDescriptorSet_;
-  write.dstBinding      = 0;
-  write.descriptorCount = 1;
-  write.descriptorType  = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-  write.pBufferInfo     = &bufInfo;
-  vkUpdateDescriptorSets(device_->device(), 1, &write, 0, nullptr);
 }
 
 void LightingManager::createLightVolumeGeometry() {
@@ -163,9 +179,12 @@ glm::vec3 LightingManager::directionalLightPosition() const {
 }
 
 void LightingManager::uploadLightingData() {
-  if (lightingBuffer_.buffer != VK_NULL_HANDLE) {
-    SceneController::writeToBuffer(allocationManager_, lightingBuffer_,
-                                   &lightingData_, sizeof(container::gpu::LightingData));
+  if (lightingBuffers_.empty()) return;
+  for (const auto& lightingBuffer : lightingBuffers_) {
+    if (lightingBuffer.buffer != VK_NULL_HANDLE) {
+      SceneController::writeToBuffer(allocationManager_, lightingBuffer,
+                                     &lightingData_, sizeof(container::gpu::LightingData));
+    }
   }
 }
 

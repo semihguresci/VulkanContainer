@@ -29,6 +29,7 @@ class GraphicsPipelineBuilder;
 class GpuCullManager;
 class OitManager;
 class SceneController;
+class ShadowCullManager;
 class ShadowManager;
 struct VulkanContextResult;
 }  // namespace container::renderer
@@ -118,6 +119,7 @@ class RendererFrontend {
     std::unique_ptr<SceneController>                    sceneController;
     std::unique_ptr<CameraController>                   cameraController;
     std::unique_ptr<LightingManager>                    lightingManager;
+    std::unique_ptr<ShadowCullManager>                  shadowCullManager;
     std::unique_ptr<ShadowManager>                       shadowManager;
     std::unique_ptr<EnvironmentManager>                  environmentManager;
     std::unique_ptr<GpuCullManager>                      gpuCullManager;
@@ -149,7 +151,7 @@ class RendererFrontend {
 
   // GPU buffers backing the camera UBO and per-object SSBO.
   struct SceneBufferState {
-    container::gpu::AllocatedBuffer camera{};
+    std::vector<container::gpu::AllocatedBuffer> cameras;
     container::gpu::AllocatedBuffer object{};
     size_t                          objectCapacity{0};
     container::gpu::CameraData      cameraData{};
@@ -177,9 +179,10 @@ class RendererFrontend {
   void createSceneBuffers();
   void createGeometryBuffers();
   void createFrameResources();
+  void ensureCameraBuffers();
 
   // ---- per-frame helpers ------------------------------------------------------
-  void updateCameraBuffer();
+  void updateCameraBuffer(uint32_t imageIndex);
   void updateObjectBuffer();
   void updateFrameDescriptorSets();
   void destroyGBufferResources();

@@ -1,5 +1,6 @@
 #include "Container/utility/PipelineManager.h"
 
+#include <algorithm>
 #include <stdexcept>
 
 namespace container::gpu {
@@ -37,6 +38,19 @@ VkDescriptorSetLayout PipelineManager::createDescriptorSetLayout(
   return setLayout;
 }
 
+void PipelineManager::destroyDescriptorSetLayout(
+    VkDescriptorSetLayout& layout) {
+  if (layout == VK_NULL_HANDLE) return;
+
+  const auto it = std::ranges::find(descriptorSetLayouts_, layout);
+  if (it != descriptorSetLayouts_.end()) {
+    descriptorSetLayouts_.erase(it);
+  }
+
+  vkDestroyDescriptorSetLayout(device_, layout, nullptr);
+  layout = VK_NULL_HANDLE;
+}
+
 VkDescriptorPool PipelineManager::createDescriptorPool(
     const std::vector<VkDescriptorPoolSize>& poolSizes, uint32_t maxSets,
     VkDescriptorPoolCreateFlags flags) {
@@ -56,6 +70,18 @@ VkDescriptorPool PipelineManager::createDescriptorPool(
 
   descriptorPools_.push_back(pool);
   return pool;
+}
+
+void PipelineManager::destroyDescriptorPool(VkDescriptorPool& pool) {
+  if (pool == VK_NULL_HANDLE) return;
+
+  const auto it = std::ranges::find(descriptorPools_, pool);
+  if (it != descriptorPools_.end()) {
+    descriptorPools_.erase(it);
+  }
+
+  vkDestroyDescriptorPool(device_, pool, nullptr);
+  pool = VK_NULL_HANDLE;
 }
 
 VkPipelineLayout PipelineManager::createPipelineLayout(
@@ -81,6 +107,18 @@ VkPipelineLayout PipelineManager::createPipelineLayout(
 
   pipelineLayouts_.push_back(layout);
   return layout;
+}
+
+void PipelineManager::destroyPipelineLayout(VkPipelineLayout& layout) {
+  if (layout == VK_NULL_HANDLE) return;
+
+  const auto it = std::ranges::find(pipelineLayouts_, layout);
+  if (it != pipelineLayouts_.end()) {
+    pipelineLayouts_.erase(it);
+  }
+
+  vkDestroyPipelineLayout(device_, layout, nullptr);
+  layout = VK_NULL_HANDLE;
 }
 
 VkPipelineCache PipelineManager::getOrCreatePipelineCache(
@@ -139,6 +177,18 @@ VkPipeline PipelineManager::createComputePipeline(
 
   pipelines_.push_back(pipeline);
   return pipeline;
+}
+
+void PipelineManager::destroyPipeline(VkPipeline& pipeline) {
+  if (pipeline == VK_NULL_HANDLE) return;
+
+  const auto it = std::ranges::find(pipelines_, pipeline);
+  if (it != pipelines_.end()) {
+    pipelines_.erase(it);
+  }
+
+  vkDestroyPipeline(device_, pipeline, nullptr);
+  pipeline = VK_NULL_HANDLE;
 }
 
 void PipelineManager::destroyManagedResources() {
