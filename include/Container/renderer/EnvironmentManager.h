@@ -61,7 +61,9 @@ class EnvironmentManager {
                     VkImageView depthView, VkSampler depthSampler,
                     VkImageView normalView, VkSampler normalSampler) const;
 
-  void dispatchGtaoBlur(VkCommandBuffer cmd) const;
+  void dispatchGtaoBlur(VkCommandBuffer cmd,
+                        VkImageView depthView,
+                        VkSampler depthSampler) const;
 
   // ---- Accessors ----
 
@@ -79,6 +81,7 @@ class EnvironmentManager {
   [[nodiscard]] VkSampler     brdfLutSampler()        const { return brdfLutSampler_; }
   [[nodiscard]] VkImageView   irradianceView()        const { return irradianceCubeView_; }
   [[nodiscard]] VkImageView   prefilteredView()       const { return prefilteredCubeView_; }
+  [[nodiscard]] uint32_t      prefilteredMipCount()   const { return prefilteredMipCount_; }
   [[nodiscard]] VkSampler     envSampler()            const { return envSampler_; }
 
   // AO texture for lighting descriptor binding (blurred result).
@@ -119,6 +122,7 @@ class EnvironmentManager {
   VkImage       prefilteredCubeImage_{VK_NULL_HANDLE};
   VmaAllocation prefilteredCubeAlloc_{nullptr};
   VkImageView   prefilteredCubeView_{VK_NULL_HANDLE};
+  uint32_t      prefilteredMipCount_{1};
 
   VkSampler     envSampler_{VK_NULL_HANDLE};
 

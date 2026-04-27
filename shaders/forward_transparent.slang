@@ -48,6 +48,11 @@ struct OitMetadataBuffer
 [[vk::binding(1, 2)]] RWStructuredBuffer<TransparentNode> transparentNodes;
 [[vk::binding(2, 2)]] RWStructuredBuffer<uint> nodeCounter;
 [[vk::binding(3, 2)]] ConstantBuffer<OitMetadataBuffer> uOit;
+[[vk::binding(10, 3)]] TextureCube<float4> gIrradianceCubemap;
+[[vk::binding(11, 3)]] TextureCube<float4> gPrefilteredCubemap;
+[[vk::binding(12, 3)]] Texture2D<float2> gBrdfLUT;
+[[vk::binding(13, 3)]] SamplerState envSampler;
+[[vk::binding(14, 3)]] SamplerState brdfSampler;
 
 #include "surface_normal_common.slang"
 
@@ -110,6 +115,20 @@ float3 EvaluateLight(float3 albedo, float3 normal, float3 V, float3 L,
     float3 kD = (1.0 - kS) * (1.0 - metallic);
     float NdotL = saturate(dot(normal, L));
     return (kD * albedo / PI + specular) * radiance * NdotL;
+}
+
+float3 EvaluateThinSurfaceTransmission(float3 albedo, float3 normal, float3 V,
+                                       float3 L, float3 radiance,
+                                       float alpha, bool isBackFace)
+{
+    float wrappedDiffuse = saturate((dot(normal, L) + 0.45) / 1.45);
+    float backLight = saturate(dot(-normal, L));
+    float viewThrough = pow(saturate(dot(-L, V)), 2.0);
+    float faceWeight = isBackFace ? 1.0 : 0.45;
+    float opacityWeight = saturate(1.0 - alpha * 0.5);
+    float transmission = max(wrappedDiffuse * 0.35, backLight * viewThrough) *
+                         faceWeight * opacityWeight;
+    return albedo * radiance * transmission;
 }
 
 [shader("vertex")]
@@ -209,14 +228,38 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     float roughness = clamp(sampledRoughness, 0.045, 1.0);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - vertIn.worldPos,
                              float3(0.0, 0.0, 1.0));
+    float3 F0 = lerp(0.04.xxx, baseColor, metallic);
+    float NdotV = max(dot(surfaceNormal.shadingNormal, V), 0.0);
 
-    float3 lighting = baseColor * 0.03 * occlusion;
+    float3 F_ibl = FresnelSchlickRoughness(NdotV, F0, roughness);
+    float3 kD_ibl = (1.0 - F_ibl) * (1.0 - metallic);
+    float3 irradiance = gIrradianceCubemap.Sample(envSampler, surfaceNormal.shadingNormal).rgb;
+    float3 diffuseIBL = irradiance * baseColor;
+    float3 R = reflect(-V, surfaceNormal.shadingNormal);
+    float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
+    float3 prefilteredColor = gPrefilteredCubemap.SampleLevel(envSampler, R, roughness * maxMipLevel).rgb;
+    float2 brdf = gBrdfLUT.Sample(brdfSampler, float2(NdotV, roughness));
+    float3 specularIBL = prefilteredColor * (F0 * brdf.x + brdf.y);
+
+    float diffuseAO = occlusion;
+    float specularOcclusion = saturate(pow(NdotV + diffuseAO, exp2(-16.0 * roughness - 1.0)) - 1.0 + diffuseAO);
+    specularOcclusion = lerp(1.0, specularOcclusion, saturate(1.0 - roughness));
+    float3 lighting = kD_ibl * diffuseIBL * diffuseAO + specularIBL * specularOcclusion;
     float3 directionalL = SafeNormalize(-uLighting.directionalDirection.xyz,
                                         float3(0.0, 1.0, 0.0));
     float3 directionalRadiance =
         uLighting.directionalColorIntensity.rgb * uLighting.directionalColorIntensity.a;
     lighting += EvaluateLight(baseColor, surfaceNormal.shadingNormal, V, directionalL,
                               directionalRadiance, metallic, roughness);
+    const bool thinSurface =
+        (vertIn.flags & (kObjectFlagAlphaCutoff | kObjectFlagDoubleSided)) ==
+        (kObjectFlagAlphaCutoff | kObjectFlagDoubleSided);
+    if (thinSurface)
+    {
+        lighting += EvaluateThinSurfaceTransmission(
+            baseColor, surfaceNormal.shadingNormal, V, directionalL,
+            directionalRadiance, saturate(baseAlpha), !isFrontFace);
+    }
 
     for (uint i = 0; i < uLighting.pointLightCount && i < MAX_POINT_LIGHTS; ++i)
     {
@@ -235,6 +278,13 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         lighting += EvaluateLight(baseColor, surfaceNormal.shadingNormal, V,
                                   lightVector / max(distanceToLight, 1e-4),
                                   radiance, metallic, roughness);
+        if (thinSurface)
+        {
+            lighting += EvaluateThinSurfaceTransmission(
+                baseColor, surfaceNormal.shadingNormal, V,
+                lightVector / max(distanceToLight, 1e-4), radiance,
+                saturate(baseAlpha), !isFrontFace);
+        }
     }
 
     lighting += emissive;

@@ -67,6 +67,10 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
 
 	DrawIndexedIndirectCommand draw = uInputDraws[idx];
 	uint objectIndex = draw.firstInstance;
+	if (objectIndex >= pc.objectCount)
+	{
+		return;
+	}
 	ObjectBuffer objectData = uObjects[objectIndex];
 	float4 boundingSphere = objectData.boundingSphere;
 

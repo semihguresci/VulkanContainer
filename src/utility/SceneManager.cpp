@@ -498,7 +498,10 @@ void SceneManager::createSampler() {
   info.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
   info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
 
-  vkCreateSampler(deviceWrapper_->device(), &info, nullptr, &baseColorSampler_);
+  if (vkCreateSampler(deviceWrapper_->device(), &info, nullptr,
+                      &baseColorSampler_) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create scene texture sampler");
+  }
 }
 
 /* ---------- Assets ---------- */

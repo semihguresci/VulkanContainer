@@ -81,8 +81,8 @@ void ShadowCullManager::createResources(const std::filesystem::path& shaderDir,
 
 	recreatePerFrameResources(descriptorSetCount);
 	createShadowCullPipeline(shaderDir);
-	for (uint32_t i = 0; i < shadowCullSets_.size(); ++i) {
-	writeDescriptorSets(i);
+	for (uint32_t i = 0; i < shadowCullBuffers_.size(); ++i) {
+	  writeDescriptorSets(i);
   }
 }
 
@@ -92,17 +92,17 @@ void ShadowCullManager::recreatePerFrameResources(uint32_t descriptorSetCount) {
 	  pipelineManager_.destroyDescriptorPool(shadowCullPool_);
 	}
 	shadowCullPool_ = pipelineManager_.createDescriptorPool(
-		{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount},
-		 {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount * 4}},
-		setCount, 0);
+		{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount * container::gpu::kShadowCascadeCount},
+		 {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount * container::gpu::kShadowCascadeCount * 4}},
+		setCount * container::gpu::kShadowCascadeCount, 0);
 
-	shadowCullSets_.assign(setCount, VK_NULL_HANDLE);
+	shadowCullSets_.assign(setCount * container::gpu::kShadowCascadeCount, VK_NULL_HANDLE);
 	shadowCullBuffers_.assign(setCount, ownedShadowCullUbo_.buffer);
-	std::vector<VkDescriptorSetLayout> layouts(setCount, shadowCullSetLayout_);
+	std::vector<VkDescriptorSetLayout> layouts(shadowCullSets_.size(), shadowCullSetLayout_);
 	VkDescriptorSetAllocateInfo allocInfo{
 		VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
 	allocInfo.descriptorPool     = shadowCullPool_;
-	allocInfo.descriptorSetCount = setCount;
+	allocInfo.descriptorSetCount = static_cast<uint32_t>(layouts.size());
 	allocInfo.pSetLayouts        = layouts.data();
 	if (vkAllocateDescriptorSets(device_->device(), &allocInfo,
 							 shadowCullSets_.data()) != VK_SUCCESS) {
@@ -150,7 +150,7 @@ bool ShadowCullManager::ensureBufferCapacity(uint32_t maxDrawCount) {
   }
 
   maxDrawCount_ = capacity;
-	for (uint32_t i = 0; i < shadowCullSets_.size(); ++i) {
+	for (uint32_t i = 0; i < shadowCullBuffers_.size(); ++i) {
 	writeDescriptorSets(i);
   }
   return true;
@@ -180,7 +180,8 @@ void ShadowCullManager::updateObjectSsboDescriptor(
 	VkDeviceSize objectBufferSize) {
 	objectSsboBuffer_  = objectBuffer;
 	objectSsboSize_    = objectBufferSize;
-	for (uint32_t i = 0; i < shadowCullSets_.size(); ++i) {
+	objectCount_       = static_cast<uint32_t>(objectBufferSize / sizeof(container::gpu::ObjectData));
+	for (uint32_t i = 0; i < shadowCullBuffers_.size(); ++i) {
 	writeDescriptorSets(i);
   }
 }
@@ -201,7 +202,7 @@ void ShadowCullManager::dispatchCascadeCull(VkCommandBuffer cmd,
 											uint32_t drawCount,
 											uint32_t outputOffset) {
 	if (shadowCullPipeline_ == VK_NULL_HANDLE ||
-	  imageIndex >= shadowCullSets_.size() ||
+	  imageIndex >= shadowCullBuffers_.size() ||
 	  cascadeIndex >= container::gpu::kShadowCascadeCount ||
 	  shadowCullBuffers_[imageIndex] == VK_NULL_HANDLE ||
 	  objectSsboBuffer_ == VK_NULL_HANDLE ||
@@ -210,8 +211,6 @@ void ShadowCullManager::dispatchCascadeCull(VkCommandBuffer cmd,
 	  drawCountBuffers_[cascadeIndex].buffer == VK_NULL_HANDLE) {
 	return;
   }
-
-	writeDescriptorSets(imageIndex);
 
 	vkCmdFillBuffer(cmd, drawCountBuffers_[cascadeIndex].buffer, 0,
 					 sizeof(uint32_t), 0);
@@ -224,37 +223,22 @@ void ShadowCullManager::dispatchCascadeCull(VkCommandBuffer cmd,
 					 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
 					 0, 1, &fillBarrier, 0, nullptr, 0, nullptr);
 
-	VkDescriptorBufferInfo outputDrawInfo{
-		indirectDrawBuffers_[cascadeIndex].buffer, 0,
-		sizeof(GpuDrawIndexedIndirectCommand) * std::max(maxDrawCount_, 1u)};
-	VkDescriptorBufferInfo drawCountInfo{
-		drawCountBuffers_[cascadeIndex].buffer, 0, sizeof(uint32_t)};
-
-	std::array<VkWriteDescriptorSet, 2> writes{};
-	writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-	writes[0].dstSet          = shadowCullSets_[imageIndex];
-	writes[0].dstBinding      = 3;
-	writes[0].descriptorCount = 1;
-	writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[0].pBufferInfo     = &outputDrawInfo;
-	writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-	writes[1].dstSet          = shadowCullSets_[imageIndex];
-	writes[1].dstBinding      = 4;
-	writes[1].descriptorCount = 1;
-	writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-	writes[1].pBufferInfo     = &drawCountInfo;
-	vkUpdateDescriptorSets(device_->device(), static_cast<uint32_t>(writes.size()),
-					 writes.data(), 0, nullptr);
-
+	const size_t setIndex = descriptorSetIndex(imageIndex, cascadeIndex);
+	if (setIndex >= shadowCullSets_.size() ||
+		shadowCullSets_[setIndex] == VK_NULL_HANDLE) {
+	  return;
+	}
+	const VkDescriptorSet descriptorSet = shadowCullSets_[setIndex];
 	vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, shadowCullPipeline_);
 	vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
 					shadowCullPipelineLayout_, 0, 1,
-					&shadowCullSets_[imageIndex], 0, nullptr);
+					&descriptorSet, 0, nullptr);
 
 	ShadowCullPushConstants pc{};
 	pc.drawCount    = drawCount;
 	pc.cascadeIndex = cascadeIndex;
 	pc.outputOffset = outputOffset;
+	pc.objectCount  = objectCount_;
 	vkCmdPushConstants(cmd, shadowCullPipelineLayout_,
 				   VK_SHADER_STAGE_COMPUTE_BIT, 0,
 				   sizeof(ShadowCullPushConstants), &pc);
@@ -314,11 +298,20 @@ void ShadowCullManager::createShadowCullPipeline(
 	vkDestroyShaderModule(device_->device(), compModule, nullptr);
 }
 
-void ShadowCullManager::writeDescriptorSets(uint32_t imageIndex) {
-  if (imageIndex >= shadowCullSets_.size() ||
-	  shadowCullSets_[imageIndex] == VK_NULL_HANDLE) return;
+size_t ShadowCullManager::descriptorSetIndex(uint32_t imageIndex,
+											 uint32_t cascadeIndex) const {
+  return static_cast<size_t>(imageIndex) * container::gpu::kShadowCascadeCount +
+		 static_cast<size_t>(cascadeIndex);
+}
 
-  const uint32_t cascadeIndex = 0;
+void ShadowCullManager::writeDescriptorSets(uint32_t imageIndex) {
+  if (imageIndex >= shadowCullBuffers_.size()) return;
+  for (uint32_t cascadeIndex = 0;
+	   cascadeIndex < container::gpu::kShadowCascadeCount; ++cascadeIndex) {
+	const size_t setIndex = descriptorSetIndex(imageIndex, cascadeIndex);
+	if (setIndex >= shadowCullSets_.size() ||
+		shadowCullSets_[setIndex] == VK_NULL_HANDLE) continue;
+
   VkDescriptorBufferInfo shadowCullInfo{
 		shadowCullBuffers_[imageIndex], 0,
 	  shadowCullUboSize_ > 0 ? shadowCullUboSize_ : sizeof(ShadowCullData)};
@@ -342,7 +335,7 @@ void ShadowCullManager::writeDescriptorSets(uint32_t imageIndex) {
     if (bufferInfo.buffer == VK_NULL_HANDLE || bufferInfo.range == 0) return;
 
     VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    write.dstSet          = shadowCullSets_[imageIndex];
+	write.dstSet          = shadowCullSets_[setIndex];
     write.dstBinding      = binding;
     write.descriptorCount = 1;
     write.descriptorType  = descriptorType;
@@ -360,6 +353,7 @@ void ShadowCullManager::writeDescriptorSets(uint32_t imageIndex) {
     vkUpdateDescriptorSets(device_->device(),
                            static_cast<uint32_t>(writes.size()),
                            writes.data(), 0, nullptr);
+  }
   }
 }
 

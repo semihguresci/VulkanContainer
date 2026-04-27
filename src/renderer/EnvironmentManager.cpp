@@ -278,6 +278,7 @@ void EnvironmentManager::destroyEnvironmentCubemaps() {
   destroyImage(irradianceCubeImage_, irradianceCubeAlloc_);
   destroyView(prefilteredCubeView_);
   destroyImage(prefilteredCubeImage_, prefilteredCubeAlloc_);
+  prefilteredMipCount_ = 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -850,6 +851,7 @@ bool EnvironmentManager::loadHdrEnvironment(
   prefilteredCubeImage_ = newPrefilteredImage;
   prefilteredCubeAlloc_ = newPrefilteredAlloc;
   prefilteredCubeView_ = newPrefilteredView;
+  prefilteredMipCount_ = kPrefilterMips;
 
   std::println("[HDR] IBL generation complete");
   environmentStatus_ =
@@ -903,6 +905,7 @@ void EnvironmentManager::createPlaceholderCubemaps() {
 
   createCube(1, irradianceCubeImage_, irradianceCubeAlloc_, irradianceCubeView_);
   createCube(1, prefilteredCubeImage_, prefilteredCubeAlloc_, prefilteredCubeView_);
+  prefilteredMipCount_ = 1;
 
   // Transition both to SHADER_READ_ONLY.
   VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -911,11 +914,15 @@ void EnvironmentManager::createPlaceholderCubemaps() {
     ai.commandPool        = commandPool_;
     ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     ai.commandBufferCount = 1;
-    vkAllocateCommandBuffers(dev, &ai, &cmd);
+    if (vkAllocateCommandBuffers(dev, &ai, &cmd) != VK_SUCCESS)
+      throw std::runtime_error("failed to allocate placeholder cubemap command buffer");
   }
   VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(cmd, &beginInfo);
+  if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+    vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
+    throw std::runtime_error("failed to begin placeholder cubemap command buffer");
+  }
 
   auto transitionCube = [&](VkImage img, VkImageLayout oldLayout,
                             VkImageLayout newLayout,
@@ -970,11 +977,17 @@ void EnvironmentManager::createPlaceholderCubemaps() {
       VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
       VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 
-  vkEndCommandBuffer(cmd);
+  if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+    vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
+    throw std::runtime_error("failed to end placeholder cubemap command buffer");
+  }
   VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
   submitInfo.commandBufferCount = 1;
   submitInfo.pCommandBuffers    = &cmd;
-  vkQueueSubmit(device_->graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE);
+  if (vkQueueSubmit(device_->graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+    vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
+    throw std::runtime_error("failed to submit placeholder cubemap command buffer");
+  }
   vkQueueWaitIdle(device_->graphicsQueue());
   vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
 }
@@ -1219,11 +1232,15 @@ void EnvironmentManager::createGtaoTextures(uint32_t halfWidth,
     ai.commandPool        = commandPool_;
     ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     ai.commandBufferCount = 1;
-    vkAllocateCommandBuffers(dev, &ai, &cmd);
+    if (vkAllocateCommandBuffers(dev, &ai, &cmd) != VK_SUCCESS)
+      throw std::runtime_error("failed to allocate GTAO texture command buffer");
   }
   VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
   beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  vkBeginCommandBuffer(cmd, &beginInfo);
+  if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+    vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
+    throw std::runtime_error("failed to begin GTAO texture command buffer");
+  }
 
   auto transition = [&](VkImage img) {
     VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
@@ -1242,11 +1259,17 @@ void EnvironmentManager::createGtaoTextures(uint32_t halfWidth,
   transition(gtaoImage_);
   transition(gtaoBlurredImage_);
 
-  vkEndCommandBuffer(cmd);
+  if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+    vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
+    throw std::runtime_error("failed to end GTAO texture command buffer");
+  }
   VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
   submitInfo.commandBufferCount = 1;
   submitInfo.pCommandBuffers    = &cmd;
-  vkQueueSubmit(device_->graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE);
+  if (vkQueueSubmit(device_->graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
+    vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
+    throw std::runtime_error("failed to submit GTAO texture command buffer");
+  }
   vkQueueWaitIdle(device_->graphicsQueue());
   vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
 
@@ -1260,18 +1283,11 @@ void EnvironmentManager::createGtaoTextures(uint32_t halfWidth,
     VkDescriptorImageInfo aoSampInfo{};
     aoSampInfo.sampler = gtaoSampler_;
 
-    VkDescriptorImageInfo depthInfo{};
-    depthInfo.imageView   = VK_NULL_HANDLE;  // placeholder — updated at dispatch
-    depthInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-    VkDescriptorImageInfo depthSampInfo{};
-    depthSampInfo.sampler = gtaoSampler_;
-
     VkDescriptorImageInfo outInfo{};
     outInfo.imageView   = gtaoBlurredView_;
     outInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
-    std::array<VkWriteDescriptorSet, 5> w{};
+    std::array<VkWriteDescriptorSet, 3> w{};
     w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     w[0].dstSet = gtaoBlurSet_; w[0].dstBinding = 0;
     w[0].descriptorCount = 1;
@@ -1285,26 +1301,12 @@ void EnvironmentManager::createGtaoTextures(uint32_t halfWidth,
     w[1].pImageInfo = &aoSampInfo;
 
     w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[2].dstSet = gtaoBlurSet_; w[2].dstBinding = 2;
+    w[2].dstSet = gtaoBlurSet_; w[2].dstBinding = 4;
     w[2].descriptorCount = 1;
-    w[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    w[2].pImageInfo = &depthInfo;
+    w[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
+    w[2].pImageInfo = &outInfo;
 
-    w[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[3].dstSet = gtaoBlurSet_; w[3].dstBinding = 3;
-    w[3].descriptorCount = 1;
-    w[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    w[3].pImageInfo = &depthSampInfo;
-
-    w[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[4].dstSet = gtaoBlurSet_; w[4].dstBinding = 4;
-    w[4].descriptorCount = 1;
-    w[4].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    w[4].pImageInfo = &outInfo;
-
-    // Only write bindings 0, 1, 4 now — 2 and 3 (depth) updated at dispatch time.
-    vkUpdateDescriptorSets(dev, 2, w.data(), 0, nullptr);   // bindings 0,1
-    vkUpdateDescriptorSets(dev, 1, &w[4], 0, nullptr);      // binding 4
+    vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
   }
 }
 
@@ -1447,13 +1449,37 @@ void EnvironmentManager::dispatchGtao(
   }
 }
 
-void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd) const {
+void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd,
+                                          VkImageView depthView,
+                                          VkSampler depthSampler) const {
   if (gtaoBlurPipeline_ == VK_NULL_HANDLE || !aoEnabled_) return;
   if (gtaoBlurredView_ == VK_NULL_HANDLE) return;
+  if (depthView == VK_NULL_HANDLE || depthSampler == VK_NULL_HANDLE) return;
 
   // Update blur depth descriptors (bindings 2,3) at dispatch time.
-  // Note: for simplicity we reuse the same AO sampler for depth in the blur.
-  // The blur set's bindings 0,1,4 were written in createGtaoTextures.
+  {
+    VkDescriptorImageInfo depthInfo{};
+    depthInfo.imageView   = depthView;
+    depthInfo.imageLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+    VkDescriptorImageInfo depthSampInfo{};
+    depthSampInfo.sampler = depthSampler;
+
+    std::array<VkWriteDescriptorSet, 2> w{};
+    w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w[0].dstSet = gtaoBlurSet_; w[0].dstBinding = 2;
+    w[0].descriptorCount = 1;
+    w[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    w[0].pImageInfo = &depthInfo;
+
+    w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    w[1].dstSet = gtaoBlurSet_; w[1].dstBinding = 3;
+    w[1].descriptorCount = 1;
+    w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    w[1].pImageInfo = &depthSampInfo;
+
+    vkUpdateDescriptorSets(device_->device(), static_cast<uint32_t>(w.size()),
+                           w.data(), 0, nullptr);
+  }
 
   struct BlurPushConstants {
     uint32_t width;

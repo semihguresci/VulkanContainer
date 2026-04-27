@@ -106,7 +106,7 @@ struct ShadowCullPushConstants {
   uint32_t drawCount{0};
   uint32_t cascadeIndex{0};
   uint32_t outputOffset{0};
-  uint32_t pad0{0};
+  uint32_t objectCount{0};
 };
 
 struct ShadowCullCountData {
@@ -140,6 +140,8 @@ struct LightingData {
   alignas(16) glm::vec4 directionalColorIntensity{1.0f, 1.0f, 1.0f, 1.0f};
   alignas(4) uint32_t pointLightCount{0};
   alignas(4) std::array<uint32_t, 3> featureFlags{};
+  alignas(4) uint32_t prefilteredMipCount{1};
+  alignas(4) std::array<uint32_t, 3> padding{};
   alignas(16) std::array<PointLightData, kMaxDeferredPointLights> pointLights{};
 };
 
@@ -221,7 +223,7 @@ static_assert(offsetof(PointLightData, positionRadius) == 0,
 static_assert(offsetof(PointLightData, colorIntensity) == 16,
               "PointLightData.colorIntensity offset");
 
-static_assert(sizeof(LightingData) == 432,
+static_assert(sizeof(LightingData) == 448,
               "LightingData size mismatch with shaders/lighting_structs.slang "
               "LightingBuffer. Update shader layout in lockstep.");
 static_assert(alignof(LightingData) == 16,
@@ -234,7 +236,9 @@ static_assert(offsetof(LightingData, pointLightCount) == 32,
               "LightingData.pointLightCount offset");
 static_assert(offsetof(LightingData, featureFlags) == 36,
               "LightingData.featureFlags offset");
-static_assert(offsetof(LightingData, pointLights) == 48,
+static_assert(offsetof(LightingData, prefilteredMipCount) == 48,
+              "LightingData.prefilteredMipCount offset");
+static_assert(offsetof(LightingData, pointLights) == 64,
               "LightingData.pointLights offset");
 
 static_assert(sizeof(ShadowCascadeData) == 80,

@@ -81,6 +81,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     float metallic = saturate(material.x);
     float roughness = clamp(material.y, 0.045, 1.0);
     float occlusion = saturate(material.z);
+    bool thinSurface = material.w > 0.5;
     float3 worldPosition = ReconstructWorldPosition(uv, depth, uCamera.inverseViewProj);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
     float3 L = SafeNormalize(-uLighting.directionalDirection.xyz, float3(0.0, 1.0, 0.0));
@@ -114,6 +115,14 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 kD = (1.0 - kS) * (1.0 - metallic);
     float NdotL = saturate(dot(normal, L));
     float3 directLighting = (kD * albedo.rgb / PI + specular) * lightColor * NdotL * shadowFactor;
+    if (thinSurface)
+    {
+        float wrappedDiffuse = saturate((dot(normal, L) + 0.45) / 1.45);
+        float backLight = saturate(dot(-normal, L));
+        float viewThrough = pow(saturate(dot(-L, V)), 2.0);
+        float transmission = max(wrappedDiffuse * 0.3, backLight * viewThrough * 0.7);
+        directLighting += albedo.rgb * lightColor * transmission * shadowFactor;
+    }
 
     // IBL ambient lighting (split-sum approximation).
     float NdotV = max(dot(normal, V), 0.0);
@@ -124,7 +133,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 diffuseIBL = irradiance * albedo.rgb;
 
     float3 R = reflect(-V, normal);
-    float maxMipLevel = 4.0; // 5 mip levels: 0..4
+    float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
     float3 prefilteredColor = gPrefilteredCubemap.SampleLevel(envSampler, R, roughness * maxMipLevel).rgb;
     float2 brdf = gBrdfLUT.Sample(brdfSampler, float2(NdotV, roughness));
     float3 specularIBL = prefilteredColor * (F0 * brdf.x + brdf.y);
@@ -136,7 +145,10 @@ float4 fragMain(VSOutput input) : SV_Target0
         ssao = gAOTexture.Sample(aoSampler, uv);
     }
 
-    float3 ambientLighting = (kD_ibl * diffuseIBL + specularIBL) * occlusion * ssao;
+    float diffuseAO = occlusion * ssao;
+    float specularOcclusion = saturate(pow(NdotV + diffuseAO, exp2(-16.0 * roughness - 1.0)) - 1.0 + diffuseAO);
+    specularOcclusion = lerp(1.0, specularOcclusion, saturate(1.0 - roughness));
+    float3 ambientLighting = kD_ibl * diffuseIBL * diffuseAO + specularIBL * specularOcclusion;
     float3 finalColor = ambientLighting + directLighting + emissive;
 
     return float4(finalColor, 1.0);

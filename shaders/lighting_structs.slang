@@ -27,6 +27,8 @@ struct LightingBuffer
     float4 directionalColorIntensity;
     uint pointLightCount;
     uint3 featureFlags;
+    uint prefilteredMipCount;
+    uint3 padding;
     PointLightData pointLights[MAX_POINT_LIGHTS];
 };
 
@@ -118,5 +120,5 @@ struct ShadowCullPushConstants
     uint drawCount;
     uint cascadeIndex;
     uint outputOffset;
-    uint pad0;
+    uint objectCount;
 };

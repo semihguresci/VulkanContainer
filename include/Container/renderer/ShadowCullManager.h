@@ -65,12 +65,15 @@ class ShadowCullManager {
  private:
 	void createShadowCullPipeline(const std::filesystem::path& shaderDir);
 	void writeDescriptorSets(uint32_t imageIndex);
+  [[nodiscard]] size_t descriptorSetIndex(uint32_t imageIndex,
+										  uint32_t cascadeIndex) const;
 
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager&            allocationManager_;
   container::gpu::PipelineManager&              pipelineManager_;
 
   uint32_t maxDrawCount_{0};
+	uint32_t objectCount_{0};
   VkDeviceSize objectSsboSize_{0};
   VkDeviceSize shadowCullUboSize_{0};
 
