@@ -399,7 +399,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   layouts.scene = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.scene}, {snPCR});
   layouts.transparent = pipelineManager_.createPipelineLayout(
-      {descriptorLayouts.scene, descriptorLayouts.light, descriptorLayouts.oit},
+      {descriptorLayouts.scene, descriptorLayouts.light, descriptorLayouts.oit,
+       descriptorLayouts.lighting},
       {scenePCR});
   layouts.lighting = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.lighting, descriptorLayouts.light}, {lightPCR});

@@ -240,8 +240,14 @@ void ShadowManager::destroy() {
   }
   shadowCullUbos_.clear();
 
-  descriptorPool_      = VK_NULL_HANDLE;
-  descriptorSetLayout_ = VK_NULL_HANDLE;
+  if (descriptorPool_ != VK_NULL_HANDLE) {
+    pipelineManager_.destroyDescriptorPool(descriptorPool_);
+    descriptorPool_ = VK_NULL_HANDLE;
+  }
+  if (descriptorSetLayout_ != VK_NULL_HANDLE) {
+    pipelineManager_.destroyDescriptorSetLayout(descriptorSetLayout_);
+    descriptorSetLayout_ = VK_NULL_HANDLE;
+  }
   descriptorSets_.clear();
 }
 

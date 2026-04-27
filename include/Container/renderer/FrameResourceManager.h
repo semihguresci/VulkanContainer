@@ -117,6 +117,7 @@ class FrameResourceManager {
   void            destroyAttachment(AttachmentImage& a) const;
   void            transitionToGeneral(VkImage image, VkImageAspectFlags mask) const;
   void            writeOitMetadata(FrameResources& frame) const;
+  void            ensureFallbackTileGridBuffer();
   VkCommandBuffer beginImmediate() const;
   void            endImmediate(VkCommandBuffer cmd) const;
 
@@ -134,6 +135,7 @@ class FrameResourceManager {
   VkDescriptorPool lightingPool_{VK_NULL_HANDLE};
   VkDescriptorPool postProcessPool_{VK_NULL_HANDLE};
   VkDescriptorPool oitPool_{VK_NULL_HANDLE};
+  container::gpu::AllocatedBuffer fallbackTileGridBuffer_{};
 
   GBufferFormats formats_{};
   VkRenderPass   depthPrepassPass_{VK_NULL_HANDLE};

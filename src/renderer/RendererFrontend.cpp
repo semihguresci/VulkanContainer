@@ -296,9 +296,10 @@ void RendererFrontend::initialize() {
 }
 
 bool RendererFrontend::drawFrame(bool& framebufferResized) {
-  // Several render subsystems still rewrite shared descriptor sets and cull
-  // buffers during command recording. Keep only one submitted frame live until
-  // those resources are fully per-frame.
+  // Several render subsystems still rewrite shared descriptor sets or GPU
+  // buffers during command recording (GTAO, tile cull, frame descriptors,
+  // cull stats/readback). Keep only one submitted frame live until every such
+  // resource is per-frame or uses update-after-bind safe lifetime rules.
   subs_.frameSyncManager->waitForAllFrames();
 
   // Collect culling statistics from the previous frame (now safe after fence).
@@ -724,6 +725,8 @@ void RendererFrontend::updateFrameDescriptorSets() {
       lightingData.featureFlags[0] = shadowEnabled ? 1u : 0u;
       lightingData.featureFlags[1] = gtaoEnabled ? 1u : 0u;
       lightingData.featureFlags[2] = tileCullEnabled ? 1u : 0u;
+      lightingData.prefilteredMipCount =
+          subs_.environmentManager ? subs_.environmentManager->prefilteredMipCount() : 1u;
       for (const auto& lightingBuffer :
            subs_.lightingManager->lightingBuffers()) {
         if (lightingBuffer.buffer != VK_NULL_HANDLE) {

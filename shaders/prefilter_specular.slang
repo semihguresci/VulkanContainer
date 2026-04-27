@@ -54,6 +54,14 @@ float3 ImportanceSampleGGX(float2 Xi, float roughness, float3 N)
     return tangent * H.x + bitangent * H.y + N * H.z;
 }
 
+float DistributionGGX(float NdotH, float roughness)
+{
+    float a = roughness * roughness;
+    float a2 = a * a;
+    float denom = NdotH * NdotH * (a2 - 1.0) + 1.0;
+    return a2 / max(PI * denom * denom, 1e-6);
+}
+
 float3 CubeTexelToDir(uint face, float2 uv)
 {
     float2 st = uv * 2.0 - 1.0;
@@ -84,7 +92,9 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
 
     float totalWeight = 0.0;
     float3 prefilteredColor = float3(0.0, 0.0, 0.0);
-    float sourceMip = pc.roughness * max(float(pc.sourceMipCount) - 1.0, 0.0);
+    float sourceResolution = exp2(max(float(pc.sourceMipCount), 1.0) - 1.0);
+    float sourceTexelSolidAngle = 4.0 * PI / max(6.0 * sourceResolution * sourceResolution, 1.0);
+    float maxSourceMip = max(float(pc.sourceMipCount) - 1.0, 0.0);
 
     for (uint i = 0u; i < SAMPLE_COUNT; ++i)
     {
@@ -95,6 +105,15 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
         float NdotL = saturate(dot(N, L));
         if (NdotL > 0.0)
         {
+            float NdotH = saturate(dot(N, H));
+            float VdotH = saturate(dot(V, H));
+            float pdf = DistributionGGX(NdotH, pc.roughness) * NdotH /
+                        max(4.0 * VdotH, 1e-4);
+            float sampleSolidAngle = 1.0 / max(float(SAMPLE_COUNT) * pdf, 1e-6);
+            float sourceMip = pc.roughness <= 0.001
+                ? 0.0
+                : 0.5 * log2(sampleSolidAngle / sourceTexelSolidAngle);
+            sourceMip = clamp(sourceMip, 0.0, maxSourceMip);
             prefilteredColor += envCubemap.SampleLevel(envSampler, L, sourceMip).rgb * NdotL;
             totalWeight += NdotL;
         }

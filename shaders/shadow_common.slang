@@ -12,6 +12,51 @@ float2 ShadowNdcToUv(float2 shadowNdcXY)
     return shadowNdcXY * 0.5 + 0.5;
 }
 
+static const float SHADOW_MAP_RESOLUTION = 2048.0;
+
+float ComputeReceiverPlaneDepthBias(float3 shadowNDC)
+{
+    float2 dz = float2(ddx(shadowNDC.z), ddy(shadowNDC.z));
+    return min(dot(abs(dz), 1.0.xx) * 1.5, 0.006);
+}
+
+float ComputeSlopeScaledBias(float3 normal, float3 lightDir)
+{
+    float NdotL = saturate(dot(normal, -lightDir));
+    float slope = sqrt(max(1.0 - NdotL * NdotL, 0.0)) / max(NdotL, 0.12);
+    return min(0.00035 + slope * 0.0012, 0.006);
+}
+
+float SampleWeightedPcf(
+    float2 shadowUV,
+    uint cascadeIndex,
+    float compareDepth,
+    Texture2DArray<float> shadowAtlas,
+    SamplerComparisonState shadowSampler)
+{
+    float2 texelSize = (1.0 / SHADOW_MAP_RESOLUTION).xx;
+    float shadow = 0.0;
+    float totalWeight = 0.0;
+
+    [unroll]
+    for (int y = -2; y <= 2; ++y)
+    {
+        [unroll]
+        for (int x = -2; x <= 2; ++x)
+        {
+            float2 o = float2(float(x), float(y));
+            float weight = exp2(-dot(o, o) * 0.55);
+            shadow += shadowAtlas.SampleCmpLevelZero(
+                shadowSampler,
+                float3(shadowUV + o * texelSize, float(cascadeIndex)),
+                compareDepth) * weight;
+            totalWeight += weight;
+        }
+    }
+
+    return shadow / max(totalWeight, 1e-4);
+}
+
 // Select the cascade index based on the fragment's view-space depth.
 // splitDepths are in linear view-space depth, compared with reverse-Z convention
 // where near=1 and far=0 in NDC but splitDepths use positive linear distances.
@@ -49,28 +94,13 @@ float SampleCascadeShadow(
         return 1.0;
     }
 
-    float NdotL = saturate(dot(normal, -lightDir));
-    float bias = max(0.005 * (1.0 - NdotL), 0.001);
+    float bias = ComputeSlopeScaledBias(normal, lightDir) +
+                 ComputeReceiverPlaneDepthBias(shadowNDC);
     // Reverse-Z: push compare depth towards the light (larger = closer = near=1).
     float compareDepth = shadowNDC.z + bias;
 
-    float texelSize = 1.0 / 2048.0;
-    float shadow = 0.0;
-    float2 texelSizeVec = float2(texelSize, texelSize);
-    for (int y = -1; y <= 1; ++y)
-    {
-        for (int x = -1; x <= 1; ++x)
-        {
-            float2 offset = float2(float(x), float(y)) * texelSizeVec;
-            shadow += shadowAtlas.SampleCmpLevelZero(
-                shadowSampler,
-                float3(shadowUV + offset, float(cascadeIndex)),
-                compareDepth);
-        }
-    }
-    shadow /= 9.0;
-
-    return shadow;
+    return SampleWeightedPcf(
+        shadowUV, cascadeIndex, compareDepth, shadowAtlas, shadowSampler);
 }
 
 // Fraction of the cascade range used as the blend overlap zone on each side.
@@ -91,8 +121,8 @@ float ComputeShadowFactor(
     uint cascadeIndex = SelectCascade(viewDepth, shadowData);
 
     // Normal offset bias: push sample position along surface normal to reduce acne.
-    float texelSize = 1.0 / 2048.0;
-    float normalBias = texelSize * 2.0;
+    float texelSize = 1.0 / SHADOW_MAP_RESOLUTION;
+    float normalBias = texelSize * lerp(1.5, 3.5, saturate(1.0 - dot(normal, -lightDir)));
     float3 samplePos = worldPosition + normal * normalBias;
 
     float shadow = SampleCascadeShadow(

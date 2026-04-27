@@ -229,15 +229,17 @@ void FrameRecorder::buildGraph() {
           p.cameraBuffer, p.cameraBufferSize,
           p.frame->depthSamplingView, p.gBufferSampler,
           p.frame->normal.view, p.gBufferSampler);
-      environmentManager_->dispatchGtaoBlur(cmd);
+      environmentManager_->dispatchGtaoBlur(
+          cmd, p.frame->depthSamplingView, p.gBufferSampler);
     }
   });
 
   graph_.addPass("Lighting", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     const std::array<VkDescriptorSet, 2> lightingSets = {
         p.frame->lightingDescriptorSet, p.lightDescriptorSet};
-    const std::array<VkDescriptorSet, 3> transparentSets = {
-        p.sceneDescriptorSet, p.lightDescriptorSet, p.frame->oitDescriptorSet};
+    const std::array<VkDescriptorSet, 4> transparentSets = {
+        p.sceneDescriptorSet, p.lightDescriptorSet, p.frame->oitDescriptorSet,
+        p.frame->lightingDescriptorSet};
     recordLightingPass(cmd, p, p.sceneDescriptorSet, lightingSets, transparentSets);
   });
 
@@ -658,7 +660,7 @@ void FrameRecorder::recordShadowPass(VkCommandBuffer cmd,
 void FrameRecorder::recordLightingPass(
     VkCommandBuffer cmd, const FrameRecordParams& p, VkDescriptorSet sceneSet,
     const std::array<VkDescriptorSet, 2>& lightingDescriptorSets,
-    const std::array<VkDescriptorSet, 3>& transparentDescriptorSets) const {
+    const std::array<VkDescriptorSet, 4>& transparentDescriptorSets) const {
   using container::ui::GBufferViewMode;
   using container::ui::WireframeMode;
 

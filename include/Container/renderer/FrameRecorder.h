@@ -186,7 +186,7 @@ class FrameRecorder {
                           const FrameRecordParams& p,
                           VkDescriptorSet sceneSet,
                           const std::array<VkDescriptorSet, 2>& lightingSets,
-                          const std::array<VkDescriptorSet, 3>& transparentSets) const;
+                          const std::array<VkDescriptorSet, 4>& transparentSets) const;
 
   void recordPostProcessPass(VkCommandBuffer cmd,
                               const FrameRecordParams& p,

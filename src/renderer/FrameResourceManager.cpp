@@ -28,6 +28,7 @@ FrameResourceManager::FrameResourceManager(
 
 FrameResourceManager::~FrameResourceManager() {
   destroy();
+  allocationMgr_->destroyBuffer(fallbackTileGridBuffer_);
   if (gBufferSampler_ != VK_NULL_HANDLE) {
     vkDestroySampler(device_->device(), gBufferSampler_, nullptr);
     gBufferSampler_ = VK_NULL_HANDLE;
@@ -183,6 +184,7 @@ void FrameResourceManager::create(
   lightingPass_     = lightingPass;
 
   validateOitFormatSupport();
+  ensureFallbackTileGridBuffer();
 
   const uint32_t n = static_cast<uint32_t>(swapChain_->imageCount());
   if (n == 0) return;
@@ -606,8 +608,7 @@ void FrameResourceManager::updateDescriptorSets(
       if (tileGridBuffer != VK_NULL_HANDLE && tileGridBufferSize > 0) {
         tileGridInfo = {tileGridBuffer, 0, tileGridBufferSize};
       } else {
-        // Fallback: bind camera buffer to avoid null descriptor.
-        tileGridInfo = camInfo;
+        tileGridInfo = {fallbackTileGridBuffer_.buffer, 0, sizeof(container::gpu::TileLightGrid)};
       }
       w[9].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
       w[9].dstSet = set; w[9].dstBinding = 9;
@@ -768,6 +769,39 @@ void FrameResourceManager::writeOitMetadata(FrameResources& frame) const {
   if (mappedHere)
     vmaUnmapMemory(allocationMgr_->memoryManager()->allocator(),
                    frame.oitMetadataBuffer.allocation);
+}
+
+void FrameResourceManager::ensureFallbackTileGridBuffer() {
+  if (fallbackTileGridBuffer_.buffer != VK_NULL_HANDLE) return;
+
+  fallbackTileGridBuffer_ = allocationMgr_->createBuffer(
+      sizeof(container::gpu::TileLightGrid),
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+      VMA_MEMORY_USAGE_AUTO,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+          VMA_ALLOCATION_CREATE_MAPPED_BIT);
+
+  const container::gpu::TileLightGrid fallbackTile{};
+  void* mapped = fallbackTileGridBuffer_.allocation_info.pMappedData;
+  bool mappedHere = false;
+  if (!mapped) {
+    if (vmaMapMemory(allocationMgr_->memoryManager()->allocator(),
+                     fallbackTileGridBuffer_.allocation, &mapped) != VK_SUCCESS)
+      throw std::runtime_error("failed to map fallback tile grid buffer");
+    mappedHere = true;
+  }
+  std::memcpy(mapped, &fallbackTile, sizeof(fallbackTile));
+  if (vmaFlushAllocation(allocationMgr_->memoryManager()->allocator(),
+                         fallbackTileGridBuffer_.allocation, 0,
+                         sizeof(fallbackTile)) != VK_SUCCESS) {
+    if (mappedHere)
+      vmaUnmapMemory(allocationMgr_->memoryManager()->allocator(),
+                     fallbackTileGridBuffer_.allocation);
+    throw std::runtime_error("failed to flush fallback tile grid buffer");
+  }
+  if (mappedHere)
+    vmaUnmapMemory(allocationMgr_->memoryManager()->allocator(),
+                   fallbackTileGridBuffer_.allocation);
 }
 
 VkCommandBuffer FrameResourceManager::beginImmediate() const {
