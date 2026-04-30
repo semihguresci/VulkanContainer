@@ -52,9 +52,13 @@ struct FrameRecordParams {
   VkIndexType                       indexType{VK_INDEX_TYPE_UINT32};
   const std::vector<DrawCommand>*   opaqueDrawCommands{nullptr};
   const std::vector<DrawCommand>*   transparentDrawCommands{nullptr};
+  // Split draw lists let the recorder route fast GPU-driven single-sided draws
+  // separately from mirrored-winding and no-cull/double-sided material paths.
   const std::vector<DrawCommand>*   opaqueSingleSidedDrawCommands{nullptr};
+  const std::vector<DrawCommand>*   opaqueWindingFlippedDrawCommands{nullptr};
   const std::vector<DrawCommand>*   opaqueDoubleSidedDrawCommands{nullptr};
   const std::vector<DrawCommand>*   transparentSingleSidedDrawCommands{nullptr};
+  const std::vector<DrawCommand>*   transparentWindingFlippedDrawCommands{nullptr};
   const std::vector<DrawCommand>*   transparentDoubleSidedDrawCommands{nullptr};
   const std::vector<container::gpu::ObjectData>* objectData{nullptr};
 
@@ -64,7 +68,8 @@ struct FrameRecordParams {
   VkDescriptorSet                   shadowDescriptorSet{VK_NULL_HANDLE};
   VkDescriptorSet                   tiledDescriptorSet{VK_NULL_HANDLE};
 
-  // Tiled culling resources
+  // Shared camera/depth resources sampled by compute passes such as tile cull,
+  // GTAO, and occlusion cull.
   VkBuffer                          cameraBuffer{VK_NULL_HANDLE};
   VkDeviceSize                      cameraBufferSize{0};
   VkSampler                         gBufferSampler{VK_NULL_HANDLE};
@@ -104,16 +109,19 @@ struct FrameRecordParams {
   float                             cameraNear{0.1f};
   float                             cameraFar{100.0f};
 
-  // Shadow cascade framebuffers (kShadowCascadeCount entries)
+  // Shadow cascade framebuffers. GPU-cull buffers are owned by ShadowCullManager,
+  // which keeps the frame parameter contract to high-level pass services.
   const VkFramebuffer*              shadowFramebuffers{nullptr};
-  container::gpu::ShadowPushConstants*  shadowPushConstants{nullptr};
   const container::gpu::ShadowData*     shadowData{nullptr};
   bool                                 useGpuShadowCull{false};
   ShadowCullManager*                   shadowCullManager{nullptr};
-  std::array<VkBuffer, container::gpu::kShadowCascadeCount> shadowCullIndirectBuffers{};
-  std::array<VkBuffer, container::gpu::kShadowCascadeCount> shadowCullCountBuffers{};
-  uint32_t                             shadowCullMaxDrawCount{0};
   const ShadowManager*                  shadowManager{nullptr};
+  // One secondary command buffer per shadow cascade, allocated from separate
+  // worker command pools. When unavailable, shadows fall back to inline primary
+  // command recording.
+  bool                                  useShadowSecondaryCommandBuffers{false};
+  std::array<VkCommandBuffer, container::gpu::kShadowCascadeCount>
+      shadowSecondaryCommandBuffers{};
 
   // Swapchain framebuffers (for post-process pass)
   const std::vector<VkFramebuffer>* swapChainFramebuffers{nullptr};
@@ -131,6 +139,8 @@ struct FrameRecordParams {
 // Records a complete frame into a command buffer.
 // All render passes: depth prepass → G-Buffer → lighting → post-process.
 // Debug overlays: wireframe, normal validation, surface normals, light gizmos.
+// The concrete pass order is the RenderGraph built by buildGraph(); barriers
+// and image layouts stay close to the passes that require them.
 class FrameRecorder {
  public:
   FrameRecorder(std::shared_ptr<container::gpu::VulkanDevice> device,
@@ -156,6 +166,8 @@ class FrameRecorder {
   const RenderGraph& graph() const { return graph_; }
 
  private:
+  [[nodiscard]] bool isPassActive(RenderPassId id) const;
+
   void setViewportAndScissor(VkCommandBuffer cmd) const;
 
   void bindSceneGeometryBuffers(VkCommandBuffer cmd,
@@ -179,6 +191,21 @@ class FrameRecorder {
   void recordShadowPass(VkCommandBuffer cmd,
                         const FrameRecordParams& p,
                         uint32_t cascadeIndex) const;
+  void recordShadowPassBody(VkCommandBuffer cmd,
+                            const FrameRecordParams& p,
+                            uint32_t cascadeIndex) const;
+  void recordShadowCascadeSecondaryCommandBuffers(
+      const FrameRecordParams& p) const;
+  void recordShadowCascadeSecondaryCommandBuffer(
+      VkCommandBuffer cmd,
+      const FrameRecordParams& p,
+      uint32_t cascadeIndex) const;
+  [[nodiscard]] bool canRecordShadowPass(
+      const FrameRecordParams& p,
+      uint32_t cascadeIndex) const;
+  [[nodiscard]] bool shouldUseShadowSecondaryCommandBuffer(
+      const FrameRecordParams& p,
+      uint32_t cascadeIndex) const;
 
   void prepareShadowCascadeDrawCommands(const FrameRecordParams& p) const;
 
@@ -207,6 +234,8 @@ class FrameRecorder {
   RenderGraph          graph_;
   mutable std::array<std::vector<DrawCommand>, container::gpu::kShadowCascadeCount>
       shadowCascadeSingleSidedDrawCommands_;
+  mutable std::array<std::vector<DrawCommand>, container::gpu::kShadowCascadeCount>
+      shadowCascadeWindingFlippedDrawCommands_;
   mutable std::array<std::vector<DrawCommand>, container::gpu::kShadowCascadeCount>
       shadowCascadeDoubleSidedDrawCommands_;
 };

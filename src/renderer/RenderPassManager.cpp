@@ -1,10 +1,40 @@
 #include "Container/renderer/RenderPassManager.h"
 
-#include <stdexcept>
 #include <array>
 #include <initializer_list>
+#include <stdexcept>
+#include <utility>
 
 namespace container::renderer {
+
+namespace {
+
+constexpr VkPipelineStageFlags kDepthTestStages =
+    VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+    VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+
+constexpr VkDependencyFlags kFramebufferLocalDependency =
+    VK_DEPENDENCY_BY_REGION_BIT;
+
+VkSubpassDependency MakeDependency(uint32_t srcSubpass,
+                                   uint32_t dstSubpass,
+                                   VkPipelineStageFlags srcStages,
+                                   VkPipelineStageFlags dstStages,
+                                   VkAccessFlags srcAccess,
+                                   VkAccessFlags dstAccess,
+                                   VkDependencyFlags flags = 0) {
+  VkSubpassDependency dependency{};
+  dependency.srcSubpass = srcSubpass;
+  dependency.dstSubpass = dstSubpass;
+  dependency.srcStageMask = srcStages;
+  dependency.dstStageMask = dstStages;
+  dependency.srcAccessMask = srcAccess;
+  dependency.dstAccessMask = dstAccess;
+  dependency.dependencyFlags = flags;
+  return dependency;
+}
+
+}  // namespace
 
 RenderPassManager::RenderPassManager(
     std::shared_ptr<container::gpu::VulkanDevice> device)
@@ -29,7 +59,9 @@ VkFormat RenderPassManager::findSupportedFormat(
 VkFormat RenderPassManager::findDepthStencilFormat() const {
   return findSupportedFormat(
       {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT},
-      VK_IMAGE_TILING_OPTIMAL, VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT);
+      VK_IMAGE_TILING_OPTIMAL,
+      VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+          VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
 }
 
 void RenderPassManager::create(VkFormat swapchainFormat,
@@ -47,8 +79,8 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   ds.samples        = VK_SAMPLE_COUNT_1_BIT;
   ds.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
   ds.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
-  ds.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_CLEAR;
-  ds.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
+  ds.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  ds.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   ds.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
   ds.finalLayout    = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
@@ -58,13 +90,18 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   depthSubpass.pDepthStencilAttachment = &dsRef;
 
   std::array<VkSubpassDependency, 2> depthDeps{};
-  depthDeps[0] = {VK_SUBPASS_EXTERNAL, 0,
-                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                  0, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, 0};
-  depthDeps[1] = {0, VK_SUBPASS_EXTERNAL,
-                  VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, 0};
+  depthDeps[0] = MakeDependency(
+      VK_SUBPASS_EXTERNAL, 0,
+      VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, kDepthTestStages,
+      0, VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      kFramebufferLocalDependency);
+  depthDeps[1] = MakeDependency(
+      0, VK_SUBPASS_EXTERNAL,
+      kDepthTestStages, kDepthTestStages,
+      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      kFramebufferLocalDependency);
 
   VkRenderPassCreateInfo rpInfo{};
   rpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
@@ -116,21 +153,29 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   gbSubpass.pDepthStencilAttachment = &gbDsRef;
 
   std::array<VkSubpassDependency, 2> gbDeps{};
-  // Entry: depth prepass wrote depth (late fragment tests), then Hi-Z compute
-  // read it.  We must wait for both before the GBuffer starts.
-  gbDeps[0] = {VK_SUBPASS_EXTERNAL, 0,
-               VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-               VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, 0};
+  // Entry: depth prepass wrote depth, then Hi-Z compute may have read it.
+  // Occlusion culling may also have produced indirect commands for this pass.
+  gbDeps[0] = MakeDependency(
+      VK_SUBPASS_EXTERNAL, 0,
+      kDepthTestStages | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | kDepthTestStages |
+          VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
   // Exit: GBuffer colors → shader read (lighting pass),
   //       depth → compute shader read (TileCull, GTAO) + attachment read (lighting).
-  gbDeps[1] = {0, VK_SUBPASS_EXTERNAL,
-               VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-               VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-               VK_ACCESS_SHADER_READ_BIT, 0};
+  gbDeps[1] = MakeDependency(
+      0, VK_SUBPASS_EXTERNAL,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | kDepthTestStages,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT);
 
   rpInfo.attachmentCount = static_cast<uint32_t>(gbAttachments.size());
   rpInfo.pAttachments    = gbAttachments.data();
@@ -156,6 +201,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   // Stencil is cleared per-light-volume via vkCmdClearAttachments; no need to
   // preserve stale values from the GBuffer pass.
   lightDs.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+  lightDs.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   // After GBuffer, depth is transitioned to DEPTH_READ_ONLY_STENCIL_ATTACHMENT
   // for TileCull/GTAO compute reads; the lighting pass picks it up in that layout.
   lightDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
@@ -172,23 +218,34 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   lightSubpass.pDepthStencilAttachment = &lightDsRef;
 
   std::array<VkSubpassDependency, 2> lightDeps{};
-  // Entry: preceding GBuffer wrote colors/depth, and TileCull/GTAO compute
-  // shaders read depth + wrote tile grids and AO.  We need all of those to
-  // complete before the lighting subpass begins.
-  lightDeps[0] = {VK_SUBPASS_EXTERNAL, 0,
-                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT |
-                      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
-                      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-                      VK_ACCESS_SHADER_WRITE_BIT,
-                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
-                      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT, 0};
-  lightDeps[1] = {0, VK_SUBPASS_EXTERNAL,
-                  VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                  VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                  VK_ACCESS_SHADER_READ_BIT, 0};
+  // Entry: preceding passes provide GBuffer textures, read-only depth,
+  // tile-light grids, AO, and cleared OIT storage for transparent fragments.
+  lightDeps[0] = MakeDependency(
+      VK_SUBPASS_EXTERNAL, 0,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | kDepthTestStages |
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+          VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | kDepthTestStages |
+          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_TRANSFER_WRITE_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
+  lightDeps[1] = MakeDependency(
+      0, VK_SUBPASS_EXTERNAL,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | kDepthTestStages |
+          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT);
 
   rpInfo.attachmentCount = static_cast<uint32_t>(lightAttachments.size());
   rpInfo.pAttachments    = lightAttachments.data();
@@ -217,16 +274,20 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   shadowSubpass.pDepthStencilAttachment = &shadowDsRef;
 
   std::array<VkSubpassDependency, 2> shadowDeps{};
-  shadowDeps[0] = {VK_SUBPASS_EXTERNAL, 0,
-                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                   VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                   VK_ACCESS_SHADER_READ_BIT,
-                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT, 0};
-  shadowDeps[1] = {0, VK_SUBPASS_EXTERNAL,
-                   VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                   VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-                   VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-                   VK_ACCESS_SHADER_READ_BIT, 0};
+  shadowDeps[0] = MakeDependency(
+      VK_SUBPASS_EXTERNAL, 0,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      kDepthTestStages | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
+      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
+  shadowDeps[1] = MakeDependency(
+      0, VK_SUBPASS_EXTERNAL,
+      kDepthTestStages,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT);
 
   rpInfo.attachmentCount = 1;
   rpInfo.pAttachments    = &shadowDs;
@@ -255,15 +316,20 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   postSubpass.pColorAttachments    = &swapRef;
 
   std::array<VkSubpassDependency, 2> postDeps{};
-  postDeps[0] = {VK_SUBPASS_EXTERNAL, 0,
-                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                 0, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0};
-  postDeps[1] = {0, VK_SUBPASS_EXTERNAL,
-                 VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-                 VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
-                 VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
-                 VK_ACCESS_MEMORY_READ_BIT, 0};
+  postDeps[0] = MakeDependency(
+      VK_SUBPASS_EXTERNAL, 0,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
+          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT);
+  postDeps[1] = MakeDependency(
+      0, VK_SUBPASS_EXTERNAL,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+      VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, 0);
 
   rpInfo.attachmentCount = 1;
   rpInfo.pAttachments    = &swapAttachment;

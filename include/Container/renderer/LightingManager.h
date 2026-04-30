@@ -1,7 +1,7 @@
 #pragma once
 
-#include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonMath.h"
+#include "Container/common/CommonVulkan.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/SceneGraph.h"
 #include "Container/utility/VulkanMemoryManager.h"
@@ -17,12 +17,16 @@ namespace container::gpu {
 class AllocationManager;
 class PipelineManager;
 class VulkanDevice;
-}  // namespace container::gpu
+} // namespace container::gpu
+
+namespace container::ecs {
+class World;
+} // namespace container::ecs
 
 namespace container::scene {
 class BaseCamera;
 class SceneManager;
-}  // namespace container::scene
+} // namespace container::scene
 
 namespace container::renderer {
 
@@ -30,8 +34,8 @@ namespace container::renderer {
 struct SceneLightingAnchor {
   glm::mat4 sceneTransform{1.0f};
   glm::vec3 center{0.0f, 0.0f, 0.0f};
-  float     localRadius{1.0f};
-  float     worldRadius{1.0f};
+  float localRadius{1.0f};
+  float worldRadius{1.0f};
 };
 
 // Push constants for light-gizmo draw calls.
@@ -43,17 +47,17 @@ struct LightPushConstants {
 // Manages the LightingData uniform buffer, directional + point lights,
 // tiled light culling resources, and the light-gizmo draw helper.
 class LightingManager {
- public:
-  LightingManager(
-      std::shared_ptr<container::gpu::VulkanDevice> device,
-      container::gpu::AllocationManager&            allocationManager,
-      container::gpu::PipelineManager&            pipelineManager,
-      container::scene::SceneManager*                  sceneManager,
-      container::scene::SceneGraph&                    sceneGraph);
+public:
+  LightingManager(std::shared_ptr<container::gpu::VulkanDevice> device,
+                  container::gpu::AllocationManager &allocationManager,
+                  container::gpu::PipelineManager &pipelineManager,
+                  container::scene::SceneManager *sceneManager,
+                  container::scene::SceneGraph &sceneGraph,
+                  container::ecs::World &world);
 
   ~LightingManager();
-  LightingManager(const LightingManager&) = delete;
-  LightingManager& operator=(const LightingManager&) = delete;
+  LightingManager(const LightingManager &) = delete;
+  LightingManager &operator=(const LightingManager &) = delete;
 
   // ---- Lifecycle ----------------------------------------------------------
 
@@ -66,23 +70,27 @@ class LightingManager {
 
   // Creates the tiled light culling compute pipeline, descriptor sets,
   // and SSBO buffers.  Must be called after createDescriptorResources().
-  void createTiledResources(const std::filesystem::path& shaderDir,
+  void createTiledResources(const std::filesystem::path &shaderDir,
                             VkExtent2D initialExtent);
   void resizeTiledResources(VkExtent2D extent);
 
   // ---- Per-frame updates --------------------------------------------------
 
-  // Recomputes LightingData from current scene anchor and uploads to lightingBuffer_.
+  // Recomputes CPU lighting state from the current scene anchor.
   void updateLightingData();
-  void updateLightingData(const container::scene::BaseCamera* camera);
+  void updateLightingData(const container::scene::BaseCamera *camera);
+  void updateLightingDataForActiveCamera();
+  // Uploads the compact lighting UBO and the point-light SSBO once per frame.
+  void uploadLightingData() const;
+  void uploadLightingData(uint32_t imageIndex) const;
   void collectStats();
 
   // Uploads point lights to the SSBO and dispatches the tile culling compute
   // shader.  Must be called between G-Buffer and Lighting passes.
   void dispatchTileCull(VkCommandBuffer cmd, VkExtent2D screenExtent,
                         VkBuffer cameraBuffer, VkDeviceSize cameraBufferSize,
-                        VkImageView depthView, VkSampler depthSampler,
-                        float cameraNear, float cameraFar) const;
+                        VkImageView depthView, float cameraNear,
+                        float cameraFar) const;
   void resetGpuTimers(VkCommandBuffer cmd, uint32_t frameSlot) const;
   void beginClusterCullTimer(VkCommandBuffer cmd) const;
   void endClusterCullTimer(VkCommandBuffer cmd) const;
@@ -91,35 +99,42 @@ class LightingManager {
 
   // ---- Draw helpers -------------------------------------------------------
 
-  // Records the directional-light gizmo + point-light gizmos into commandBuffer.
-  void drawLightGizmos(
-      VkCommandBuffer                          commandBuffer,
-      const std::array<VkDescriptorSet, 2>&    lightingDescriptorSets,
-      VkPipeline                               lightGizmoPipeline,
-      VkPipelineLayout                         lightingPipelineLayout,
-      const container::scene::BaseCamera*       camera) const;
+  // Records the directional-light gizmo + point-light gizmos into
+  // commandBuffer.
+  void
+  drawLightGizmos(VkCommandBuffer commandBuffer,
+                  const std::array<VkDescriptorSet, 2> &lightingDescriptorSets,
+                  VkPipeline lightGizmoPipeline,
+                  VkPipelineLayout lightingPipelineLayout,
+                  const container::scene::BaseCamera *camera) const;
 
   // ---- Accessors ----------------------------------------------------------
 
-  const container::gpu::LightingData& lightingData()      const { return lightingData_; }
-  container::gpu::LightingData&       lightingData()            { return lightingData_; }
-  const container::gpu::LightingSettings& lightingSettings() const {
+  const container::gpu::LightingData &lightingData() const {
+    return lightingData_;
+  }
+  container::gpu::LightingData &lightingData() { return lightingData_; }
+  const container::gpu::LightingSettings &lightingSettings() const {
     return lightingSettings_;
   }
-  void setLightingSettings(const container::gpu::LightingSettings& settings);
-  const container::gpu::LightCullingStats& lightCullingStats() const {
+  void setLightingSettings(const container::gpu::LightingSettings &settings);
+  const container::gpu::LightCullingStats &lightCullingStats() const {
     return lastStats_;
   }
-  uint32_t            lightVolumeIndexCount() const { return lightVolumeIndexCount_; }
+  uint32_t lightVolumeIndexCount() const { return lightVolumeIndexCount_; }
 
   // Descriptor set / buffer accessors (valid after createDescriptorResources())
-  VkDescriptorSetLayout lightDescriptorSetLayout() const { return lightDescriptorSetLayout_; }
-  VkDescriptorSet       lightDescriptorSet(uint32_t imageIndex) const {
-    return imageIndex < lightDescriptorSets_.size() ? lightDescriptorSets_[imageIndex]
-                                                    : VK_NULL_HANDLE;
+  VkDescriptorSetLayout lightDescriptorSetLayout() const {
+    return lightDescriptorSetLayout_;
   }
-  VkDescriptorPool      lightDescriptorPool()       const { return lightDescriptorPool_; }
-  const container::gpu::AllocatedBuffer& lightingBuffer(uint32_t imageIndex) const {
+  VkDescriptorSet lightDescriptorSet(uint32_t imageIndex) const {
+    return imageIndex < lightDescriptorSets_.size()
+               ? lightDescriptorSets_[imageIndex]
+               : VK_NULL_HANDLE;
+  }
+  VkDescriptorPool lightDescriptorPool() const { return lightDescriptorPool_; }
+  const container::gpu::AllocatedBuffer &
+  lightingBuffer(uint32_t imageIndex) const {
     return lightingBuffers_[imageIndex];
   }
   std::span<const container::gpu::AllocatedBuffer> lightingBuffers() const {
@@ -127,46 +142,57 @@ class LightingManager {
   }
 
   SceneLightingAnchor computeSceneLightingAnchor() const;
-  glm::vec3           directionalLightPosition()   const;
+  glm::vec3 directionalLightPosition() const;
 
-  // The root node must be kept in sync with the scene graph after buildSceneGraph.
+  // The root node must be kept in sync with the scene graph after
+  // buildSceneGraph.
   void setRootNode(uint32_t rootNode) { rootNode_ = rootNode; }
 
   // ---- Tiled lighting accessors -------------------------------------------
-  bool isTiledLightingReady()       const { return tileCullPipeline_ != VK_NULL_HANDLE; }
-  VkDescriptorSetLayout tiledDescriptorSetLayout() const { return tiledDescriptorSetLayout_; }
-  VkDescriptorSet       tiledDescriptorSet()        const { return tiledDescriptorSet_; }
+  bool isTiledLightingReady() const {
+    return tileCullPipeline_ != VK_NULL_HANDLE;
+  }
+  VkDescriptorSetLayout tiledDescriptorSetLayout() const {
+    return tiledDescriptorSetLayout_;
+  }
+  VkDescriptorSet tiledDescriptorSet() const { return tiledDescriptorSet_; }
 
-  // Returns the point light SSBO contents.  Updated each frame by updateLightingData().
-  const std::vector<container::gpu::PointLightData>& pointLightsSsbo() const { return pointLightsSsbo_; }
+  // Returns the point light SSBO contents.  Updated each frame by
+  // updateLightingData().
+  const std::vector<container::gpu::PointLightData> &pointLightsSsbo() const {
+    return pointLightsSsbo_;
+  }
 
   // Tile grid SSBO accessors for debug visualization (heat map).
-  VkBuffer     tileGridBuffer()     const { return tileGridSsbo_.buffer; }
+  VkBuffer tileGridBuffer() const { return tileGridSsbo_.buffer; }
   VkDeviceSize tileGridBufferSize() const {
     return sizeof(container::gpu::TileLightGrid) * maxClusterCount_;
   }
 
- private:
-  void uploadLightingData();
+private:
+  void publishGeneratedPointLights();
+  void rebuildPointLightSsboFromEcs();
+  void writeLightDescriptorPointBuffers() const;
   void allocateClusterBuffers(VkExtent2D extent);
   void writeTiledResourceDescriptors() const;
   std::shared_ptr<container::gpu::VulkanDevice> device_;
-  container::gpu::AllocationManager&            allocationManager_;
-  container::gpu::PipelineManager&            pipelineManager_;
-  container::scene::SceneManager*                  sceneManager_{nullptr};
-  container::scene::SceneGraph&                    sceneGraph_;
+  container::gpu::AllocationManager &allocationManager_;
+  container::gpu::PipelineManager &pipelineManager_;
+  container::scene::SceneManager *sceneManager_{nullptr};
+  container::scene::SceneGraph &sceneGraph_;
+  container::ecs::World &world_;
 
   container::gpu::LightingData lightingData_{};
   container::gpu::LightingSettings lightingSettings_{};
   container::gpu::LightCullingStats lastStats_{};
-  uint32_t     lightVolumeIndexCount_{0};
-  uint32_t     rootNode_{container::scene::SceneGraph::kInvalidNode};
+  uint32_t lightVolumeIndexCount_{0};
+  uint32_t rootNode_{container::scene::SceneGraph::kInvalidNode};
 
   // Descriptor resources created by createDescriptorResources()
   std::vector<container::gpu::AllocatedBuffer> lightingBuffers_{};
-  VkDescriptorSetLayout            lightDescriptorSetLayout_{VK_NULL_HANDLE};
-  VkDescriptorPool                 lightDescriptorPool_{VK_NULL_HANDLE};
-  std::vector<VkDescriptorSet>     lightDescriptorSets_{};
+  VkDescriptorSetLayout lightDescriptorSetLayout_{VK_NULL_HANDLE};
+  VkDescriptorPool lightDescriptorPool_{VK_NULL_HANDLE};
+  std::vector<VkDescriptorSet> lightDescriptorSets_{};
 
   // ---- Tiled light culling ------------------------------------------------
   std::vector<container::gpu::PointLightData> pointLightsSsbo_{};
@@ -183,24 +209,25 @@ class LightingManager {
   mutable bool timingQueriesWritten_{false};
 
   // Compute pipeline
-  VkPipeline            tileCullPipeline_{VK_NULL_HANDLE};
-  VkPipelineLayout      tileCullPipelineLayout_{VK_NULL_HANDLE};
+  VkPipeline tileCullPipeline_{VK_NULL_HANDLE};
+  VkPipelineLayout tileCullPipelineLayout_{VK_NULL_HANDLE};
 
   // Descriptor resources for the compute cull shader (set 0 = camera+depth,
   // set 1 = light SSBO, set 2 = tile grid + index list SSBOs).
-  VkDescriptorSetLayout tileCullSet0Layout_{VK_NULL_HANDLE};   // camera + depth
-  VkDescriptorSetLayout tileCullSet1Layout_{VK_NULL_HANDLE};   // light SSBO
-  VkDescriptorSetLayout tileCullSet2Layout_{VK_NULL_HANDLE};   // tile grid + index list
-  VkDescriptorPool      tileCullDescriptorPool_{VK_NULL_HANDLE};
-  VkDescriptorSet       tileCullSet0_{VK_NULL_HANDLE};
-  VkDescriptorSet       tileCullSet1_{VK_NULL_HANDLE};
-  VkDescriptorSet       tileCullSet2_{VK_NULL_HANDLE};
+  VkDescriptorSetLayout tileCullSet0Layout_{VK_NULL_HANDLE}; // camera + depth
+  VkDescriptorSetLayout tileCullSet1Layout_{VK_NULL_HANDLE}; // light SSBO
+  VkDescriptorSetLayout tileCullSet2Layout_{
+      VK_NULL_HANDLE}; // tile grid + index list
+  VkDescriptorPool tileCullDescriptorPool_{VK_NULL_HANDLE};
+  VkDescriptorSet tileCullSet0_{VK_NULL_HANDLE};
+  VkDescriptorSet tileCullSet1_{VK_NULL_HANDLE};
+  VkDescriptorSet tileCullSet2_{VK_NULL_HANDLE};
 
   // Descriptor for the tiled lighting fragment shader (set 1).
   // Contains light SSBO + tile grid + light index list.
   VkDescriptorSetLayout tiledDescriptorSetLayout_{VK_NULL_HANDLE};
-  VkDescriptorPool      tiledDescriptorPool_{VK_NULL_HANDLE};
-  VkDescriptorSet       tiledDescriptorSet_{VK_NULL_HANDLE};
+  VkDescriptorPool tiledDescriptorPool_{VK_NULL_HANDLE};
+  VkDescriptorSet tiledDescriptorSet_{VK_NULL_HANDLE};
 
   uint32_t maxTileCount_{0};
   uint32_t maxClusterCount_{0};
@@ -209,4 +236,4 @@ class LightingManager {
   void uploadLightSsbo() const;
 };
 
-}  // namespace container::renderer
+} // namespace container::renderer

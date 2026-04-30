@@ -49,23 +49,26 @@ set(GENERATE_MODEL_OUTPUTS
 
 # --- glTF Sample Models download ----------------------------------------
 
-find_package(Git QUIET)
+if(ENABLE_SAMPLE_MODEL_DOWNLOAD)
+    set(GLTF_SAMPLE_MODELS_DIR "${MODELS_OUTPUT_DIR}/glTF-Sample-Models")
+    set(GLTF_SAMPLE_MODELS_STAMP "${GLTF_SAMPLE_MODELS_DIR}/.fetched")
+    set(GLTF_SAMPLE_MODELS_ARCHIVE_URL
+        "https://github.com/KhronosGroup/glTF-Sample-Models/archive/d7a3cc8e51d7c573771ae77a57f16b0662a905c6.zip")
 
-set(GLTF_SAMPLE_MODELS_DIR "${MODELS_OUTPUT_DIR}/glTF-Sample-Models")
-set(GLTF_SAMPLE_MODELS_STAMP "${GLTF_SAMPLE_MODELS_DIR}/.fetched")
+    add_custom_command(
+        OUTPUT "${GLTF_SAMPLE_MODELS_STAMP}"
+        COMMAND ${CMAKE_COMMAND}
+                "-DDESTINATION:PATH=${GLTF_SAMPLE_MODELS_DIR}"
+                "-DSTAMP_FILE:FILEPATH=${GLTF_SAMPLE_MODELS_STAMP}"
+                "-DREPO_ARCHIVE_URL:STRING=${GLTF_SAMPLE_MODELS_ARCHIVE_URL}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/fetch_gltf_sample_models.cmake"
+        DEPENDS "${CMAKE_SOURCE_DIR}/cmake/fetch_gltf_sample_models.cmake"
+        COMMENT "Downloading pinned glTF Sample Models archive"
+        VERBATIM
+    )
 
-add_custom_command(
-    OUTPUT "${GLTF_SAMPLE_MODELS_STAMP}"
-    COMMAND ${CMAKE_COMMAND}
-            "-DDESTINATION:PATH=${GLTF_SAMPLE_MODELS_DIR}"
-            "-DSTAMP_FILE:FILEPATH=${GLTF_SAMPLE_MODELS_STAMP}"
-            -P "${CMAKE_SOURCE_DIR}/cmake/fetch_gltf_sample_models.cmake"
-    DEPENDS "${CMAKE_SOURCE_DIR}/cmake/fetch_gltf_sample_models.cmake"
-    COMMENT "Downloading glTF Sample Models repository archive"
-    VERBATIM
-)
-
-list(APPEND GENERATE_MODEL_OUTPUTS "${GLTF_SAMPLE_MODELS_STAMP}")
+    list(APPEND GENERATE_MODEL_OUTPUTS "${GLTF_SAMPLE_MODELS_STAMP}")
+endif()
 
 add_custom_target(generate_models ALL
     DEPENDS ${GENERATE_MODEL_OUTPUTS}

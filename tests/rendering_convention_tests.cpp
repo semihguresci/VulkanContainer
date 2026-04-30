@@ -6,7 +6,9 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <glm/glm.hpp>
+#include <limits>
 
 namespace {
 
@@ -156,6 +158,17 @@ bool pointInsideClipVolume(const glm::mat4& viewProj, const glm::vec3& point) {
 float rowXyzLength(const glm::mat4& matrix, int row) {
   const glm::vec4 r = slangMatrixRow(matrix, row);
   return glm::length(glm::vec3(r));
+}
+
+bool occlusionCullMayRejectProjectedBounds(float maxExtentPixels) {
+  constexpr float kLargeProjectedExtentPixels = 96.0f;
+  return maxExtentPixels <= kLargeProjectedExtentPixels;
+}
+
+uint32_t resolveObjectIndex(uint32_t pushedObjectIndex, uint32_t instanceID) {
+  return pushedObjectIndex == std::numeric_limits<uint32_t>::max()
+             ? instanceID
+             : pushedObjectIndex;
 }
 
 }  // namespace
@@ -364,6 +377,11 @@ TEST(RenderingConventionTests, FrustumCullUsesDrawFirstInstanceForObjectBounds) 
       objectBounds[correctObjectIndex].radius));
 }
 
+TEST(RenderingConventionTests, ShaderObjectIndexUsesPushConstantOrFirstInstance) {
+  EXPECT_EQ(resolveObjectIndex(17u, 3u), 17u);
+  EXPECT_EQ(resolveObjectIndex(std::numeric_limits<uint32_t>::max(), 42u), 42u);
+}
+
 TEST(RenderingConventionTests, OcclusionCullSphereBoundsNeedProjectionScale) {
   const glm::mat4 proj = container::math::perspectiveRH_ReverseZ(
       glm::radians(60.0f), 16.0f / 9.0f, 0.1f, 100.0f);
@@ -401,10 +419,18 @@ TEST(RenderingConventionTests, OcclusionCullSphereDepthUsesNearestPointProjectio
   EXPECT_NEAR(exactClosestDepth, clipToNdc(nearestPointClip).z, 1e-6f);
 }
 
-TEST(RenderingConventionTests, DefaultSceneUsesCompositeTestSceneToken) {
+TEST(RenderingConventionTests, OcclusionCullKeepsLargeProjectedBoundsVisible) {
+  EXPECT_TRUE(occlusionCullMayRejectProjectedBounds(32.0f));
+  EXPECT_TRUE(occlusionCullMayRejectProjectedBounds(96.0f));
+  EXPECT_FALSE(occlusionCullMayRejectProjectedBounds(96.01f));
+  EXPECT_FALSE(occlusionCullMayRejectProjectedBounds(256.0f));
+}
+
+TEST(RenderingConventionTests, DefaultConfigUsesRuntimeSponzaScene) {
   const auto config = container::app::DefaultAppConfig();
 
-  EXPECT_EQ(config.modelPath, container::app::kDefaultSceneModelToken);
+  EXPECT_EQ(config.modelPath, container::app::kDefaultModelRelativePath);
+  EXPECT_NE(config.modelPath, container::app::kDefaultSceneModelToken);
 }
 
 TEST(RenderingConventionTests, DefaultSceneModelListContainsTriangleCubeAndSphere) {

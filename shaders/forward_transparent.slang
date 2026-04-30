@@ -6,7 +6,9 @@ static const uint INVALID_NODE_INDEX = 0xffffffffu;
 struct ObjectBuffer
 {
     column_major float4x4 model;
-    column_major float4x4 normalMatrix;
+    float4 normalMatrix0;
+    float4 normalMatrix1;
+    float4 normalMatrix2;
     float4 color;
     float3 emissiveColor;
     float emissiveStrength;
@@ -44,6 +46,7 @@ struct OitMetadataBuffer
 [[vk::binding(2, 0)]] SamplerState baseSampler;
 [[vk::binding(3, 0)]] Texture2D materialTextures[];
 [[vk::binding(0, 1)]] ConstantBuffer<LightingBuffer> uLighting;
+[[vk::binding(1, 1)]] StructuredBuffer<PointLightData> uPointLights;
 [[vk::binding(0, 2)]] RWTexture2D<uint> headPointerImage;
 [[vk::binding(1, 2)]] RWStructuredBuffer<TransparentNode> transparentNodes;
 [[vk::binding(2, 2)]] RWStructuredBuffer<uint> nodeCounter;
@@ -54,6 +57,7 @@ struct OitMetadataBuffer
 [[vk::binding(13, 3)]] SamplerState envSampler;
 [[vk::binding(14, 3)]] SamplerState brdfSampler;
 
+#include "object_index_common.slang"
 #include "surface_normal_common.slang"
 
 struct PushConstants
@@ -99,24 +103,6 @@ struct VSOutput
     [[vk::location(16)]] float4 worldTangent;
 };
 
-float3 EvaluateLight(float3 albedo, float3 normal, float3 V, float3 L,
-                     float3 radiance, float metallic, float roughness)
-{
-    float3 H = SafeNormalize(V + L, normal);
-    float3 F0 = lerp(0.04.xxx, albedo, metallic);
-    float NDF = DistributionGGX(normal, H, roughness);
-    float G = GeometrySmith(normal, V, L, roughness);
-    float3 F = FresnelSchlick(saturate(dot(H, V)), F0);
-    float3 numerator = NDF * G * F;
-    float denominator =
-        max(4.0 * saturate(dot(normal, V)) * saturate(dot(normal, L)), 1e-4);
-    float3 specular = numerator / denominator;
-    float3 kS = F;
-    float3 kD = (1.0 - kS) * (1.0 - metallic);
-    float NdotL = saturate(dot(normal, L));
-    return (kD * albedo / PI + specular) * radiance * NdotL;
-}
-
 float3 EvaluateThinSurfaceTransmission(float3 albedo, float3 normal, float3 V,
                                        float3 L, float3 radiance,
                                        float alpha, bool isBackFace)
@@ -135,12 +121,16 @@ float3 EvaluateThinSurfaceTransmission(float3 albedo, float3 normal, float3 V,
 VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
 {
     VSOutput output;
-    uint objectIndex = instanceID;
+    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID);
     ObjectBuffer obj = uObjects[objectIndex];
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
     float3x3 modelMatrix = (float3x3)obj.model;
-    float3 worldNormal = BuildWorldNormal((float3x3)obj.normalMatrix, input.inNormal);
+    float3 normalVector =
+        obj.normalMatrix0.xyz * input.inNormal.x +
+        obj.normalMatrix1.xyz * input.inNormal.y +
+        obj.normalMatrix2.xyz * input.inNormal.z;
+    float3 worldNormal = SafeNormalize(normalVector, float3(0.0, 1.0, 0.0));
     float4 worldTangent = BuildWorldTangent(modelMatrix, worldNormal, input.inTangent);
 
     output.pos = mul(uCamera.viewProj, worldPos);
@@ -198,14 +188,12 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         sampledMetallic *= mrSample.b;
     }
 
+    float faceSign =
+        ((vertIn.flags & kObjectFlagDoubleSided) != 0u && !isFrontFace)
+            ? -1.0 : 1.0;
     SurfaceNormalState surfaceNormal = EvaluateSurfaceNormal(
         vertIn.worldNormal, vertIn.worldTangent, vertIn.texCoord,
-        vertIn.normalTextureIndex, vertIn.normalTextureScale);
-
-    if ((vertIn.flags & kObjectFlagDoubleSided) != 0u && !isFrontFace)
-    {
-        surfaceNormal.shadingNormal = -surfaceNormal.shadingNormal;
-    }
+        vertIn.normalTextureIndex, vertIn.normalTextureScale, faceSign);
 
     float occlusion = 1.0;
     if (vertIn.occlusionTextureIndex != 0xffffffff)
@@ -216,13 +204,13 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         occlusion = lerp(1.0, sampledOcclusion, saturate(vertIn.occlusionStrength));
     }
 
-    float3 emissive = vertIn.emissiveColor * vertIn.emissiveStrength;
+    float3 emissive = vertIn.emissiveColor;
     if (vertIn.emissiveTextureIndex != 0xffffffff)
     {
         uint texIndex = NonUniformResourceIndex(vertIn.emissiveTextureIndex);
-        emissive += materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).rgb
-                    * vertIn.emissiveStrength;
+        emissive *= materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).rgb;
     }
+    emissive *= vertIn.emissiveStrength;
 
     float metallic = saturate(sampledMetallic);
     float roughness = clamp(sampledRoughness, 0.045, 1.0);
@@ -249,8 +237,9 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                                         float3(0.0, 1.0, 0.0));
     float3 directionalRadiance =
         uLighting.directionalColorIntensity.rgb * uLighting.directionalColorIntensity.a;
-    lighting += EvaluateLight(baseColor, surfaceNormal.shadingNormal, V, directionalL,
-                              directionalRadiance, metallic, roughness);
+    lighting += EvaluatePbrDirectLight(
+        baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal, V,
+        directionalL, directionalRadiance);
     const bool thinSurface =
         (vertIn.flags & (kObjectFlagAlphaCutoff | kObjectFlagDoubleSided)) ==
         (kObjectFlagAlphaCutoff | kObjectFlagDoubleSided);
@@ -263,26 +252,27 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 
     for (uint i = 0; i < uLighting.pointLightCount && i < MAX_POINT_LIGHTS; ++i)
     {
-        float3 lightVector = uLighting.pointLights[i].positionRadius.xyz - vertIn.worldPos;
-        float distanceToLight = length(lightVector);
-        float lightRadius = max(uLighting.pointLights[i].positionRadius.w, 1e-3);
-        if (distanceToLight >= lightRadius)
+        PointLightData light = uPointLights[i];
+        float3 lightVector = light.positionRadius.xyz - vertIn.worldPos;
+        float lightRadius = max(light.positionRadius.w, 1e-3);
+        float distanceSq = dot(lightVector, lightVector);
+        if (distanceSq >= lightRadius * lightRadius)
         {
             continue;
         }
 
-        float attenuation = pow(saturate(1.0 - distanceToLight / lightRadius), 2.0);
+        float invDistance = rsqrt(max(distanceSq, 1e-8));
+        float3 L = lightVector * invDistance;
+        float attenuation = SmoothRangeAttenuation(distanceSq, lightRadius);
         float3 radiance =
-            uLighting.pointLights[i].colorIntensity.rgb *
-            uLighting.pointLights[i].colorIntensity.a * attenuation;
-        lighting += EvaluateLight(baseColor, surfaceNormal.shadingNormal, V,
-                                  lightVector / max(distanceToLight, 1e-4),
-                                  radiance, metallic, roughness);
+            light.colorIntensity.rgb * light.colorIntensity.a * attenuation;
+        lighting += EvaluatePbrDirectLight(
+            baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal, V,
+            L, radiance);
         if (thinSurface)
         {
             lighting += EvaluateThinSurfaceTransmission(
-                baseColor, surfaceNormal.shadingNormal, V,
-                lightVector / max(distanceToLight, 1e-4), radiance,
+                baseColor, surfaceNormal.shadingNormal, V, L, radiance,
                 saturate(baseAlpha), !isFrontFace);
         }
     }

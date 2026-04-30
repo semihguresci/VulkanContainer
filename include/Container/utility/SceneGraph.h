@@ -39,6 +39,8 @@ class SceneGraph {
   [[nodiscard]] size_t nodeCount() const { return nodes_.size(); }
 
  private:
+  [[nodiscard]] bool isDescendant(uint32_t ancestor,
+                                  uint32_t candidate) const;
   void updateWorldRecursive(uint32_t nodeIndex, const glm::mat4& parentTransform);
   void registerRenderable(uint32_t nodeIndex);
   void unregisterRenderable(uint32_t nodeIndex);

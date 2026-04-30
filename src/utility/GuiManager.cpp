@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 
@@ -227,6 +228,7 @@ void GuiManager::drawSceneControls(
     const std::function<void(const TransformControls&)>& applySceneTransform,
     const glm::vec3& directionalLightPosition,
     const container::gpu::LightingData& lightingData,
+    const std::vector<container::gpu::PointLightData>& pointLights,
     uint32_t selectedMeshNode,
     const std::function<void(uint32_t)>& selectMeshNode,
     const TransformControls& meshTransform,
@@ -455,14 +457,17 @@ void GuiManager::drawSceneControls(
                       lightingData.directionalDirection.y,
                       lightingData.directionalDirection.z);
 
+    const uint32_t submittedPointLightCount =
+        static_cast<uint32_t>(std::min<size_t>(pointLights.size(), UINT32_MAX));
     const uint32_t visiblePointLightCount =
-        std::min(lightingData.pointLightCount, kMaxDeferredPointLights);
-    ImGui::Text("Point lights: %u total", lightingData.pointLightCount);
-    if (lightingData.pointLightCount > visiblePointLightCount) {
-      ImGui::Text("Showing first %u UBO fallback lights", visiblePointLightCount);
+        std::min(submittedPointLightCount, kMaxDeferredPointLights);
+    ImGui::Text("Point lights: %u submitted, %u uploaded",
+                submittedPointLightCount, lightingData.pointLightCount);
+    if (submittedPointLightCount > visiblePointLightCount) {
+      ImGui::Text("Showing first %u SSBO lights", visiblePointLightCount);
     }
     for (uint32_t i = 0; i < visiblePointLightCount; ++i) {
-      const auto& light = lightingData.pointLights[i];
+      const auto& light = pointLights[i];
       ImGui::Separator();
       ImGui::Text("Point Light %u", i);
       ImGui::BulletText("Position: (%.2f, %.2f, %.2f)",

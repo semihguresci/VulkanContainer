@@ -13,18 +13,24 @@ VkDescriptorSetLayout PipelineManager::createDescriptorSetLayout(
     const std::vector<VkDescriptorSetLayoutBinding>& bindings,
     const std::vector<VkDescriptorBindingFlags>& bindingFlags,
     VkDescriptorSetLayoutCreateFlags flags, const void* next) {
+  if (!bindingFlags.empty() && bindingFlags.size() != bindings.size()) {
+    throw std::runtime_error(
+        "Descriptor binding flags count must match layout binding count");
+  }
+
   VkDescriptorSetLayoutBindingFlagsCreateInfo bindingFlagsInfo{};
   bindingFlagsInfo.sType =
       VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_BINDING_FLAGS_CREATE_INFO;
   bindingFlagsInfo.bindingCount = static_cast<uint32_t>(bindingFlags.size());
   bindingFlagsInfo.pBindingFlags = bindingFlags.data();
+  bindingFlagsInfo.pNext = next;
 
   VkDescriptorSetLayoutCreateInfo layoutInfo{};
   layoutInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
   layoutInfo.bindingCount = static_cast<uint32_t>(bindings.size());
   layoutInfo.pBindings = bindings.data();
   layoutInfo.flags = flags;
-  layoutInfo.pNext = next ? next : &bindingFlagsInfo;
+  layoutInfo.pNext = bindingFlags.empty() ? next : &bindingFlagsInfo;
 
   VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
   VkResult res =

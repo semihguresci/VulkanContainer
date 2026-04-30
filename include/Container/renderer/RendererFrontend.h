@@ -68,14 +68,9 @@ struct RendererFrontendCreateInfo {
   container::window::InputManager*        inputManager{nullptr};
 };
 
-// RendererFrontend owns the complete Vulkan rendering pipeline.
-// It is constructed with a live VulkanContextResult + window surface and
-// manages all subsystems from render passes through frame submission.
-//
-// HelloTriangleApplication is responsible only for:
-//   - Window + GLFW lifecycle
-//   - VulkanContextInitializer::initialize()
-//   - Constructing and driving RendererFrontend
+// RendererFrontend owns the renderer-facing lifetime graph. The application
+// handles window/input setup, while this class creates render passes, frame
+// resources, scene systems, pipelines, and per-frame submission state.
 class RendererFrontend {
  public:
   explicit RendererFrontend(RendererFrontendCreateInfo info);
@@ -110,7 +105,9 @@ class RendererFrontend {
   const SceneState& sceneState() const { return sceneState_; }
 
  private:
-  // All heap-allocated subsystems owned by the frontend.
+  // Owned subsystems are listed roughly in construction/use order. shutdown()
+  // releases them in dependency-aware order because many destructors touch
+  // Vulkan objects owned by earlier services.
   struct OwnedSubsystems {
     std::unique_ptr<RenderPassManager>                  renderPassManager;
     std::unique_ptr<OitManager>                         oitManager;
@@ -130,7 +127,9 @@ class RendererFrontend {
     std::unique_ptr<container::gpu::FrameSyncManager>   frameSyncManager;
   };
 
-  // External services passed in at construction (not owned).
+  // External services passed in at construction. These must outlive the
+  // frontend; they wrap the device, swapchain, allocator, command pool, and
+  // app configuration supplied by the application layer.
   struct BorrowedServices {
     VulkanContextResult&                  ctx;
     container::gpu::PipelineManager&     pipelineManager;
@@ -166,7 +165,6 @@ class RendererFrontend {
   struct FrameState {
     std::vector<VkFence> imagesInFlight;
     uint32_t             currentFrame{0};
-    uint32_t             exactOitNodeCapacityFloor{0};
   };
   FrameState frame_{};
 
@@ -184,7 +182,7 @@ class RendererFrontend {
   // ---- per-frame helpers ------------------------------------------------------
   void updateCameraBuffer(uint32_t imageIndex);
   void updateObjectBuffer();
-  void updateFrameDescriptorSets();
+  void updateFrameDescriptorSets(uint32_t imageIndex = UINT32_MAX);
   void destroyGBufferResources();
   bool growExactOitNodePoolIfNeeded(uint32_t imageIndex);
   void presentSceneControls();

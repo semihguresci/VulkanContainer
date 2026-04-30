@@ -12,8 +12,11 @@
 #include "Container/utility/SwapChainManager.h"
 #include "Container/utility/VulkanDevice.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
+#include <future>
+#include <limits>
 #include <stdexcept>
 
 namespace container::renderer {
@@ -23,10 +26,63 @@ using container::gpu::kMaxDeferredPointLights;
 using container::gpu::kTileSize;
 using container::gpu::kShadowCascadeCount;
 using container::gpu::kShadowMapResolution;
-using container::gpu::LightingData;
 using container::gpu::ShadowPushConstants;
 using container::gpu::PostProcessPushConstants;
 using container::gpu::TiledLightingPushConstants;
+
+namespace {
+
+bool hasDrawCommands(const std::vector<DrawCommand>* commands) {
+  return commands != nullptr && !commands->empty();
+}
+
+bool hasTransparentDrawCommands(const FrameRecordParams& p) {
+  return hasDrawCommands(p.transparentSingleSidedDrawCommands) ||
+         hasDrawCommands(p.transparentWindingFlippedDrawCommands) ||
+         hasDrawCommands(p.transparentDoubleSidedDrawCommands);
+}
+
+VkPipeline choosePipeline(VkPipeline preferred, VkPipeline fallback) {
+  return preferred != VK_NULL_HANDLE ? preferred : fallback;
+}
+
+constexpr uint32_t kIndirectObjectIndex =
+    std::numeric_limits<uint32_t>::max();
+
+void pushSceneObjectIndex(VkCommandBuffer cmd,
+                          VkPipelineLayout layout,
+                          BindlessPushConstants& pc,
+                          uint32_t objectIndex) {
+  pc.objectIndex = objectIndex;
+  vkCmdPushConstants(cmd, layout,
+                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                     0, sizeof(BindlessPushConstants), &pc);
+}
+
+bool shouldRecordTransparentOit(const FrameRecordParams& p,
+                                const container::ui::GuiManager* guiManager) {
+  if (!hasTransparentDrawCommands(p)) return false;
+
+  const auto displayMode =
+      guiManager ? guiManager->gBufferViewMode()
+                 : container::ui::GBufferViewMode::Overview;
+  if (displayMode == container::ui::GBufferViewMode::ObjectSpaceNormals) {
+    return false;
+  }
+
+  const auto wireframeSettings =
+      guiManager ? guiManager->wireframeSettings()
+                 : container::ui::WireframeSettings{};
+  const bool wireframeFullMode =
+      guiManager && guiManager->wireframeSupported() &&
+      wireframeSettings.enabled &&
+      wireframeSettings.mode == container::ui::WireframeMode::Full &&
+      p.pipelines.wireframeDepth != VK_NULL_HANDLE &&
+      p.pipelines.wireframeNoDepth != VK_NULL_HANDLE;
+  return !wireframeFullMode;
+}
+
+}  // namespace
 
 FrameRecorder::FrameRecorder(
     std::shared_ptr<container::gpu::VulkanDevice> device,
@@ -58,7 +114,9 @@ FrameRecorder::FrameRecorder(
 void FrameRecorder::buildGraph() {
   graph_.clear();
 
-  graph_.addPass("FrustumCull", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+  // CPU registration order is the frame schedule. Later passes rely on the
+  // image layouts and indirect-count buffers produced by earlier nodes.
+  graph_.addPass(RenderPassId::FrustumCull, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     if (gpuCullManager_ && gpuCullManager_->isReady() &&
         p.opaqueSingleSidedDrawCommands &&
         !p.opaqueSingleSidedDrawCommands->empty()) {
@@ -79,20 +137,11 @@ void FrameRecorder::buildGraph() {
     }
   });
 
-  graph_.addPass("DepthPrepass", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
-    const auto ws = guiManager_ ? guiManager_->wireframeSettings()
-                                : container::ui::WireframeSettings{};
-    const bool wfEnabled =
-        guiManager_ && guiManager_->wireframeSupported() && ws.enabled &&
-        p.pipelines.wireframeDepth != VK_NULL_HANDLE &&
-        p.pipelines.wireframeNoDepth != VK_NULL_HANDLE;
-    const bool wfFull = wfEnabled && ws.mode == container::ui::WireframeMode::Full;
-    if (!wfFull || ws.depthTest) {
-      recordDepthPrepass(cmd, p, p.sceneDescriptorSet);
-    }
+  graph_.addPass(RenderPassId::DepthPrepass, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+    recordDepthPrepass(cmd, p, p.sceneDescriptorSet);
   });
 
-  graph_.addPass("HiZGenerate", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+  graph_.addPass(RenderPassId::HiZGenerate, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     if (!gpuCullManager_ || !gpuCullManager_->isReady() ||
         !p.frame || p.frame->depthSamplingView == VK_NULL_HANDLE ||
         p.gBufferSampler == VK_NULL_HANDLE) return;
@@ -110,7 +159,8 @@ void FrameRecorder::buildGraph() {
     depthBarrier.subresourceRange = {
         VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1};
     vkCmdPipelineBarrier(cmd,
-        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
         0, 0, nullptr, 0, nullptr, 1, &depthBarrier);
 
@@ -126,11 +176,12 @@ void FrameRecorder::buildGraph() {
     depthBarrier.newLayout     = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     vkCmdPipelineBarrier(cmd,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         0, 0, nullptr, 0, nullptr, 1, &depthBarrier);
   });
 
-  graph_.addPass("OcclusionCull", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+  graph_.addPass(RenderPassId::OcclusionCull, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     if (gpuCullManager_ && gpuCullManager_->isReady() &&
         p.opaqueSingleSidedDrawCommands &&
         !p.opaqueSingleSidedDrawCommands->empty()) {
@@ -139,30 +190,24 @@ void FrameRecorder::buildGraph() {
     }
   });
 
-  graph_.addPass("CullStatsReadback", [this](VkCommandBuffer cmd, const FrameRecordParams&) {
+  graph_.addPass(RenderPassId::CullStatsReadback, [this](VkCommandBuffer cmd, const FrameRecordParams&) {
     if (gpuCullManager_ && gpuCullManager_->isReady())
       gpuCullManager_->scheduleStatsReadback(cmd);
   });
 
-  graph_.addPass("GBuffer", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
-    const auto ws = guiManager_ ? guiManager_->wireframeSettings()
-                                : container::ui::WireframeSettings{};
-    const bool wfEnabled =
-        guiManager_ && guiManager_->wireframeSupported() && ws.enabled &&
-        p.pipelines.wireframeDepth != VK_NULL_HANDLE &&
-        p.pipelines.wireframeNoDepth != VK_NULL_HANDLE;
-    const bool wfFull = wfEnabled && ws.mode == container::ui::WireframeMode::Full;
-    if (!wfFull) {
-      recordGBufferPass(cmd, p, p.sceneDescriptorSet);
-    }
+  graph_.addPass(RenderPassId::GBuffer, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+    recordGBufferPass(cmd, p, p.sceneDescriptorSet);
   });
 
-  graph_.addPass("OitClear", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+  graph_.addPass(RenderPassId::OitClear, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+    if (!shouldRecordTransparentOit(p, guiManager_)) return;
     oitManager_.clearResources(cmd, *p.frame, std::numeric_limits<uint32_t>::max());
   });
 
+  const auto shadowCullIds = shadowCullPassIds();
+  const auto shadowPassIds = shadowCascadePassIds();
   for (uint32_t i = 0; i < kShadowCascadeCount; ++i) {
-    graph_.addPass("ShadowCullCascade" + std::to_string(i),
+    graph_.addPass(shadowCullIds[i],
         [this, i](VkCommandBuffer cmd, const FrameRecordParams& p) {
       if (!p.useGpuShadowCull || p.shadowCullManager == nullptr ||
           !p.shadowCullManager->isReady() ||
@@ -177,7 +222,7 @@ void FrameRecorder::buildGraph() {
       p.shadowCullManager->dispatchCascadeCull(cmd, p.imageIndex, i, drawCount);
     });
 
-    graph_.addPass("ShadowCascade" + std::to_string(i),
+    graph_.addPass(shadowPassIds[i],
         [this, i](VkCommandBuffer cmd, const FrameRecordParams& p) {
       recordShadowPass(cmd, p, i);
     });
@@ -186,13 +231,15 @@ void FrameRecorder::buildGraph() {
   // Transition depth from attachment-writable to read-only for the compute
   // passes (TileCull, GTAO) that sample depth.  The lighting render pass
   // initialLayout also expects DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL.
-  graph_.addPass("DepthToReadOnly", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+  graph_.addPass(RenderPassId::DepthToReadOnly, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     if (!p.frame || p.frame->depthStencil.image == VK_NULL_HANDLE) return;
 
     VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrier.srcAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    barrier.srcAccessMask       = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     barrier.dstAccessMask       = VK_ACCESS_SHADER_READ_BIT |
-                                  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT;
+                                  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                                  VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     barrier.oldLayout           = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
     barrier.newLayout           = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
     barrier.image               = p.frame->depthStencil.image;
@@ -200,14 +247,15 @@ void FrameRecorder::buildGraph() {
     barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
     vkCmdPipelineBarrier(cmd,
-        VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+            VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT |
             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         0, 0, nullptr, 0, nullptr, 1, &barrier);
   });
 
-  graph_.addPass("TileCull", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+  graph_.addPass(RenderPassId::TileCull, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     if (lightingManager_ && lightingManager_->isTiledLightingReady() &&
         p.frame && p.frame->depthSamplingView != VK_NULL_HANDLE) {
       lightingManager_->resetGpuTimers(cmd, p.imageIndex);
@@ -215,13 +263,12 @@ void FrameRecorder::buildGraph() {
       lightingManager_->dispatchTileCull(
           cmd, swapChainManager_.extent(),
           p.cameraBuffer, p.cameraBufferSize,
-          p.frame->depthSamplingView, p.gBufferSampler,
-          p.cameraNear, p.cameraFar);
+          p.frame->depthSamplingView, p.cameraNear, p.cameraFar);
       lightingManager_->endClusterCullTimer(cmd);
     }
   });
 
-  graph_.addPass("GTAO", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+  graph_.addPass(RenderPassId::GTAO, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     if (environmentManager_ && environmentManager_->isGtaoReady() &&
         p.frame && p.frame->depthSamplingView != VK_NULL_HANDLE) {
       environmentManager_->dispatchGtao(
@@ -230,11 +277,12 @@ void FrameRecorder::buildGraph() {
           p.frame->depthSamplingView, p.gBufferSampler,
           p.frame->normal.view, p.gBufferSampler);
       environmentManager_->dispatchGtaoBlur(
-          cmd, p.frame->depthSamplingView, p.gBufferSampler);
+          cmd, p.frame->depthSamplingView, p.gBufferSampler,
+          p.cameraNear, p.cameraFar);
     }
   });
 
-  graph_.addPass("Lighting", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+  graph_.addPass(RenderPassId::Lighting, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     const std::array<VkDescriptorSet, 2> lightingSets = {
         p.frame->lightingDescriptorSet, p.lightDescriptorSet};
     const std::array<VkDescriptorSet, 4> transparentSets = {
@@ -243,12 +291,14 @@ void FrameRecorder::buildGraph() {
     recordLightingPass(cmd, p, p.sceneDescriptorSet, lightingSets, transparentSets);
   });
 
-  graph_.addPass("OitResolve", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+  graph_.addPass(RenderPassId::OitResolve, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+    if (!shouldRecordTransparentOit(p, guiManager_)) return;
     oitManager_.prepareResolve(cmd, *p.frame);
   });
 
-  graph_.addPass("Bloom", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+  graph_.addPass(RenderPassId::Bloom, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     if (!bloomManager_ || !bloomManager_->isReady()) return;
+    if (!bloomManager_->enabled()) return;
     if (!p.frame || p.frame->sceneColor.view == VK_NULL_HANDLE) return;
 
     // Barrier: scene color attachment write → compute shader read.
@@ -270,11 +320,13 @@ void FrameRecorder::buildGraph() {
     bloomManager_->dispatch(cmd, p.frame->sceneColor.view, extent.width, extent.height);
   });
 
-  graph_.addPass("PostProcess", [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+  graph_.addPass(RenderPassId::PostProcess, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     const std::array<VkDescriptorSet, 2> ppSets = {
         p.frame->postProcessDescriptorSet, p.frame->oitDescriptorSet};
     recordPostProcessPass(cmd, p, ppSets);
   });
+
+  graph_.compile();
 }
 
 // ---------------------------------------------------------------------------
@@ -283,25 +335,37 @@ void FrameRecorder::buildGraph() {
 
 void FrameRecorder::record(VkCommandBuffer commandBuffer,
                            const FrameRecordParams& p) const {
-  VkCommandBufferBeginInfo beginInfo{};
-  beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-  if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
-    throw std::runtime_error("failed to begin recording command buffer!");
+  if (commandBuffer == VK_NULL_HANDLE) {
+    throw std::runtime_error("FrameRecorder::record received a null command buffer");
   }
-
   if (!p.frame) {
     throw std::runtime_error("FrameRecordParams::frame is null");
+  }
+
+  if (gpuCullManager_) {
+    gpuCullManager_->beginFrameCulling();
   }
 
   if (p.useGpuShadowCull && p.shadowCullManager != nullptr &&
       p.shadowCullManager->isReady() &&
       p.opaqueSingleSidedDrawCommands != nullptr) {
+    // Shadow culling is per-cascade, but all cascades consume the same source
+    // draw list. Upload once before graph execution so each cascade pass can
+    // filter into its own indirect buffer.
     p.shadowCullManager->ensureBufferCapacity(static_cast<uint32_t>(
         p.opaqueSingleSidedDrawCommands->size()));
     p.shadowCullManager->uploadDrawCommands(*p.opaqueSingleSidedDrawCommands);
   }
 
   prepareShadowCascadeDrawCommands(p);
+  recordShadowCascadeSecondaryCommandBuffers(p);
+
+  VkCommandBufferBeginInfo beginInfo{};
+  beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+    throw std::runtime_error("failed to begin recording command buffer!");
+  }
+
   graph_.execute(commandBuffer, p);
 
   if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
@@ -312,11 +376,16 @@ void FrameRecorder::record(VkCommandBuffer commandBuffer,
 // Private helpers
 // ---------------------------------------------------------------------------
 
+bool FrameRecorder::isPassActive(RenderPassId id) const {
+  return graph_.isPassActive(id);
+}
+
 void FrameRecorder::prepareShadowCascadeDrawCommands(
     const FrameRecordParams& p) const {
   for (uint32_t cascadeIndex = 0; cascadeIndex < kShadowCascadeCount;
        ++cascadeIndex) {
     shadowCascadeSingleSidedDrawCommands_[cascadeIndex].clear();
+    shadowCascadeWindingFlippedDrawCommands_[cascadeIndex].clear();
     shadowCascadeDoubleSidedDrawCommands_[cascadeIndex].clear();
   }
 
@@ -339,8 +408,12 @@ void FrameRecorder::prepareShadowCascadeDrawCommands(
   };
 
   if (p.shadowManager == nullptr || p.objectData == nullptr) {
+    // Without cascade/object bounds, use the full draw list for every cascade.
+    // This keeps shadows correct and simply gives up CPU-side cascade pruning.
     distributeCommands(p.opaqueSingleSidedDrawCommands,
                        shadowCascadeSingleSidedDrawCommands_);
+    distributeCommands(p.opaqueWindingFlippedDrawCommands,
+                       shadowCascadeWindingFlippedDrawCommands_);
     distributeCommands(p.opaqueDoubleSidedDrawCommands,
                        shadowCascadeDoubleSidedDrawCommands_);
     return;
@@ -382,6 +455,8 @@ void FrameRecorder::prepareShadowCascadeDrawCommands(
 
   filterCommands(p.opaqueSingleSidedDrawCommands,
                  shadowCascadeSingleSidedDrawCommands_);
+  filterCommands(p.opaqueWindingFlippedDrawCommands,
+                 shadowCascadeWindingFlippedDrawCommands_);
   filterCommands(p.opaqueDoubleSidedDrawCommands,
                  shadowCascadeDoubleSidedDrawCommands_);
 }
@@ -389,6 +464,8 @@ void FrameRecorder::prepareShadowCascadeDrawCommands(
 void FrameRecorder::setViewportAndScissor(VkCommandBuffer cmd) const {
   VkViewport viewport{};
   viewport.x        = 0.0f;
+  // Scene passes use a negative-height viewport so NDC +Y maps to the top of
+  // the framebuffer while projection matrices remain glTF/right-handed.
   viewport.y        = static_cast<float>(swapChainManager_.extent().height);
   viewport.width    = static_cast<float>(swapChainManager_.extent().width);
   viewport.height   = -static_cast<float>(swapChainManager_.extent().height);
@@ -449,25 +526,40 @@ void FrameRecorder::recordDepthPrepass(VkCommandBuffer cmd, const FrameRecordPar
                           p.layouts.scene, 0, 1, &sceneSet, 0, nullptr);
   setViewportAndScissor(cmd);
   bindSceneGeometryBuffers(cmd, p.vertexSlice, p.indexSlice, p.indexType);
-  const bool frustumCullEnabled = graph_.findPass("FrustumCull") != nullptr &&
-                                  graph_.findPass("FrustumCull")->enabled;
+  const bool frustumCullActive = isPassActive(RenderPassId::FrustumCull);
 
+  const VkPipeline depthFrontCullPipeline =
+      choosePipeline(p.pipelines.depthPrepassFrontCull,
+                     p.pipelines.depthPrepass);
   const VkPipeline depthNoCullPipeline =
-      p.pipelines.depthPrepassNoCull != VK_NULL_HANDLE
-          ? p.pipelines.depthPrepassNoCull
-          : p.pipelines.depthPrepass;
+      choosePipeline(p.pipelines.depthPrepassNoCull, p.pipelines.depthPrepass);
 
-  if (gpuCullManager_ && gpuCullManager_->isReady() && frustumCullEnabled &&
+  // Single-sided opaque draws can use the GPU-produced indirect list. Double-
+  // sided/alpha-special cases stay on explicit draw lists so pipeline variants
+  // and material flags remain easy to reason about.
+  if (gpuCullManager_ && gpuCullManager_->isReady() && frustumCullActive &&
+      gpuCullManager_->frustumDrawsValid() &&
       p.opaqueSingleSidedDrawCommands &&
       !p.opaqueSingleSidedDrawCommands->empty()) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       p.pipelines.depthPrepass);
+    pushSceneObjectIndex(cmd, p.layouts.scene, *p.pushConstants.bindless,
+                         kIndirectObjectIndex);
     gpuCullManager_->drawIndirect(cmd);
   } else if (p.opaqueSingleSidedDrawCommands &&
              !p.opaqueSingleSidedDrawCommands->empty()) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       p.pipelines.depthPrepass);
     debugOverlay_.drawScene(cmd, p.layouts.scene, *p.opaqueSingleSidedDrawCommands,
+                            *p.pushConstants.bindless);
+  }
+
+  if (p.opaqueWindingFlippedDrawCommands &&
+      !p.opaqueWindingFlippedDrawCommands->empty()) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      depthFrontCullPipeline);
+    debugOverlay_.drawScene(cmd, p.layouts.scene,
+                            *p.opaqueWindingFlippedDrawCommands,
                             *p.pushConstants.bindless);
   }
 
@@ -493,7 +585,7 @@ void FrameRecorder::recordGBufferPass(VkCommandBuffer cmd, const FrameRecordPara
   info.renderArea.offset = {0, 0};
   info.renderArea.extent = swapChainManager_.extent();
   std::array<VkClearValue, 5> clearValues{};
-  clearValues[0].color        = {{0.0f, 0.0f, 0.0f, 1.0f}};
+  clearValues[0].color        = {{0.0f, 0.0f, 0.0f, 0.0f}};
   clearValues[1].color        = {{0.5f, 0.5f, 1.0f, 1.0f}};
   clearValues[2].color        = {{0.0f, 1.0f, 1.0f, 1.0f}};
   clearValues[3].color        = {{0.0f, 0.0f, 0.0f, 0.0f}};
@@ -506,23 +598,38 @@ void FrameRecorder::recordGBufferPass(VkCommandBuffer cmd, const FrameRecordPara
                           p.layouts.scene, 0, 1, &sceneSet, 0, nullptr);
   setViewportAndScissor(cmd);
   bindSceneGeometryBuffers(cmd, p.vertexSlice, p.indexSlice, p.indexType);
-  const bool occlusionCullEnabled = graph_.findPass("OcclusionCull") != nullptr &&
-                                    graph_.findPass("OcclusionCull")->enabled;
+  const bool frustumCullActive = isPassActive(RenderPassId::FrustumCull);
 
+  const VkPipeline gBufferFrontCullPipeline =
+      choosePipeline(p.pipelines.gBufferFrontCull, p.pipelines.gBuffer);
   const VkPipeline gBufferNoCullPipeline =
-      p.pipelines.gBufferNoCull != VK_NULL_HANDLE
-          ? p.pipelines.gBufferNoCull
-          : p.pipelines.gBuffer;
+      choosePipeline(p.pipelines.gBufferNoCull, p.pipelines.gBuffer);
 
-  if (gpuCullManager_ && gpuCullManager_->isReady() && occlusionCullEnabled &&
+  // The same-frame Hi-Z pyramid contains this geometry from the depth prepass,
+  // so consuming the occlusion list for G-buffer visibility can self-occlude
+  // wall reliefs and thin fixtures. G-buffer therefore fails open to the
+  // frustum list, with CPU draws as the final fallback.
+  if (gpuCullManager_ && gpuCullManager_->isReady() && frustumCullActive &&
+      gpuCullManager_->frustumDrawsValid() &&
       p.opaqueSingleSidedDrawCommands &&
       !p.opaqueSingleSidedDrawCommands->empty()) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipelines.gBuffer);
-    gpuCullManager_->drawIndirectOccluded(cmd);
+    pushSceneObjectIndex(cmd, p.layouts.scene, *p.pushConstants.bindless,
+                         kIndirectObjectIndex);
+    gpuCullManager_->drawIndirect(cmd);
   } else if (p.opaqueSingleSidedDrawCommands &&
              !p.opaqueSingleSidedDrawCommands->empty()) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipelines.gBuffer);
     debugOverlay_.drawScene(cmd, p.layouts.scene, *p.opaqueSingleSidedDrawCommands,
+                            *p.pushConstants.bindless);
+  }
+
+  if (p.opaqueWindingFlippedDrawCommands &&
+      !p.opaqueWindingFlippedDrawCommands->empty()) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      gBufferFrontCullPipeline);
+    debugOverlay_.drawScene(cmd, p.layouts.scene,
+                            *p.opaqueWindingFlippedDrawCommands,
                             *p.pushConstants.bindless);
   }
 
@@ -539,13 +646,88 @@ void FrameRecorder::recordGBufferPass(VkCommandBuffer cmd, const FrameRecordPara
   vkCmdEndRenderPass(cmd);
 }
 
+bool FrameRecorder::canRecordShadowPass(const FrameRecordParams& p,
+                                         uint32_t cascadeIndex) const {
+  return cascadeIndex < kShadowCascadeCount &&
+         p.renderPasses.shadow != VK_NULL_HANDLE &&
+         p.pipelines.shadowDepth != VK_NULL_HANDLE &&
+         p.shadowFramebuffers != nullptr &&
+         p.shadowFramebuffers[cascadeIndex] != VK_NULL_HANDLE;
+}
+
+bool FrameRecorder::shouldUseShadowSecondaryCommandBuffer(
+    const FrameRecordParams& p,
+    uint32_t cascadeIndex) const {
+  return p.useShadowSecondaryCommandBuffers &&
+         canRecordShadowPass(p, cascadeIndex) &&
+         cascadeIndex < p.shadowSecondaryCommandBuffers.size() &&
+         p.shadowSecondaryCommandBuffers[cascadeIndex] != VK_NULL_HANDLE;
+}
+
+void FrameRecorder::recordShadowCascadeSecondaryCommandBuffers(
+    const FrameRecordParams& p) const {
+  if (!p.useShadowSecondaryCommandBuffers) return;
+
+  const auto shadowPassIds = shadowCascadePassIds();
+  std::vector<std::future<void>> workers;
+  workers.reserve(kShadowCascadeCount);
+
+  for (uint32_t cascadeIndex = 0; cascadeIndex < kShadowCascadeCount;
+       ++cascadeIndex) {
+    if (cascadeIndex >= shadowPassIds.size() ||
+        !isPassActive(shadowPassIds[cascadeIndex]) ||
+        !shouldUseShadowSecondaryCommandBuffer(p, cascadeIndex)) {
+      continue;
+    }
+
+    const VkCommandBuffer secondary =
+        p.shadowSecondaryCommandBuffers[cascadeIndex];
+    workers.emplace_back(std::async(
+        std::launch::async,
+        [this, &p, secondary, cascadeIndex]() {
+          recordShadowCascadeSecondaryCommandBuffer(
+              secondary, p, cascadeIndex);
+        }));
+  }
+
+  for (auto& worker : workers) {
+    worker.get();
+  }
+}
+
+void FrameRecorder::recordShadowCascadeSecondaryCommandBuffer(
+    VkCommandBuffer cmd,
+    const FrameRecordParams& p,
+    uint32_t cascadeIndex) const {
+  if (vkResetCommandBuffer(cmd, 0) != VK_SUCCESS) {
+    throw std::runtime_error("failed to reset shadow secondary command buffer!");
+  }
+
+  VkCommandBufferInheritanceInfo inheritanceInfo{};
+  inheritanceInfo.sType       = VK_STRUCTURE_TYPE_COMMAND_BUFFER_INHERITANCE_INFO;
+  inheritanceInfo.renderPass  = p.renderPasses.shadow;
+  inheritanceInfo.subpass     = 0;
+  inheritanceInfo.framebuffer = p.shadowFramebuffers[cascadeIndex];
+
+  VkCommandBufferBeginInfo beginInfo{};
+  beginInfo.sType            = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  beginInfo.flags            = VK_COMMAND_BUFFER_USAGE_RENDER_PASS_CONTINUE_BIT;
+  beginInfo.pInheritanceInfo = &inheritanceInfo;
+  if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
+    throw std::runtime_error("failed to begin shadow secondary command buffer!");
+  }
+
+  recordShadowPassBody(cmd, p, cascadeIndex);
+
+  if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
+    throw std::runtime_error("failed to record shadow secondary command buffer!");
+  }
+}
+
 void FrameRecorder::recordShadowPass(VkCommandBuffer cmd,
                                       const FrameRecordParams& p,
                                       uint32_t cascadeIndex) const {
-  if (p.pipelines.shadowDepth == VK_NULL_HANDLE ||
-      p.shadowFramebuffers == nullptr ||
-      p.shadowFramebuffers[cascadeIndex] == VK_NULL_HANDLE)
-    return;
+  if (!canRecordShadowPass(p, cascadeIndex)) return;
 
   VkRenderPassBeginInfo info{};
   info.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -558,9 +740,26 @@ void FrameRecorder::recordShadowPass(VkCommandBuffer cmd,
   info.clearValueCount   = 1;
   info.pClearValues      = &clearVal;
 
-  vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+  if (shouldUseShadowSecondaryCommandBuffer(p, cascadeIndex)) {
+    vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_SECONDARY_COMMAND_BUFFERS);
+    const VkCommandBuffer secondary =
+        p.shadowSecondaryCommandBuffers[cascadeIndex];
+    vkCmdExecuteCommands(cmd, 1, &secondary);
+    vkCmdEndRenderPass(cmd);
+    return;
+  }
 
+  vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+  recordShadowPassBody(cmd, p, cascadeIndex);
+  vkCmdEndRenderPass(cmd);
+}
+
+void FrameRecorder::recordShadowPassBody(VkCommandBuffer cmd,
+                                          const FrameRecordParams& p,
+                                          uint32_t cascadeIndex) const {
   VkViewport viewport{};
+  // Shadow maps intentionally use a positive-height viewport. Their atlas UV
+  // mapping therefore differs from scene-buffer UV mapping and does not flip Y.
   viewport.width    = static_cast<float>(kShadowMapResolution);
   viewport.height   = static_cast<float>(kShadowMapResolution);
   viewport.minDepth = 0.0f;
@@ -593,10 +792,10 @@ void FrameRecorder::recordShadowPass(VkCommandBuffer cmd,
     }
   };
 
+  const VkPipeline shadowFrontCullPipeline =
+      choosePipeline(p.pipelines.shadowDepthFrontCull, p.pipelines.shadowDepth);
   const VkPipeline shadowNoCullPipeline =
-      p.pipelines.shadowDepthNoCull != VK_NULL_HANDLE
-          ? p.pipelines.shadowDepthNoCull
-          : p.pipelines.shadowDepth;
+      choosePipeline(p.pipelines.shadowDepthNoCull, p.pipelines.shadowDepth);
 
   const VkBuffer gpuShadowIndirectBuffer =
       (p.shadowCullManager != nullptr &&
@@ -610,13 +809,13 @@ void FrameRecorder::recordShadowPass(VkCommandBuffer cmd,
           : VK_NULL_HANDLE;
   const uint32_t gpuShadowMaxDrawCount =
       p.shadowCullManager != nullptr ? p.shadowCullManager->maxDrawCount() : 0u;
-  const RenderPassNode* shadowCullPass =
-      graph_.findPass("ShadowCullCascade" + std::to_string(cascadeIndex));
-  const bool shadowCullPassEnabled =
-      shadowCullPass != nullptr && shadowCullPass->enabled;
+  const auto shadowCullIds = shadowCullPassIds();
+  const bool shadowCullPassActive =
+      cascadeIndex < shadowCullIds.size() &&
+      isPassActive(shadowCullIds[cascadeIndex]);
 
   const bool useGpuShadowCull = p.useGpuShadowCull &&
-                                shadowCullPassEnabled &&
+                                shadowCullPassActive &&
                                 p.shadowCullManager != nullptr &&
                                 p.shadowCullManager->isReady() &&
                                 p.opaqueSingleSidedDrawCommands != nullptr &&
@@ -628,7 +827,7 @@ void FrameRecorder::recordShadowPass(VkCommandBuffer cmd,
 
   if (useGpuShadowCull) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipelines.shadowDepth);
-    spc.objectIndex = 0;
+    spc.objectIndex = kIndirectObjectIndex;
     vkCmdPushConstants(cmd, p.layouts.shadow,
                        VK_SHADER_STAGE_VERTEX_BIT,
                        0, sizeof(ShadowPushConstants), &spc);
@@ -647,14 +846,20 @@ void FrameRecorder::recordShadowPass(VkCommandBuffer cmd,
     drawShadowList(&singleSidedCommands);
   }
 
+  const auto& windingFlippedCommands =
+      shadowCascadeWindingFlippedDrawCommands_[cascadeIndex];
+  if (!windingFlippedCommands.empty()) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      shadowFrontCullPipeline);
+    drawShadowList(&windingFlippedCommands);
+  }
+
   const auto& doubleSidedCommands =
       shadowCascadeDoubleSidedDrawCommands_[cascadeIndex];
   if (!doubleSidedCommands.empty()) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowNoCullPipeline);
     drawShadowList(&doubleSidedCommands);
   }
-
-  vkCmdEndRenderPass(cmd);
 }
 
 void FrameRecorder::recordLightingPass(
@@ -682,9 +887,17 @@ void FrameRecorder::recordLightingPass(
                                        : wireframeSettings.overlayIntensity;
   const VkPipeline activeWireframePipeline =
       wireframeSettings.depthTest ? p.pipelines.wireframeDepth : p.pipelines.wireframeNoDepth;
+  const VkPipeline activeWireframeFrontCullPipeline =
+      wireframeSettings.depthTest
+          ? choosePipeline(p.pipelines.wireframeDepthFrontCull,
+                           p.pipelines.wireframeDepth)
+          : choosePipeline(p.pipelines.wireframeNoDepthFrontCull,
+                           p.pipelines.wireframeNoDepth);
   const bool showNormalValidation =
       guiManager_ && guiManager_->showNormalValidation() &&
       p.pipelines.normalValidation != VK_NULL_HANDLE;
+  const bool transparentOitEnabled =
+      shouldRecordTransparentOit(p, guiManager_);
 
   VkRenderPassBeginInfo lightingPassInfo{};
   lightingPassInfo.sType       = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
@@ -701,23 +914,42 @@ void FrameRecorder::recordLightingPass(
   vkCmdBeginRenderPass(cmd, &lightingPassInfo, VK_SUBPASS_CONTENTS_INLINE);
   setViewportAndScissor(cmd);
 
-  if (wireframeFullMode) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeWireframePipeline);
+  const auto bindWireframePipeline = [&](VkPipeline pipeline) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     if (p.wireframeRasterModeSupported) {
       const float lineWidth = p.wireframeWideLinesSupported
                                   ? wireframeSettings.lineWidth
                                   : 1.0f;
       vkCmdSetLineWidth(cmd, lineWidth);
     }
+  };
+  const auto drawWireframeCommands =
+      [&](const std::vector<DrawCommand>* commands, VkPipeline pipeline) {
+    if (!hasDrawCommands(commands) || pipeline == VK_NULL_HANDLE) return;
+    bindWireframePipeline(pipeline);
+    debugOverlay_.drawWireframe(cmd, p.layouts.wireframe, *commands,
+                                wireframeSettings.color, wireframeIntensity,
+                                wireframeSettings.lineWidth,
+                                *p.pushConstants.wireframe);
+  };
+
+  if (wireframeFullMode) {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             p.layouts.wireframe, 0, 1, &p.sceneDescriptorSet, 0, nullptr);
     bindSceneGeometryBuffers(cmd, p.vertexSlice, p.indexSlice, p.indexType);
-    debugOverlay_.drawWireframe(cmd, p.layouts.wireframe, *p.opaqueDrawCommands,
-                                 wireframeSettings.color, wireframeIntensity,
-                                wireframeSettings.lineWidth, *p.pushConstants.wireframe);
-    debugOverlay_.drawWireframe(cmd, p.layouts.wireframe, *p.transparentDrawCommands,
-                                 wireframeSettings.color, wireframeIntensity,
-                                wireframeSettings.lineWidth, *p.pushConstants.wireframe);
+    drawWireframeCommands(p.opaqueSingleSidedDrawCommands,
+                          activeWireframePipeline);
+    drawWireframeCommands(p.transparentSingleSidedDrawCommands,
+                          activeWireframePipeline);
+    drawWireframeCommands(p.opaqueWindingFlippedDrawCommands,
+                          activeWireframeFrontCullPipeline);
+    drawWireframeCommands(p.transparentWindingFlippedDrawCommands,
+                          activeWireframeFrontCullPipeline);
+    drawWireframeCommands(p.opaqueDoubleSidedDrawCommands,
+                          activeWireframePipeline);
+    drawWireframeCommands(p.transparentDoubleSidedDrawCommands,
+                          activeWireframePipeline);
+    bindWireframePipeline(activeWireframePipeline);
     drawDiagnosticCube(cmd, p.layouts.wireframe, p.diagCubeObjectIndex,
                        *p.pushConstants.bindless);
   } else if (showObjectSpaceNormals &&
@@ -727,15 +959,26 @@ void FrameRecorder::recordLightingPass(
                             nullptr);
     bindSceneGeometryBuffers(cmd, p.vertexSlice, p.indexSlice, p.indexType);
     const VkPipeline objectNormalNoCullPipeline =
-        p.pipelines.objectNormalDebugNoCull != VK_NULL_HANDLE
-            ? p.pipelines.objectNormalDebugNoCull
-            : p.pipelines.objectNormalDebug;
+        choosePipeline(p.pipelines.objectNormalDebugNoCull,
+                       p.pipelines.objectNormalDebug);
+    const VkPipeline objectNormalFrontCullPipeline =
+        choosePipeline(p.pipelines.objectNormalDebugFrontCull,
+                       p.pipelines.objectNormalDebug);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       p.pipelines.objectNormalDebug);
     debugOverlay_.drawScene(cmd, p.layouts.scene, *p.opaqueSingleSidedDrawCommands,
                             *p.pushConstants.bindless);
     debugOverlay_.drawScene(cmd, p.layouts.scene, *p.transparentSingleSidedDrawCommands,
+                            *p.pushConstants.bindless);
+
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      objectNormalFrontCullPipeline);
+    debugOverlay_.drawScene(cmd, p.layouts.scene,
+                            *p.opaqueWindingFlippedDrawCommands,
+                            *p.pushConstants.bindless);
+    debugOverlay_.drawScene(cmd, p.layouts.scene,
+                            *p.transparentWindingFlippedDrawCommands,
                             *p.pushConstants.bindless);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
@@ -767,11 +1010,11 @@ void FrameRecorder::recordLightingPass(
   stencilClearRect.layerCount     = 1;
 
   if (!wireframeFullMode && !showObjectSpaceNormals && !p.debugDirectionalOnly) {
-    const bool tileCullEnabled = graph_.findPass("TileCull") != nullptr &&
-                                 graph_.findPass("TileCull")->enabled;
+    const bool tileCullActive = isPassActive(RenderPassId::TileCull);
     const bool useTiled =
-        tileCullEnabled &&
+        tileCullActive &&
         lightingManager_ && lightingManager_->isTiledLightingReady() &&
+        !lightingManager_->pointLightsSsbo().empty() &&
         p.frame && p.frame->depthSamplingView != VK_NULL_HANDLE &&
         p.pipelines.tiledPointLight != VK_NULL_HANDLE &&
         p.tiledDescriptorSet != VK_NULL_HANDLE;
@@ -786,10 +1029,14 @@ void FrameRecorder::recordLightingPass(
                               p.layouts.tiledLighting, 0,
                               static_cast<uint32_t>(tiledSets.size()),
                               tiledSets.data(), 0, nullptr);
+      const auto extent = swapChainManager_.extent();
       const uint32_t tileCountX =
-          (swapChainManager_.extent().width + kTileSize - 1) / kTileSize;
+          std::max(1u, (extent.width + kTileSize - 1u) / kTileSize);
+      const uint32_t tileCountY =
+          std::max(1u, (extent.height + kTileSize - 1u) / kTileSize);
       TiledLightingPushConstants tlpc{};
       tlpc.tileCountX = tileCountX;
+      tlpc.tileCountY = tileCountY;
       tlpc.depthSliceCount = container::gpu::kClusterDepthSlices;
       tlpc.cameraNear = p.cameraNear;
       tlpc.cameraFar = p.cameraFar;
@@ -804,28 +1051,30 @@ void FrameRecorder::recordLightingPass(
       const VkPipeline activePointPipeline =
           p.debugVisualizePointLightStencil ? p.pipelines.pointLightStencilDebug
                                            : p.pipelines.pointLight;
-      const auto& lightingData =
-          lightingManager_ ? lightingManager_->lightingData() : LightingData{};
-      const uint32_t numLights = std::min(lightingData.pointLightCount, kMaxDeferredPointLights);
+      const auto* pointLights =
+          lightingManager_ ? &lightingManager_->pointLightsSsbo() : nullptr;
+      const uint32_t numLights = std::min(
+          pointLights ? static_cast<uint32_t>(pointLights->size()) : 0u,
+          kMaxDeferredPointLights);
 
-      for (uint32_t i = 0; i < numLights; ++i) {
-        vkCmdClearAttachments(cmd, 1, &stencilClearAttachment, 1, &stencilClearRect);
-        p.pushConstants.light->positionRadius = lightingData.pointLights[i].positionRadius;
-        p.pushConstants.light->colorIntensity = lightingData.pointLights[i].colorIntensity;
-
-        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipelines.stencilVolume);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layouts.lighting, 0,
+      if (numLights > 0u) {
+        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                                p.layouts.lighting, 0,
                                 static_cast<uint32_t>(lightingDescriptorSets.size()),
                                 lightingDescriptorSets.data(), 0, nullptr);
+      }
+      for (uint32_t i = 0; i < numLights; ++i) {
+        vkCmdClearAttachments(cmd, 1, &stencilClearAttachment, 1, &stencilClearRect);
+        p.pushConstants.light->positionRadius = (*pointLights)[i].positionRadius;
+        p.pushConstants.light->colorIntensity = (*pointLights)[i].colorIntensity;
+
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipelines.stencilVolume);
         vkCmdPushConstants(cmd, p.layouts.lighting,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(LightPushConstants), p.pushConstants.light);
         vkCmdDraw(cmd, lightingManager_ ? lightingManager_->lightVolumeIndexCount() : 0, 1, 0, 0);
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activePointPipeline);
-        vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layouts.lighting, 0,
-                                static_cast<uint32_t>(lightingDescriptorSets.size()),
-                                lightingDescriptorSets.data(), 0, nullptr);
         vkCmdPushConstants(cmd, p.layouts.lighting,
                            VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                            0, sizeof(LightPushConstants), p.pushConstants.light);
@@ -834,25 +1083,29 @@ void FrameRecorder::recordLightingPass(
     }
   }
 
-  if (!wireframeFullMode && !showObjectSpaceNormals &&
-      ((p.transparentSingleSidedDrawCommands &&
-        !p.transparentSingleSidedDrawCommands->empty()) ||
-       (p.transparentDoubleSidedDrawCommands &&
-        !p.transparentDoubleSidedDrawCommands->empty()))) {
+  if (transparentOitEnabled) {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layouts.transparent, 0,
                             static_cast<uint32_t>(transparentDescriptorSets.size()),
                             transparentDescriptorSets.data(), 0, nullptr);
     bindSceneGeometryBuffers(cmd, p.vertexSlice, p.indexSlice, p.indexType);
+    const VkPipeline transparentFrontCullPipeline =
+        choosePipeline(p.pipelines.transparentFrontCull, p.pipelines.transparent);
     const VkPipeline transparentNoCullPipeline =
-        p.pipelines.transparentNoCull != VK_NULL_HANDLE
-            ? p.pipelines.transparentNoCull
-            : p.pipelines.transparent;
+        choosePipeline(p.pipelines.transparentNoCull, p.pipelines.transparent);
 
     if (p.transparentSingleSidedDrawCommands &&
         !p.transparentSingleSidedDrawCommands->empty()) {
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipelines.transparent);
       debugOverlay_.drawScene(cmd, p.layouts.transparent,
                               *p.transparentSingleSidedDrawCommands,
+                              *p.pushConstants.bindless);
+    }
+    if (p.transparentWindingFlippedDrawCommands &&
+        !p.transparentWindingFlippedDrawCommands->empty()) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        transparentFrontCullPipeline);
+      debugOverlay_.drawScene(cmd, p.layouts.transparent,
+                              *p.transparentWindingFlippedDrawCommands,
                               *p.pushConstants.bindless);
     }
     if (p.transparentDoubleSidedDrawCommands &&
@@ -908,22 +1161,21 @@ void FrameRecorder::recordLightingPass(
   }
 
   if (wireframeOverlayMode && activeWireframePipeline != VK_NULL_HANDLE) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, activeWireframePipeline);
-    if (p.wireframeRasterModeSupported) {
-      const float lineWidth = p.wireframeWideLinesSupported
-                                  ? wireframeSettings.lineWidth
-                                  : 1.0f;
-      vkCmdSetLineWidth(cmd, lineWidth);
-    }
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             p.layouts.wireframe, 0, 1, &p.sceneDescriptorSet, 0, nullptr);
     bindSceneGeometryBuffers(cmd, p.vertexSlice, p.indexSlice, p.indexType);
-    debugOverlay_.drawWireframe(cmd, p.layouts.wireframe, *p.opaqueDrawCommands,
-                                wireframeSettings.color, wireframeIntensity,
-                                wireframeSettings.lineWidth, *p.pushConstants.wireframe);
-    debugOverlay_.drawWireframe(cmd, p.layouts.wireframe, *p.transparentDrawCommands,
-                                wireframeSettings.color, wireframeIntensity,
-                                wireframeSettings.lineWidth, *p.pushConstants.wireframe);
+    drawWireframeCommands(p.opaqueSingleSidedDrawCommands,
+                          activeWireframePipeline);
+    drawWireframeCommands(p.transparentSingleSidedDrawCommands,
+                          activeWireframePipeline);
+    drawWireframeCommands(p.opaqueWindingFlippedDrawCommands,
+                          activeWireframeFrontCullPipeline);
+    drawWireframeCommands(p.transparentWindingFlippedDrawCommands,
+                          activeWireframeFrontCullPipeline);
+    drawWireframeCommands(p.opaqueDoubleSidedDrawCommands,
+                          activeWireframePipeline);
+    drawWireframeCommands(p.transparentDoubleSidedDrawCommands,
+                          activeWireframePipeline);
   }
 
   if (guiManager_ && guiManager_->showLightGizmos() &&
@@ -966,20 +1218,15 @@ void FrameRecorder::recordPostProcessPass(
       guiManager_ ? guiManager_->gBufferViewMode() : GBufferViewMode::Overview;
   PostProcessPushConstants ppPc{};
   ppPc.outputMode = static_cast<uint32_t>(displayMode);
-  const auto isPassEnabled = [this](std::string_view name) {
-    const auto* pass = graph_.findPass(std::string{name});
-    return pass != nullptr && pass->enabled;
-  };
-  const bool bloomPassEnabled = isPassEnabled("Bloom");
-  const bool gtaoEnabled = isPassEnabled("GTAO");
-  const bool shadowEnabled = isPassEnabled("ShadowCascade0") ||
-                             isPassEnabled("ShadowCascade1") ||
-                             isPassEnabled("ShadowCascade2") ||
-                             isPassEnabled("ShadowCascade3");
-  const bool tileCullEnabled = isPassEnabled("TileCull") && lightingManager_ &&
-                               lightingManager_->isTiledLightingReady();
+  const bool bloomPassActive = isPassActive(RenderPassId::Bloom);
+  const auto shadowPassIds = shadowCascadePassIds();
+  const bool shadowEnabled = std::ranges::any_of(shadowPassIds, [this](RenderPassId id) {
+    return isPassActive(id);
+  });
+  const bool tileCullActive = isPassActive(RenderPassId::TileCull) && lightingManager_ &&
+                              lightingManager_->isTiledLightingReady();
   ppPc.bloomEnabled = (bloomManager_ && bloomManager_->isReady() &&
-                       bloomManager_->enabled() && bloomPassEnabled)
+                       bloomManager_->enabled() && bloomPassActive)
                           ? 1u
                           : 0u;
   ppPc.bloomIntensity = bloomManager_ ? bloomManager_->intensity() : 0.0f;
@@ -989,7 +1236,7 @@ void FrameRecorder::recordPostProcessPass(
     for (uint32_t i = 0; i < kShadowCascadeCount; ++i)
       ppPc.cascadeSplits[i] = p.shadowData->cascades[i].splitDepth;
   }
-  if (tileCullEnabled) {
+  if (tileCullActive) {
     const auto extent = swapChainManager_.extent();
     ppPc.tileCountX  = (extent.width + container::gpu::kTileSize - 1) / container::gpu::kTileSize;
     ppPc.totalLights = static_cast<uint32_t>(lightingManager_->pointLightsSsbo().size());
@@ -999,9 +1246,10 @@ void FrameRecorder::recordPostProcessPass(
     ppPc.totalLights = 0u;
     ppPc.depthSliceCount = 1u;
   }
-  if (!gtaoEnabled && displayMode == GBufferViewMode::TileLightHeatMap) {
+  if (!tileCullActive && displayMode == GBufferViewMode::TileLightHeatMap) {
     ppPc.totalLights = 0u;
   }
+  ppPc.oitEnabled = shouldRecordTransparentOit(p, guiManager_) ? 1u : 0u;
   vkCmdPushConstants(cmd, p.layouts.postProcess, VK_SHADER_STAGE_FRAGMENT_BIT,
                      0, sizeof(PostProcessPushConstants), &ppPc);
   vkCmdDraw(cmd, 3, 1, 0, 0);

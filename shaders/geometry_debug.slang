@@ -8,7 +8,9 @@ struct CameraBuffer
 struct ObjectBuffer
 {
     column_major float4x4 model;
-    column_major float4x4 normalMatrix;
+    float4 normalMatrix0;
+    float4 normalMatrix1;
+    float4 normalMatrix2;
     float4 color;
     float3 emissiveColor;
     float emissiveStrength;
@@ -27,6 +29,8 @@ struct ObjectBuffer
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
+
+#include "object_index_common.slang"
 
 struct PushConstants
 {
@@ -64,7 +68,7 @@ float3 hashColor(uint index)
 VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
 {
     VSOutput output;
-    uint objectIndex = instanceID;
+    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID);
     ObjectBuffer obj = uObjects[objectIndex];
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));

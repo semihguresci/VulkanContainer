@@ -13,11 +13,18 @@ struct CameraData {
   alignas(16) glm::mat4 viewProj{1.0f};
   alignas(16) glm::mat4 inverseViewProj{1.0f};
   alignas(16) glm::vec4 cameraWorldPosition{0.0f, 0.0f, 0.0f, 1.0f};
+  // Unit world-space forward vector. Lighting uses this for cascade selection
+  // without reconstructing camera basis vectors per shaded pixel.
+  alignas(16) glm::vec4 cameraForward{0.0f, 0.0f, -1.0f, 0.0f};
 };
 
 struct ObjectData {
   alignas(16) glm::mat4 model{1.0f};
-  alignas(16) glm::mat4 normalMatrix{1.0f};
+  // Inverse-transpose normal transform stored as 3 columns. The implicit final
+  // row of a mat4 is unused for normal vectors, so this saves 16 bytes/object.
+  alignas(16) glm::vec4 normalMatrix0{1.0f, 0.0f, 0.0f, 0.0f};
+  alignas(16) glm::vec4 normalMatrix1{0.0f, 1.0f, 0.0f, 0.0f};
+  alignas(16) glm::vec4 normalMatrix2{0.0f, 0.0f, 1.0f, 0.0f};
   alignas(16) glm::vec4 color{1.0f};
   alignas(16) glm::vec3 emissiveColor{0.0f, 0.0f, 0.0f};
   alignas(4) float emissiveStrength{1.0f};
@@ -133,6 +140,7 @@ struct PostProcessPushConstants {
   uint32_t tileCountX{0};
   uint32_t totalLights{0};
   uint32_t depthSliceCount{kClusterDepthSlices};
+  uint32_t oitEnabled{0};
 };
 
 struct LightingData {
@@ -142,7 +150,6 @@ struct LightingData {
   alignas(4) std::array<uint32_t, 3> featureFlags{};
   alignas(4) uint32_t prefilteredMipCount{1};
   alignas(4) std::array<uint32_t, 3> padding{};
-  alignas(16) std::array<PointLightData, kMaxDeferredPointLights> pointLights{};
 };
 
 struct TileLightGrid {
@@ -161,6 +168,7 @@ struct TileCullPushConstants {
 
 struct TiledLightingPushConstants {
   uint32_t tileCountX{0};
+  uint32_t tileCountY{0};
   uint32_t depthSliceCount{kClusterDepthSlices};
   float cameraNear{0.1f};
   float cameraFar{100.0f};
@@ -204,7 +212,7 @@ struct HiZPushConstants {
 // uniform or storage buffers.
 // ---------------------------------------------------------------------------
 
-static_assert(sizeof(CameraData) == 144,
+static_assert(sizeof(CameraData) == 160,
               "CameraData size mismatch with shaders/lighting_structs.slang "
               "CameraBuffer. Update shader layout in lockstep.");
 static_assert(alignof(CameraData) == 16, "CameraData must be 16-byte aligned.");
@@ -213,6 +221,8 @@ static_assert(offsetof(CameraData, inverseViewProj) == 64,
               "CameraData.inverseViewProj offset");
 static_assert(offsetof(CameraData, cameraWorldPosition) == 128,
               "CameraData.cameraWorldPosition offset");
+static_assert(offsetof(CameraData, cameraForward) == 144,
+              "CameraData.cameraForward offset");
 
 static_assert(sizeof(PointLightData) == 32,
               "PointLightData size mismatch with shader PointLightData.");
@@ -223,7 +233,7 @@ static_assert(offsetof(PointLightData, positionRadius) == 0,
 static_assert(offsetof(PointLightData, colorIntensity) == 16,
               "PointLightData.colorIntensity offset");
 
-static_assert(sizeof(LightingData) == 448,
+static_assert(sizeof(LightingData) == 64,
               "LightingData size mismatch with shaders/lighting_structs.slang "
               "LightingBuffer. Update shader layout in lockstep.");
 static_assert(alignof(LightingData) == 16,
@@ -238,9 +248,6 @@ static_assert(offsetof(LightingData, featureFlags) == 36,
               "LightingData.featureFlags offset");
 static_assert(offsetof(LightingData, prefilteredMipCount) == 48,
               "LightingData.prefilteredMipCount offset");
-static_assert(offsetof(LightingData, pointLights) == 64,
-              "LightingData.pointLights offset");
-
 static_assert(sizeof(ShadowCascadeData) == 80,
               "ShadowCascadeData size mismatch with shader ShadowCascadeData.");
 static_assert(alignof(ShadowCascadeData) == 16,
@@ -283,40 +290,44 @@ static_assert(sizeof(ShadowCullPushConstants) == 16,
 static_assert(sizeof(ShadowCullCountData) == sizeof(uint32_t) * kShadowCascadeCount,
               "ShadowCullCountData stores one visible count per shadow cascade.");
 
-static_assert(sizeof(ObjectData) == 224,
+static_assert(sizeof(ObjectData) == 208,
               "ObjectData size mismatch with shader ObjectBuffer (see "
               "gbuffer.slang, depth_prepass.slang, shadow_depth.slang, etc.). "
               "Update all shader ObjectBuffer declarations in lockstep.");
 static_assert(alignof(ObjectData) == 16,
               "ObjectData must be 16-byte aligned.");
 static_assert(offsetof(ObjectData, model) == 0, "ObjectData.model offset");
-static_assert(offsetof(ObjectData, normalMatrix) == 64,
-              "ObjectData.normalMatrix offset");
-static_assert(offsetof(ObjectData, color) == 128, "ObjectData.color offset");
-static_assert(offsetof(ObjectData, emissiveColor) == 144,
+static_assert(offsetof(ObjectData, normalMatrix0) == 64,
+              "ObjectData.normalMatrix0 offset");
+static_assert(offsetof(ObjectData, normalMatrix1) == 80,
+              "ObjectData.normalMatrix1 offset");
+static_assert(offsetof(ObjectData, normalMatrix2) == 96,
+              "ObjectData.normalMatrix2 offset");
+static_assert(offsetof(ObjectData, color) == 112, "ObjectData.color offset");
+static_assert(offsetof(ObjectData, emissiveColor) == 128,
               "ObjectData.emissiveColor offset");
-static_assert(offsetof(ObjectData, emissiveStrength) == 156,
+static_assert(offsetof(ObjectData, emissiveStrength) == 140,
               "ObjectData.emissiveStrength offset");
-static_assert(offsetof(ObjectData, metallicRoughness) == 160,
+static_assert(offsetof(ObjectData, metallicRoughness) == 144,
               "ObjectData.metallicRoughness offset");
-static_assert(offsetof(ObjectData, alphaCutoff) == 168,
+static_assert(offsetof(ObjectData, alphaCutoff) == 152,
               "ObjectData.alphaCutoff offset");
-static_assert(offsetof(ObjectData, normalTextureScale) == 172,
+static_assert(offsetof(ObjectData, normalTextureScale) == 156,
               "ObjectData.normalTextureScale offset");
-static_assert(offsetof(ObjectData, occlusionStrength) == 176,
+static_assert(offsetof(ObjectData, occlusionStrength) == 160,
               "ObjectData.occlusionStrength offset");
-static_assert(offsetof(ObjectData, baseColorTextureIndex) == 180,
+static_assert(offsetof(ObjectData, baseColorTextureIndex) == 164,
               "ObjectData.baseColorTextureIndex offset");
-static_assert(offsetof(ObjectData, normalTextureIndex) == 184,
+static_assert(offsetof(ObjectData, normalTextureIndex) == 168,
               "ObjectData.normalTextureIndex offset");
-static_assert(offsetof(ObjectData, occlusionTextureIndex) == 188,
+static_assert(offsetof(ObjectData, occlusionTextureIndex) == 172,
               "ObjectData.occlusionTextureIndex offset");
-static_assert(offsetof(ObjectData, emissiveTextureIndex) == 192,
+static_assert(offsetof(ObjectData, emissiveTextureIndex) == 176,
               "ObjectData.emissiveTextureIndex offset");
-static_assert(offsetof(ObjectData, metallicRoughnessTextureIndex) == 196,
+static_assert(offsetof(ObjectData, metallicRoughnessTextureIndex) == 180,
               "ObjectData.metallicRoughnessTextureIndex offset");
-static_assert(offsetof(ObjectData, flags) == 200, "ObjectData.flags offset");
-static_assert(offsetof(ObjectData, boundingSphere) == 208,
+static_assert(offsetof(ObjectData, flags) == 184, "ObjectData.flags offset");
+static_assert(offsetof(ObjectData, boundingSphere) == 192,
               "ObjectData.boundingSphere offset");
 
 }  // namespace container::gpu

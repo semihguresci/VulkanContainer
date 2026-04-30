@@ -24,10 +24,9 @@ print("Building the project...")
 subprocess.run(["cmake", "--build", build_dir, "--config", "Release"], check=True)
 
 # Build main executable (correct target name)
-subprocess.run(["cmake", "--build", build_dir, "--target", "VulkanContainer", "--config", "Release"], check=True)
+subprocess.run(["cmake", "--build", build_dir, "--target", "VulkanSceneRenderer", "--config", "Release"], check=True)
 
 if args.run_tests:
-    subprocess.run(["cmake", "--build", build_dir, "--target", "build_tests", "--config", "Release"], check=True)
-    subprocess.run(["cmake", "--build", build_dir, "--target", "run_tests", "--config", "Release"], check=True)
+    subprocess.run(["ctest", "--test-dir", build_dir, "--output-on-failure"], check=True)
 
 print("Rebuild complete.")

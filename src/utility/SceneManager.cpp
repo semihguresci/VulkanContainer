@@ -107,8 +107,10 @@ container::geometry::Mesh transformMesh(const container::geometry::Mesh& mesh,
                                         const glm::mat4& transform,
                                         int32_t materialIndex) {
   std::vector<container::geometry::Vertex> vertices = mesh.vertices();
+  std::vector<uint32_t> indices = mesh.indices();
   const glm::mat3 modelMatrix = glm::mat3(transform);
   const glm::mat3 normalMatrix = glm::transpose(glm::inverse(modelMatrix));
+  const bool windingFlipped = glm::determinant(modelMatrix) < 0.0f;
 
   for (auto& vertex : vertices) {
     vertex.position = glm::vec3(transform * glm::vec4(vertex.position, 1.0f));
@@ -121,11 +123,20 @@ container::geometry::Mesh transformMesh(const container::geometry::Mesh& mesh,
     glm::vec3 worldTangent = modelMatrix * glm::vec3(vertex.tangent);
     worldTangent -= vertex.normal * glm::dot(vertex.normal, worldTangent);
     if (glm::dot(worldTangent, worldTangent) > 1e-8f) {
-      vertex.tangent = glm::vec4(glm::normalize(worldTangent), vertex.tangent.w);
+      vertex.tangent =
+          glm::vec4(glm::normalize(worldTangent),
+                    windingFlipped ? -vertex.tangent.w : vertex.tangent.w);
     }
   }
 
-  return container::geometry::Mesh(vertices, mesh.indices(), materialIndex);
+  if (windingFlipped) {
+    for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+      std::swap(indices[i + 1], indices[i + 2]);
+    }
+  }
+
+  return container::geometry::Mesh(std::move(vertices), std::move(indices),
+                                   materialIndex, mesh.disableBackfaceCulling());
 }
 
 void appendModelMeshes(const container::geometry::Model& model,
@@ -303,25 +314,34 @@ bool SceneManager::reloadModel(
     const std::string& path,
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
-  resetLoadedAssets();
-  loadMaterialXMaterial();
+  const std::string previousModelPath = config_.modelPath;
+  auto resetForLoad = [this]() {
+    resetLoadedAssets();
+    loadMaterialXMaterial();
+    vertices_.clear();
+    indices_.clear();
+    gltfModel_ = tinygltf::Model{};
+    model_ = container::geometry::Model{};
+  };
 
+  resetForLoad();
   config_.modelPath = path;
-  vertices_.clear();
-  indices_.clear();
-  gltfModel_ = tinygltf::Model{};
-  model_ = container::geometry::Model{};
 
   try {
     loadGltfAssets();
     updateDescriptorSets(cameraBuffers, objectBuffer);
     return true;
   } catch (...) {
-    materialManager_ = container::material::MaterialManager{};
-    textureManager_ = container::material::TextureManager{};
-    materialBaseColor_ = glm::vec4(1.0f);
-    defaultMaterialIndex_ = std::numeric_limits<uint32_t>::max();
-    loadMaterialXMaterial();
+    try {
+      resetForLoad();
+      config_.modelPath = previousModelPath;
+      loadGltfAssets();
+      updateDescriptorSets(cameraBuffers, objectBuffer);
+    } catch (const std::exception& e) {
+      std::println(stderr, "failed to restore previous model '{}': {}",
+                   previousModelPath, e.what());
+      resetForLoad();
+    }
     return false;
   }
 }
@@ -570,7 +590,8 @@ void SceneManager::loadGltfAssets() {
           gltfModel_, imageToTexture, materialManager_, defaultMaterialIndex_);
       defaultMaterialIndex_ = fallbackMaterialIndex;
     } catch (const std::exception& e) {
-      std::println(stderr, "glTF load failed: {}; scene left empty.", e.what());
+      std::println(stderr, "glTF load failed: {}", e.what());
+      throw;
     }
   }
 

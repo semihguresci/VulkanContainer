@@ -8,7 +8,9 @@ struct CameraBuffer
 struct ObjectBuffer
 {
     column_major float4x4 model;
-    column_major float4x4 normalMatrix;
+    float4 normalMatrix0;
+    float4 normalMatrix1;
+    float4 normalMatrix2;
     float4 color;
     float3 emissiveColor;
     float emissiveStrength;
@@ -27,8 +29,12 @@ struct ObjectBuffer
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
+
+#include "object_index_common.slang"
 [[vk::binding(2, 0)]] SamplerState baseSampler;
 [[vk::binding(3, 0)]] Texture2D materialTextures[];
+
+#include "alpha_mask_common.slang"
 
 struct PushConstants
 {
@@ -62,7 +68,7 @@ struct VSOutput
 VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
 {
     VSOutput output;
-    uint objectIndex = instanceID;
+    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID);
     ObjectBuffer obj = uObjects[objectIndex];
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
@@ -91,7 +97,8 @@ float4 fragMain(VSOutput input) : SV_Target0
         alpha *= materialTextures[texIndex].Sample(baseSampler, input.texCoord).a;
     }
 
-    if ((input.flags & 0x1u) != 0u && alpha < input.alphaCutoff)
+    if ((input.flags & 0x1u) != 0u &&
+        !AlphaMaskPass(alpha, input.alphaCutoff, input.pos))
     {
         discard;
     }

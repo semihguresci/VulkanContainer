@@ -53,7 +53,10 @@ class BloomManager {
   [[nodiscard]] bool isReady() const { return downsamplePipeline_ != VK_NULL_HANDLE && mipCount_ > 0; }
 
   // The final bloom result to sample in the post-process shader.
-  [[nodiscard]] VkImageView  bloomResultView() const { return mipCount_ > 0 ? mipViews_[0] : VK_NULL_HANDLE; }
+  [[nodiscard]] VkImageView bloomResultView() const {
+    if (!upsampleViews_.empty()) return upsampleViews_[0];
+    return mipCount_ > 0 ? mipViews_[0] : VK_NULL_HANDLE;
+  }
   [[nodiscard]] VkSampler    bloomSampler()    const { return linearSampler_; }
 
   // ---- Settings ----
@@ -82,6 +85,8 @@ class BloomManager {
   };
   std::vector<MipLevel> mips_;
   std::vector<VkImageView> mipViews_;  // redundant pointers for fast access
+  std::vector<MipLevel> upsampleMips_;
+  std::vector<VkImageView> upsampleViews_;
   uint32_t mipCount_{0};
 
   VkSampler linearSampler_{VK_NULL_HANDLE};

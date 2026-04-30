@@ -94,6 +94,7 @@ class GuiManager {
       const std::function<void(const TransformControls&)>& applySceneTransform,
       const glm::vec3& directionalLightPosition,
       const container::gpu::LightingData& lightingData,
+      const std::vector<container::gpu::PointLightData>& pointLights,
       uint32_t selectedMeshNode,
       const std::function<void(uint32_t)>& selectMeshNode,
       const TransformControls& meshTransform,

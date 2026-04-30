@@ -8,11 +8,14 @@ static const uint TILE_SIZE = 16u;
 static const uint CLUSTER_DEPTH_SLICES = 16u;
 static const uint MAX_LIGHTS_PER_TILE = 128u;
 
+// These structs mirror C++ GPU upload structs in SceneData.h. Keep float4
+// alignment, array sizes, and field order synchronized with the static_asserts.
 struct CameraBuffer
 {
     column_major float4x4 viewProj;
     column_major float4x4 inverseViewProj;
     float4 cameraWorldPosition;
+    float4 cameraForward;
 };
 
 struct PointLightData
@@ -29,7 +32,6 @@ struct LightingBuffer
     uint3 featureFlags;
     uint prefilteredMipCount;
     uint3 padding;
-    PointLightData pointLights[MAX_POINT_LIGHTS];
 };
 
 struct TileLightGrid
@@ -50,6 +52,8 @@ float SanitizeClusterFar(float nearPlane, float farPlane)
 
 float LinearizeReverseZDepth(float depth, float nearPlane, float farPlane)
 {
+    // Reverse-Z perspective depth maps near -> 1 and far -> 0. The linearized
+    // value returned here is a positive view-space distance from the camera.
     float n = SanitizeClusterNear(nearPlane);
     float f = SanitizeClusterFar(n, farPlane);
     return (n * f) / (saturate(depth) * (f - n) + n);
@@ -65,6 +69,8 @@ float ViewDepthToReverseZ(float viewDepth, float nearPlane, float farPlane)
 
 uint DepthToClusterSlice(float depth, float nearPlane, float farPlane, uint depthSliceCount)
 {
+    // Logarithmic slicing gives more resolution near the camera where point
+    // lights change screen coverage fastest.
     uint safeSliceCount = max(depthSliceCount, 1u);
     float n = SanitizeClusterNear(nearPlane);
     float f = SanitizeClusterFar(n, farPlane);

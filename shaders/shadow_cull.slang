@@ -5,7 +5,9 @@
 struct ObjectBuffer
 {
 	column_major float4x4 model;
-	column_major float4x4 normalMatrix;
+	float4 normalMatrix0;
+	float4 normalMatrix1;
+	float4 normalMatrix2;
 	float4 color;
 	float3 emissiveColor;
 	float emissiveStrength;

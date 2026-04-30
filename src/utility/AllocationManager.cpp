@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <memory>
 #include <stdexcept>
 
 #include "stb_image.h"
@@ -125,8 +126,10 @@ void AllocationManager::destroyBuffer(AllocatedBuffer& buffer) {
 container::material::TextureResource AllocationManager::createTextureFromFile(
     const std::string& texturePath, VkFormat format) {
   int texWidth, texHeight, texChannels;
-  stbi_uc* pixels = stbi_load(texturePath.c_str(), &texWidth, &texHeight,
-                              &texChannels, STBI_rgb_alpha);
+  std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
+      stbi_load(texturePath.c_str(), &texWidth, &texHeight, &texChannels,
+                STBI_rgb_alpha),
+      stbi_image_free);
 
   if (!pixels) {
     throw std::runtime_error("failed to load texture: " + texturePath);
@@ -136,10 +139,8 @@ container::material::TextureResource AllocationManager::createTextureFromFile(
                            static_cast<VkDeviceSize>(texHeight) * 4;
 
   StagingBuffer stagingBuffer(*memoryManager_, imageSize);
-  stagingBuffer.upload({reinterpret_cast<const std::byte*>(pixels),
+  stagingBuffer.upload({reinterpret_cast<const std::byte*>(pixels.get()),
                         static_cast<size_t>(imageSize)});
-
-  stbi_image_free(pixels);
 
   VkImageCreateInfo imageInfo{};
   imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
@@ -159,27 +160,38 @@ container::material::TextureResource AllocationManager::createTextureFromFile(
   VmaAllocationCreateInfo allocInfo{};
   allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
-  VkImage image;
-  VmaAllocation allocation;
+  VkImage image = VK_NULL_HANDLE;
+  VmaAllocation allocation = nullptr;
 
   if (vmaCreateImage(memoryManager_->allocator(), &imageInfo, &allocInfo,
                      &image, &allocation, nullptr) != VK_SUCCESS) {
     throw std::runtime_error("failed to create texture image");
   }
 
-  transitionImageLayout(image, VK_IMAGE_LAYOUT_UNDEFINED,
-                        VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+  VkImageView imageView = VK_NULL_HANDLE;
+  bool registeredTexture = false;
+  try {
+    transitionImageLayout(image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-  copyBufferToImage(stagingBuffer.buffer().buffer, image, texWidth, texHeight);
+    copyBufferToImage(stagingBuffer.buffer().buffer, image, texWidth, texHeight);
 
-  transitionImageLayout(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    transitionImageLayout(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
 
-  VkImageView imageView = createImageView(image, imageInfo.format);
+    imageView = createImageView(image, imageInfo.format);
 
-  textureAllocations_.push_back({image, allocation});
-  textureImages_.push_back(image);
-  textureImageViews_.push_back(imageView);
+    textureAllocations_.push_back({image, imageView, allocation});
+    registeredTexture = true;
+  } catch (...) {
+    if (imageView != VK_NULL_HANDLE) {
+      vkDestroyImageView(device_, imageView, nullptr);
+    }
+    if (!registeredTexture && image != VK_NULL_HANDLE) {
+      vmaDestroyImage(memoryManager_->allocator(), image, allocation);
+    }
+    throw;
+  }
 
   container::material::TextureResource resource{};
   resource.name =
@@ -191,21 +203,26 @@ container::material::TextureResource AllocationManager::createTextureFromFile(
 }
 
 void AllocationManager::resetTextureAllocations() {
-  for (auto& alloc : textureAllocations_) {
-    vmaFreeMemory(memoryManager_->allocator(), alloc.allocation);
+  if (!memoryManager_) {
+    textureAllocations_.clear();
+    return;
   }
 
-  for (VkImageView view : textureImageViews_) {
-    vkDestroyImageView(device_, view, nullptr);
-  }
+  for (auto& texture : textureAllocations_) {
+    if (texture.imageView != VK_NULL_HANDLE) {
+      vkDestroyImageView(device_, texture.imageView, nullptr);
+      texture.imageView = VK_NULL_HANDLE;
+    }
 
-  for (VkImage image : textureImages_) {
-    vkDestroyImage(device_, image, nullptr);
+    if (texture.image != VK_NULL_HANDLE) {
+      vmaDestroyImage(memoryManager_->allocator(), texture.image,
+                      texture.allocation);
+      texture.image = VK_NULL_HANDLE;
+      texture.allocation = nullptr;
+    }
   }
 
   textureAllocations_.clear();
-  textureImages_.clear();
-  textureImageViews_.clear();
 }
 
 /* ---------- Command helpers ---------- */
@@ -217,27 +234,43 @@ VkCommandBuffer AllocationManager::beginSingleTimeCommands() {
   allocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
   allocInfo.commandBufferCount = 1;
 
-  VkCommandBuffer commandBuffer;
-  vkAllocateCommandBuffers(device_, &allocInfo, &commandBuffer);
+  VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+  if (vkAllocateCommandBuffers(device_, &allocInfo, &commandBuffer) !=
+      VK_SUCCESS) {
+    throw std::runtime_error("failed to allocate single-use command buffer");
+  }
 
   VkCommandBufferBeginInfo beginInfo{};
   beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
 
-  vkBeginCommandBuffer(commandBuffer, &beginInfo);
+  if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+    vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
+    throw std::runtime_error("failed to begin single-use command buffer");
+  }
   return commandBuffer;
 }
 
 void AllocationManager::endSingleTimeCommands(VkCommandBuffer commandBuffer) {
-  vkEndCommandBuffer(commandBuffer);
+  if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
+    vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
+    throw std::runtime_error("failed to end single-use command buffer");
+  }
 
   VkSubmitInfo submitInfo{};
   submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
   submitInfo.commandBufferCount = 1;
   submitInfo.pCommandBuffers = &commandBuffer;
 
-  vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE);
-  vkQueueWaitIdle(graphicsQueue_);
+  if (vkQueueSubmit(graphicsQueue_, 1, &submitInfo, VK_NULL_HANDLE) !=
+      VK_SUCCESS) {
+    vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
+    throw std::runtime_error("failed to submit single-use command buffer");
+  }
+  if (vkQueueWaitIdle(graphicsQueue_) != VK_SUCCESS) {
+    vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
+    throw std::runtime_error("failed to wait for single-use command buffer");
+  }
 
   vkFreeCommandBuffers(device_, commandPool_, 1, &commandBuffer);
 }
@@ -320,8 +353,10 @@ VkImageView AllocationManager::createImageView(VkImage image, VkFormat format) {
   info.subresourceRange.levelCount = 1;
   info.subresourceRange.layerCount = 1;
 
-  VkImageView view;
-  vkCreateImageView(device_, &info, nullptr, &view);
+  VkImageView view = VK_NULL_HANDLE;
+  if (vkCreateImageView(device_, &info, nullptr, &view) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create texture image view");
+  }
   return view;
 }
 

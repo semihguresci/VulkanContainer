@@ -2,7 +2,6 @@
 #include "shadow_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
-[[vk::binding(1, 0)]] SamplerState gBufferSampler;
 [[vk::binding(2, 0)]] Texture2D<float4> gAlbedoTexture;
 [[vk::binding(3, 0)]] Texture2D<float4> gNormalTexture;
 [[vk::binding(4, 0)]] Texture2D<float4> gMaterialTexture;
@@ -53,19 +52,15 @@ float4 fragMain(VSOutput input) : SV_Target0
     uint width = 0u;
     uint height = 0u;
     gDepthTexture.GetDimensions(width, height);
+    // Use integer pixel loads for the G-buffer to avoid filtering material IDs,
+    // normal encodings, and depth across geometry edges.
     uint2 pixelCoord = uint2(input.pos.xy);
     pixelCoord = min(pixelCoord, uint2(max(width, 1u) - 1u, max(height, 1u) - 1u));
     float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
 
     float depth = gDepthTexture.Load(int3(pixelCoord, 0));
 
-    float4 albedo = gAlbedoTexture.Load(int3(pixelCoord, 0));
-    float3 normal = SafeNormalize(gNormalTexture.Load(int3(pixelCoord, 0)).xyz * 2.0 - 1.0,
-                                  float3(0.0, 1.0, 0.0));
-    float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
-    float3 emissive = gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb;
-
-    if (depth == 0.0 || albedo.a <= 0.0)
+    if (depth == 0.0)
     {
         // Background pixel: no opaque geometry (sky, wall holes, frame cutouts,
         // etc.). Sample the environment cubemap along the view ray so we get a
@@ -75,8 +70,23 @@ float4 fragMain(VSOutput input) : SV_Target0
         float3 farWorld  = ReconstructWorldPosition(uv, 1e-4, uCamera.inverseViewProj);
         float3 viewDir = SafeNormalize(farWorld - nearWorld, float3(0.0, 0.0, -1.0));
         float3 skyColor = gPrefilteredCubemap.SampleLevel(envSampler, viewDir, 0.0).rgb;
-        return float4(skyColor + emissive, 1.0);
+        return float4(skyColor + gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb, 1.0);
     }
+
+    float4 albedo = gAlbedoTexture.Load(int3(pixelCoord, 0));
+    if (albedo.a <= 0.0)
+    {
+        float3 nearWorld = ReconstructWorldPosition(uv, 1.0, uCamera.inverseViewProj);
+        float3 farWorld  = ReconstructWorldPosition(uv, 1e-4, uCamera.inverseViewProj);
+        float3 viewDir = SafeNormalize(farWorld - nearWorld, float3(0.0, 0.0, -1.0));
+        float3 skyColor = gPrefilteredCubemap.SampleLevel(envSampler, viewDir, 0.0).rgb;
+        return float4(skyColor + gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb, 1.0);
+    }
+
+    float3 normal = SafeNormalize(gNormalTexture.Load(int3(pixelCoord, 0)).xyz * 2.0 - 1.0,
+                                  float3(0.0, 1.0, 0.0));
+    float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
+    float3 emissive = gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb;
 
     float metallic = saturate(material.x);
     float roughness = clamp(material.y, 0.045, 1.0);
@@ -85,18 +95,22 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 worldPosition = ReconstructWorldPosition(uv, depth, uCamera.inverseViewProj);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
     float3 L = SafeNormalize(-uLighting.directionalDirection.xyz, float3(0.0, 1.0, 0.0));
-    float3 H = SafeNormalize(V + L, normal);
     float3 lightColor =
         uLighting.directionalColorIntensity.rgb * uLighting.directionalColorIntensity.a;
 
-    // Compute view-space depth for cascade selection.
-    // For RH perspective, clip.w = -viewZ = positive linear distance from camera.
-    float4 clipPos = mul(uCamera.viewProj, float4(worldPosition, 1.0));
-    float viewDepth = clipPos.w;
+    // Positive view-axis depth selects the cascade. Camera forward is uploaded
+    // once per frame; reconstructing it here would cost two matrix transforms
+    // for every lit pixel.
+    float3 cameraForward =
+        SafeNormalize(uCamera.cameraForward.xyz, float3(0.0, 0.0, -1.0));
+    float viewDepth =
+        max(dot(worldPosition - uCamera.cameraWorldPosition.xyz, cameraForward), 0.0);
 
     // Shadow evaluation.
     float shadowFactor = 1.0;
-    if (uLighting.featureFlags.x != 0u)
+    float NdotLForShadow = dot(normal, L);
+    if (uLighting.featureFlags.x != 0u &&
+        (NdotLForShadow > 0.0 || thinSurface))
     {
         shadowFactor = ComputeShadowFactor(
             worldPosition, normal, uLighting.directionalDirection.xyz,
@@ -104,17 +118,8 @@ float4 fragMain(VSOutput input) : SV_Target0
     }
 
     float3 F0 = lerp(0.04.xxx, albedo.rgb, metallic);
-    float NDF = DistributionGGX(normal, H, roughness);
-    float G = GeometrySmith(normal, V, L, roughness);
-    float3 F = FresnelSchlick(saturate(dot(H, V)), F0);
-    float3 numerator = NDF * G * F;
-    float denominator = max(4.0 * saturate(dot(normal, V)) * saturate(dot(normal, L)), 1e-4);
-    float3 specular = numerator / denominator;
-
-    float3 kS = F;
-    float3 kD = (1.0 - kS) * (1.0 - metallic);
-    float NdotL = saturate(dot(normal, L));
-    float3 directLighting = (kD * albedo.rgb / PI + specular) * lightColor * NdotL * shadowFactor;
+    float3 directLighting = EvaluatePbrDirectLight(
+        albedo.rgb, F0, metallic, roughness, normal, V, L, lightColor) * shadowFactor;
     if (thinSurface)
     {
         float wrappedDiffuse = saturate((dot(normal, L) + 0.45) / 1.45);

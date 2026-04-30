@@ -8,7 +8,9 @@
 #include "Container/utility/VulkanDevice.h"
 
 #include <array>
+#include <limits>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace container::renderer {
@@ -127,25 +129,29 @@ void FrameResourceManager::validateOitFormatSupport() const {
   VkFormatProperties props{};
   vkGetPhysicalDeviceFormatProperties(device_->physicalDevice(),
                                       formats_.oitHeadPointer, &props);
-  if ((props.optimalTilingFeatures & VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT) == 0)
+  constexpr VkFormatFeatureFlags kRequiredOitFeatures =
+      VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+      VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+  if ((props.optimalTilingFeatures & kRequiredOitFeatures) !=
+      kRequiredOitFeatures)
     throw std::runtime_error(
-        "GPU does not support R32_UINT storage images for exact OIT");
+        "GPU does not support R32_UINT storage/transfer images for exact OIT");
 }
 
 // -----------------------------------------------------------------------
-uint32_t FrameResourceManager::computeOitNodeCapacity(uint32_t floor) const {
+uint32_t FrameResourceManager::computeOitNodeCapacity() const {
   const VkExtent2D ext = swapChain_->extent();
   const uint64_t   px  = static_cast<uint64_t>(ext.width) *
                          static_cast<uint64_t>(ext.height);
   const uint64_t desired =
       std::min<uint64_t>(std::max<uint64_t>(1, px * kOitAvgNodesPerPixel),
                          static_cast<uint64_t>(std::numeric_limits<uint32_t>::max()));
-  return std::max<uint32_t>(static_cast<uint32_t>(desired), floor);
+  return std::max<uint32_t>(static_cast<uint32_t>(desired),
+                            oitNodeCapacityFloor_);
 }
 
 // -----------------------------------------------------------------------
-bool FrameResourceManager::growOitPoolIfNeeded(uint32_t imageIndex,
-                                                uint32_t& capacityFloor) {
+bool FrameResourceManager::growOitPoolIfNeeded(uint32_t imageIndex) {
   if (imageIndex >= frames_.size()) return false;
   auto& frame = frames_[imageIndex];
   if (frame.oitCounterBuffer.buffer == VK_NULL_HANDLE) return false;
@@ -162,7 +168,12 @@ bool FrameResourceManager::growOitPoolIfNeeded(uint32_t imageIndex,
   const uint32_t required = mapped[0];
   if (required <= frame.oitNodeCapacity) return false;
 
-  capacityFloor = std::max(required, frame.oitNodeCapacity * 2u);
+  const uint64_t doubledCapacity =
+      static_cast<uint64_t>(frame.oitNodeCapacity) * 2ull;
+  const uint64_t nextCapacity =
+      std::max<uint64_t>(required, doubledCapacity);
+  oitNodeCapacityFloor_ = static_cast<uint32_t>(std::min<uint64_t>(
+      nextCapacity, std::numeric_limits<uint32_t>::max()));
   return true;
 }
 
@@ -284,7 +295,7 @@ void FrameResourceManager::create(
                    VK_IMAGE_ASPECT_COLOR_BIT);
     transitionToGeneral(f.oitHeadPointers.image, VK_IMAGE_ASPECT_COLOR_BIT);
 
-    f.oitNodeCapacity = computeOitNodeCapacity(0);
+    f.oitNodeCapacity = computeOitNodeCapacity();
     f.oitNodeBuffer = allocationMgr_->createBuffer(
         sizeof(OitNode) * f.oitNodeCapacity,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -399,6 +410,8 @@ void FrameResourceManager::destroy() {
     f.oitNodeCapacity          = 0;
   }
   frames_.clear();
+  descriptorUpdateKey_      = {};
+  descriptorUpdateKeyValid_ = false;
 
   auto destroyPool = [&](VkDescriptorPool& p) {
     if (p != VK_NULL_HANDLE) { vkDestroyDescriptorPool(dev, p, nullptr); p = VK_NULL_HANDLE; }
@@ -406,6 +419,14 @@ void FrameResourceManager::destroy() {
   destroyPool(lightingPool_);
   destroyPool(postProcessPool_);
   destroyPool(oitPool_);
+}
+
+const FrameResources* FrameResourceManager::frame(uint32_t imageIndex) const {
+  return imageIndex < frames_.size() ? &frames_[imageIndex] : nullptr;
+}
+
+FrameResources* FrameResourceManager::frame(uint32_t imageIndex) {
+  return imageIndex < frames_.size() ? &frames_[imageIndex] : nullptr;
 }
 
 // -----------------------------------------------------------------------
@@ -428,6 +449,35 @@ void FrameResourceManager::updateDescriptorSets(
     VkDeviceSize tileGridBufferSize) {
   (void)objectBuffer;  // reserved for future per-frame object buffer binding
   if (cameraBuffers.empty()) return;
+
+  DescriptorUpdateKey nextKey{};
+  nextKey.cameraBuffers.reserve(cameraBuffers.size());
+  for (const auto& cameraBuffer : cameraBuffers) {
+    nextKey.cameraBuffers.push_back(cameraBuffer.buffer);
+  }
+  nextKey.shadowUboBuffers.reserve(shadowUbos.size());
+  for (const auto& shadowUbo : shadowUbos) {
+    nextKey.shadowUboBuffers.push_back(shadowUbo.buffer);
+  }
+  nextKey.shadowAtlasView   = shadowAtlasView;
+  nextKey.shadowSampler     = shadowSampler;
+  nextKey.irradianceView    = irradianceView;
+  nextKey.prefilteredView   = prefilteredView;
+  nextKey.brdfLutView       = brdfLutView;
+  nextKey.envSampler        = envSampler;
+  nextKey.brdfLutSampler    = brdfLutSampler;
+  nextKey.aoTextureView     = aoTextureView;
+  nextKey.aoSampler         = aoSampler;
+  nextKey.bloomTextureView  = bloomTextureView;
+  nextKey.bloomSampler      = bloomSampler;
+  nextKey.tileGridBuffer    = tileGridBuffer;
+  nextKey.tileGridBufferSize = tileGridBufferSize;
+
+  if (descriptorUpdateKeyValid_ && nextKey == descriptorUpdateKey_) {
+    return;
+  }
+  descriptorUpdateKey_      = std::move(nextKey);
+  descriptorUpdateKeyValid_ = true;
 
   VkDevice dev = device_->device();
 

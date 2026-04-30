@@ -4,6 +4,12 @@
 
 static const float PI = 3.14159265359;
 
+float Pow5(float x)
+{
+    float x2 = x * x;
+    return x2 * x2 * x;
+}
+
 float3 SafeNormalize(float3 v, float3 fallback)
 {
     float lenSq = dot(v, v);
@@ -39,18 +45,49 @@ float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
 
 float3 FresnelSchlick(float cosTheta, float3 F0)
 {
-    return F0 + (1.0 - F0) * pow(1.0 - cosTheta, 5.0);
+    return F0 + (1.0 - F0) * Pow5(saturate(1.0 - cosTheta));
 }
 
 float3 FresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
 {
     float3 maxReflectivity = max((1.0 - roughness).xxx, F0);
-    return F0 + (maxReflectivity - F0) * pow(1.0 - cosTheta, 5.0);
+    return F0 + (maxReflectivity - F0) * Pow5(saturate(1.0 - cosTheta));
+}
+
+float SmoothRangeAttenuation(float distanceSq, float radius)
+{
+    float safeRadius = max(radius, 1e-3);
+    float invRadiusSq = 1.0 / (safeRadius * safeRadius);
+    float normalizedSq = distanceSq * invRadiusSq;
+    float smoothFactor = saturate(1.0 - normalizedSq);
+    return smoothFactor * smoothFactor;
+}
+
+float3 EvaluatePbrDirectLight(float3 albedo, float3 F0, float metallic,
+                              float roughness, float3 N, float3 V, float3 L,
+                              float3 radiance)
+{
+    float NdotL = saturate(dot(N, L));
+    float NdotV = saturate(dot(N, V));
+    if (NdotL <= 0.0 || NdotV <= 0.0)
+    {
+        return 0.0.xxx;
+    }
+
+    float3 H = SafeNormalize(V + L, N);
+    float NDF = DistributionGGX(N, H, roughness);
+    float G = GeometrySmith(N, V, L, roughness);
+    float3 F = FresnelSchlick(saturate(dot(H, V)), F0);
+    float3 specular = (NDF * G * F) / max(4.0 * NdotV * NdotL, 1e-4);
+    float3 diffuse = (1.0 - F) * (1.0 - metallic) * albedo / PI;
+    return (diffuse + specular) * radiance * NdotL;
 }
 
 float3 ReconstructWorldPosition(float2 texCoord, float depth,
                                 column_major float4x4 inverseViewProj)
 {
+    // texCoord is framebuffer UV from a negative-height scene viewport. Convert
+    // it back to scene NDC explicitly before applying inverse view-projection.
     float2 ndcXY = texCoord * 2.0 - 1.0;
     ndcXY.y = -ndcXY.y; // Negative-height viewport: framebuffer Y is inverted relative to NDC Y.
     float4 clipPosition = float4(ndcXY, depth, 1.0);

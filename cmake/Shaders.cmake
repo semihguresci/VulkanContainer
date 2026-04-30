@@ -4,17 +4,6 @@
 set(SHADERS_DIR "${CMAKE_SOURCE_DIR}/shaders")
 set(COMPILED_SHADERS_DIR "${CMAKE_BINARY_DIR}/spv_shaders")
 
-if(NOT TARGET glslang::validator)
-    add_executable(glslang::validator IMPORTED GLOBAL)
-endif()
-
-find_program(GLSLANG_VALIDATOR
-    glslangValidator
-    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
-    REQUIRED
-)
-set_property(TARGET glslang::validator PROPERTY IMPORTED_LOCATION "${GLSLANG_VALIDATOR}")
-
 find_program(SLANGC_EXECUTABLE
     slangc
     HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
@@ -38,6 +27,8 @@ set(SLANG_SPIRV_FLAGS
 
 file(GLOB SLANG_SOURCES CONFIGURE_DEPENDS "${SHADERS_DIR}/*.slang")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/surface_normal_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/alpha_mask_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/object_index_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/brdf_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/lighting_structs\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/shadow_common\\.slang$")

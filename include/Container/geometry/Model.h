@@ -13,6 +13,7 @@ struct PrimitiveRange {
   uint32_t firstIndex{0};
   uint32_t indexCount{0};
   int32_t materialIndex{-1};
+  bool disableBackfaceCulling{false};
 };
 
 class Model;

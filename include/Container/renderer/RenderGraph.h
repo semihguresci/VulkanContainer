@@ -1,11 +1,16 @@
 #pragma once
 
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <initializer_list>
+#include <span>
 #include <string>
+#include <string_view>
 #include <vector>
 
-// Forward declaration — no Vulkan header needed here.
+// Forward declaration. No Vulkan header needed here.
 struct VkCommandBuffer_T;
 using VkCommandBuffer = VkCommandBuffer_T*;
 
@@ -13,42 +18,183 @@ namespace container::renderer {
 
 struct FrameRecordParams;
 
+// Stable IDs for the renderer's frame graph passes. Display names are still
+// exposed for the debug UI, but renderer code should use IDs for scheduling,
+// dependency checks, and pass lookups.
+enum class RenderPassId : uint8_t {
+  FrustumCull,
+  DepthPrepass,
+  HiZGenerate,
+  OcclusionCull,
+  CullStatsReadback,
+  GBuffer,
+  OitClear,
+  ShadowCullCascade0,
+  ShadowCullCascade1,
+  ShadowCullCascade2,
+  ShadowCullCascade3,
+  ShadowCascade0,
+  ShadowCascade1,
+  ShadowCascade2,
+  ShadowCascade3,
+  DepthToReadOnly,
+  TileCull,
+  GTAO,
+  Lighting,
+  OitResolve,
+  Bloom,
+  PostProcess,
+  Count,
+  Invalid = Count,
+};
+
+inline constexpr auto kRenderPassIdCount =
+    static_cast<size_t>(RenderPassId::Count);
+
+enum class RenderResourceId : uint8_t {
+  SceneGeometry,
+  CameraBuffer,
+  ObjectBuffer,
+  LightingData,
+  ShadowData,
+  EnvironmentMaps,
+  FrustumCullDraws,
+  HiZPyramid,
+  OcclusionCullDraws,
+  CullStats,
+  SceneDepth,
+  GBufferAlbedo,
+  GBufferNormal,
+  GBufferMaterial,
+  GBufferEmissive,
+  OitStorage,
+  ShadowCullCascade0,
+  ShadowCullCascade1,
+  ShadowCullCascade2,
+  ShadowCullCascade3,
+  ShadowAtlas,
+  TileLightGrid,
+  AmbientOcclusion,
+  SceneColor,
+  BloomTexture,
+  SwapchainImage,
+  Count,
+  Invalid = Count,
+};
+
+inline constexpr auto kRenderResourceIdCount =
+    static_cast<size_t>(RenderResourceId::Count);
+
+struct RenderResourceEdge {
+  RenderResourceId resource{RenderResourceId::Invalid};
+  RenderPassId     writer{RenderPassId::Invalid};
+  RenderPassId     reader{RenderPassId::Invalid};
+};
+
+enum class RenderPassSkipReason : uint8_t {
+  None,
+  Disabled,
+  MissingPassDependency,
+  MissingResource,
+  MissingRecordCallback,
+};
+
+struct RenderPassExecutionStatus {
+  RenderPassId           id{RenderPassId::Invalid};
+  bool                   active{false};
+  RenderPassSkipReason   skipReason{RenderPassSkipReason::None};
+  RenderPassId           blockingPass{RenderPassId::Invalid};
+  RenderResourceId       blockingResource{RenderResourceId::Invalid};
+};
+
+[[nodiscard]] std::string_view renderPassName(RenderPassId id);
+[[nodiscard]] RenderPassId renderPassIdFromName(std::string_view name);
+[[nodiscard]] bool isProtectedRenderPass(RenderPassId id);
+// Enable dependencies gate optional passes when their producer pass is disabled.
+// Schedule dependencies only constrain graph order.
+[[nodiscard]] std::span<const RenderPassId> renderPassDependencies(RenderPassId id);
+[[nodiscard]] std::span<const RenderPassId> renderPassScheduleDependencies(RenderPassId id);
+[[nodiscard]] std::string_view renderResourceName(RenderResourceId id);
+[[nodiscard]] bool isExternalRenderResource(RenderResourceId id);
+[[nodiscard]] std::span<const RenderResourceId> renderPassResourceReads(RenderPassId id);
+[[nodiscard]] std::span<const RenderResourceId> renderPassOptionalResourceReads(RenderPassId id);
+[[nodiscard]] std::span<const RenderResourceId> renderPassResourceWrites(RenderPassId id);
+[[nodiscard]] std::string_view renderPassSkipReasonName(RenderPassSkipReason reason);
+[[nodiscard]] std::span<const RenderPassId> shadowCullPassIds();
+[[nodiscard]] std::span<const RenderPassId> shadowCascadePassIds();
+
 // A single node in the render graph.
 // Each node wraps a callable that records commands for one logical pass.
 struct RenderPassNode {
-  std::string name;
-  bool        enabled{true};
+  RenderPassId id{RenderPassId::Invalid};
+  std::string  name;
+  std::vector<RenderPassId> scheduleDependencies;
+  std::vector<RenderResourceId> reads;
+  std::vector<RenderResourceId> optionalReads;
+  std::vector<RenderResourceId> writes;
+  bool         enabled{true};
 
-  // The recording callback.  Receives the command buffer and the current
+  // The recording callback. Receives the command buffer and the current
   // per-frame params built by RendererFrontend.
   using RecordFn = std::function<void(VkCommandBuffer, const FrameRecordParams&)>;
   RecordFn record;
 };
 
 // Ordered sequence of render pass nodes.
-// Nodes are executed front-to-back; disabled nodes are skipped.
+// Nodes are scheduled from their dependency edges; disabled nodes are skipped.
 //
-// The graph does **not** perform topological sorting or automatic barrier
-// insertion — the caller (FrameRecorder) registers passes in the correct
-// dependency order and relies on Vulkan render-pass subpass dependencies
-// for synchronisation between attachments.
+// The graph performs dependency validation and topological sorting, but it does
+// not perform automatic resource lifetime or barrier insertion. FrameRecorder
+// still keeps Vulkan image layout transitions close to the concrete passes that
+// need them.
 class RenderGraph {
  public:
-  RenderGraph() = default;
+  RenderGraph();
 
-  // Append a pass to the end of the execution list.
-  // Returns a reference to the newly added node.  Note: the reference is
-  // invalidated by subsequent addPass() calls (vector reallocation).
-  // Use findPass() for deferred access.
-  RenderPassNode& addPass(std::string name, RenderPassNode::RecordFn fn);
+  // Append a pass to the graph.
+  // Returns a reference to the newly added node. The reference is invalidated
+  // by subsequent addPass() calls; use findPass() for deferred inspection and
+  // the setPass* methods for deferred mutation.
+  const RenderPassNode& addPass(RenderPassId id, RenderPassNode::RecordFn fn);
+  const RenderPassNode& addPass(
+      RenderPassId id,
+      std::initializer_list<RenderPassId> scheduleDependencies,
+      RenderPassNode::RecordFn fn);
+  const RenderPassNode& addPass(
+      RenderPassId id,
+      std::span<const RenderPassId> scheduleDependencies,
+      RenderPassNode::RecordFn fn);
 
-  // Execute all enabled passes in registration order.
+  // Validate dependencies and rebuild the execution schedule.
+  void compile();
+
+  // Execute all enabled passes in dependency order.
   void execute(VkCommandBuffer cmd, const FrameRecordParams& params) const;
 
-  // Access a pass by name (linear search — graph is small).
-  // Returns nullptr if not found.
-  RenderPassNode*       findPass(const std::string& name);
-  const RenderPassNode* findPass(const std::string& name) const;
+  // Update a pass toggle and invalidate the active execution plan when it
+  // changes. Returns false when the pass is not registered.
+  bool setPassEnabled(RenderPassId id, bool enabled);
+  bool setPassRecord(RenderPassId id, RenderPassNode::RecordFn fn);
+  bool setPassScheduleDependencies(
+      RenderPassId id,
+      std::initializer_list<RenderPassId> scheduleDependencies);
+  bool setPassScheduleDependencies(
+      RenderPassId id,
+      std::span<const RenderPassId> scheduleDependencies);
+  bool setPassResourceAccess(
+      RenderPassId id,
+      std::initializer_list<RenderResourceId> reads,
+      std::initializer_list<RenderResourceId> optionalReads,
+      std::initializer_list<RenderResourceId> writes);
+  bool setPassResourceAccess(
+      RenderPassId id,
+      std::span<const RenderResourceId> reads,
+      std::span<const RenderResourceId> optionalReads,
+      std::span<const RenderResourceId> writes);
+
+  // Access a pass by stable ID. Returns nullptr when the graph has not
+  // registered that pass.
+  const RenderPassNode* findPass(RenderPassId id) const;
 
   // Number of registered passes.
   [[nodiscard]] uint32_t passCount() const;
@@ -56,15 +202,41 @@ class RenderGraph {
   // Number of currently enabled passes.
   [[nodiscard]] uint32_t enabledPassCount() const;
 
-  // Direct access to the pass list for iteration.
-  [[nodiscard]] std::vector<RenderPassNode>&       passes()       { return passes_; }
-  [[nodiscard]] const std::vector<RenderPassNode>& passes() const { return passes_; }
+  // Read-only access to the pass list for UI iteration and diagnostics.
+  [[nodiscard]] std::span<const RenderPassNode> passes() const {
+    return {passes_.data(), passes_.size()};
+  }
+  [[nodiscard]] std::span<const RenderPassId> executionPassIds() const;
+  [[nodiscard]] std::span<const RenderPassId> activeExecutionPassIds() const;
+  [[nodiscard]] std::span<const RenderPassExecutionStatus> executionStatuses() const;
+  [[nodiscard]] const RenderPassExecutionStatus* executionStatus(RenderPassId id) const;
+  [[nodiscard]] bool isPassActive(RenderPassId id) const;
+  [[nodiscard]] std::span<const RenderResourceEdge> resourceEdges() const;
 
   // Remove all passes.
   void clear();
 
  private:
+  [[nodiscard]] uint32_t indexFor(RenderPassId id) const;
+  [[nodiscard]] RenderPassNode* mutablePass(RenderPassId id);
+  [[nodiscard]] std::vector<std::vector<uint32_t>> buildResourceDependencies();
+  [[nodiscard]] uint64_t computeActivePlanSignature() const;
+  void ensureActivePlan() const;
+  void rebuildActiveExecutionOrder() const;
+  void ensureCompiled() const;
+
   std::vector<RenderPassNode> passes_;
+  std::array<uint32_t, kRenderPassIdCount> passIndexById_{};
+  mutable std::vector<uint32_t> executionOrder_;
+  mutable std::vector<uint32_t> activeExecutionOrder_;
+  mutable std::vector<RenderPassId> executionPassIds_;
+  mutable std::vector<RenderPassId> activeExecutionPassIds_;
+  mutable std::vector<uint8_t> activePasses_;
+  mutable std::vector<RenderPassExecutionStatus> executionStatuses_;
+  std::vector<RenderResourceEdge> resourceEdges_;
+  mutable bool executionOrderDirty_{false};
+  mutable bool activePlanDirty_{true};
+  mutable uint64_t activePlanSignature_{0};
 };
 
 }  // namespace container::renderer

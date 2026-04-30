@@ -6,7 +6,6 @@
 #include "lighting_structs.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
-[[vk::binding(1, 0)]] SamplerState gBufferSampler;
 [[vk::binding(2, 0)]] Texture2D<float4> gAlbedoTexture;
 [[vk::binding(3, 0)]] Texture2D<float4> gNormalTexture;
 [[vk::binding(4, 0)]] Texture2D<float4> gMaterialTexture;
@@ -22,6 +21,7 @@
 struct PushConstants
 {
     uint tileCountX;
+    uint tileCountY;
     uint depthSliceCount;
     float cameraNear;
     float cameraFar;
@@ -65,67 +65,68 @@ float4 fragMain(VSOutput input) : SV_Target0
     gDepthTexture.GetDimensions(width, height);
     uint2 pixelCoord = uint2(input.pos.xy);
     pixelCoord = min(pixelCoord, uint2(max(width, 1u) - 1u, max(height, 1u) - 1u));
-    float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
 
     float depth = gDepthTexture.Load(int3(pixelCoord, 0));
-
-    float4 albedo = gAlbedoTexture.Load(int3(pixelCoord, 0));
-    float3 normal = SafeNormalize(gNormalTexture.Load(int3(pixelCoord, 0)).xyz * 2.0 - 1.0,
-                                  float3(0.0, 1.0, 0.0));
-    float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
-
-    if (depth == 0.0 || albedo.a <= 0.0)
+    if (depth == 0.0)
     {
         return 0.0.xxxx;
     }
 
+    // Look up the screen/depth cluster for this pixel.
+    uint tileCountX = max(pc.tileCountX, 1u);
+    uint tileCountY = max(pc.tileCountY, 1u);
+    uint2 tileCoord = min(pixelCoord / TILE_SIZE,
+                          uint2(tileCountX - 1u, tileCountY - 1u));
+    uint safeDepthSliceCount = max(pc.depthSliceCount, 1u);
+    uint sliceZ = DepthToClusterSlice(depth, pc.cameraNear, pc.cameraFar,
+                                      safeDepthSliceCount);
+    uint clusterIndex =
+        (sliceZ * tileCountY + tileCoord.y) * tileCountX + tileCoord.x;
+    TileLightGrid tile = uTileGrid[clusterIndex];
+    uint lightCount = min(tile.count, MAX_LIGHTS_PER_TILE);
+    if (lightCount == 0u)
+    {
+        return 0.0.xxxx;
+    }
+
+    float4 albedo = gAlbedoTexture.Load(int3(pixelCoord, 0));
+    if (albedo.a <= 0.0)
+    {
+        return 0.0.xxxx;
+    }
+
+    float3 normal = SafeNormalize(gNormalTexture.Load(int3(pixelCoord, 0)).xyz * 2.0 - 1.0,
+                                  float3(0.0, 1.0, 0.0));
+    float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
+
+    float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
     float3 worldPosition = ReconstructWorldPosition(uv, depth, uCamera.inverseViewProj);
     float metallic = saturate(material.x);
     float roughness = clamp(material.y, 0.045, 1.0);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
-
-    // Look up the screen/depth cluster for this pixel.
-    uint2 tileCoord = pixelCoord / TILE_SIZE;
-    uint safeDepthSliceCount = max(pc.depthSliceCount, 1u);
-    uint tileCountY = (height + TILE_SIZE - 1u) / TILE_SIZE;
-    uint sliceZ = DepthToClusterSlice(depth, pc.cameraNear, pc.cameraFar,
-                                      safeDepthSliceCount);
-    uint clusterIndex =
-        (sliceZ * tileCountY + tileCoord.y) * pc.tileCountX + tileCoord.x;
-    TileLightGrid tile = uTileGrid[clusterIndex];
+    float3 F0 = lerp(0.04.xxx, albedo.rgb, metallic);
 
     float3 totalLighting = 0.0.xxx;
 
-    for (uint i = 0; i < tile.count; ++i)
+    for (uint i = 0; i < lightCount; ++i)
     {
         uint lightIdx = uLightIndexList[tile.offset + i];
         PointLightData light = uLights[lightIdx];
 
         float3 lightVector = light.positionRadius.xyz - worldPosition;
-        float distanceToLight = length(lightVector);
         float lightRadius = max(light.positionRadius.w, 1e-3);
-        if (distanceToLight >= lightRadius)
+        float distanceSq = dot(lightVector, lightVector);
+        if (distanceSq >= lightRadius * lightRadius)
         {
             continue;
         }
 
-        float attenuation = pow(saturate(1.0 - distanceToLight / lightRadius), 2.0);
-        float3 L = SafeNormalize(lightVector, float3(0.0, 1.0, 0.0));
-        float3 H = SafeNormalize(V + L, normal);
+        float invDistance = rsqrt(max(distanceSq, 1e-8));
+        float3 L = lightVector * invDistance;
+        float attenuation = SmoothRangeAttenuation(distanceSq, lightRadius);
         float3 radiance = light.colorIntensity.rgb * light.colorIntensity.a * attenuation;
-
-        float3 F0 = lerp(0.04.xxx, albedo.rgb, metallic);
-        float NDF = DistributionGGX(normal, H, roughness);
-        float G = GeometrySmith(normal, V, L, roughness);
-        float3 F = FresnelSchlick(saturate(dot(H, V)), F0);
-        float3 numerator = NDF * G * F;
-        float denominator = max(4.0 * saturate(dot(normal, V)) * saturate(dot(normal, L)), 1e-4);
-        float3 specular = numerator / denominator;
-
-        float3 kS = F;
-        float3 kD = (1.0 - kS) * (1.0 - metallic);
-        float NdotL = saturate(dot(normal, L));
-        totalLighting += (kD * albedo.rgb / PI + specular) * radiance * NdotL;
+        totalLighting += EvaluatePbrDirectLight(
+            albedo.rgb, F0, metallic, roughness, normal, V, L, radiance);
     }
 
     return float4(totalLighting, 1.0);

@@ -52,51 +52,55 @@ float4 fragMain(VSOutput input) : SV_Target0
     gDepthTexture.GetDimensions(width, height);
     uint2 pixelCoord = uint2(input.pos.xy);
     pixelCoord = min(pixelCoord, uint2(max(width, 1u) - 1u, max(height, 1u) - 1u));
-    float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
 
-    float4 albedo = gAlbedoTexture.Load(int3(pixelCoord, 0));
-    float3 encodedNormal = gNormalTexture.Load(int3(pixelCoord, 0)).xyz;
-    float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
-    float3 emissive = gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb;
-    float depth = gDepthTexture.Load(int3(pixelCoord, 0));
-
-    float3 normal = SafeNormalize(encodedNormal * 2.0 - 1.0, float3(0.0, 1.0, 0.0));
-
-    if (pc.outputMode == 1)
+    uint outputMode = pc.outputMode;
+    if (outputMode == 1u)
     {
-        return albedo;
+        return gAlbedoTexture.Load(int3(pixelCoord, 0));
     }
 
-    if (pc.outputMode == 2)
+    if (outputMode == 2u)
     {
+        float3 encodedNormal = gNormalTexture.Load(int3(pixelCoord, 0)).xyz;
+        float3 normal = SafeNormalize(encodedNormal * 2.0 - 1.0, float3(0.0, 1.0, 0.0));
         return float4(normal * 0.5 + 0.5, 1.0);
     }
 
-    if (pc.outputMode == 3)
+    if (outputMode == 3u)
     {
+        float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
         return float4(material.xyz, 1.0);
     }
 
-    if (pc.outputMode == 4)
+    if (outputMode == 4u)
     {
+        float depth = gDepthTexture.Load(int3(pixelCoord, 0));
         float depthVisual = 1.0 - pow(saturate(depth), 48.0);
         return float4(depthVisual.xxx, 1.0);
     }
 
-    if (pc.outputMode == 5)
+    if (outputMode == 5u)
     {
+        float3 emissive = gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb;
         return float4(emissive, 1.0);
     }
 
+    float depth = gDepthTexture.Load(int3(pixelCoord, 0));
+    float4 albedo = gAlbedoTexture.Load(int3(pixelCoord, 0));
     if (depth <= 1e-6 || albedo.a <= 0.0)
     {
-        return float4(emissive, 1.0);
+        return float4(gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb, 1.0);
     }
 
+    float3 encodedNormal = gNormalTexture.Load(int3(pixelCoord, 0)).xyz;
+    float3 normal = SafeNormalize(encodedNormal * 2.0 - 1.0, float3(0.0, 1.0, 0.0));
+    float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
+    float3 emissive = gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb;
+
+    float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
     float3 worldPosition = ReconstructWorldPosition(uv, depth, uCamera.inverseViewProj);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
     float3 L = SafeNormalize(float3(0.45, 0.65, 1.0), float3(0.0, 1.0, 0.0));
-    float3 H = SafeNormalize(V + L, normal);
     float3 lightColor = float3(4.0, 3.8, 3.5);
 
     float metallic = saturate(material.x);
@@ -104,18 +108,8 @@ float4 fragMain(VSOutput input) : SV_Target0
     float occlusion = saturate(material.z);
 
     float3 F0 = lerp(0.04.xxx, albedo.rgb, metallic);
-    float NDF = DistributionGGX(normal, H, roughness);
-    float G = GeometrySmith(normal, V, L, roughness);
-    float3 F = FresnelSchlick(saturate(dot(H, V)), F0);
-
-    float3 numerator = NDF * G * F;
-    float denominator = max(4.0 * saturate(dot(normal, V)) * saturate(dot(normal, L)), 1e-4);
-    float3 specular = numerator / denominator;
-
-    float3 kS = F;
-    float3 kD = (1.0 - kS) * (1.0 - metallic);
-    float NdotL = saturate(dot(normal, L));
-    float3 directLighting = (kD * albedo.rgb / PI + specular) * lightColor * NdotL;
+    float3 directLighting = EvaluatePbrDirectLight(
+        albedo.rgb, F0, metallic, roughness, normal, V, L, lightColor);
     float3 ambientLighting = albedo.rgb * 0.03 * occlusion;
     float3 finalColor = ambientLighting + directLighting + emissive;
 

@@ -46,8 +46,11 @@ class SwapChainManager {
                                               VkSurfaceKHR surface);
 
  private:
-  void createSwapChain();
+  void createSwapChain(VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE);
   void createImageViews();
+  void destroyFramebuffers();
+  void destroyImageViews();
+  void waitForNonZeroFramebufferExtent() const;
 
   VkSurfaceFormatKHR chooseSwapSurfaceFormat(
       const std::vector<VkSurfaceFormatKHR>& availableFormats);

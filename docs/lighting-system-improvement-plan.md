@@ -1,12 +1,37 @@
-# VulkanContainer — Lighting System Improvement Plan
+# VulkanSceneRenderer — Lighting System Improvement Plan
 
-> **Project:** VulkanContainer  
+> **Project:** VulkanSceneRenderer
 > **Branch:** `main`  
 > **Date:** 2025  
 > **Status:** Living document — Phase 1 ✅ Phase 2 ✅ Phase 3 ✅ (+ cascade blend & debug view) Phase 4 ✅ Phase 5 ✅ Phase 6 ✅ Bloom ✅
 > **Related:** [`docs/refactoring-plan.md`](refactoring-plan.md) (architecture refactoring)
 
 ---
+
+## Reader Notes
+
+This document records the renderer feature plan and the rationale behind the
+current lighting pipeline. Some early audit rows are intentionally historical;
+when behavior differs, trust the implementation and the phase-completion notes
+later in the file.
+
+The active frame-lighting path is:
+
+```text
+Depth prepass
+  -> Hi-Z / occlusion cull
+  -> G-buffer
+  -> shadow cascades
+  -> tile light cull
+  -> GTAO
+  -> deferred lighting + transparent OIT
+  -> bloom
+  -> post-process
+```
+
+Coordinate, reverse-Z, viewport, and winding rules are defined in
+[`coordinate-conventions.md`](coordinate-conventions.md). Shader comments should
+point back to those rules instead of restating a conflicting local convention.
 
 ## Table of Contents
 
@@ -244,7 +269,7 @@ Matching Slang structs added to `lighting_structs.slang` (`SHADOW_CASCADE_COUNT`
 | `FrameResourceManager` descriptor expansion | ✅ | Lighting layout expanded from 7 → 10 bindings (7=shadow UBO, 8=shadow atlas SAMPLED_IMAGE, 9=shadow comparison SAMPLER); pool sizes updated; `updateDescriptorSets()` accepts shadow params |
 | `FrameRecorder` render graph integration | ✅ | 4 `ShadowCascade0..3` passes added between `OitClear` and `Lighting`; `recordShadowPass()` method renders all opaque geometry per cascade |
 | `cmake/Shaders.cmake` exclude filter | ✅ | `shadow_common.slang` excluded from compilation (include-only) |
-| `src/CMakeLists.txt` | ✅ | `renderer/ShadowManager.cpp` added to `VulkanContainer_renderer` library |
+| `src/CMakeLists.txt` | ✅ | `renderer/ShadowManager.cpp` added to `VulkanSceneRenderer_renderer` library |
 | `RendererFrontend` wiring | ✅ | `ShadowManager` in `OwnedSubsystems`; `createResources()` + `createFramebuffers()` in `initialize()`; per-frame `update()` with camera/aspect/lightDirection; shadow descriptor set + framebuffers passed to `FrameRecordParams`; shadow UBO/atlas/sampler passed to `updateDescriptorSets()` |
 | `shadow_depth.slang` binding fix | ✅ | Corrected descriptor bindings to `(1,0)` for ObjectBuffer SSBO (scene set 0, binding 1) and `(0,1)` for ShadowBuffer UBO (shadow set 1, binding 0) |
 | Build verification | ✅ | C++ build successful |
@@ -536,7 +561,7 @@ Phase 5 adds two major lighting quality improvements:
 
 6. ✅ **`cmake/Shaders.cmake`** — all Phase 5 shaders excluded from vert/frag glob, added as explicit compute entries
 
-7. ✅ **`src/CMakeLists.txt`** — `renderer/EnvironmentManager.cpp` added to `VulkanContainer_renderer`
+7. ✅ **`src/CMakeLists.txt`** — `renderer/EnvironmentManager.cpp` added to `VulkanSceneRenderer_renderer`
 
 ### Render Graph Order (Updated)
 

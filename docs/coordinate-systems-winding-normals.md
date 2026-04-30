@@ -41,7 +41,7 @@ A negative-height viewport flips the mapping between NDC Y and framebuffer Y.
 
 ## 2. Engine Choice
 
-Container chooses the following:
+VulkanSceneRenderer chooses the following:
 
 - Right-handed world and view space
 - Camera forward is -Z
@@ -155,8 +155,9 @@ This section records the current status after the coordinate audit.
 | File | Status | Notes |
 | --- | --- | --- |
 | `src/renderer/GraphicsPipelineBuilder.cpp` front face | Fixed | Scene passes now use `VK_FRONT_FACE_CLOCKWISE` for the negative-height viewport, while shadow passes keep `VK_FRONT_FACE_COUNTER_CLOCKWISE` for the positive-height viewport |
-| `src/renderer/GraphicsPipelineBuilder.cpp` scene cull | Fixed | Single-sided and double-sided materials now have separate back-cull and no-cull pipeline variants |
-| `src/renderer/GraphicsPipelineBuilder.cpp` shadow cull | OK | Front-face cull plus reverse-Z bias is consistent |
+| `src/geometry/GltfModelLoader.cpp` triangle winding | Fixed | Imported normals repair triangles whose geometric face normal is opposite to the authored vertex normals before renderer buffers are built |
+| `src/renderer/GraphicsPipelineBuilder.cpp` scene cull | Fixed | Repaired single-sided meshes use back-face culling; mirrored transforms route through front-cull variants |
+| `src/renderer/GraphicsPipelineBuilder.cpp` shadow cull | Fixed | Shadow casters use the same repaired-winding cull policy as scene passes, with reverse-Z bias retained |
 
 ### 5.4 Deferred path shader wiring
 

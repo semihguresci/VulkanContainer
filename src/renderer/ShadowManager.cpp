@@ -92,7 +92,10 @@ void ShadowManager::createResources(VkFormat depthFormat,
     si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    si.borderColor  = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    // Reverse-Z shadow maps clear to far depth (0.0) and use GREATER compare.
+    // PCF taps that fall just outside a cascade should therefore read far/lit,
+    // not near/shadowed.
+    si.borderColor  = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
     si.compareEnable = VK_TRUE;
     si.compareOp     = VK_COMPARE_OP_GREATER;
     si.minLod       = 0.0f;
@@ -389,11 +392,20 @@ void ShadowManager::update(const container::scene::BaseCamera* camera,
                            uint32_t imageIndex) {
   if (!camera) return;
 
-  // Get near/far from camera (cast to PerspectiveCamera for near/far access).
-  const auto* perspCam =
-      dynamic_cast<const container::scene::PerspectiveCamera*>(camera);
-  const float nearPlane = perspCam ? perspCam->nearPlane() : 0.1f;
-  const float farPlane  = perspCam ? perspCam->farPlane()  : 100.0f;
+  float nearPlane = 0.1f;
+  float farPlane = 100.0f;
+  if (const auto* perspCam =
+          dynamic_cast<const container::scene::PerspectiveCamera*>(camera)) {
+    nearPlane = perspCam->nearPlane();
+    farPlane = perspCam->farPlane();
+  } else if (const auto* orthoCam =
+                 dynamic_cast<const container::scene::OrthographicCamera*>(
+                     camera)) {
+    nearPlane = orthoCam->nearPlane();
+    farPlane = orthoCam->farPlane();
+  }
+  nearPlane = std::max(nearPlane, 1.0e-4f);
+  farPlane = std::max(farPlane, nearPlane + 1.0e-3f);
 
   computeCascadeSplits(nearPlane, farPlane);
 

@@ -49,6 +49,9 @@ class GpuCullManager {
   // Upload CPU-side draw commands to the input SSBO and prepare for culling.
   void uploadDrawCommands(const std::vector<DrawCommand>& commands);
 
+  // Reset per-frame validity bits before recording the render graph.
+  void beginFrameCulling();
+
   // Dispatch frustum culling compute shader.  After this call, the indirect
   // draw buffer and draw count buffer are ready for vkCmdDrawIndexedIndirect.
   void dispatchFrustumCull(VkCommandBuffer cmd,
@@ -72,7 +75,7 @@ class GpuCullManager {
   // Uses frustum-culled results (depth prepass + shadow passes).
   void drawIndirect(VkCommandBuffer cmd) const;
 
-  // Issue indirect draw from occlusion-culled results (G-Buffer pass).
+  // Issue indirect draw from occlusion-culled results for optional consumers.
   void drawIndirectOccluded(VkCommandBuffer cmd) const;
 
   // Ensure the Hi-Z image matches the given depth buffer dimensions.
@@ -86,6 +89,10 @@ class GpuCullManager {
   uint32_t maxDrawCount() const { return maxObjectCount_; }
 
   [[nodiscard]] bool isReady() const;
+  [[nodiscard]] bool canRecordOcclusionCull() const;
+  [[nodiscard]] bool frustumDrawsValid() const { return frustumDrawsValid_; }
+  [[nodiscard]] bool hizGeneratedThisFrame() const { return hizGeneratedThisFrame_; }
+  [[nodiscard]] bool occlusionDrawsValid() const { return occlusionDrawsValid_; }
 
   // Update the object SSBO descriptor (binding 1) to point at the scene's
   // object buffer.  Call whenever the object buffer is recreated.
@@ -125,6 +132,7 @@ class GpuCullManager {
   void createFrustumCullPipeline(const std::filesystem::path& shaderDir);
   void createHiZPipeline(const std::filesystem::path& shaderDir);
   void createOcclusionCullPipeline(const std::filesystem::path& shaderDir);
+  void createHiZDescriptorSets();
   void writeDescriptorSets();
   void destroyHiZImage();
 
@@ -133,10 +141,12 @@ class GpuCullManager {
   container::gpu::PipelineManager&            pipelineManager_;
 
   uint32_t maxObjectCount_{0};
+  std::vector<container::gpu::GpuDrawIndexedIndirectCommand> uploadScratch_{};
 
   // Input: draw commands + object bounding spheres (read by cull shaders).
   container::gpu::AllocatedBuffer inputDrawBuffer_{};   // DrawCommand[]
-  container::gpu::AllocatedBuffer objectSsbo_{};        // ObjectData[] (ref to scene SSBO)
+  VkBuffer                        objectSsboBuffer_{VK_NULL_HANDLE};
+  VkDeviceSize                    objectSsboSize_{0};
 
   // Output: VkDrawIndexedIndirectCommand[] written by cull shader.
   container::gpu::AllocatedBuffer indirectDrawBuffer_{};
@@ -159,7 +169,7 @@ class GpuCullManager {
   VkPipelineLayout     hizPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout hizSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool     hizPool_{VK_NULL_HANDLE};
-  VkDescriptorSet      hizSet_{VK_NULL_HANDLE};
+  std::vector<VkDescriptorSet> hizSets_;
   VkImage              hizImage_{VK_NULL_HANDLE};
   VmaAllocation        hizAllocation_{nullptr};
   VkImageView          hizFullView_{VK_NULL_HANDLE};     // All mip levels (for sampling).
@@ -168,6 +178,7 @@ class GpuCullManager {
   uint32_t             hizWidth_{0};
   uint32_t             hizHeight_{0};
   uint32_t             hizMipLevels_{0};
+  bool                 hizInitialized_{false};
 
   // Occlusion cull compute pipeline.
   VkPipeline           occlusionCullPipeline_{VK_NULL_HANDLE};
@@ -183,6 +194,10 @@ class GpuCullManager {
   // Freeze-culling: snapshot of camera data used for cull dispatches.
   container::gpu::AllocatedBuffer frozenCameraBuffer_{};   // CameraData, GPU-only
   bool cullingFrozen_{false};
+
+  bool frustumDrawsValid_{false};
+  bool hizGeneratedThisFrame_{false};
+  bool occlusionDrawsValid_{false};
 };
 
 }  // namespace container::renderer

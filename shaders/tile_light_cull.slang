@@ -19,7 +19,6 @@ ConstantBuffer<TileCullPushConstants> pc;
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] Texture2D<float>             gDepthTexture;
-[[vk::binding(2, 0)]] SamplerState                 gDepthSampler;
 [[vk::binding(0, 1)]] StructuredBuffer<PointLightData> uLights;
 [[vk::binding(0, 2)]] RWStructuredBuffer<TileLightGrid> uTileGrid;
 [[vk::binding(1, 2)]] RWStructuredBuffer<uint>          uLightIndexList;
@@ -70,14 +69,19 @@ void computeMain(
     }
     GroupMemoryBarrierWithGroupSync();
 
+    if (pc.totalLights == 0u)
+    {
+        return;
+    }
+
     uint2 pixel = uint2(tileX * TILE_SIZE + localId.x,
                         tileY * TILE_SIZE + localId.y);
 
     if (pixel.x < screenWidth && pixel.y < screenHeight)
     {
-        float2 uv = (float2(pixel) + 0.5.xx) /
-                    float2(max(screenWidth, 1u), max(screenHeight, 1u));
-        float depth = gDepthTexture.SampleLevel(gDepthSampler, uv, 0.0);
+        // G-buffer depth is a per-pixel classification input here; using Load
+        // avoids filtering depth across geometry edges into the wrong cluster.
+        float depth = gDepthTexture.Load(int3(pixel, 0));
         if (depth > 0.0 &&
             DepthToClusterSlice(depth, pc.cameraNear, pc.cameraFar,
                                 safeDepthSliceCount) == sliceZ)
@@ -90,9 +94,13 @@ void computeMain(
 
     if (sharedVisiblePixelCount == 0u)
     {
+        // No geometry from this depth slice touched the tile. Leave the light
+        // list empty so deferred lighting can skip the cluster entirely.
         return;
     }
 
+    // Scene framebuffer UV uses +Y down, but scene NDC uses +Y up because
+    // graphics passes use a negative-height viewport. Build tile bounds in NDC.
     float tileLeft =
         float(tileX * TILE_SIZE) / float(max(screenWidth, 1u)) * 2.0 - 1.0;
     float tileRight =
@@ -137,6 +145,8 @@ void computeMain(
     uint threadsPerCluster = TILE_SIZE * TILE_SIZE;
     for (uint i = localIndex; i < pc.totalLights; i += threadsPerCluster)
     {
+        // AABB/sphere is conservative but cheap. The small radius inflation
+        // avoids dropping lights near cluster boundaries after depth slicing.
         float3 lightPos = uLights[i].positionRadius.xyz;
         float lightRadius = uLights[i].positionRadius.w * 1.03;
 

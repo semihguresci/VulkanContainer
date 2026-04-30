@@ -4,6 +4,7 @@
 #include "Container/common/CommonMath.h"
 #include "Container/renderer/FrameResources.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <span>
@@ -19,7 +20,8 @@ struct AllocatedBuffer;
 
 namespace container::renderer {
 
-// Per-node data in the OIT linked list.
+// Per-node data in the OIT linked list. The layout is consumed directly by
+// post_process.slang; keep alignment and field order in sync with TransparentNode.
 struct OitNode {
   alignas(16) glm::vec4 color{0.0f};
   alignas(4)  float     depth{0.0f};
@@ -35,13 +37,21 @@ struct OitMetadata {
   alignas(4) uint32_t reserved{0};
 };
 
+static_assert(sizeof(OitNode) == 32,
+              "OitNode must match shaders/post_process.slang TransparentNode.");
+static_assert(offsetof(OitNode, color) == 0, "OitNode.color offset");
+static_assert(offsetof(OitNode, depth) == 16, "OitNode.depth offset");
+static_assert(offsetof(OitNode, next) == 20, "OitNode.next offset");
+static_assert(sizeof(OitMetadata) == 16,
+              "OitMetadata must match shaders/post_process.slang OitMetadataBuffer.");
+
 // Aggregated format bundle passed into FrameResourceManager::create().
 struct GBufferFormats {
   VkFormat depthStencil{VK_FORMAT_UNDEFINED};
   VkFormat sceneColor{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat albedo{VK_FORMAT_R8G8B8A8_UNORM};
   VkFormat normal{VK_FORMAT_R16G16B16A16_SFLOAT};
-  VkFormat material{VK_FORMAT_R16G16B16A16_SFLOAT};
+  VkFormat material{VK_FORMAT_R8G8B8A8_UNORM};
   VkFormat emissive{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat oitHeadPointer{VK_FORMAT_R32_UINT};
 
@@ -74,7 +84,8 @@ class FrameResourceManager {
   [[nodiscard]] VkDescriptorSetLayout oitLayout()         const { return oitLayout_; }
   [[nodiscard]] VkSampler             gBufferSampler()    const { return gBufferSampler_; }
 
-  // Create / recreate per-swapchain-image resources.
+  // Create / recreate per-swapchain-image attachments, descriptor sets, and
+  // OIT storage. Call after swapchain resize or any layout-affecting resource change.
   void create(const GBufferFormats&                    formats,
               VkRenderPass                             depthPrepassPass,
               VkRenderPass                             gBufferPass,
@@ -104,12 +115,18 @@ class FrameResourceManager {
   void validateOitFormatSupport() const;
 
   // Returns true if the OIT node pool was grown (caller must recreate).
-  bool growOitPoolIfNeeded(uint32_t imageIndex, uint32_t& capacityFloor);
+  bool growOitPoolIfNeeded(uint32_t imageIndex);
 
-  [[nodiscard]] uint32_t computeOitNodeCapacity(uint32_t floor) const;
+  [[nodiscard]] uint32_t computeOitNodeCapacity() const;
+  [[nodiscard]] uint32_t oitNodeCapacityFloor() const {
+    return oitNodeCapacityFloor_;
+  }
 
-  [[nodiscard]] const std::vector<FrameResources>& frames() const { return frames_; }
-  [[nodiscard]] std::vector<FrameResources>&       frames()       { return frames_; }
+  [[nodiscard]] uint32_t frameCount() const {
+    return static_cast<uint32_t>(frames_.size());
+  }
+  [[nodiscard]] const FrameResources* frame(uint32_t imageIndex) const;
+  [[nodiscard]] FrameResources*       frame(uint32_t imageIndex);
 
  private:
   AttachmentImage createAttachment(VkFormat fmt, VkImageUsageFlags usage,
@@ -120,6 +137,26 @@ class FrameResourceManager {
   void            ensureFallbackTileGridBuffer();
   VkCommandBuffer beginImmediate() const;
   void            endImmediate(VkCommandBuffer cmd) const;
+
+  struct DescriptorUpdateKey {
+    std::vector<VkBuffer> cameraBuffers{};
+    std::vector<VkBuffer> shadowUboBuffers{};
+    VkImageView shadowAtlasView{VK_NULL_HANDLE};
+    VkSampler   shadowSampler{VK_NULL_HANDLE};
+    VkImageView irradianceView{VK_NULL_HANDLE};
+    VkImageView prefilteredView{VK_NULL_HANDLE};
+    VkImageView brdfLutView{VK_NULL_HANDLE};
+    VkSampler   envSampler{VK_NULL_HANDLE};
+    VkSampler   brdfLutSampler{VK_NULL_HANDLE};
+    VkImageView aoTextureView{VK_NULL_HANDLE};
+    VkSampler   aoSampler{VK_NULL_HANDLE};
+    VkImageView bloomTextureView{VK_NULL_HANDLE};
+    VkSampler   bloomSampler{VK_NULL_HANDLE};
+    VkBuffer    tileGridBuffer{VK_NULL_HANDLE};
+    VkDeviceSize tileGridBufferSize{0};
+
+    bool operator==(const DescriptorUpdateKey&) const = default;
+  };
 
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager*            allocationMgr_{nullptr};
@@ -143,8 +180,11 @@ class FrameResourceManager {
   VkRenderPass   lightingPass_{VK_NULL_HANDLE};
 
   std::vector<FrameResources> frames_;
+  DescriptorUpdateKey descriptorUpdateKey_{};
+  bool descriptorUpdateKeyValid_{false};
+  uint32_t oitNodeCapacityFloor_{0};
 
-  static constexpr uint32_t kOitAvgNodesPerPixel = 4u;
+  static constexpr uint32_t kOitAvgNodesPerPixel = 2u;
 };
 
 }  // namespace container::renderer

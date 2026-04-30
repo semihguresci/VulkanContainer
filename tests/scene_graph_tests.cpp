@@ -174,6 +174,45 @@ TEST(SceneGraph, ReparentMovesChild) {
   EXPECT_EQ(graph.getNode(c)->parent, p2);
 }
 
+TEST(SceneGraph, SetParentRejectsSelfParent) {
+  SceneGraph graph;
+  const uint32_t node = graph.createNode(glm::mat4(1.0f), 0);
+
+  graph.setParent(node, node);
+
+  EXPECT_EQ(graph.getNode(node)->parent, SceneGraph::kInvalidNode);
+  graph.updateWorldTransforms();
+}
+
+TEST(SceneGraph, SetParentRejectsDescendantParent) {
+  SceneGraph graph;
+  const uint32_t parent = graph.createNode(glm::mat4(1.0f), 0);
+  const uint32_t child = graph.createNode(glm::mat4(1.0f), 0);
+  const uint32_t grandchild = graph.createNode(glm::mat4(1.0f), 0);
+
+  graph.setParent(child, parent);
+  graph.setParent(grandchild, child);
+  graph.setParent(parent, grandchild);
+
+  EXPECT_EQ(graph.getNode(parent)->parent, SceneGraph::kInvalidNode);
+  EXPECT_EQ(graph.getNode(child)->parent, parent);
+  EXPECT_EQ(graph.getNode(grandchild)->parent, child);
+  graph.updateWorldTransforms();
+}
+
+TEST(SceneGraph, SetParentRejectsInvalidParentWithoutDetaching) {
+  SceneGraph graph;
+  const uint32_t parent = graph.createNode(glm::mat4(1.0f), 0);
+  const uint32_t child = graph.createNode(glm::mat4(1.0f), 0);
+
+  graph.setParent(child, parent);
+  graph.setParent(child, 999u);
+
+  EXPECT_EQ(graph.getNode(child)->parent, parent);
+  ASSERT_EQ(graph.getNode(parent)->children.size(), 1u);
+  EXPECT_EQ(graph.getNode(parent)->children[0], child);
+}
+
 // ============================================================================
 // SceneGraph — transforms
 // ============================================================================

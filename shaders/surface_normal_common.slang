@@ -42,10 +42,20 @@ float4 BuildWorldTangent(float3x3 modelMatrix, float3 worldNormal,
 
 SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent,
                                          float2 texCoord, uint normalTextureIndex,
-                                         float normalTextureScale)
+                                         float normalTextureScale, float faceSign)
 {
     SurfaceNormalState state;
-    state.geometricNormal = SafeNormalize(worldNormal, float3(0.0, 1.0, 0.0));
+    float orientedFaceSign = faceSign < 0.0 ? -1.0 : 1.0;
+    state.geometricNormal =
+        SafeNormalize(worldNormal, float3(0.0, 1.0, 0.0)) * orientedFaceSign;
+    state.shadingNormal = state.geometricNormal;
+    state.tangent = 0.0.xxx;
+    state.bitangent = 0.0.xxx;
+
+    if (normalTextureIndex == 0xffffffff)
+    {
+        return state;
+    }
 
     float3 tangent = worldTangent.xyz;
     tangent -= state.geometricNormal * dot(state.geometricNormal, tangent);
@@ -60,24 +70,28 @@ SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent
 
     state.tangent = tangent;
     state.bitangent = bitangent;
-    state.shadingNormal = state.geometricNormal;
 
-    if (normalTextureIndex != 0xffffffff)
+    uint texIndex = NonUniformResourceIndex(normalTextureIndex);
+    float3 normalSample =
+        materialTextures[texIndex].Sample(baseSampler, texCoord).xyz * 2.0 - 1.0;
+    normalSample.xy *= normalTextureScale;
+    normalSample = SafeNormalize(normalSample, float3(0.0, 0.0, 1.0));
+    state.shadingNormal = SafeNormalize(
+        tangent * normalSample.x + bitangent * normalSample.y +
+            state.geometricNormal * normalSample.z,
+        state.geometricNormal);
+    if (dot(state.shadingNormal, state.geometricNormal) < 0.0)
     {
-        uint texIndex = NonUniformResourceIndex(normalTextureIndex);
-        float3 normalSample =
-            materialTextures[texIndex].Sample(baseSampler, texCoord).xyz * 2.0 - 1.0;
-        normalSample.xy *= normalTextureScale;
-        normalSample = SafeNormalize(normalSample, float3(0.0, 0.0, 1.0));
-        state.shadingNormal = SafeNormalize(
-            tangent * normalSample.x + bitangent * normalSample.y +
-                state.geometricNormal * normalSample.z,
-            state.geometricNormal);
-        if (dot(state.shadingNormal, state.geometricNormal) < 0.0)
-        {
-            state.shadingNormal *= -1.0;
-        }
+        state.shadingNormal *= -1.0;
     }
 
     return state;
+}
+
+SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent,
+                                         float2 texCoord, uint normalTextureIndex,
+                                         float normalTextureScale)
+{
+    return EvaluateSurfaceNormal(worldNormal, worldTangent, texCoord,
+                                 normalTextureIndex, normalTextureScale, 1.0);
 }

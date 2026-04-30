@@ -102,7 +102,6 @@ set(REQUIRED_PACKAGES
     glm
     fmt
     glfw3
-    GTest
     imgui
     EnTT
     nlohmann_json

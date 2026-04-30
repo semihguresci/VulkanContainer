@@ -34,6 +34,7 @@
 /test_results
 /Testing
 /.vscode
+CMakeUserPresets.json
 ExportDisplay.txt
 toolchain.cmake
 *.spv

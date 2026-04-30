@@ -1,5 +1,5 @@
 # CMakeLists.txt in project-root
-cmake_minimum_required(VERSION 3.14)
+cmake_minimum_required(VERSION 3.23)
 
 # Ensure MSVC targets link the correct C runtime (DLL variant).
 # Required for VS 2026+ / MSVC 19.50+ where auto-linking may not
@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.14)
 cmake_policy(SET CMP0091 NEW)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 
-project(VulkanContainer)
+project(VulkanSceneRenderer)
 
 # Set the C++ standard
 set(CMAKE_CXX_STANDARD 23)
@@ -29,7 +29,7 @@ include(cmake/Assets.cmake)
 add_executable(${PROJECT_NAME} main.cpp)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
-    VulkanContainer_Core
+    VulkanSceneRenderer_Core
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -42,6 +42,9 @@ if(TARGET shaders)
 endif()
 add_dependencies(${PROJECT_NAME} copy_materials)
 add_dependencies(${PROJECT_NAME} generate_models)
+if(TARGET copy_hdr)
+    add_dependencies(${PROJECT_NAME} copy_hdr)
+endif()
 
 # Include the tests configuration
 if(ENABLE_TESTS)

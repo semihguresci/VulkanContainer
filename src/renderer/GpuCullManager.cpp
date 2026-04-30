@@ -28,8 +28,6 @@ GpuCullManager::GpuCullManager(
 }
 
 GpuCullManager::~GpuCullManager() {
-  VkDevice dev = device_->device();
-
   if (inputDrawBuffer_.buffer != VK_NULL_HANDLE)
     allocationManager_.destroyBuffer(inputDrawBuffer_);
   if (indirectDrawBuffer_.buffer != VK_NULL_HANDLE)
@@ -45,40 +43,50 @@ GpuCullManager::~GpuCullManager() {
   if (frozenCameraBuffer_.buffer != VK_NULL_HANDLE)
     allocationManager_.destroyBuffer(frozenCameraBuffer_);
 
-  if (frustumCullPipeline_ != VK_NULL_HANDLE)
-    vkDestroyPipeline(dev, frustumCullPipeline_, nullptr);
-  if (frustumCullPipelineLayout_ != VK_NULL_HANDLE)
-    vkDestroyPipelineLayout(dev, frustumCullPipelineLayout_, nullptr);
-  if (frustumCullPool_ != VK_NULL_HANDLE)
-    vkDestroyDescriptorPool(dev, frustumCullPool_, nullptr);
-  if (frustumCullSetLayout_ != VK_NULL_HANDLE)
-    vkDestroyDescriptorSetLayout(dev, frustumCullSetLayout_, nullptr);
+  pipelineManager_.destroyPipeline(frustumCullPipeline_);
+  pipelineManager_.destroyPipelineLayout(frustumCullPipelineLayout_);
+  pipelineManager_.destroyDescriptorPool(frustumCullPool_);
+  pipelineManager_.destroyDescriptorSetLayout(frustumCullSetLayout_);
 
   destroyHiZImage();
   if (hizSampler_ != VK_NULL_HANDLE)
-    vkDestroySampler(dev, hizSampler_, nullptr);
-  if (hizPipeline_ != VK_NULL_HANDLE)
-    vkDestroyPipeline(dev, hizPipeline_, nullptr);
-  if (hizPipelineLayout_ != VK_NULL_HANDLE)
-    vkDestroyPipelineLayout(dev, hizPipelineLayout_, nullptr);
-  if (hizPool_ != VK_NULL_HANDLE)
-    vkDestroyDescriptorPool(dev, hizPool_, nullptr);
-  if (hizSetLayout_ != VK_NULL_HANDLE)
-    vkDestroyDescriptorSetLayout(dev, hizSetLayout_, nullptr);
+    vkDestroySampler(device_->device(), hizSampler_, nullptr);
+  pipelineManager_.destroyPipeline(hizPipeline_);
+  pipelineManager_.destroyPipelineLayout(hizPipelineLayout_);
+  pipelineManager_.destroyDescriptorPool(hizPool_);
+  pipelineManager_.destroyDescriptorSetLayout(hizSetLayout_);
 
-  if (occlusionCullPipeline_ != VK_NULL_HANDLE)
-    vkDestroyPipeline(dev, occlusionCullPipeline_, nullptr);
-  if (occlusionCullPipelineLayout_ != VK_NULL_HANDLE)
-    vkDestroyPipelineLayout(dev, occlusionCullPipelineLayout_, nullptr);
-  if (occlusionCullPool_ != VK_NULL_HANDLE)
-    vkDestroyDescriptorPool(dev, occlusionCullPool_, nullptr);
-  if (occlusionCullSetLayout_ != VK_NULL_HANDLE)
-    vkDestroyDescriptorSetLayout(dev, occlusionCullSetLayout_, nullptr);
+  pipelineManager_.destroyPipeline(occlusionCullPipeline_);
+  pipelineManager_.destroyPipelineLayout(occlusionCullPipelineLayout_);
+  pipelineManager_.destroyDescriptorPool(occlusionCullPool_);
+  pipelineManager_.destroyDescriptorSetLayout(occlusionCullSetLayout_);
 }
 
 bool GpuCullManager::isReady() const {
   return frustumCullPipeline_ != VK_NULL_HANDLE &&
          device_->enabledFeatures().drawIndirectFirstInstance == VK_TRUE;
+}
+
+bool GpuCullManager::canRecordOcclusionCull() const {
+  return isReady() &&
+         frustumDrawsValid_ &&
+         hizGeneratedThisFrame_ &&
+         occlusionCullPipeline_ != VK_NULL_HANDLE &&
+         occlusionCullSet_ != VK_NULL_HANDLE &&
+         occlusionIndirectBuffer_.buffer != VK_NULL_HANDLE &&
+         occlusionCountBuffer_.buffer != VK_NULL_HANDLE &&
+         drawCountBuffer_.buffer != VK_NULL_HANDLE &&
+         indirectDrawBuffer_.buffer != VK_NULL_HANDLE &&
+         hizFullView_ != VK_NULL_HANDLE &&
+         hizSampler_ != VK_NULL_HANDLE &&
+         !hizMipViews_.empty() &&
+         hizSets_.size() == hizMipLevels_;
+}
+
+void GpuCullManager::beginFrameCulling() {
+  frustumDrawsValid_ = false;
+  hizGeneratedThisFrame_ = false;
+  occlusionDrawsValid_ = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +186,8 @@ void GpuCullManager::uploadDrawCommands(
 
   // Convert DrawCommand to GpuDrawIndexedIndirectCommand.
   // objectIndex is encoded in firstInstance so vertex shaders can read it.
-  std::vector<GpuDrawIndexedIndirectCommand> gpuCmds(count);
+  uploadScratch_.resize(count);
+  auto& gpuCmds = uploadScratch_;
   for (uint32_t i = 0; i < count; ++i) {
     gpuCmds[i].indexCount    = commands[i].indexCount;
     gpuCmds[i].instanceCount = 1;
@@ -202,8 +211,12 @@ void GpuCullManager::dispatchFrustumCull(VkCommandBuffer cmd,
                                           VkBuffer cameraBuffer,
                                           VkDeviceSize cameraBufferSize,
                                           uint32_t objectCount) {
+  frustumDrawsValid_ = false;
   if (frustumCullPipeline_ == VK_NULL_HANDLE ||
-      indirectDrawBuffer_.buffer == VK_NULL_HANDLE) return;
+      indirectDrawBuffer_.buffer == VK_NULL_HANDLE ||
+      drawCountBuffer_.buffer == VK_NULL_HANDLE ||
+      frustumCullSet_ == VK_NULL_HANDLE ||
+      objectCount == 0) return;
 
   // Zero the draw count buffer.
   vkCmdFillBuffer(cmd, drawCountBuffer_.buffer, 0, sizeof(uint32_t), 0);
@@ -257,6 +270,7 @@ void GpuCullManager::dispatchFrustumCull(VkCommandBuffer cmd,
                            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                        0, 1, &barrier, 0, nullptr, 0, nullptr);
+  frustumDrawsValid_ = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +278,8 @@ void GpuCullManager::dispatchFrustumCull(VkCommandBuffer cmd,
 // ---------------------------------------------------------------------------
 
 void GpuCullManager::ensureHiZImage(uint32_t width, uint32_t height) {
+  if (width == 0 || height == 0) return;
+
   if (width == hizWidth_ && height == hizHeight_ && hizImage_ != VK_NULL_HANDLE)
     return;
 
@@ -273,6 +289,7 @@ void GpuCullManager::ensureHiZImage(uint32_t width, uint32_t height) {
   hizHeight_ = height;
   hizMipLevels_ = static_cast<uint32_t>(
       std::floor(std::log2(static_cast<float>(std::max(width, height))))) + 1;
+  hizInitialized_ = false;
 
   VkImageCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ci.imageType     = VK_IMAGE_TYPE_2D;
@@ -314,23 +331,32 @@ void GpuCullManager::ensureHiZImage(uint32_t width, uint32_t height) {
       throw std::runtime_error("failed to create Hi-Z mip view " + std::to_string(m));
   }
 
-  // Sampler: nearest, clamp-to-edge.
-  if (hizSampler_ == VK_NULL_HANDLE) {
-    VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
-    si.magFilter    = VK_FILTER_NEAREST;
-    si.minFilter    = VK_FILTER_NEAREST;
-    si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
-    si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
-    si.maxLod       = static_cast<float>(hizMipLevels_);
-    if (vkCreateSampler(device_->device(), &si, nullptr, &hizSampler_) != VK_SUCCESS)
-      throw std::runtime_error("failed to create Hi-Z sampler");
+  // Sampler: nearest, clamp-to-edge. Recreate it with the image because maxLod
+  // depends on the mip count, which can change after swapchain resize.
+  if (hizSampler_ != VK_NULL_HANDLE) {
+    vkDestroySampler(device_->device(), hizSampler_, nullptr);
+    hizSampler_ = VK_NULL_HANDLE;
   }
+  VkSamplerCreateInfo si{VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO};
+  si.magFilter    = VK_FILTER_NEAREST;
+  si.minFilter    = VK_FILTER_NEAREST;
+  si.mipmapMode   = VK_SAMPLER_MIPMAP_MODE_NEAREST;
+  si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+  si.minLod       = 0.0f;
+  si.maxLod       = static_cast<float>(hizMipLevels_ - 1u);
+  if (vkCreateSampler(device_->device(), &si, nullptr, &hizSampler_) != VK_SUCCESS)
+    throw std::runtime_error("failed to create Hi-Z sampler");
+
+  createHiZDescriptorSets();
 }
 
 void GpuCullManager::destroyHiZImage() {
   VkDevice dev = device_->device();
+  pipelineManager_.destroyDescriptorPool(hizPool_);
+  hizSets_.clear();
+
   for (auto v : hizMipViews_)
     if (v != VK_NULL_HANDLE) vkDestroyImageView(dev, v, nullptr);
   hizMipViews_.clear();
@@ -345,25 +371,35 @@ void GpuCullManager::destroyHiZImage() {
   }
   hizWidth_  = 0;
   hizHeight_ = 0;
+  hizMipLevels_ = 0;
+  hizInitialized_ = false;
 }
 
 void GpuCullManager::dispatchHiZGenerate(VkCommandBuffer cmd,
                                           VkImageView depthView,
                                           VkSampler depthSampler,
                                           uint32_t width, uint32_t height) {
+  hizGeneratedThisFrame_ = false;
+  if (width == 0 || height == 0) return;
+
   if (hizPipeline_ == VK_NULL_HANDLE || hizImage_ == VK_NULL_HANDLE ||
-      hizMipViews_.empty()) return;
+      hizMipViews_.empty() || hizSets_.size() != hizMipLevels_ ||
+      depthView == VK_NULL_HANDLE || depthSampler == VK_NULL_HANDLE) return;
 
   // Transition Hi-Z image to GENERAL for storage writes.
   {
     VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    b.srcAccessMask       = 0;
+    b.srcAccessMask       = hizInitialized_ ? VK_ACCESS_SHADER_READ_BIT : 0;
     b.dstAccessMask       = VK_ACCESS_SHADER_WRITE_BIT;
-    b.oldLayout           = VK_IMAGE_LAYOUT_UNDEFINED;
+    b.oldLayout           = hizInitialized_
+                                ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                : VK_IMAGE_LAYOUT_UNDEFINED;
     b.newLayout           = VK_IMAGE_LAYOUT_GENERAL;
     b.image               = hizImage_;
     b.subresourceRange    = {VK_IMAGE_ASPECT_COLOR_BIT, 0, hizMipLevels_, 0, 1};
-    vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+    vkCmdPipelineBarrier(cmd,
+                         hizInitialized_ ? VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT
+                                         : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &b);
   }
@@ -390,19 +426,19 @@ void GpuCullManager::dispatchHiZGenerate(VkCommandBuffer cmd,
 
     std::array<VkWriteDescriptorSet, 3> writes{};
     writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    writes[0].dstSet          = hizSet_;
+    writes[0].dstSet          = hizSets_[mip];
     writes[0].dstBinding      = 0;
     writes[0].descriptorCount = 1;
     writes[0].descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     writes[0].pImageInfo      = &srcInfo;
     writes[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    writes[1].dstSet          = hizSet_;
+    writes[1].dstSet          = hizSets_[mip];
     writes[1].dstBinding      = 1;
     writes[1].descriptorCount = 1;
     writes[1].descriptorType  = VK_DESCRIPTOR_TYPE_SAMPLER;
     writes[1].pImageInfo      = &samplerInfo;
     writes[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    writes[2].dstSet          = hizSet_;
+    writes[2].dstSet          = hizSets_[mip];
     writes[2].dstBinding      = 2;
     writes[2].descriptorCount = 1;
     writes[2].descriptorType  = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -413,7 +449,8 @@ void GpuCullManager::dispatchHiZGenerate(VkCommandBuffer cmd,
                            writes.data(), 0, nullptr);
 
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
-                            hizPipelineLayout_, 0, 1, &hizSet_, 0, nullptr);
+                            hizPipelineLayout_, 0, 1, &hizSets_[mip], 0,
+                            nullptr);
 
     HiZPushConstants hpc{};
     hpc.srcWidth  = srcW;
@@ -456,6 +493,8 @@ void GpuCullManager::dispatchHiZGenerate(VkCommandBuffer cmd,
     vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                          0, 0, nullptr, 0, nullptr, 1, &b);
+    hizInitialized_ = true;
+    hizGeneratedThisFrame_ = true;
   }
 }
 
@@ -467,9 +506,8 @@ void GpuCullManager::dispatchOcclusionCull(VkCommandBuffer cmd,
                                             VkBuffer cameraBuffer,
                                             VkDeviceSize cameraBufferSize,
                                             uint32_t objectCount) {
-  if (occlusionCullPipeline_ == VK_NULL_HANDLE ||
-      occlusionIndirectBuffer_.buffer == VK_NULL_HANDLE ||
-      hizFullView_ == VK_NULL_HANDLE) return;
+  occlusionDrawsValid_ = false;
+  if (!canRecordOcclusionCull() || objectCount == 0) return;
 
   // Zero the occlusion draw count.
   vkCmdFillBuffer(cmd, occlusionCountBuffer_.buffer, 0, sizeof(uint32_t), 0);
@@ -584,6 +622,7 @@ void GpuCullManager::dispatchOcclusionCull(VkCommandBuffer cmd,
                        VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT |
                            VK_PIPELINE_STAGE_VERTEX_SHADER_BIT,
                        0, 1, &barrier, 0, nullptr, 0, nullptr);
+  occlusionDrawsValid_ = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -592,7 +631,8 @@ void GpuCullManager::dispatchOcclusionCull(VkCommandBuffer cmd,
 
 void GpuCullManager::drawIndirect(VkCommandBuffer cmd) const {
   if (indirectDrawBuffer_.buffer == VK_NULL_HANDLE ||
-      drawCountBuffer_.buffer == VK_NULL_HANDLE) return;
+      drawCountBuffer_.buffer == VK_NULL_HANDLE ||
+      !frustumDrawsValid_) return;
 
   vkCmdDrawIndexedIndirectCount(
       cmd,
@@ -604,7 +644,8 @@ void GpuCullManager::drawIndirect(VkCommandBuffer cmd) const {
 
 void GpuCullManager::drawIndirectOccluded(VkCommandBuffer cmd) const {
   if (occlusionIndirectBuffer_.buffer == VK_NULL_HANDLE ||
-      occlusionCountBuffer_.buffer == VK_NULL_HANDLE) return;
+      occlusionCountBuffer_.buffer == VK_NULL_HANDLE ||
+      !occlusionDrawsValid_) return;
 
   vkCmdDrawIndexedIndirectCount(
       cmd,
@@ -695,21 +736,6 @@ void GpuCullManager::createHiZPipeline(
         {bindings.begin(), bindings.end()}, flags);
   }
 
-  hizPool_ = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1},
-       {VK_DESCRIPTOR_TYPE_SAMPLER, 1},
-       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}},
-      1, 0);
-
-  {
-    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool     = hizPool_;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts        = &hizSetLayout_;
-    if (vkAllocateDescriptorSets(device_->device(), &ai, &hizSet_) != VK_SUCCESS)
-      throw std::runtime_error("failed to allocate Hi-Z descriptor set");
-  }
-
   VkPushConstantRange pcRange{};
   pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
   pcRange.size       = sizeof(HiZPushConstants);
@@ -734,6 +760,32 @@ void GpuCullManager::createHiZPipeline(
 
   hizPipeline_ = pipelineManager_.createComputePipeline(ci, "hiz_generate");
   vkDestroyShaderModule(device_->device(), compModule, nullptr);
+}
+
+void GpuCullManager::createHiZDescriptorSets() {
+  if (hizSetLayout_ == VK_NULL_HANDLE || hizMipLevels_ == 0) return;
+
+  pipelineManager_.destroyDescriptorPool(hizPool_);
+  hizSets_.clear();
+
+  hizPool_ = pipelineManager_.createDescriptorPool(
+      {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, hizMipLevels_},
+       {VK_DESCRIPTOR_TYPE_SAMPLER, hizMipLevels_},
+       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, hizMipLevels_}},
+      hizMipLevels_, 0);
+
+  std::vector<VkDescriptorSetLayout> layouts(hizMipLevels_, hizSetLayout_);
+  hizSets_.resize(hizMipLevels_, VK_NULL_HANDLE);
+
+  VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  ai.descriptorPool     = hizPool_;
+  ai.descriptorSetCount = hizMipLevels_;
+  ai.pSetLayouts        = layouts.data();
+  if (vkAllocateDescriptorSets(device_->device(), &ai, hizSets_.data()) !=
+      VK_SUCCESS) {
+    hizSets_.clear();
+    throw std::runtime_error("failed to allocate Hi-Z descriptor sets");
+  }
 }
 
 void GpuCullManager::createOcclusionCullPipeline(
@@ -849,6 +901,13 @@ void GpuCullManager::writeDescriptorSets() {
 
 void GpuCullManager::updateObjectSsboDescriptor(
     VkBuffer objectBuffer, VkDeviceSize objectBufferSize) {
+  if (objectBuffer == objectSsboBuffer_ &&
+      objectBufferSize == objectSsboSize_) {
+    return;
+  }
+  objectSsboBuffer_ = objectBuffer;
+  objectSsboSize_   = objectBufferSize;
+
   VkDescriptorBufferInfo objInfo{objectBuffer, 0, objectBufferSize};
 
   std::vector<VkWriteDescriptorSet> writes;
@@ -885,9 +944,23 @@ void GpuCullManager::updateObjectSsboDescriptor(
 // ---------------------------------------------------------------------------
 
 void GpuCullManager::scheduleStatsReadback(VkCommandBuffer cmd) {
-  if (statsReadbackBuffer_.buffer == VK_NULL_HANDLE ||
-      drawCountBuffer_.buffer == VK_NULL_HANDLE ||
-      occlusionCountBuffer_.buffer == VK_NULL_HANDLE) return;
+  if (statsReadbackBuffer_.buffer == VK_NULL_HANDLE) return;
+
+  if (!frustumDrawsValid_ || drawCountBuffer_.buffer == VK_NULL_HANDLE) {
+    vkCmdFillBuffer(cmd, statsReadbackBuffer_.buffer, 0,
+                    sizeof(uint32_t) * 2, 0);
+
+    VkMemoryBarrier postBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+    postBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    postBarrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_TRANSFER_BIT,
+        VK_PIPELINE_STAGE_HOST_BIT,
+        0, 1, &postBarrier, 0, nullptr, 0, nullptr);
+    return;
+  }
+
+  if (occlusionCountBuffer_.buffer == VK_NULL_HANDLE) return;
 
   // Barrier: ensure all compute writes to count buffers are visible to transfer.
   VkMemoryBarrier preBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -907,11 +980,15 @@ void GpuCullManager::scheduleStatsReadback(VkCommandBuffer cmd) {
                   statsReadbackBuffer_.buffer, 1, &frustumCopy);
 
   // Copy occlusion-culled draw count → statsReadbackBuffer_[1].
+  const VkBuffer occlusionStatsSource =
+      occlusionDrawsValid_ ? occlusionCountBuffer_.buffer
+                           : drawCountBuffer_.buffer;
+
   VkBufferCopy occlusionCopy{};
   occlusionCopy.srcOffset = 0;
   occlusionCopy.dstOffset = sizeof(uint32_t);
   occlusionCopy.size      = sizeof(uint32_t);
-  vkCmdCopyBuffer(cmd, occlusionCountBuffer_.buffer,
+  vkCmdCopyBuffer(cmd, occlusionStatsSource,
                   statsReadbackBuffer_.buffer, 1, &occlusionCopy);
 
   // Barrier: transfer writes → host reads (visible after fence).
@@ -932,6 +1009,10 @@ void GpuCullManager::collectStats() {
   vmaGetAllocationInfo(allocationManager_.memoryManager()->allocator(),
                        statsReadbackBuffer_.allocation, &allocInfo);
   if (allocInfo.pMappedData == nullptr) return;
+
+  vmaInvalidateAllocation(allocationManager_.memoryManager()->allocator(),
+                          statsReadbackBuffer_.allocation, 0,
+                          sizeof(uint32_t) * 2);
 
   const auto* data = static_cast<const uint32_t*>(allocInfo.pMappedData);
   lastStats_.frustumPassedCount   = data[0];

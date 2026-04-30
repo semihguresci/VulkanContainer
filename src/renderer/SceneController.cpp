@@ -23,6 +23,21 @@ using container::gpu::kObjectFlagAlphaMask;
 using container::gpu::kObjectFlagDoubleSided;
 using container::gpu::ObjectData;
 
+namespace {
+
+bool transformFlipsWinding(const glm::mat4& transform) {
+  const glm::vec3 x(transform[0]);
+  const glm::vec3 y(transform[1]);
+  const glm::vec3 z(transform[2]);
+  const float determinant =
+      x.x * (y.y * z.z - y.z * z.y) -
+      y.x * (x.y * z.z - x.z * z.y) +
+      z.x * (x.y * y.z - x.z * y.y);
+  return determinant < 0.0f;
+}
+
+}  // namespace
+
 SceneController::SceneController(
     std::shared_ptr<container::gpu::VulkanDevice>  device,
     container::gpu::AllocationManager&             allocationManager,
@@ -173,16 +188,20 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
   opaqueDrawCommands_.clear();
   transparentDrawCommands_.clear();
   opaqueSingleSidedDrawCommands_.clear();
+  opaqueWindingFlippedDrawCommands_.clear();
   opaqueDoubleSidedDrawCommands_.clear();
   transparentSingleSidedDrawCommands_.clear();
+  transparentWindingFlippedDrawCommands_.clear();
   transparentDoubleSidedDrawCommands_.clear();
   const uint32_t renderableCount = world_->renderableCount();
   objectData_.reserve(renderableCount);
   opaqueDrawCommands_.reserve(renderableCount);
   transparentDrawCommands_.reserve(renderableCount);
   opaqueSingleSidedDrawCommands_.reserve(renderableCount);
+  opaqueWindingFlippedDrawCommands_.reserve(renderableCount);
   opaqueDoubleSidedDrawCommands_.reserve(renderableCount);
   transparentSingleSidedDrawCommands_.reserve(renderableCount);
+  transparentWindingFlippedDrawCommands_.reserve(renderableCount);
   transparentDoubleSidedDrawCommands_.reserve(renderableCount);
 
   world_->forEachRenderable(
@@ -203,10 +222,9 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         {
           const glm::mat3 model3  = glm::mat3(transform.worldTransform);
           const glm::mat3 normal3 = glm::transpose(glm::inverse(model3));
-          object.normalMatrix = glm::mat4(1.0f);
-          object.normalMatrix[0] = glm::vec4(normal3[0], 0.0f);
-          object.normalMatrix[1] = glm::vec4(normal3[1], 0.0f);
-          object.normalMatrix[2] = glm::vec4(normal3[2], 0.0f);
+          object.normalMatrix0 = glm::vec4(normal3[0], 0.0f);
+          object.normalMatrix1 = glm::vec4(normal3[1], 0.0f);
+          object.normalMatrix2 = glm::vec4(normal3[2], 0.0f);
         }
         object.color        = sceneManager_.resolveMaterialColor(materialIndex);
         object.emissiveColor =
@@ -230,13 +248,19 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
                 materialIndex);
         object.alphaCutoff =
             sceneManager_.resolveMaterialAlphaCutoff(materialIndex);
+        const bool materialDoubleSided =
+            sceneManager_.isMaterialDoubleSided(materialIndex);
         object.flags = 0;
         if (sceneManager_.isMaterialAlphaMasked(materialIndex))
           object.flags |= kObjectFlagAlphaMask;
         if (sceneManager_.isMaterialTransparent(materialIndex))
           object.flags |= kObjectFlagAlphaBlend;
-        if (sceneManager_.isMaterialDoubleSided(materialIndex))
+        if (materialDoubleSided)
           object.flags |= kObjectFlagDoubleSided;
+        const bool rasterDoubleSided =
+            materialDoubleSided || primitive.disableBackfaceCulling;
+        const bool windingFlipped =
+            transformFlipsWinding(transform.worldTransform);
 
         // Compute world-space bounding sphere from primitive vertices.
         {
@@ -278,15 +302,19 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
 
         if ((object.flags & kObjectFlagAlphaBlend) != 0u) {
           transparentDrawCommands_.push_back(drawCommand);
-          if ((object.flags & kObjectFlagDoubleSided) != 0u) {
+          if (rasterDoubleSided) {
             transparentDoubleSidedDrawCommands_.push_back(drawCommand);
+          } else if (windingFlipped) {
+            transparentWindingFlippedDrawCommands_.push_back(drawCommand);
           } else {
             transparentSingleSidedDrawCommands_.push_back(drawCommand);
           }
         } else {
           opaqueDrawCommands_.push_back(drawCommand);
-          if ((object.flags & kObjectFlagDoubleSided) != 0u) {
+          if (rasterDoubleSided) {
             opaqueDoubleSidedDrawCommands_.push_back(drawCommand);
+          } else if (windingFlipped) {
+            opaqueWindingFlippedDrawCommands_.push_back(drawCommand);
           } else {
             opaqueSingleSidedDrawCommands_.push_back(drawCommand);
           }
@@ -309,8 +337,11 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         glm::translate(glm::mat4(1.0f), diagCenter) *
         glm::scale(glm::mat4(1.0f), glm::vec3(diagScale));
     cubeObject.model = cubeModel;
-    cubeObject.normalMatrix = glm::mat4(
-        glm::transpose(glm::inverse(glm::mat3(cubeModel))));
+    const glm::mat3 cubeNormal =
+        glm::transpose(glm::inverse(glm::mat3(cubeModel)));
+    cubeObject.normalMatrix0 = glm::vec4(cubeNormal[0], 0.0f);
+    cubeObject.normalMatrix1 = glm::vec4(cubeNormal[1], 0.0f);
+    cubeObject.normalMatrix2 = glm::vec4(cubeNormal[2], 0.0f);
     cubeObject.color             = glm::vec4(1.0f);
     cubeObject.metallicRoughness = glm::vec2(0.0f, 0.5f);
     diagCubeObjectIndex_ = static_cast<uint32_t>(objectData_.size());

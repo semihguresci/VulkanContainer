@@ -20,6 +20,15 @@ uint32_t SceneGraph::createNode(const glm::mat4& localTransform,
 void SceneGraph::setParent(uint32_t child, std::optional<uint32_t> parentIndex) {
   if (child >= nodes_.size()) return;
 
+  if (parentIndex.has_value()) {
+    const uint32_t newParent = parentIndex.value();
+    if (newParent >= nodes_.size()) {
+      return;
+    } else if (newParent == child || isDescendant(child, newParent)) {
+      return;
+    }
+  }
+
   SceneNode& childNode = nodes_[child];
   if (childNode.parent != kInvalidNode) {
     auto& siblings = nodes_[childNode.parent].children;
@@ -35,6 +44,17 @@ void SceneGraph::setParent(uint32_t child, std::optional<uint32_t> parentIndex) 
     childNode.parent = kInvalidNode;
     roots_.push_back(child);
   }
+}
+
+bool SceneGraph::isDescendant(uint32_t ancestor, uint32_t candidate) const {
+  if (ancestor >= nodes_.size() || candidate >= nodes_.size()) return false;
+
+  uint32_t current = candidate;
+  while (current != kInvalidNode && current < nodes_.size()) {
+    if (current == ancestor) return true;
+    current = nodes_[current].parent;
+  }
+  return false;
 }
 
 void SceneGraph::setLocalTransform(uint32_t nodeIndex,

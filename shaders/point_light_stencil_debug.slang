@@ -2,7 +2,6 @@
 #include "lighting_structs.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
-[[vk::binding(1, 0)]] SamplerState gBufferSampler;
 [[vk::binding(6, 0)]] Texture2D<float> gDepthTexture;
 
 struct PushConstants
@@ -51,7 +50,9 @@ float4 fragMain(VSOutput input) : SV_Target0
     pixelCoord = min(pixelCoord, uint2(max(width, 1u) - 1u, max(height, 1u) - 1u));
     float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
 
-    float depth = gDepthTexture.SampleLevel(gBufferSampler, uv, 0.0);
+    // Depth is a classification input for the debug overlay; integer loads keep
+    // point-light bounds from bleeding across geometry edges.
+    float depth = gDepthTexture.Load(int3(pixelCoord, 0));
     if (depth == 0.0)
     {
         return 0.0.xxxx;
