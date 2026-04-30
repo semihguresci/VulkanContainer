@@ -5,29 +5,7 @@ struct CameraBuffer
     float4 cameraWorldPosition;
 };
 
-struct ObjectBuffer
-{
-    // Keep this shape identical to the G-buffer ObjectBuffer so both passes can
-    // consume the same scene descriptor set.
-    column_major float4x4 model;
-    float4 normalMatrix0;
-    float4 normalMatrix1;
-    float4 normalMatrix2;
-    float4 color;
-    float3 emissiveColor;
-    float emissiveStrength;
-    float2 metallicRoughness;
-    float alphaCutoff;
-    float normalTextureScale;
-    float occlusionStrength;
-    uint baseColorTextureIndex;
-    uint normalTextureIndex;
-    uint occlusionTextureIndex;
-    uint emissiveTextureIndex;
-    uint metallicRoughnessTextureIndex;
-    uint flags;
-    float4 boundingSphere;
-};
+#include "object_data_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
@@ -36,6 +14,7 @@ struct ObjectBuffer
 
 #include "alpha_mask_common.slang"
 #include "object_index_common.slang"
+#include "pbr_material_common.slang"
 
 struct PushConstants
 {
@@ -48,8 +27,8 @@ ConstantBuffer<PushConstants> pc;
 struct VSInput
 {
     [[vk::location(0)]] float3 inPosition;
-    [[vk::location(1)]] float3 inColor;
     [[vk::location(2)]] float2 inTexCoord;
+    [[vk::location(3)]] float3 inNormal;
 };
 
 struct VSOutput
@@ -60,6 +39,8 @@ struct VSOutput
     [[vk::location(2)]] uint flags;
     [[vk::location(3)]] float alphaCutoff;
     [[vk::location(4)]] float baseColorAlpha;
+    [[vk::location(5)]] uint opacityTextureIndex;
+    [[vk::location(6)]] float opacityFactor;
 };
 
 [shader("vertex")]
@@ -68,13 +49,18 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
     VSOutput output;
     uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID);
     ObjectBuffer obj = uObjects[objectIndex];
-    float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
+    float3 objectPosition = ApplyHeightDisplacement(
+        input.inPosition, input.inNormal, input.inTexCoord,
+        obj.heightTextureIndex, obj.heightScale, obj.heightOffset);
+    float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);
     output.texCoord = input.inTexCoord;
     output.baseColorTextureIndex = obj.baseColorTextureIndex;
     output.flags = obj.flags;
     output.alphaCutoff = obj.alphaCutoff;
     output.baseColorAlpha = obj.color.a;
+    output.opacityTextureIndex = obj.opacityTextureIndex;
+    output.opacityFactor = obj.opacityFactor;
     return output;
 }
 
@@ -92,6 +78,8 @@ float4 fragMain(VSOutput input) : SV_Target0
         uint texIndex = NonUniformResourceIndex(input.baseColorTextureIndex);
         alpha *= materialTextures[texIndex].Sample(baseSampler, input.texCoord).a;
     }
+    alpha = EvaluateOpacity(
+        alpha, input.opacityTextureIndex, input.opacityFactor, input.texCoord);
 
     if ((input.flags & 0x1u) != 0u &&
         !AlphaMaskPass(alpha, input.alphaCutoff, input.pos))

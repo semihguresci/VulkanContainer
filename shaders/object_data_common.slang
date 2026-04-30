@@ -1,0 +1,59 @@
+#pragma once
+
+struct ObjectBuffer
+{
+    // Must match container::gpu::ObjectData in include/Container/utility/SceneData.h.
+    column_major float4x4 model;
+    float4 normalMatrix0;
+    float4 normalMatrix1;
+    float4 normalMatrix2;
+    float4 color;
+    float3 emissiveColor;
+    float emissiveStrength;
+    float2 metallicRoughness;
+    float alphaCutoff;
+    float normalTextureScale;
+    float occlusionStrength;
+    uint baseColorTextureIndex;
+    uint normalTextureIndex;
+    uint occlusionTextureIndex;
+    uint emissiveTextureIndex;
+    uint metallicRoughnessTextureIndex;
+    uint roughnessTextureIndex;
+    uint metalnessTextureIndex;
+    uint specularTextureIndex;
+    uint heightTextureIndex;
+    uint opacityTextureIndex;
+    uint transmissionTextureIndex;
+    uint specularColorTextureIndex;
+    uint clearcoatTextureIndex;
+    uint clearcoatRoughnessTextureIndex;
+    uint clearcoatNormalTextureIndex;
+    uint thicknessTextureIndex;
+    uint sheenColorTextureIndex;
+    uint sheenRoughnessTextureIndex;
+    uint iridescenceTextureIndex;
+    uint iridescenceThicknessTextureIndex;
+    uint flags;
+    float opacityFactor;
+    float specularFactor;
+    float heightScale;
+    float heightOffset;
+    float transmissionFactor;
+    float ior;
+    float dispersion;
+    float clearcoatFactor;
+    float clearcoatRoughnessFactor;
+    float clearcoatNormalTextureScale;
+    float thicknessFactor;
+    float attenuationDistance;
+    float sheenRoughnessFactor;
+    float iridescenceFactor;
+    float iridescenceIor;
+    float iridescenceThicknessMinimum;
+    float iridescenceThicknessMaximum;
+    float4 specularColorFactor;
+    float4 attenuationColor;
+    float4 sheenColorFactor;
+    float4 boundingSphere;
+};

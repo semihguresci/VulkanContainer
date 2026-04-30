@@ -78,6 +78,11 @@ add_custom_test(gltf_loader_tests
     VulkanSceneRenderer_geometry
 )
 
+add_custom_test(materialx_integration_tests
+    ${TESTS_DIR}/materialx_integration_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_scene
+)
+
 add_custom_test(rendering_convention_tests
     ${TESTS_DIR}/rendering_convention_tests.cpp  ""  ${TEST_RESULTS_DIR}
     Dep_Math

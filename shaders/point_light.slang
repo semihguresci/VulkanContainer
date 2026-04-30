@@ -68,6 +68,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 normal = SafeNormalize(gNormalTexture.Load(int3(pixelCoord, 0)).xyz * 2.0 - 1.0,
                                   float3(0.0, 1.0, 0.0));
     float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
+    float dielectricF0 = saturate(gEmissiveTexture.Load(int3(pixelCoord, 0)).a);
 
     float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
     float3 worldPosition = ReconstructWorldPosition(uv, depth, uCamera.inverseViewProj);
@@ -86,7 +87,8 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
     float attenuation = SmoothRangeAttenuation(distanceSq, lightRadius);
     float3 radiance = pc.colorIntensity.rgb * pc.colorIntensity.a * attenuation;
-    float3 F0 = lerp(0.04.xxx, albedo.rgb, metallic);
+    float3 F0 = EvaluatePbrF0FromDielectricF0(
+        albedo.rgb, metallic, dielectricF0);
 
     float3 directLighting =
         EvaluatePbrDirectLight(albedo.rgb, F0, metallic, roughness,

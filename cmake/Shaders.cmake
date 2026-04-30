@@ -26,7 +26,19 @@ set(SLANG_SPIRV_FLAGS
 )
 
 file(GLOB SLANG_SOURCES CONFIGURE_DEPENDS "${SHADERS_DIR}/*.slang")
+set(SLANG_INCLUDE_SOURCES
+    "${SHADERS_DIR}/surface_normal_common.slang"
+    "${SHADERS_DIR}/pbr_material_common.slang"
+    "${SHADERS_DIR}/object_data_common.slang"
+    "${SHADERS_DIR}/alpha_mask_common.slang"
+    "${SHADERS_DIR}/object_index_common.slang"
+    "${SHADERS_DIR}/brdf_common.slang"
+    "${SHADERS_DIR}/lighting_structs.slang"
+    "${SHADERS_DIR}/shadow_common.slang"
+)
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/surface_normal_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/pbr_material_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/object_data_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/alpha_mask_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/object_index_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/brdf_common\\.slang$")
@@ -212,7 +224,7 @@ file(WRITE "${SHADER_BUILD_SCRIPT}" "${SHADER_BUILD_SCRIPT_CONTENT}")
 
 add_custom_target(shaders_all
     COMMAND ${CMAKE_COMMAND} -P "${SHADER_BUILD_SCRIPT}"
-    DEPENDS ${SLANG_SOURCES} "${CMAKE_CURRENT_LIST_FILE}"
+    DEPENDS ${SLANG_SOURCES} ${SLANG_INCLUDE_SOURCES} "${CMAKE_CURRENT_LIST_FILE}"
     COMMENT "Rebuilding all Slang shaders"
     VERBATIM
 )

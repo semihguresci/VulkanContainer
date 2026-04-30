@@ -508,6 +508,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   GraphicsPipelines pipelines;
 
   // Depth prepass
+  scenePCI.pVertexInputState = &posTexNormInput;
   scenePCI.stageCount = static_cast<uint32_t>(depthPrepassStages.size());
   scenePCI.pStages    = depthPrepassStages.data();
   pipelines.depthPrepass = pipelineManager_.createGraphicsPipeline(
@@ -563,7 +564,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkGraphicsPipelineCreateInfo sdPCI = scenePCI;
   sdPCI.stageCount          = static_cast<uint32_t>(sdStages.size());
   sdPCI.pStages             = sdStages.data();
-  sdPCI.pVertexInputState   = &posTexInput;
+  sdPCI.pVertexInputState   = &posTexNormInput;
   sdPCI.pInputAssemblyState = &triAssembly;
   sdPCI.pRasterizationState = &shadowRaster;
   sdPCI.pDepthStencilState  = &depthPrepassDS;

@@ -10,6 +10,7 @@
 #include "Container/utility/VulkanDevice.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <span>
@@ -21,6 +22,8 @@ using container::gpu::BindlessPushConstants;
 using container::gpu::kObjectFlagAlphaBlend;
 using container::gpu::kObjectFlagAlphaMask;
 using container::gpu::kObjectFlagDoubleSided;
+using container::gpu::kObjectFlagSpecularGlossiness;
+using container::gpu::kObjectFlagUnlit;
 using container::gpu::ObjectData;
 
 namespace {
@@ -229,6 +232,8 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         object.color        = sceneManager_.resolveMaterialColor(materialIndex);
         object.emissiveColor =
             sceneManager_.resolveMaterialEmissive(materialIndex);
+        object.emissiveStrength =
+            sceneManager_.resolveMaterialEmissiveStrength(materialIndex);
         object.metallicRoughness =
             sceneManager_.resolveMaterialMetallicRoughnessFactors(materialIndex);
         object.baseColorTextureIndex =
@@ -246,6 +251,74 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         object.metallicRoughnessTextureIndex =
             sceneManager_.resolveMaterialMetallicRoughnessTexture(
                 materialIndex);
+        object.roughnessTextureIndex =
+            sceneManager_.resolveMaterialRoughnessTexture(materialIndex);
+        object.metalnessTextureIndex =
+            sceneManager_.resolveMaterialMetalnessTexture(materialIndex);
+        object.specularTextureIndex =
+            sceneManager_.resolveMaterialSpecularTexture(materialIndex);
+        object.specularColorTextureIndex =
+            sceneManager_.resolveMaterialSpecularColorTexture(materialIndex);
+        object.heightTextureIndex =
+            sceneManager_.resolveMaterialHeightTexture(materialIndex);
+        object.opacityTextureIndex =
+            sceneManager_.resolveMaterialOpacityTexture(materialIndex);
+        object.transmissionTextureIndex =
+            sceneManager_.resolveMaterialTransmissionTexture(materialIndex);
+        object.clearcoatTextureIndex =
+            sceneManager_.resolveMaterialClearcoatTexture(materialIndex);
+        object.clearcoatRoughnessTextureIndex =
+            sceneManager_.resolveMaterialClearcoatRoughnessTexture(materialIndex);
+        object.clearcoatNormalTextureIndex =
+            sceneManager_.resolveMaterialClearcoatNormalTexture(materialIndex);
+        object.thicknessTextureIndex =
+            sceneManager_.resolveMaterialThicknessTexture(materialIndex);
+        object.sheenColorTextureIndex =
+            sceneManager_.resolveMaterialSheenColorTexture(materialIndex);
+        object.sheenRoughnessTextureIndex =
+            sceneManager_.resolveMaterialSheenRoughnessTexture(materialIndex);
+        object.iridescenceTextureIndex =
+            sceneManager_.resolveMaterialIridescenceTexture(materialIndex);
+        object.iridescenceThicknessTextureIndex =
+            sceneManager_.resolveMaterialIridescenceThicknessTexture(materialIndex);
+        object.opacityFactor =
+            sceneManager_.resolveMaterialOpacityFactor(materialIndex);
+        object.specularFactor =
+            sceneManager_.resolveMaterialSpecularFactor(materialIndex);
+        object.specularColorFactor =
+            sceneManager_.resolveMaterialSpecularColorFactor(materialIndex);
+        object.heightScale =
+            sceneManager_.resolveMaterialHeightScale(materialIndex);
+        object.heightOffset =
+            sceneManager_.resolveMaterialHeightOffset(materialIndex);
+        object.transmissionFactor =
+            sceneManager_.resolveMaterialTransmissionFactor(materialIndex);
+        object.ior = sceneManager_.resolveMaterialIor(materialIndex);
+        object.dispersion = sceneManager_.resolveMaterialDispersion(materialIndex);
+        object.clearcoatFactor =
+            sceneManager_.resolveMaterialClearcoatFactor(materialIndex);
+        object.clearcoatRoughnessFactor =
+            sceneManager_.resolveMaterialClearcoatRoughnessFactor(materialIndex);
+        object.clearcoatNormalTextureScale =
+            sceneManager_.resolveMaterialClearcoatNormalTextureScale(materialIndex);
+        object.thicknessFactor =
+            sceneManager_.resolveMaterialThicknessFactor(materialIndex);
+        object.attenuationColor =
+            sceneManager_.resolveMaterialAttenuationColor(materialIndex);
+        object.attenuationDistance =
+            sceneManager_.resolveMaterialAttenuationDistance(materialIndex);
+        object.sheenColorFactor =
+            sceneManager_.resolveMaterialSheenColorFactor(materialIndex);
+        object.sheenRoughnessFactor =
+            sceneManager_.resolveMaterialSheenRoughnessFactor(materialIndex);
+        object.iridescenceFactor =
+            sceneManager_.resolveMaterialIridescenceFactor(materialIndex);
+        object.iridescenceIor =
+            sceneManager_.resolveMaterialIridescenceIor(materialIndex);
+        object.iridescenceThicknessMinimum =
+            sceneManager_.resolveMaterialIridescenceThicknessMinimum(materialIndex);
+        object.iridescenceThicknessMaximum =
+            sceneManager_.resolveMaterialIridescenceThicknessMaximum(materialIndex);
         object.alphaCutoff =
             sceneManager_.resolveMaterialAlphaCutoff(materialIndex);
         const bool materialDoubleSided =
@@ -257,6 +330,10 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
           object.flags |= kObjectFlagAlphaBlend;
         if (materialDoubleSided)
           object.flags |= kObjectFlagDoubleSided;
+        if (sceneManager_.usesMaterialSpecularGlossiness(materialIndex))
+          object.flags |= kObjectFlagSpecularGlossiness;
+        if (sceneManager_.isMaterialUnlit(materialIndex))
+          object.flags |= kObjectFlagUnlit;
         const bool rasterDoubleSided =
             materialDoubleSided || primitive.disableBackfaceCulling;
         const bool windingFlipped =
@@ -287,7 +364,10 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
                 glm::length(glm::vec3(transform.worldTransform[0])),
                 glm::length(glm::vec3(transform.worldTransform[1])),
                 glm::length(glm::vec3(transform.worldTransform[2]))});
-            object.boundingSphere = glm::vec4(worldCenter, localRadius * scaleMax);
+            const float heightInflation =
+                std::abs(object.heightScale) * scaleMax;
+            object.boundingSphere =
+                glm::vec4(worldCenter, localRadius * scaleMax + heightInflation);
           }
         }
 

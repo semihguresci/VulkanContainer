@@ -441,6 +441,283 @@ uint32_t SceneManager::resolveMaterialMetallicRoughnessTexture(
   return std::numeric_limits<uint32_t>::max();
 }
 
+uint32_t SceneManager::resolveMaterialRoughnessTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->roughnessTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialMetalnessTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->metalnessTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialSpecularTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->specularTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialSpecularColorTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->specularColorTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialHeightTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->heightTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialOpacityTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->opacityTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialTransmissionTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->transmissionTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialClearcoatTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->clearcoatTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialClearcoatRoughnessTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->clearcoatRoughnessTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialClearcoatNormalTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->clearcoatNormalTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialThicknessTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->thicknessTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialSheenColorTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->sheenColorTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialSheenRoughnessTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->sheenRoughnessTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialIridescenceTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->iridescenceTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+uint32_t SceneManager::resolveMaterialIridescenceThicknessTexture(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->iridescenceThicknessTextureIndex;
+  }
+  return std::numeric_limits<uint32_t>::max();
+}
+
+float SceneManager::resolveMaterialOpacityFactor(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->opacityFactor;
+  }
+  return 1.0f;
+}
+
+float SceneManager::resolveMaterialSpecularFactor(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->specularFactor;
+  }
+  return 1.0f;
+}
+
+glm::vec4 SceneManager::resolveMaterialSpecularColorFactor(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return glm::vec4(m->specularColorFactor, 0.0f);
+  }
+  return glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
+}
+
+float SceneManager::resolveMaterialHeightScale(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->heightScale;
+  }
+  return 0.0f;
+}
+
+float SceneManager::resolveMaterialHeightOffset(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->heightOffset;
+  }
+  return -0.5f;
+}
+
+float SceneManager::resolveMaterialTransmissionFactor(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->transmissionFactor;
+  }
+  return 0.0f;
+}
+
+float SceneManager::resolveMaterialEmissiveStrength(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->emissiveStrength;
+  }
+  return 1.0f;
+}
+
+float SceneManager::resolveMaterialIor(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->ior;
+  }
+  return 1.5f;
+}
+
+float SceneManager::resolveMaterialDispersion(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->dispersion;
+  }
+  return 0.0f;
+}
+
+float SceneManager::resolveMaterialClearcoatFactor(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->clearcoatFactor;
+  }
+  return 0.0f;
+}
+
+float SceneManager::resolveMaterialClearcoatRoughnessFactor(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->clearcoatRoughnessFactor;
+  }
+  return 0.0f;
+}
+
+float SceneManager::resolveMaterialClearcoatNormalTextureScale(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->clearcoatNormalTextureScale;
+  }
+  return 1.0f;
+}
+
+float SceneManager::resolveMaterialThicknessFactor(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->thicknessFactor;
+  }
+  return 0.0f;
+}
+
+glm::vec4 SceneManager::resolveMaterialAttenuationColor(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return glm::vec4(m->attenuationColor, 0.0f);
+  }
+  return glm::vec4(1.0f, 1.0f, 1.0f, 0.0f);
+}
+
+float SceneManager::resolveMaterialAttenuationDistance(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->attenuationDistance;
+  }
+  return std::numeric_limits<float>::infinity();
+}
+
+glm::vec4 SceneManager::resolveMaterialSheenColorFactor(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return glm::vec4(m->sheenColorFactor, 0.0f);
+  }
+  return glm::vec4(0.0f);
+}
+
+float SceneManager::resolveMaterialSheenRoughnessFactor(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->sheenRoughnessFactor;
+  }
+  return 0.0f;
+}
+
+float SceneManager::resolveMaterialIridescenceFactor(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->iridescenceFactor;
+  }
+  return 0.0f;
+}
+
+float SceneManager::resolveMaterialIridescenceIor(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->iridescenceIor;
+  }
+  return 1.3f;
+}
+
+float SceneManager::resolveMaterialIridescenceThicknessMinimum(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->iridescenceThicknessMinimum;
+  }
+  return 100.0f;
+}
+
+float SceneManager::resolveMaterialIridescenceThicknessMaximum(
+    uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->iridescenceThicknessMaximum;
+  }
+  return 400.0f;
+}
+
 float SceneManager::resolveMaterialAlphaCutoff(uint32_t materialIndex) const {
   if (const auto* m = materialManager_.getMaterial(materialIndex)) {
     return m->alphaCutoff;
@@ -469,6 +746,20 @@ bool SceneManager::isMaterialDoubleSided(uint32_t materialIndex) const {
   return false;
 }
 
+bool SceneManager::usesMaterialSpecularGlossiness(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->specularGlossinessWorkflow;
+  }
+  return false;
+}
+
+bool SceneManager::isMaterialUnlit(uint32_t materialIndex) const {
+  if (const auto* m = materialManager_.getMaterial(materialIndex)) {
+    return m->unlit;
+  }
+  return false;
+}
+
 /* ---------- Vulkan setup ---------- */
 
 void SceneManager::createDescriptorSetLayout() {
@@ -483,11 +774,13 @@ void SceneManager::createDescriptorSetLayout() {
                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                  nullptr};
 
-  bindings[2] = {2, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
+  bindings[2] = {2, VK_DESCRIPTOR_TYPE_SAMPLER, 1,
+                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                  nullptr};
 
   bindings[3] = {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, textureDescriptorCapacity_,
-                 VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
+                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                 nullptr};
 
   std::array<VkDescriptorBindingFlags, 4> bindingFlags{
       0, 0, 0,
@@ -532,6 +825,16 @@ void SceneManager::loadMaterialXMaterial() {
   try {
     auto doc = materialXBridge_.loadDocument("materials/base.mtlx");
     material.baseColor = materialXBridge_.extractBaseColor(doc);
+    material.opacityFactor =
+        materialXBridge_.extractFloatInput(doc, "opacity", material.opacityFactor);
+    material.specularFactor =
+        materialXBridge_.extractFloatInput(doc, "specular", material.specularFactor);
+    material.heightScale =
+        materialXBridge_.extractFloatInput(doc, "height", material.heightScale);
+    material.transmissionFactor = materialXBridge_.extractFloatInput(
+        doc, "refraction",
+        materialXBridge_.extractFloatInput(
+            doc, "transmission", material.transmissionFactor));
   } catch (const std::exception& e) {
     std::println(stderr, "MaterialX load failed: {}", e.what());
     material.baseColor = glm::vec4(1.0f);

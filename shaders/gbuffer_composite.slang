@@ -95,7 +95,9 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 encodedNormal = gNormalTexture.Load(int3(pixelCoord, 0)).xyz;
     float3 normal = SafeNormalize(encodedNormal * 2.0 - 1.0, float3(0.0, 1.0, 0.0));
     float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
-    float3 emissive = gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb;
+    float4 emissiveSample = gEmissiveTexture.Load(int3(pixelCoord, 0));
+    float3 emissive = emissiveSample.rgb;
+    float dielectricF0 = saturate(emissiveSample.a);
 
     float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
     float3 worldPosition = ReconstructWorldPosition(uv, depth, uCamera.inverseViewProj);
@@ -107,7 +109,8 @@ float4 fragMain(VSOutput input) : SV_Target0
     float roughness = clamp(material.y, 0.045, 1.0);
     float occlusion = saturate(material.z);
 
-    float3 F0 = lerp(0.04.xxx, albedo.rgb, metallic);
+    float3 F0 = EvaluatePbrF0FromDielectricF0(
+        albedo.rgb, metallic, dielectricF0);
     float3 directLighting = EvaluatePbrDirectLight(
         albedo.rgb, F0, metallic, roughness, normal, V, L, lightColor);
     float3 ambientLighting = albedo.rgb * 0.03 * occlusion;

@@ -86,7 +86,9 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 normal = SafeNormalize(gNormalTexture.Load(int3(pixelCoord, 0)).xyz * 2.0 - 1.0,
                                   float3(0.0, 1.0, 0.0));
     float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
-    float3 emissive = gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb;
+    float4 emissiveSample = gEmissiveTexture.Load(int3(pixelCoord, 0));
+    float3 emissive = emissiveSample.rgb;
+    float dielectricF0 = saturate(emissiveSample.a);
 
     float metallic = saturate(material.x);
     float roughness = clamp(material.y, 0.045, 1.0);
@@ -117,7 +119,8 @@ float4 fragMain(VSOutput input) : SV_Target0
             viewDepth, uShadow, gShadowAtlas, gShadowSampler);
     }
 
-    float3 F0 = lerp(0.04.xxx, albedo.rgb, metallic);
+    float3 F0 = EvaluatePbrF0FromDielectricF0(
+        albedo.rgb, metallic, dielectricF0);
     float3 directLighting = EvaluatePbrDirectLight(
         albedo.rgb, F0, metallic, roughness, normal, V, L, lightColor) * shadowFactor;
     if (thinSurface)
@@ -141,7 +144,8 @@ float4 fragMain(VSOutput input) : SV_Target0
     float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
     float3 prefilteredColor = gPrefilteredCubemap.SampleLevel(envSampler, R, roughness * maxMipLevel).rgb;
     float2 brdf = gBrdfLUT.Sample(brdfSampler, float2(NdotV, roughness));
-    float3 specularIBL = prefilteredColor * (F0 * brdf.x + brdf.y);
+    float3 specularIBL =
+        EvaluateSpecularIblMultipleScattering(prefilteredColor, F0, brdf);
 
     // Screen-space AO (GTAO).
     float ssao = 1.0;

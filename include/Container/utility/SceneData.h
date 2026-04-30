@@ -37,7 +37,42 @@ struct ObjectData {
   alignas(4) uint32_t occlusionTextureIndex{std::numeric_limits<uint32_t>::max()};
   alignas(4) uint32_t emissiveTextureIndex{std::numeric_limits<uint32_t>::max()};
   alignas(4) uint32_t metallicRoughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t roughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t metalnessTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t specularTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t heightTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t opacityTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t transmissionTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t specularColorTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t clearcoatTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t clearcoatRoughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t clearcoatNormalTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t thicknessTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t sheenColorTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t sheenRoughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t iridescenceTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t iridescenceThicknessTextureIndex{std::numeric_limits<uint32_t>::max()};
   alignas(4) uint32_t flags{0};
+  alignas(4) float opacityFactor{1.0f};
+  alignas(4) float specularFactor{1.0f};
+  alignas(4) float heightScale{0.0f};
+  alignas(4) float heightOffset{-0.5f};
+  alignas(4) float transmissionFactor{0.0f};
+  alignas(4) float ior{1.5f};
+  alignas(4) float dispersion{0.0f};
+  alignas(4) float clearcoatFactor{0.0f};
+  alignas(4) float clearcoatRoughnessFactor{0.0f};
+  alignas(4) float clearcoatNormalTextureScale{1.0f};
+  alignas(4) float thicknessFactor{0.0f};
+  alignas(4) float attenuationDistance{std::numeric_limits<float>::infinity()};
+  alignas(4) float sheenRoughnessFactor{0.0f};
+  alignas(4) float iridescenceFactor{0.0f};
+  alignas(4) float iridescenceIor{1.3f};
+  alignas(4) float iridescenceThicknessMinimum{100.0f};
+  alignas(4) float iridescenceThicknessMaximum{400.0f};
+  alignas(16) glm::vec4 specularColorFactor{1.0f, 1.0f, 1.0f, 0.0f};
+  alignas(16) glm::vec4 attenuationColor{1.0f, 1.0f, 1.0f, 0.0f};
+  alignas(16) glm::vec4 sheenColorFactor{0.0f, 0.0f, 0.0f, 0.0f};
   // Bounding sphere in world space: xyz = center, w = radius.
   alignas(16) glm::vec4 boundingSphere{0.0f, 0.0f, 0.0f, 0.0f};
 };
@@ -59,6 +94,8 @@ struct BindlessPushConstants {
 inline constexpr uint32_t kObjectFlagAlphaMask = 1u << 0;
 inline constexpr uint32_t kObjectFlagAlphaBlend = 1u << 1;
 inline constexpr uint32_t kObjectFlagDoubleSided = 1u << 2;
+inline constexpr uint32_t kObjectFlagSpecularGlossiness = 1u << 3;
+inline constexpr uint32_t kObjectFlagUnlit = 1u << 4;
 
 inline constexpr uint32_t kMaxDeferredPointLights = 12;
 inline constexpr uint32_t kMaxClusteredLights     = 8192;
@@ -290,7 +327,7 @@ static_assert(sizeof(ShadowCullPushConstants) == 16,
 static_assert(sizeof(ShadowCullCountData) == sizeof(uint32_t) * kShadowCascadeCount,
               "ShadowCullCountData stores one visible count per shadow cascade.");
 
-static_assert(sizeof(ObjectData) == 208,
+static_assert(sizeof(ObjectData) == 384,
               "ObjectData size mismatch with shader ObjectBuffer (see "
               "gbuffer.slang, depth_prepass.slang, shadow_depth.slang, etc.). "
               "Update all shader ObjectBuffer declarations in lockstep.");
@@ -326,8 +363,77 @@ static_assert(offsetof(ObjectData, emissiveTextureIndex) == 176,
               "ObjectData.emissiveTextureIndex offset");
 static_assert(offsetof(ObjectData, metallicRoughnessTextureIndex) == 180,
               "ObjectData.metallicRoughnessTextureIndex offset");
-static_assert(offsetof(ObjectData, flags) == 184, "ObjectData.flags offset");
-static_assert(offsetof(ObjectData, boundingSphere) == 192,
+static_assert(offsetof(ObjectData, roughnessTextureIndex) == 184,
+              "ObjectData.roughnessTextureIndex offset");
+static_assert(offsetof(ObjectData, metalnessTextureIndex) == 188,
+              "ObjectData.metalnessTextureIndex offset");
+static_assert(offsetof(ObjectData, specularTextureIndex) == 192,
+              "ObjectData.specularTextureIndex offset");
+static_assert(offsetof(ObjectData, heightTextureIndex) == 196,
+              "ObjectData.heightTextureIndex offset");
+static_assert(offsetof(ObjectData, opacityTextureIndex) == 200,
+              "ObjectData.opacityTextureIndex offset");
+static_assert(offsetof(ObjectData, transmissionTextureIndex) == 204,
+              "ObjectData.transmissionTextureIndex offset");
+static_assert(offsetof(ObjectData, specularColorTextureIndex) == 208,
+              "ObjectData.specularColorTextureIndex offset");
+static_assert(offsetof(ObjectData, clearcoatTextureIndex) == 212,
+              "ObjectData.clearcoatTextureIndex offset");
+static_assert(offsetof(ObjectData, clearcoatRoughnessTextureIndex) == 216,
+              "ObjectData.clearcoatRoughnessTextureIndex offset");
+static_assert(offsetof(ObjectData, clearcoatNormalTextureIndex) == 220,
+              "ObjectData.clearcoatNormalTextureIndex offset");
+static_assert(offsetof(ObjectData, thicknessTextureIndex) == 224,
+              "ObjectData.thicknessTextureIndex offset");
+static_assert(offsetof(ObjectData, sheenColorTextureIndex) == 228,
+              "ObjectData.sheenColorTextureIndex offset");
+static_assert(offsetof(ObjectData, sheenRoughnessTextureIndex) == 232,
+              "ObjectData.sheenRoughnessTextureIndex offset");
+static_assert(offsetof(ObjectData, iridescenceTextureIndex) == 236,
+              "ObjectData.iridescenceTextureIndex offset");
+static_assert(offsetof(ObjectData, iridescenceThicknessTextureIndex) == 240,
+              "ObjectData.iridescenceThicknessTextureIndex offset");
+static_assert(offsetof(ObjectData, flags) == 244, "ObjectData.flags offset");
+static_assert(offsetof(ObjectData, opacityFactor) == 248,
+              "ObjectData.opacityFactor offset");
+static_assert(offsetof(ObjectData, specularFactor) == 252,
+              "ObjectData.specularFactor offset");
+static_assert(offsetof(ObjectData, heightScale) == 256,
+              "ObjectData.heightScale offset");
+static_assert(offsetof(ObjectData, heightOffset) == 260,
+              "ObjectData.heightOffset offset");
+static_assert(offsetof(ObjectData, transmissionFactor) == 264,
+              "ObjectData.transmissionFactor offset");
+static_assert(offsetof(ObjectData, ior) == 268, "ObjectData.ior offset");
+static_assert(offsetof(ObjectData, dispersion) == 272,
+              "ObjectData.dispersion offset");
+static_assert(offsetof(ObjectData, clearcoatFactor) == 276,
+              "ObjectData.clearcoatFactor offset");
+static_assert(offsetof(ObjectData, clearcoatRoughnessFactor) == 280,
+              "ObjectData.clearcoatRoughnessFactor offset");
+static_assert(offsetof(ObjectData, clearcoatNormalTextureScale) == 284,
+              "ObjectData.clearcoatNormalTextureScale offset");
+static_assert(offsetof(ObjectData, thicknessFactor) == 288,
+              "ObjectData.thicknessFactor offset");
+static_assert(offsetof(ObjectData, attenuationDistance) == 292,
+              "ObjectData.attenuationDistance offset");
+static_assert(offsetof(ObjectData, sheenRoughnessFactor) == 296,
+              "ObjectData.sheenRoughnessFactor offset");
+static_assert(offsetof(ObjectData, iridescenceFactor) == 300,
+              "ObjectData.iridescenceFactor offset");
+static_assert(offsetof(ObjectData, iridescenceIor) == 304,
+              "ObjectData.iridescenceIor offset");
+static_assert(offsetof(ObjectData, iridescenceThicknessMinimum) == 308,
+              "ObjectData.iridescenceThicknessMinimum offset");
+static_assert(offsetof(ObjectData, iridescenceThicknessMaximum) == 312,
+              "ObjectData.iridescenceThicknessMaximum offset");
+static_assert(offsetof(ObjectData, specularColorFactor) == 320,
+              "ObjectData.specularColorFactor offset");
+static_assert(offsetof(ObjectData, attenuationColor) == 336,
+              "ObjectData.attenuationColor offset");
+static_assert(offsetof(ObjectData, sheenColorFactor) == 352,
+              "ObjectData.sheenColorFactor offset");
+static_assert(offsetof(ObjectData, boundingSphere) == 368,
               "ObjectData.boundingSphere offset");
 
 }  // namespace container::gpu

@@ -54,6 +54,53 @@ float3 FresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
     return F0 + (maxReflectivity - F0) * Pow5(saturate(1.0 - cosTheta));
 }
 
+float IorToF0(float ior)
+{
+    if (ior <= 0.0)
+    {
+        return 1.0;
+    }
+    float safeIor = max(ior, 1.0);
+    float f0 = (safeIor - 1.0) / (safeIor + 1.0);
+    return saturate(f0 * f0);
+}
+
+float3 EvaluatePbrF0(float3 albedo, float metallic, float specularFactor,
+                     float3 specularColorFactor, float ior)
+{
+    float3 dielectricF0 =
+        min(IorToF0(ior).xxx * max(specularColorFactor, 0.0.xxx), 1.0.xxx) *
+        saturate(specularFactor);
+    return lerp(dielectricF0, albedo, saturate(metallic));
+}
+
+float EvaluateDielectricF0(float specularFactor, float3 specularColorFactor,
+                           float ior)
+{
+    float3 color = max(specularColorFactor, 0.0.xxx);
+    float colorMagnitude = max(max(color.x, color.y), color.z);
+    return saturate(IorToF0(ior) * saturate(specularFactor) * colorMagnitude);
+}
+
+float3 EvaluatePbrF0FromDielectricF0(float3 albedo, float metallic,
+                                     float dielectricF0)
+{
+    return lerp(saturate(dielectricF0).xxx, albedo, saturate(metallic));
+}
+
+float3 EvaluateSpecularIblMultipleScattering(float3 prefilteredColor,
+                                             float3 F0, float2 brdf)
+{
+    float3 singleScatter = max(F0 * brdf.x + brdf.y, 0.0.xxx);
+    float singleScatterEnergy = saturate(brdf.x + brdf.y);
+    float missingEnergy = saturate(1.0 - singleScatterEnergy);
+    float3 averageFresnel = F0 + (1.0.xxx - F0) * (1.0 / 21.0);
+    float3 multiScatter =
+        singleScatter * averageFresnel * missingEnergy /
+        max(1.0.xxx - averageFresnel * missingEnergy, 1e-4.xxx);
+    return prefilteredColor * (singleScatter + multiScatter);
+}
+
 float SmoothRangeAttenuation(float distanceSq, float radius)
 {
     float safeRadius = max(radius, 1e-3);

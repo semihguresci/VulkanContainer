@@ -94,10 +94,48 @@ class SceneManager {
   uint32_t resolveMaterialEmissiveTexture(uint32_t materialIndex) const;
   uint32_t resolveMaterialMetallicRoughnessTexture(
       uint32_t materialIndex) const;
+  uint32_t resolveMaterialRoughnessTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialMetalnessTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialSpecularTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialSpecularColorTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialHeightTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialOpacityTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialTransmissionTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialClearcoatTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialClearcoatRoughnessTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialClearcoatNormalTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialThicknessTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialSheenColorTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialSheenRoughnessTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialIridescenceTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialIridescenceThicknessTexture(uint32_t materialIndex) const;
+  float resolveMaterialOpacityFactor(uint32_t materialIndex) const;
+  float resolveMaterialSpecularFactor(uint32_t materialIndex) const;
+  glm::vec4 resolveMaterialSpecularColorFactor(uint32_t materialIndex) const;
+  float resolveMaterialHeightScale(uint32_t materialIndex) const;
+  float resolveMaterialHeightOffset(uint32_t materialIndex) const;
+  float resolveMaterialTransmissionFactor(uint32_t materialIndex) const;
+  float resolveMaterialEmissiveStrength(uint32_t materialIndex) const;
+  float resolveMaterialIor(uint32_t materialIndex) const;
+  float resolveMaterialDispersion(uint32_t materialIndex) const;
+  float resolveMaterialClearcoatFactor(uint32_t materialIndex) const;
+  float resolveMaterialClearcoatRoughnessFactor(uint32_t materialIndex) const;
+  float resolveMaterialClearcoatNormalTextureScale(uint32_t materialIndex) const;
+  float resolveMaterialThicknessFactor(uint32_t materialIndex) const;
+  glm::vec4 resolveMaterialAttenuationColor(uint32_t materialIndex) const;
+  float resolveMaterialAttenuationDistance(uint32_t materialIndex) const;
+  glm::vec4 resolveMaterialSheenColorFactor(uint32_t materialIndex) const;
+  float resolveMaterialSheenRoughnessFactor(uint32_t materialIndex) const;
+  float resolveMaterialIridescenceFactor(uint32_t materialIndex) const;
+  float resolveMaterialIridescenceIor(uint32_t materialIndex) const;
+  float resolveMaterialIridescenceThicknessMinimum(uint32_t materialIndex) const;
+  float resolveMaterialIridescenceThicknessMaximum(uint32_t materialIndex) const;
   float resolveMaterialAlphaCutoff(uint32_t materialIndex) const;
   bool isMaterialTransparent(uint32_t materialIndex) const;
   bool isMaterialAlphaMasked(uint32_t materialIndex) const;
   bool isMaterialDoubleSided(uint32_t materialIndex) const;
+  bool usesMaterialSpecularGlossiness(uint32_t materialIndex) const;
+  bool isMaterialUnlit(uint32_t materialIndex) const;
 
  private:
   uint32_t queryTextureDescriptorCapacity() const;

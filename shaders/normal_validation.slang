@@ -5,32 +5,15 @@ struct CameraBuffer
     float4 cameraWorldPosition;
 };
 
-struct ObjectBuffer
-{
-    column_major float4x4 model;
-    float4 normalMatrix0;
-    float4 normalMatrix1;
-    float4 normalMatrix2;
-    float4 color;
-    float3 emissiveColor;
-    float emissiveStrength;
-    float2 metallicRoughness;
-    float alphaCutoff;
-    float normalTextureScale;
-    float occlusionStrength;
-    uint baseColorTextureIndex;
-    uint normalTextureIndex;
-    uint occlusionTextureIndex;
-    uint emissiveTextureIndex;
-    uint metallicRoughnessTextureIndex;
-    uint flags;
-    float4 boundingSphere;
-};
+#include "object_data_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
+[[vk::binding(2, 0)]] SamplerState baseSampler;
+[[vk::binding(3, 0)]] Texture2D materialTextures[];
 
 #include "object_index_common.slang"
+#include "pbr_material_common.slang"
 
 struct PushConstants
 {
@@ -46,6 +29,8 @@ ConstantBuffer<PushConstants> pc;
 struct VSInput
 {
     [[vk::location(0)]] float3 inPosition;
+    [[vk::location(2)]] float2 inTexCoord;
+    [[vk::location(3)]] float3 inNormal;
 };
 
 struct VSOutput
@@ -66,7 +51,10 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
     VSOutput output;
     uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID);
     ObjectBuffer obj = uObjects[objectIndex];
-    float4 world = mul(obj.model, float4(input.inPosition, 1.0));
+    float3 objectPosition = ApplyHeightDisplacement(
+        input.inPosition, input.inNormal, input.inTexCoord,
+        obj.heightTextureIndex, obj.heightScale, obj.heightOffset);
+    float4 world = mul(obj.model, float4(objectPosition, 1.0));
     output.worldPos = world.xyz;
     output.pos = mul(uCamera.viewProj, world);
     return output;
