@@ -42,10 +42,12 @@ void DebugOverlayRenderer::recordNormalValidation(
     VkCommandBuffer cmd, VkPipelineLayout layout,
     const std::vector<DrawCommand>& opaque,
     const std::vector<DrawCommand>& transparent,
+    uint32_t faceClassificationFlags,
     const container::gpu::NormalValidationSettings& settings,
     NormalValidationPushConstants& pc) const {
   pc.showFaceFill = settings.showFaceFill ? 1u : 0u;
   pc.faceAlpha    = settings.faceAlpha;
+  pc.faceClassificationFlags = faceClassificationFlags;
 
   constexpr VkShaderStageFlags kStages =
       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |

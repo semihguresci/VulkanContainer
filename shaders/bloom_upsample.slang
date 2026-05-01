@@ -1,18 +1,10 @@
 // bloom_upsample.slang — Bloom progressive upsample with 9-tap tent filter.
 // Uses a 3x3 tent filter for smooth upsampling, additively blends with the next higher mip.
 
-struct PushConstants
-{
-    uint2 srcResolution;
-    uint2 dstResolution;
-    float filterRadius;
-    float bloomIntensity;  // Only used on final upsample (mip 0 target)
-    uint  isFinalPass;     // 1 = final upsample that writes to bloom output
-    uint  pad0;
-};
+#include "push_constants_common.slang"
 
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<BloomUpsamplePushConstants> pc;
 
 [[vk::binding(0, 0)]] Texture2D<float4> srcTexture;   // Lower-res mip being upsampled
 [[vk::binding(1, 0)]] SamplerState linearSampler;
@@ -49,11 +41,14 @@ float3 UpsampleTent9(Texture2D<float4> tex, SamplerState samp, float2 uv, float2
 [shader("compute")]
 void computeMain(uint3 dtid : SV_DispatchThreadID)
 {
-    if (dtid.x >= pc.dstResolution.x || dtid.y >= pc.dstResolution.y)
+    uint2 srcResolution = uint2(pc.srcWidth, pc.srcHeight);
+    uint2 dstResolution = uint2(pc.dstWidth, pc.dstHeight);
+
+    if (dtid.x >= dstResolution.x || dtid.y >= dstResolution.y)
         return;
 
-    float2 texelSize = 1.0 / float2(pc.srcResolution);
-    float2 uv = (float2(dtid.xy) + 0.5) / float2(pc.dstResolution);
+    float2 texelSize = 1.0 / float2(srcResolution);
+    float2 uv = (float2(dtid.xy) + 0.5) / float2(dstResolution);
 
     float3 upsampled = UpsampleTent9(srcTexture, linearSampler, uv, texelSize, pc.filterRadius);
 

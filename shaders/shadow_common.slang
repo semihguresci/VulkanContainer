@@ -12,29 +12,37 @@ float2 ShadowNdcToUv(float2 shadowNdcXY)
     return shadowNdcXY * 0.5 + 0.5;
 }
 
-static const float SHADOW_MAP_RESOLUTION = 2048.0;
-
-float ComputeReceiverPlaneDepthBias(float3 shadowNDC)
+float ComputeReceiverPlaneDepthBias(float3 shadowNDC, ShadowBuffer shadowData)
 {
     float2 dz = float2(ddx(shadowNDC.z), ddy(shadowNDC.z));
-    return min(dot(abs(dz), 1.0.xx) * 1.5, 0.006);
+    float scale = max(shadowData.biasSettings.w, 0.0);
+    float maxBias = max(shadowData.filterSettings.w, 0.0);
+    return min(dot(abs(dz), 1.0.xx) * scale, maxBias);
 }
 
-float ComputeSlopeScaledBias(float3 normal, float3 lightDir)
+float ComputeSlopeScaledBias(float3 normal, float3 lightDir,
+                             ShadowBuffer shadowData)
 {
     float NdotL = saturate(dot(normal, -lightDir));
     float slope = sqrt(max(1.0 - NdotL * NdotL, 0.0)) / max(NdotL, 0.12);
-    return min(0.00035 + slope * 0.0012, 0.006);
+    float constantBias = max(shadowData.filterSettings.z, 0.0);
+    float slopeScale = max(shadowData.biasSettings.z, 0.0);
+    float maxBias = max(shadowData.filterSettings.w, 0.0);
+    return min(constantBias + slope * slopeScale, maxBias);
 }
 
 float SampleWeightedPcf(
     float2 shadowUV,
     uint cascadeIndex,
     float compareDepth,
+    ShadowBuffer shadowData,
     Texture2DArray<float> shadowAtlas,
     SamplerComparisonState shadowSampler)
 {
-    float2 texelSize = (1.0 / SHADOW_MAP_RESOLUTION).xx;
+    float filterRadiusTexels = max(shadowData.filterSettings.x, 0.0);
+    ShadowCascadeData cascade = shadowData.cascades[cascadeIndex];
+    float cascadeExtent = max(cascade.worldRadius * 2.0, 1e-4);
+    float2 texelSize = (cascade.texelSize * filterRadiusTexels / cascadeExtent).xx;
     float shadow = 0.0;
     float totalWeight = 0.0;
 
@@ -94,17 +102,15 @@ float SampleCascadeShadow(
         return 1.0;
     }
 
-    float bias = ComputeSlopeScaledBias(normal, lightDir) +
-                 ComputeReceiverPlaneDepthBias(shadowNDC);
+    float bias = ComputeSlopeScaledBias(normal, lightDir, shadowData) +
+                 ComputeReceiverPlaneDepthBias(shadowNDC, shadowData);
     // Reverse-Z: push compare depth towards the light (larger = closer = near=1).
     float compareDepth = shadowNDC.z + bias;
 
     return SampleWeightedPcf(
-        shadowUV, cascadeIndex, compareDepth, shadowAtlas, shadowSampler);
+        shadowUV, cascadeIndex, compareDepth, shadowData, shadowAtlas,
+        shadowSampler);
 }
-
-// Fraction of the cascade range used as the blend overlap zone on each side.
-static const float CASCADE_BLEND_FRACTION = 0.1;
 
 // Compute the shadow factor for a world-space position.
 // Returns 1.0 if fully lit, 0.0 if fully shadowed.
@@ -121,8 +127,11 @@ float ComputeShadowFactor(
     uint cascadeIndex = SelectCascade(viewDepth, shadowData);
 
     // Normal offset bias: push sample position along surface normal to reduce acne.
-    float texelSize = 1.0 / SHADOW_MAP_RESOLUTION;
-    float normalBias = texelSize * lerp(1.5, 3.5, saturate(1.0 - dot(normal, -lightDir)));
+    float normalBiasTexels = lerp(
+        max(shadowData.biasSettings.x, 0.0),
+        max(shadowData.biasSettings.y, shadowData.biasSettings.x),
+        saturate(1.0 - dot(normal, -lightDir)));
+    float normalBias = shadowData.cascades[cascadeIndex].texelSize * normalBiasTexels;
     float3 samplePos = worldPosition + normal * normalBias;
 
     float shadow = SampleCascadeShadow(
@@ -137,7 +146,8 @@ float ComputeShadowFactor(
             ? 0.0
             : shadowData.cascades[cascadeIndex - 1].splitDepth;
         float cascadeRange = splitDepth - prevSplit;
-        float blendZone = cascadeRange * CASCADE_BLEND_FRACTION;
+        float blendFraction = clamp(shadowData.filterSettings.y, 0.0, 0.45);
+        float blendZone = cascadeRange * blendFraction;
         float blendStart = splitDepth - blendZone;
 
         if (viewDepth > blendStart)

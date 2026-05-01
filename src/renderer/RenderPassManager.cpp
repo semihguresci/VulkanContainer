@@ -70,7 +70,8 @@ void RenderPassManager::create(VkFormat swapchainFormat,
                                VkFormat albedoFormat,
                                VkFormat normalFormat,
                                VkFormat materialFormat,
-                               VkFormat emissiveFormat) {
+                               VkFormat emissiveFormat,
+                               VkFormat specularFormat) {
   VkDevice dev = device_->device();
 
   // ---- Depth Prepass ----
@@ -134,17 +135,18 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   gbDs.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   gbDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-  std::array<VkAttachmentDescription, 5> gbAttachments = {
+  std::array<VkAttachmentDescription, 6> gbAttachments = {
       makeColor(albedoFormat), makeColor(normalFormat), makeColor(materialFormat),
-      makeColor(emissiveFormat), gbDs};
+      makeColor(emissiveFormat), makeColor(specularFormat), gbDs};
 
-  std::array<VkAttachmentReference, 4> colorRefs = {{
+  std::array<VkAttachmentReference, 5> colorRefs = {{
       {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+      {4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
   }};
-  VkAttachmentReference gbDsRef{4, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference gbDsRef{5, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
   VkSubpassDescription gbSubpass{};
   gbSubpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;

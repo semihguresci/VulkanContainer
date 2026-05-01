@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "sampleModelRoot": "models/glTF-Sample-Models/2.0",
+  "regressions": [
+    {
+      "id": "texture_settings_single_sided_culling",
+      "asset": "TextureSettingsTest/glTF/TextureSettingsTest.gltf",
+      "checks": [
+        {
+          "kind": "primitiveMaterialCull",
+          "materialIndex": 8,
+          "disableBackfaceCulling": false,
+          "minCount": 1
+        },
+        {
+          "kind": "finiteVertexBasis"
+        }
+      ]
+    },
+    {
+      "id": "sponza_lion_relief_no_cull",
+      "asset": "Sponza/glTF/Sponza.gltf",
+      "checks": [
+        {
+          "kind": "primitiveMaterialCull",
+          "materialIndex": 23,
+          "minIndexCount": 3072,
+          "disableBackfaceCulling": true,
+          "minCount": 2
+        },
+        {
+          "kind": "finiteVertexBasis"
+        }
+      ]
+    },
+    {
+      "id": "orientation_test_vertex_basis",
+      "asset": "OrientationTest/glTF/OrientationTest.gltf",
+      "checks": [
+        {
+          "kind": "finiteVertexBasis"
+        }
+      ]
+    },
+    {
+      "id": "normal_tangent_test_vertex_basis",
+      "asset": "NormalTangentTest/glTF/NormalTangentTest.gltf",
+      "checks": [
+        {
+          "kind": "finiteVertexBasis"
+        }
+      ]
+    },
+    {
+      "id": "normal_tangent_mirror_test_vertex_basis",
+      "asset": "NormalTangentMirrorTest/glTF/NormalTangentMirrorTest.gltf",
+      "checks": [
+        {
+          "kind": "finiteVertexBasis"
+        }
+      ]
+    },
+    {
+      "id": "negative_scale_test_vertex_basis",
+      "asset": "NegativeScaleTest/glTF/NegativeScaleTest.gltf",
+      "checks": [
+        {
+          "kind": "finiteVertexBasis"
+        }
+      ]
+    }
+  ]
+}

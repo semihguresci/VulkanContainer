@@ -94,6 +94,7 @@ class SceneController {
 
   bool reloadSceneModel(
       const std::string&                      path,
+      float                                   importScale,
       container::gpu::AllocatedBuffer&       objectBuffer,
       size_t&                                 objectBufferCapacity,
       const container::gpu::AllocatedBuffer& cameraBuffer,

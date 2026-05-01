@@ -5,13 +5,7 @@
 static const float PI = 3.14159265359;
 static const uint  SAMPLE_COUNT = 1024u;
 
-struct PrefilterPushConstants
-{
-    uint  faceIndex;
-    uint  faceSize;     // current mip face size
-    float roughness;
-    uint  sourceMipCount;
-};
+#include "push_constants_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<PrefilterPushConstants> pc;

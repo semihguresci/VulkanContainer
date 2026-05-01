@@ -19,11 +19,6 @@
 namespace container::renderer {
 
 using container::gpu::BindlessPushConstants;
-using container::gpu::kObjectFlagAlphaBlend;
-using container::gpu::kObjectFlagAlphaMask;
-using container::gpu::kObjectFlagDoubleSided;
-using container::gpu::kObjectFlagSpecularGlossiness;
-using container::gpu::kObjectFlagUnlit;
 using container::gpu::ObjectData;
 
 namespace {
@@ -218,10 +213,12 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
 
         const auto& primitive =
             sceneManager_.primitiveRanges()[mesh.primitiveIndex];
-        const uint32_t materialIndex = material.materialIndex;
+        const uint32_t materialIndex =
+            sceneManager_.resolveGpuMaterialIndex(material.materialIndex);
 
         ObjectData object{};
         object.model = transform.worldTransform;
+        object.objectInfo.x = materialIndex;
         {
           const glm::mat3 model3  = glm::mat3(transform.worldTransform);
           const glm::mat3 normal3 = glm::transpose(glm::inverse(model3));
@@ -229,115 +226,16 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
           object.normalMatrix1 = glm::vec4(normal3[1], 0.0f);
           object.normalMatrix2 = glm::vec4(normal3[2], 0.0f);
         }
-        object.color        = sceneManager_.resolveMaterialColor(materialIndex);
-        object.emissiveColor =
-            sceneManager_.resolveMaterialEmissive(materialIndex);
-        object.emissiveStrength =
-            sceneManager_.resolveMaterialEmissiveStrength(materialIndex);
-        object.metallicRoughness =
-            sceneManager_.resolveMaterialMetallicRoughnessFactors(materialIndex);
-        object.baseColorTextureIndex =
-            sceneManager_.resolveMaterialTextureIndex(materialIndex);
-        object.normalTextureIndex =
-            sceneManager_.resolveMaterialNormalTexture(materialIndex);
-        object.normalTextureScale =
-            sceneManager_.resolveMaterialNormalTextureScale(materialIndex);
-        object.occlusionTextureIndex =
-            sceneManager_.resolveMaterialOcclusionTexture(materialIndex);
-        object.occlusionStrength =
-            sceneManager_.resolveMaterialOcclusionStrength(materialIndex);
-        object.emissiveTextureIndex =
-            sceneManager_.resolveMaterialEmissiveTexture(materialIndex);
-        object.metallicRoughnessTextureIndex =
-            sceneManager_.resolveMaterialMetallicRoughnessTexture(
-                materialIndex);
-        object.roughnessTextureIndex =
-            sceneManager_.resolveMaterialRoughnessTexture(materialIndex);
-        object.metalnessTextureIndex =
-            sceneManager_.resolveMaterialMetalnessTexture(materialIndex);
-        object.specularTextureIndex =
-            sceneManager_.resolveMaterialSpecularTexture(materialIndex);
-        object.specularColorTextureIndex =
-            sceneManager_.resolveMaterialSpecularColorTexture(materialIndex);
-        object.heightTextureIndex =
-            sceneManager_.resolveMaterialHeightTexture(materialIndex);
-        object.opacityTextureIndex =
-            sceneManager_.resolveMaterialOpacityTexture(materialIndex);
-        object.transmissionTextureIndex =
-            sceneManager_.resolveMaterialTransmissionTexture(materialIndex);
-        object.clearcoatTextureIndex =
-            sceneManager_.resolveMaterialClearcoatTexture(materialIndex);
-        object.clearcoatRoughnessTextureIndex =
-            sceneManager_.resolveMaterialClearcoatRoughnessTexture(materialIndex);
-        object.clearcoatNormalTextureIndex =
-            sceneManager_.resolveMaterialClearcoatNormalTexture(materialIndex);
-        object.thicknessTextureIndex =
-            sceneManager_.resolveMaterialThicknessTexture(materialIndex);
-        object.sheenColorTextureIndex =
-            sceneManager_.resolveMaterialSheenColorTexture(materialIndex);
-        object.sheenRoughnessTextureIndex =
-            sceneManager_.resolveMaterialSheenRoughnessTexture(materialIndex);
-        object.iridescenceTextureIndex =
-            sceneManager_.resolveMaterialIridescenceTexture(materialIndex);
-        object.iridescenceThicknessTextureIndex =
-            sceneManager_.resolveMaterialIridescenceThicknessTexture(materialIndex);
-        object.opacityFactor =
-            sceneManager_.resolveMaterialOpacityFactor(materialIndex);
-        object.specularFactor =
-            sceneManager_.resolveMaterialSpecularFactor(materialIndex);
-        object.specularColorFactor =
-            sceneManager_.resolveMaterialSpecularColorFactor(materialIndex);
-        object.heightScale =
-            sceneManager_.resolveMaterialHeightScale(materialIndex);
-        object.heightOffset =
-            sceneManager_.resolveMaterialHeightOffset(materialIndex);
-        object.transmissionFactor =
-            sceneManager_.resolveMaterialTransmissionFactor(materialIndex);
-        object.ior = sceneManager_.resolveMaterialIor(materialIndex);
-        object.dispersion = sceneManager_.resolveMaterialDispersion(materialIndex);
-        object.clearcoatFactor =
-            sceneManager_.resolveMaterialClearcoatFactor(materialIndex);
-        object.clearcoatRoughnessFactor =
-            sceneManager_.resolveMaterialClearcoatRoughnessFactor(materialIndex);
-        object.clearcoatNormalTextureScale =
-            sceneManager_.resolveMaterialClearcoatNormalTextureScale(materialIndex);
-        object.thicknessFactor =
-            sceneManager_.resolveMaterialThicknessFactor(materialIndex);
-        object.attenuationColor =
-            sceneManager_.resolveMaterialAttenuationColor(materialIndex);
-        object.attenuationDistance =
-            sceneManager_.resolveMaterialAttenuationDistance(materialIndex);
-        object.sheenColorFactor =
-            sceneManager_.resolveMaterialSheenColorFactor(materialIndex);
-        object.sheenRoughnessFactor =
-            sceneManager_.resolveMaterialSheenRoughnessFactor(materialIndex);
-        object.iridescenceFactor =
-            sceneManager_.resolveMaterialIridescenceFactor(materialIndex);
-        object.iridescenceIor =
-            sceneManager_.resolveMaterialIridescenceIor(materialIndex);
-        object.iridescenceThicknessMinimum =
-            sceneManager_.resolveMaterialIridescenceThicknessMinimum(materialIndex);
-        object.iridescenceThicknessMaximum =
-            sceneManager_.resolveMaterialIridescenceThicknessMaximum(materialIndex);
-        object.alphaCutoff =
-            sceneManager_.resolveMaterialAlphaCutoff(materialIndex);
         const bool materialDoubleSided =
             sceneManager_.isMaterialDoubleSided(materialIndex);
-        object.flags = 0;
-        if (sceneManager_.isMaterialAlphaMasked(materialIndex))
-          object.flags |= kObjectFlagAlphaMask;
-        if (sceneManager_.isMaterialTransparent(materialIndex))
-          object.flags |= kObjectFlagAlphaBlend;
-        if (materialDoubleSided)
-          object.flags |= kObjectFlagDoubleSided;
-        if (sceneManager_.usesMaterialSpecularGlossiness(materialIndex))
-          object.flags |= kObjectFlagSpecularGlossiness;
-        if (sceneManager_.isMaterialUnlit(materialIndex))
-          object.flags |= kObjectFlagUnlit;
+        const bool materialTransparent =
+            sceneManager_.isMaterialTransparent(materialIndex);
         const bool rasterDoubleSided =
             materialDoubleSided || primitive.disableBackfaceCulling;
         const bool windingFlipped =
             transformFlipsWinding(transform.worldTransform);
+        object.objectInfo.y =
+            rasterDoubleSided ? container::gpu::kObjectFlagDoubleSided : 0u;
 
         // Compute world-space bounding sphere from primitive vertices.
         {
@@ -365,7 +263,9 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
                 glm::length(glm::vec3(transform.worldTransform[1])),
                 glm::length(glm::vec3(transform.worldTransform[2]))});
             const float heightInflation =
-                std::abs(object.heightScale) * scaleMax;
+                std::abs(sceneManager_.resolveMaterialHeightScale(
+                    materialIndex)) *
+                scaleMax;
             object.boundingSphere =
                 glm::vec4(worldCenter, localRadius * scaleMax + heightInflation);
           }
@@ -380,7 +280,7 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         drawCommand.firstIndex  = primitive.firstIndex;
         drawCommand.indexCount  = primitive.indexCount;
 
-        if ((object.flags & kObjectFlagAlphaBlend) != 0u) {
+        if (materialTransparent) {
           transparentDrawCommands_.push_back(drawCommand);
           if (rasterDoubleSided) {
             transparentDoubleSidedDrawCommands_.push_back(drawCommand);
@@ -422,8 +322,7 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
     cubeObject.normalMatrix0 = glm::vec4(cubeNormal[0], 0.0f);
     cubeObject.normalMatrix1 = glm::vec4(cubeNormal[1], 0.0f);
     cubeObject.normalMatrix2 = glm::vec4(cubeNormal[2], 0.0f);
-    cubeObject.color             = glm::vec4(1.0f);
-    cubeObject.metallicRoughness = glm::vec2(0.0f, 0.5f);
+    cubeObject.objectInfo.x = sceneManager_.diagnosticMaterialIndex();
     diagCubeObjectIndex_ = static_cast<uint32_t>(objectData_.size());
     objectData_.push_back(cubeObject);
   }
@@ -512,6 +411,7 @@ void SceneController::addSceneObject(
 
 bool SceneController::reloadSceneModel(
     const std::string&                      path,
+    float                                   importScale,
     container::gpu::AllocatedBuffer&       objectBuffer,
     size_t&                                 objectBufferCapacity,
     const container::gpu::AllocatedBuffer& cameraBuffer,
@@ -523,7 +423,7 @@ bool SceneController::reloadSceneModel(
   const std::array<container::gpu::AllocatedBuffer, 1> cameraBuffers = {
       cameraBuffer};
   const bool result =
-      sceneManager_.reloadModel(path, cameraBuffers, objectBuffer);
+      sceneManager_.reloadModel(path, importScale, cameraBuffers, objectBuffer);
   outIndexType = sceneManager_.indexType();
   buildSceneGraph(outRootNode, outSelectedMeshNode, outCubeNode);
   ensureObjectBufferCapacity(allocationManager_, objectBuffer,

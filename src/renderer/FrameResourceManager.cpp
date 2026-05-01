@@ -31,6 +31,7 @@ FrameResourceManager::FrameResourceManager(
 FrameResourceManager::~FrameResourceManager() {
   destroy();
   allocationMgr_->destroyBuffer(fallbackTileGridBuffer_);
+  allocationMgr_->destroyBuffer(fallbackExposureStateBuffer_);
   if (gBufferSampler_ != VK_NULL_HANDLE) {
     vkDestroySampler(device_->device(), gBufferSampler_, nullptr);
     gBufferSampler_ = VK_NULL_HANDLE;
@@ -42,7 +43,7 @@ FrameResourceManager::~FrameResourceManager() {
 // -----------------------------------------------------------------------
 void FrameResourceManager::createDescriptorSetLayouts() {
   if (lightingLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 17> b = {{
+    const std::array<VkDescriptorSetLayoutBinding, 18> b = {{
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,  1,
          VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -63,6 +64,7 @@ void FrameResourceManager::createDescriptorSetLayouts() {
         // AO bindings (15-16)
         {15, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,   1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // AO texture
         {16, VK_DESCRIPTOR_TYPE_SAMPLER,          1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // AO sampler
+        {17, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,   1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // specular/F0 G-buffer
     }};
     const std::vector<VkDescriptorBindingFlags> flags(b.size(), 0);
     lightingLayout_ = pipelineMgr_->createDescriptorSetLayout(
@@ -70,7 +72,7 @@ void FrameResourceManager::createDescriptorSetLayouts() {
   }
 
   if (postProcessLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 13> b = {{
+    const std::array<VkDescriptorSetLayoutBinding, 14> b = {{
         {0, VK_DESCRIPTOR_TYPE_SAMPLER,       1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
         {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
@@ -84,6 +86,7 @@ void FrameResourceManager::createDescriptorSetLayouts() {
         {10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // camera UBO
         {11, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // shadow UBO
         {12, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},  // shadow atlas
+        {13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // exposure state
     }};
     const std::vector<VkDescriptorBindingFlags> flags(b.size(), 0);
     postProcessLayout_ = pipelineMgr_->createDescriptorSetLayout(
@@ -196,6 +199,7 @@ void FrameResourceManager::create(
 
   validateOitFormatSupport();
   ensureFallbackTileGridBuffer();
+  ensureFallbackExposureStateBuffer();
 
   const uint32_t n = static_cast<uint32_t>(swapChain_->imageCount());
   if (n == 0) return;
@@ -206,12 +210,12 @@ void FrameResourceManager::create(
   {
     std::array<VkDescriptorPoolSize, 3> sizes = {{
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, n * 2},
-        {VK_DESCRIPTOR_TYPE_SAMPLER, n * 5},    // 1(gbuf) + 1(shadow) + 1(env) + 1(brdfLut) + 1(ao)
+        {VK_DESCRIPTOR_TYPE_SAMPLER, n * 5},    // gbuf + shadow + env + BRDF LUT + AO
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 9}, // 5(gbuf) + 1(shadow) + 1(irrad) + 1(prefilt) + 1(brdfLut) + ... err: 5+1+3+1=10 → use 10
     }};
     // Corrected: samplers=5/frame, sampled_images=5(gbuf)+1(shadow)+3(IBL)+1(AO)=10/frame
     sizes[1].descriptorCount = n * 5;
-    sizes[2].descriptorCount = n * 10;
+    sizes[2].descriptorCount = n * 11;
     VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
     ci.maxSets       = n;
     ci.poolSizeCount = static_cast<uint32_t>(sizes.size());
@@ -223,7 +227,7 @@ void FrameResourceManager::create(
     std::array<VkDescriptorPoolSize, 4> sizes = {{
         {VK_DESCRIPTOR_TYPE_SAMPLER, n * 2},          // gBuffer sampler + bloom sampler
         {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 8},    // sceneColor + 4 gbuf + depth + bloom + shadow atlas
-        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, n * 1},   // tile grid SSBO
+        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, n * 2},   // tile grid SSBO + exposure state
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, n * 2},   // camera + shadow UBO
     }};
     VkDescriptorPoolCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
@@ -287,6 +291,9 @@ void FrameResourceManager::create(
     f.emissive = createAttachment(formats_.emissive,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
+    f.specular = createAttachment(formats_.specular,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT);
     f.sceneColor = createAttachment(formats_.sceneColor,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
@@ -344,9 +351,9 @@ void FrameResourceManager::create(
 
     // GBuffer framebuffer
     {
-      std::array<VkImageView, 5> views = {f.albedo.view, f.normal.view,
+      std::array<VkImageView, 6> views = {f.albedo.view, f.normal.view,
                                           f.material.view, f.emissive.view,
-                                          f.depthStencil.view};
+                                          f.specular.view, f.depthStencil.view};
       VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
       fbi.renderPass      = gBufferPass_;
       fbi.attachmentCount = static_cast<uint32_t>(views.size());
@@ -392,6 +399,7 @@ void FrameResourceManager::destroy() {
     destroyAttachment(f.normal);
     destroyAttachment(f.material);
     destroyAttachment(f.emissive);
+    destroyAttachment(f.specular);
     if (f.depthSamplingView != VK_NULL_HANDLE) {
       vkDestroyImageView(dev, f.depthSamplingView, nullptr);
       f.depthSamplingView = VK_NULL_HANDLE;
@@ -446,7 +454,9 @@ void FrameResourceManager::updateDescriptorSets(
     VkImageView bloomTextureView,
     VkSampler   bloomSampler,
     VkBuffer    tileGridBuffer,
-    VkDeviceSize tileGridBufferSize) {
+    VkDeviceSize tileGridBufferSize,
+    VkBuffer    exposureStateBuffer,
+    VkDeviceSize exposureStateBufferSize) {
   (void)objectBuffer;  // reserved for future per-frame object buffer binding
   if (cameraBuffers.empty()) return;
 
@@ -472,6 +482,8 @@ void FrameResourceManager::updateDescriptorSets(
   nextKey.bloomSampler      = bloomSampler;
   nextKey.tileGridBuffer    = tileGridBuffer;
   nextKey.tileGridBufferSize = tileGridBufferSize;
+  nextKey.exposureStateBuffer = exposureStateBuffer;
+  nextKey.exposureStateBufferSize = exposureStateBufferSize;
 
   if (descriptorUpdateKeyValid_ && nextKey == descriptorUpdateKey_) {
     return;
@@ -498,6 +510,7 @@ void FrameResourceManager::updateDescriptorSets(
     auto normal   = imgInfo(f.normal.view,    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto material = imgInfo(f.material.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto emissive = imgInfo(f.emissive.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    auto specular = imgInfo(f.specular.view,  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto depthImg = imgInfo(f.depthSamplingView,
                             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);
     auto scColor  = imgInfo(f.sceneColor.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -506,7 +519,7 @@ void FrameResourceManager::updateDescriptorSets(
 
     // Lighting set
     {
-      std::array<VkWriteDescriptorSet, 17> w{};
+      std::array<VkWriteDescriptorSet, 18> w{};
       auto set = f.lightingDescriptorSet;
       auto buf = [&](int b, VkDescriptorType t, const VkDescriptorBufferInfo* i) {
         w[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -609,13 +622,14 @@ void FrameResourceManager::updateDescriptorSets(
         aoSamplerInfo = sampInfo;  // fallback
       }
       img(16, VK_DESCRIPTOR_TYPE_SAMPLER, &aoSamplerInfo);
+      img(17, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &specular);
 
       vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
     }
 
     // Post-process set
     {
-      std::array<VkWriteDescriptorSet, 13> w{};
+      std::array<VkWriteDescriptorSet, 14> w{};
       auto set = f.postProcessDescriptorSet;
       auto buf = [&](int b, VkDescriptorType t, const VkDescriptorBufferInfo* i) {
         w[b].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
@@ -686,6 +700,17 @@ void FrameResourceManager::updateDescriptorSets(
         postShadowAtlasInfo = depthPostProcess;
       }
       img(12, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &postShadowAtlasInfo);
+
+      VkDescriptorBufferInfo exposureStateInfo{};
+      if (exposureStateBuffer != VK_NULL_HANDLE &&
+          exposureStateBufferSize > 0) {
+        exposureStateInfo = {exposureStateBuffer, 0,
+                             exposureStateBufferSize};
+      } else {
+        exposureStateInfo = {fallbackExposureStateBuffer_.buffer, 0,
+                             sizeof(container::gpu::ExposureStateData)};
+      }
+      buf(13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, &exposureStateInfo);
 
       vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
     }
@@ -852,6 +877,44 @@ void FrameResourceManager::ensureFallbackTileGridBuffer() {
   if (mappedHere)
     vmaUnmapMemory(allocationMgr_->memoryManager()->allocator(),
                    fallbackTileGridBuffer_.allocation);
+}
+
+void FrameResourceManager::ensureFallbackExposureStateBuffer() {
+  if (fallbackExposureStateBuffer_.buffer != VK_NULL_HANDLE) return;
+
+  fallbackExposureStateBuffer_ = allocationMgr_->createBuffer(
+      sizeof(container::gpu::ExposureStateData),
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+      VMA_MEMORY_USAGE_AUTO,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+          VMA_ALLOCATION_CREATE_MAPPED_BIT);
+
+  container::gpu::ExposureStateData fallbackExposure{};
+  fallbackExposure.exposure = 0.25f;
+  fallbackExposure.averageLuminance = 0.18f;
+  fallbackExposure.targetExposure = 0.25f;
+  fallbackExposure.initialized = 0.0f;
+  void* mapped = fallbackExposureStateBuffer_.allocation_info.pMappedData;
+  bool mappedHere = false;
+  if (!mapped) {
+    if (vmaMapMemory(allocationMgr_->memoryManager()->allocator(),
+                     fallbackExposureStateBuffer_.allocation,
+                     &mapped) != VK_SUCCESS)
+      throw std::runtime_error("failed to map fallback exposure state buffer");
+    mappedHere = true;
+  }
+  std::memcpy(mapped, &fallbackExposure, sizeof(fallbackExposure));
+  if (vmaFlushAllocation(allocationMgr_->memoryManager()->allocator(),
+                         fallbackExposureStateBuffer_.allocation, 0,
+                         sizeof(fallbackExposure)) != VK_SUCCESS) {
+    if (mappedHere)
+      vmaUnmapMemory(allocationMgr_->memoryManager()->allocator(),
+                     fallbackExposureStateBuffer_.allocation);
+    throw std::runtime_error("failed to flush fallback exposure state buffer");
+  }
+  if (mappedHere)
+    vmaUnmapMemory(allocationMgr_->memoryManager()->allocator(),
+                   fallbackExposureStateBuffer_.allocation);
 }
 
 VkCommandBuffer FrameResourceManager::beginImmediate() const {

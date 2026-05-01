@@ -4,25 +4,10 @@
 // to the indirect draw buffer for the G-Buffer pass.
 
 #include "lighting_structs.slang"
+#include "push_constants_common.slang"
+#include "draw_indirect_common.slang"
 
 #include "object_data_common.slang"
-
-struct DrawIndexedIndirectCommand
-{
-    uint indexCount;
-    uint instanceCount;
-    uint firstIndex;
-    int  vertexOffset;
-    uint firstInstance;
-};
-
-struct CullPushConstants
-{
-    uint objectCount;
-    uint pad0;
-    uint pad1;
-    uint pad2;
-};
 
 [[vk::push_constant]]
 ConstantBuffer<CullPushConstants> pc;

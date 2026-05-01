@@ -1,31 +1,20 @@
-struct CameraBuffer
-{
-    column_major float4x4 viewProj;
-    column_major float4x4 inverseViewProj;
-    float4 cameraWorldPosition;
-};
-
+#include "lighting_structs.slang"
+#include "push_constants_common.slang"
 #include "object_data_common.slang"
+#include "material_data_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
-[[vk::binding(2, 0)]] SamplerState baseSampler;
-[[vk::binding(3, 0)]] Texture2D materialTextures[];
+[[vk::binding(2, 0)]] SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT];
+[[vk::binding(3, 0)]] StructuredBuffer<GpuMaterial> uMaterials;
+[[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
+[[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
 
 #include "object_index_common.slang"
 #include "pbr_material_common.slang"
 
-struct PushConstants
-{
-    uint objectIndex;
-    float3 _pad0;
-    float4 colorIntensity;
-    float lineWidth;
-    float3 _pad1;
-};
-
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<WireframePushConstants> pc;
 
 struct VSInput
 {
@@ -42,14 +31,17 @@ struct VSOutput
 };
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
+                  uint startInstance : SV_StartInstanceLocation)
 {
     VSOutput output;
-    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID);
+    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID, startInstance);
     ObjectBuffer obj = uObjects[objectIndex];
+    GpuMaterial material = uMaterials[obj.objectInfo.x];
     float3 objectPosition = ApplyHeightDisplacement(
         input.inPosition, input.inNormal, input.inTexCoord,
-        obj.heightTextureIndex, obj.heightScale, obj.heightOffset);
+        material.heightTextureIndex, material.heightScale,
+        material.heightOffset);
     float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);
     return output;

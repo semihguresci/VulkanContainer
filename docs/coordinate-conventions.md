@@ -104,8 +104,10 @@ viewport.maxDepth = 1.0f;
 Effect:
 - `y_ndc = +1` maps to the top of the framebuffer.
 - The projection matrix stays clean.
-- A glTF-native CCW triangle appears clockwise in framebuffer space, so scene
-  pipelines must use `VK_FRONT_FACE_CLOCKWISE`.
+- Scene raster state still keeps glTF-native CCW triangles as front faces.
+  Do not compensate with `VK_FRONT_FACE_CLOCKWISE`; that routes visible
+  single-sided surfaces through their back faces and stores inward-facing
+  G-buffer normals.
 
 ### Shadow passes
 
@@ -176,15 +178,14 @@ Global rasterization defaults:
 
 | Setting | Value |
 | --- | --- |
-| Scene front face | `VK_FRONT_FACE_CLOCKWISE` |
+| Scene front face | `VK_FRONT_FACE_COUNTER_CLOCKWISE` |
 | Shadow front face | `VK_FRONT_FACE_COUNTER_CLOCKWISE` |
 | Opaque scene cull | `VK_CULL_MODE_BACK_BIT` |
 | Shadow cull | `VK_CULL_MODE_BACK_BIT` |
 
 Rules:
-- Winding is evaluated after viewport transform, in framebuffer coordinates.
-- Negative-height scene viewports are part of the culling convention, so scene
-  front-face classification differs from shadow passes.
+- Negative-height scene viewports are part of the scene UV/NDC convention, but
+  scene and shadow raster front-face state both preserve glTF's CCW winding.
 - Reverse-Z is unrelated to front-face classification.
 
 glTF-specific rule:
@@ -250,8 +251,8 @@ These are the conventions the code should implement everywhere:
 - Reverse-Z depth with clean projection matrices
 - Negative-height viewport for scene-facing passes only
 - Positive-height viewport for shadow cascades
-- Clockwise front faces for scene passes with negative-height viewports
-- Counter-clockwise front faces for shadow passes with positive-height viewports
+- Counter-clockwise front faces for scene passes
+- Counter-clockwise front faces for shadow passes
 - World-space normals in the G-buffer
 - glTF tangent handedness and double-sided lighting rules
 

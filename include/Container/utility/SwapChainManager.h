@@ -33,11 +33,17 @@ class SwapChainManager {
     return swapChainImageViews_;
   }
   [[nodiscard]] size_t imageCount() const { return swapChainImages_.size(); }
+  [[nodiscard]] VkImage image(size_t imageIndex) const {
+    return swapChainImages_.at(imageIndex);
+  }
   [[nodiscard]] const std::vector<VkFramebuffer>& framebuffers() const {
     return swapChainFramebuffers_;
   }
   [[nodiscard]] VkFormat imageFormat() const { return swapChainImageFormat_; }
   [[nodiscard]] VkExtent2D extent() const { return swapChainExtent_; }
+  [[nodiscard]] bool supportsTransferSrc() const {
+    return supportsTransferSrc_;
+  }
 
   static SwapChainSupportDetails QuerySwapChainSupport(VkPhysicalDevice device,
                                                        VkSurfaceKHR surface);
@@ -71,6 +77,7 @@ class SwapChainManager {
   VkExtent2D swapChainExtent_{};
   std::vector<VkImageView> swapChainImageViews_;
   std::vector<VkFramebuffer> swapChainFramebuffers_;
+  bool supportsTransferSrc_{false};
 };
 
 }  // namespace container::gpu

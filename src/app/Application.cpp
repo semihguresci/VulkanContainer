@@ -13,6 +13,7 @@
 #include "Container/renderer/VulkanContextInitializer.h"
 #include "Container/renderer/WindowInputBridge.h"
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -40,8 +41,14 @@ void Application::run() {
 
 void Application::initWindow() {
   windowManager_ = std::make_unique<container::window::WindowManager>();
-  window_ = windowManager_->createWindow(
-      config_.windowWidth, config_.windowHeight, "Vulkan");
+  container::window::WindowManager::WindowConfig windowConfig{};
+  windowConfig.width = config_.windowWidth;
+  windowConfig.height = config_.windowHeight;
+  windowConfig.title = "Vulkan";
+  windowConfig.visible = config_.windowVisible;
+  windowConfig.focused = config_.windowVisible;
+  windowConfig.focusOnShow = config_.windowVisible;
+  window_ = windowManager_->createWindow(windowConfig);
 
   GLFWwindow* nativeWindow = window_->getNativeWindow();
   inputManager_ = std::make_unique<container::window::InputManager>();
@@ -100,6 +107,11 @@ void Application::initVulkan() {
 }
 
 void Application::mainLoop() {
+  if (!config_.screenshotCapturePath.empty()) {
+    screenshotCaptureLoop();
+    return;
+  }
+
   lastFrameTimeSeconds_ = windowManager_->getTime();
   while (!window_->shouldClose()) {
     const double now = windowManager_->getTime();
@@ -108,6 +120,29 @@ void Application::mainLoop() {
 
     window_->pollEvents();
     renderer_->processInput(dt);
+    renderer_->drawFrame(framebufferResized_);
+  }
+  vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());
+
+  onMainLoop();
+}
+
+void Application::screenshotCaptureLoop() {
+  const uint32_t captureFrame =
+      std::max(config_.screenshotCaptureFrame,
+               config_.screenshotWarmupFrames + 1u);
+  const float fixedDt = config_.screenshotFixedTimestepSeconds > 0.0f
+                            ? config_.screenshotFixedTimestepSeconds
+                            : 1.0f / 60.0f;
+
+  for (uint32_t frameNumber = 1; frameNumber <= captureFrame &&
+                                     !window_->shouldClose();
+       ++frameNumber) {
+    window_->pollEvents();
+    renderer_->processInput(fixedDt);
+    if (frameNumber == captureFrame) {
+      renderer_->requestScreenshot(config_.screenshotCapturePath);
+    }
     renderer_->drawFrame(framebufferResized_);
   }
   vkDeviceWaitIdle(vulkanContext_->result().deviceWrapper->device());

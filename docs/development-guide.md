@@ -16,7 +16,8 @@ For architecture and feature context, read:
 
 ## Renderer Conventions
 
-- Scene passes use a negative-height viewport and clockwise front faces.
+- Scene passes use a negative-height viewport and glTF-native counter-clockwise
+  front faces.
 - Shadow passes use a positive-height viewport and shadow-specific UV mapping.
 - Depth is reverse-Z: near maps to `1.0`, far maps to `0.0`, and depth clears
   to `0.0`.

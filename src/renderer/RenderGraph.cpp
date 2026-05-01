@@ -39,6 +39,7 @@ constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "TileCull",
     "GTAO",
     "Lighting",
+    "ExposureAdaptation",
     "OitResolve",
     "Bloom",
     "PostProcess",
@@ -63,6 +64,7 @@ constexpr std::array<std::string_view, kRenderResourceIdCount>
         "GBufferNormal",
         "GBufferMaterial",
         "GBufferEmissive",
+        "GBufferSpecular",
         "OitStorage",
         "ShadowCullCascade0",
         "ShadowCullCascade1",
@@ -72,6 +74,7 @@ constexpr std::array<std::string_view, kRenderResourceIdCount>
         "TileLightGrid",
         "AmbientOcclusion",
         "SceneColor",
+        "ExposureState",
         "BloomTexture",
         "SwapchainImage",
 };
@@ -106,6 +109,9 @@ constexpr std::array kTileCullDependencies{RenderPassId::DepthToReadOnly};
 constexpr std::array kGtaoDependencies{
     RenderPassId::DepthToReadOnly,
     RenderPassId::GBuffer,
+};
+constexpr std::array kExposureAdaptationDependencies{
+    RenderPassId::Lighting,
 };
 constexpr std::array kBloomDependencies{RenderPassId::Lighting};
 
@@ -143,9 +149,15 @@ constexpr std::array kLightingScheduleDependencies{
     RenderPassId::GTAO,
     RenderPassId::OitClear,
 };
-constexpr std::array kOitResolveScheduleDependencies{RenderPassId::Lighting};
-constexpr std::array kBloomScheduleDependencies{
+constexpr std::array kExposureAdaptationScheduleDependencies{
     RenderPassId::Lighting,
+};
+constexpr std::array kOitResolveScheduleDependencies{
+    RenderPassId::Lighting,
+    RenderPassId::ExposureAdaptation,
+};
+constexpr std::array kBloomScheduleDependencies{
+    RenderPassId::ExposureAdaptation,
     RenderPassId::OitResolve,
 };
 constexpr std::array kPostProcessScheduleDependencies{
@@ -209,6 +221,7 @@ constexpr std::array kGBufferWrites{
     RenderResourceId::GBufferNormal,
     RenderResourceId::GBufferMaterial,
     RenderResourceId::GBufferEmissive,
+    RenderResourceId::GBufferSpecular,
 };
 constexpr std::array kOitClearWrites{
     RenderResourceId::OitStorage,
@@ -280,6 +293,7 @@ constexpr std::array kLightingReads{
     RenderResourceId::GBufferNormal,
     RenderResourceId::GBufferMaterial,
     RenderResourceId::GBufferEmissive,
+    RenderResourceId::GBufferSpecular,
     RenderResourceId::LightingData,
     RenderResourceId::EnvironmentMaps,
 };
@@ -292,6 +306,12 @@ constexpr std::array kLightingOptionalReads{
 constexpr std::array kLightingWrites{
     RenderResourceId::SceneColor,
     RenderResourceId::OitStorage,
+};
+constexpr std::array kExposureAdaptationReads{
+    RenderResourceId::SceneColor,
+};
+constexpr std::array kExposureAdaptationWrites{
+    RenderResourceId::ExposureState,
 };
 constexpr std::array kOitResolveReads{
     RenderResourceId::OitStorage,
@@ -313,6 +333,7 @@ constexpr std::array kPostProcessReads{
 constexpr std::array kPostProcessOptionalReads{
     RenderResourceId::OitStorage,
     RenderResourceId::BloomTexture,
+    RenderResourceId::ExposureState,
     RenderResourceId::ShadowAtlas,
     RenderResourceId::TileLightGrid,
 };
@@ -419,6 +440,7 @@ bool isProtectedRenderPass(RenderPassId id) {
     case RenderPassId::OitClear:
     case RenderPassId::DepthToReadOnly:
     case RenderPassId::Lighting:
+    case RenderPassId::ExposureAdaptation:
     case RenderPassId::OitResolve:
     case RenderPassId::PostProcess:
       return true;
@@ -444,6 +466,8 @@ std::span<const RenderPassId> renderPassDependencies(RenderPassId id) {
       return kTileCullDependencies;
     case RenderPassId::GTAO:
       return kGtaoDependencies;
+    case RenderPassId::ExposureAdaptation:
+      return kExposureAdaptationDependencies;
     case RenderPassId::Bloom:
       return kBloomDependencies;
     default:
@@ -486,6 +510,8 @@ std::span<const RenderPassId> renderPassScheduleDependencies(RenderPassId id) {
       return kGtaoDependencies;
     case RenderPassId::Lighting:
       return kLightingScheduleDependencies;
+    case RenderPassId::ExposureAdaptation:
+      return kExposureAdaptationScheduleDependencies;
     case RenderPassId::OitResolve:
       return kOitResolveScheduleDependencies;
     case RenderPassId::Bloom:
@@ -548,6 +574,8 @@ std::span<const RenderResourceId> renderPassResourceReads(RenderPassId id) {
       return kGtaoReads;
     case RenderPassId::Lighting:
       return kLightingReads;
+    case RenderPassId::ExposureAdaptation:
+      return kExposureAdaptationReads;
     case RenderPassId::OitResolve:
       return kOitResolveReads;
     case RenderPassId::Bloom:
@@ -618,6 +646,8 @@ std::span<const RenderResourceId> renderPassResourceWrites(RenderPassId id) {
       return kGtaoWrites;
     case RenderPassId::Lighting:
       return kLightingWrites;
+    case RenderPassId::ExposureAdaptation:
+      return kExposureAdaptationWrites;
     case RenderPassId::Bloom:
       return kBloomWrites;
     case RenderPassId::PostProcess:

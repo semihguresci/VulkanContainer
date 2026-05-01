@@ -1,17 +1,7 @@
 // gtao_blur.slang — Bilateral blur for GTAO denoising.
 // Depth-aware 5×5 blur to smooth AO while preserving edges.
 
-struct BlurPushConstants
-{
-    uint  width;
-    uint  height;
-    float depthThreshold;
-    float cameraNear;
-    float cameraFar;
-    float pad0;
-    float pad1;
-    float pad2;
-};
+#include "push_constants_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<BlurPushConstants> pc;

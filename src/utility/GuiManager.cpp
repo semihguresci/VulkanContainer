@@ -1,12 +1,18 @@
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
+#include <filesystem>
+#include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <system_error>
 
 #include "Container/utility/GuiManager.h"
 
 #include "Container/common/CommonGLFW.h"
+#include "Container/utility/Platform.h"
 #include "Container/utility/SceneGraph.h"
 
 #include <imgui.h>
@@ -25,9 +31,181 @@ using container::gpu::LightingSettings;
 
 namespace {
 
+constexpr std::string_view kSampleModelsRelativeRoot =
+    "models/glTF-Sample-Models/2.0";
+
 constexpr std::array<const char*, 4> kLightingPresetLabels = {{
     "Sponza", "Interior", "Exterior", "Custom",
 }};
+
+constexpr std::array<const char*, 3> kImportScaleLabels = {{
+    "1x", "10x", "100x",
+}};
+
+constexpr std::array<float, 3> kImportScaleValues = {{
+    1.0f, 10.0f, 100.0f,
+}};
+
+std::string ToLowerAscii(std::string value) {
+  std::ranges::transform(value, value.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return value;
+}
+
+bool IsGltfModelFile(const std::filesystem::path& path) {
+  const std::string extension =
+      ToLowerAscii(container::util::pathToUtf8(path.extension()));
+  return extension == ".gltf" || extension == ".glb";
+}
+
+std::filesystem::path ComparableModelPath(const std::filesystem::path& input) {
+  std::filesystem::path path = input;
+  if (path.is_relative()) {
+    std::error_code existsError;
+    const auto exeRelative =
+        container::util::executableDirectory() / std::filesystem::path(path);
+    if (std::filesystem::exists(exeRelative, existsError)) {
+      path = exeRelative;
+    } else {
+      std::error_code currentPathError;
+      const auto workingDirectory = std::filesystem::current_path(currentPathError);
+      if (!currentPathError) {
+        path = workingDirectory / path;
+      }
+    }
+  }
+
+  std::error_code canonicalError;
+  const auto canonical = std::filesystem::weakly_canonical(path, canonicalError);
+  if (!canonicalError) {
+    return canonical.lexically_normal();
+  }
+
+  std::error_code absoluteError;
+  const auto absolute = std::filesystem::absolute(path, absoluteError);
+  if (!absoluteError) {
+    return absolute.lexically_normal();
+  }
+
+  return path.lexically_normal();
+}
+
+std::string ModelPathKey(const std::filesystem::path& path) {
+  std::string key = container::util::pathToUtf8(ComparableModelPath(path));
+#ifdef _WIN32
+  key = ToLowerAscii(std::move(key));
+#endif
+  return key;
+}
+
+std::optional<std::filesystem::path> ResolveSampleModelsRoot() {
+  const std::array<std::filesystem::path, 2> candidates = {
+      container::util::executableDirectory() /
+          std::filesystem::path(kSampleModelsRelativeRoot),
+      std::filesystem::current_path() /
+          std::filesystem::path(kSampleModelsRelativeRoot),
+  };
+
+  for (const auto& candidate : candidates) {
+    std::error_code error;
+    if (std::filesystem::is_directory(candidate, error)) {
+      return candidate;
+    }
+  }
+
+  return std::nullopt;
+}
+
+std::optional<std::filesystem::path> FindFirstModelFileInDirectory(
+    const std::filesystem::path& directory) {
+  std::error_code error;
+  if (!std::filesystem::is_directory(directory, error)) {
+    return std::nullopt;
+  }
+
+  std::vector<std::filesystem::path> candidates;
+  for (std::filesystem::directory_iterator it(directory, error), end;
+       !error && it != end; it.increment(error)) {
+    std::error_code fileError;
+    if (it->is_regular_file(fileError) && IsGltfModelFile(it->path())) {
+      candidates.push_back(it->path());
+    }
+  }
+
+  if (candidates.empty()) {
+    return std::nullopt;
+  }
+
+  std::ranges::sort(candidates);
+  const auto gltf = std::ranges::find_if(candidates, [](const auto& path) {
+    return ToLowerAscii(container::util::pathToUtf8(path.extension())) ==
+           ".gltf";
+  });
+  return gltf != candidates.end() ? *gltf : candidates.front();
+}
+
+std::optional<std::filesystem::path> FindFirstModelFileRecursive(
+    const std::filesystem::path& directory) {
+  std::error_code error;
+  std::vector<std::filesystem::path> candidates;
+  for (std::filesystem::recursive_directory_iterator it(
+           directory, std::filesystem::directory_options::skip_permission_denied,
+           error),
+       end;
+       !error && it != end; it.increment(error)) {
+    std::error_code fileError;
+    if (it->is_regular_file(fileError) && IsGltfModelFile(it->path())) {
+      candidates.push_back(it->path());
+    }
+  }
+
+  if (candidates.empty()) {
+    return std::nullopt;
+  }
+
+  std::ranges::sort(candidates);
+  return candidates.front();
+}
+
+std::optional<std::filesystem::path> PreferredSampleModelPath(
+    const std::filesystem::path& modelDirectory,
+    std::string& selectedVariant) {
+  static constexpr std::array<std::string_view, 6> kPreferredVariantFolders = {{
+      "glTF",
+      "glTF-Binary",
+      "glTF-Embedded",
+      "glTF-MaterialsCommon",
+      "glTF-pbrSpecularGlossiness",
+      "glTF-KTX-BasisU",
+  }};
+
+  for (std::string_view variant : kPreferredVariantFolders) {
+    const auto variantDirectory =
+        modelDirectory / std::filesystem::path(variant);
+    if (auto path = FindFirstModelFileInDirectory(variantDirectory)) {
+      selectedVariant = std::string(variant);
+      return path;
+    }
+  }
+
+  if (auto path = FindFirstModelFileRecursive(modelDirectory)) {
+    selectedVariant =
+        container::util::pathToUtf8(path->parent_path().filename());
+    return path;
+  }
+
+  return std::nullopt;
+}
+
+std::string ImportScaleLabel(float scale) {
+  for (size_t i = 0; i < kImportScaleValues.size(); ++i) {
+    if (scale == kImportScaleValues[i]) {
+      return kImportScaleLabels[i];
+    }
+  }
+  return std::to_string(scale) + "x";
+}
 
 LightingSettings LightingPreset(uint32_t preset) {
   LightingSettings settings{};
@@ -128,7 +306,8 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
                             VkQueue graphicsQueue, uint32_t graphicsQueueFamily,
                             VkRenderPass renderPass, uint32_t imageCount,
                             GLFWwindow* window,
-                            const std::string& defaultModelPath) {
+                            const std::string& defaultModelPath,
+                            float defaultImportScale) {
   if (initialized_) return;
 
   IMGUI_CHECKVERSION();
@@ -182,7 +361,68 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
 
   defaultModelPath_ = defaultModelPath;
   gltfPathInput_ = defaultModelPath;
+  const auto importScaleIt =
+      std::ranges::find(kImportScaleValues, defaultImportScale);
+  importScaleIndex_ =
+      importScaleIt != kImportScaleValues.end()
+          ? static_cast<int>(importScaleIt - kImportScaleValues.begin())
+          : 0;
+  importScale_ = kImportScaleValues[static_cast<size_t>(importScaleIndex_)];
+  discoverSampleModels();
   initialized_ = true;
+}
+
+void GuiManager::discoverSampleModels() {
+  sampleModelOptions_.clear();
+  selectedSampleModelIndex_ = -1;
+
+  const auto sampleRoot = ResolveSampleModelsRoot();
+  if (!sampleRoot) {
+    return;
+  }
+
+  std::error_code error;
+  for (std::filesystem::directory_iterator it(*sampleRoot, error), end;
+       !error && it != end; it.increment(error)) {
+    std::error_code directoryError;
+    if (!it->is_directory(directoryError)) {
+      continue;
+    }
+
+    std::string selectedVariant;
+    const auto modelPath = PreferredSampleModelPath(it->path(), selectedVariant);
+    if (!modelPath) {
+      continue;
+    }
+
+    SampleModelOption option{};
+    option.label = container::util::pathToUtf8(it->path().filename());
+    if (!selectedVariant.empty() && selectedVariant != "glTF") {
+      option.label += " (" + selectedVariant + ")";
+    }
+    option.path = container::util::pathToUtf8(*modelPath);
+    sampleModelOptions_.push_back(std::move(option));
+  }
+
+  std::ranges::sort(sampleModelOptions_, {}, &SampleModelOption::label);
+  selectedSampleModelIndex_ = sampleModelIndexForPath(gltfPathInput_);
+}
+
+int GuiManager::sampleModelIndexForPath(const std::string& path) const {
+  if (path.empty()) {
+    return -1;
+  }
+
+  const std::string target =
+      ModelPathKey(container::util::pathFromUtf8(path));
+  for (size_t i = 0; i < sampleModelOptions_.size(); ++i) {
+    if (ModelPathKey(container::util::pathFromUtf8(
+            sampleModelOptions_[i].path)) == target) {
+      return static_cast<int>(i);
+    }
+  }
+
+  return -1;
 }
 
 void GuiManager::shutdown(VkDevice device) {
@@ -220,8 +460,8 @@ void GuiManager::render(VkCommandBuffer commandBuffer) {
 
 void GuiManager::drawSceneControls(
     const container::scene::SceneGraph& sceneGraph,
-    const std::function<bool(const std::string&)>& reloadModel,
-    const std::function<bool()>& reloadDefault,
+    const std::function<bool(const std::string&, float)>& reloadModel,
+    const std::function<bool(float)>& reloadDefault,
     const TransformControls& cameraTransform,
     const std::function<void(const TransformControls&)>& applyCameraTransform,
     const TransformControls& sceneTransform,
@@ -241,24 +481,73 @@ void GuiManager::drawSceneControls(
       "Depth",     "Emissive",    "Transparency",
       "Revealage", "Overview",    "Surface Normals",
       "Object Normals", "Shadow Cascades",
-      "Tile Light Heat Map"};
+      "Tile Light Heat Map", "Shadow Texel Density"};
 
   ImGui::Begin("Scene Controls");
+  if (ImGui::Combo("Import scale", &importScaleIndex_,
+                   kImportScaleLabels.data(),
+                   static_cast<int>(kImportScaleLabels.size()))) {
+    importScaleIndex_ =
+        std::clamp(importScaleIndex_, 0,
+                   static_cast<int>(kImportScaleValues.size()) - 1);
+    importScale_ = kImportScaleValues[static_cast<size_t>(importScaleIndex_)];
+    statusMessage_ = "Import scale set to " + ImportScaleLabel(importScale_) +
+                     "; reload model to apply";
+  }
+
+  if (!sampleModelOptions_.empty()) {
+    const bool hasSelection =
+        selectedSampleModelIndex_ >= 0 &&
+        selectedSampleModelIndex_ <
+            static_cast<int>(sampleModelOptions_.size());
+    const char* preview =
+        hasSelection ? sampleModelOptions_[selectedSampleModelIndex_].label.c_str()
+                     : "Select sample model";
+    if (ImGui::BeginCombo("Sample model", preview)) {
+      for (int i = 0; i < static_cast<int>(sampleModelOptions_.size()); ++i) {
+        const auto& option = sampleModelOptions_[i];
+        const bool selected = i == selectedSampleModelIndex_;
+        if (ImGui::Selectable(option.label.c_str(), selected)) {
+          selectedSampleModelIndex_ = i;
+          gltfPathInput_ = option.path;
+          const bool success = reloadModel(gltfPathInput_, importScale_);
+          statusMessage_ =
+              success ? "Loaded model: " + option.label + " @ " +
+                            ImportScaleLabel(importScale_)
+                      : "Failed to load model: " + option.label;
+        }
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("%s", option.path.c_str());
+        }
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
+      }
+      ImGui::EndCombo();
+    }
+  } else {
+    ImGui::TextDisabled("No sample models found");
+  }
+
   ImGui::InputText("glTF path", &gltfPathInput_);
 
   if (ImGui::Button("Load glTF")) {
-    const bool success = reloadModel(gltfPathInput_);
-    statusMessage_ = success ? "Loaded model: " + gltfPathInput_
+    const bool success = reloadModel(gltfPathInput_, importScale_);
+    selectedSampleModelIndex_ = sampleModelIndexForPath(gltfPathInput_);
+    statusMessage_ = success ? "Loaded model: " + gltfPathInput_ + " @ " +
+                                   ImportScaleLabel(importScale_)
                              : "Failed to load model: " + gltfPathInput_;
   }
 
   ImGui::SameLine();
 
   if (ImGui::Button("Reload Default")) {
-    const bool success = reloadDefault();
-    statusMessage_ = success ? "Loaded default test scene"
-                             : "Failed to load default test scene";
+    const bool success = reloadDefault(importScale_);
+    statusMessage_ = success ? "Loaded default model @ " +
+                                   ImportScaleLabel(importScale_)
+                             : "Failed to load default model";
     gltfPathInput_ = defaultModelPath_;
+    selectedSampleModelIndex_ = sampleModelIndexForPath(gltfPathInput_);
   }
 
   ImGui::Separator();
@@ -384,6 +673,43 @@ void GuiManager::drawSceneControls(
   }
 
   ImGui::Separator();
+  ImGui::Text("Post-process");
+  int exposureMode =
+      exposureSettings_.mode == container::gpu::kExposureModeAuto ? 1 : 0;
+  static constexpr const char* kExposureModeLabels[] = {"Manual", "Auto"};
+  if (ImGui::Combo("Exposure Mode", &exposureMode, kExposureModeLabels,
+                   IM_ARRAYSIZE(kExposureModeLabels))) {
+    exposureSettings_.mode = exposureMode == 1
+                                 ? container::gpu::kExposureModeAuto
+                                 : container::gpu::kExposureModeManual;
+  }
+  ImGui::SliderFloat("Exposure", &exposureSettings_.manualExposure, 0.0f,
+                     4.0f, "%.3f");
+  if (exposureSettings_.mode == container::gpu::kExposureModeAuto) {
+    ImGui::SliderFloat("Target Luminance",
+                       &exposureSettings_.targetLuminance, 0.01f, 2.0f,
+                       "%.3f");
+    ImGui::SliderFloat("Min Exposure", &exposureSettings_.minExposure,
+                       0.0f, 4.0f, "%.3f");
+    ImGui::SliderFloat("Max Exposure", &exposureSettings_.maxExposure,
+                       0.0f, 16.0f, "%.3f");
+    exposureSettings_.maxExposure =
+        std::max(exposureSettings_.maxExposure,
+                 exposureSettings_.minExposure);
+    ImGui::SliderFloat("Adaptation Rate",
+                       &exposureSettings_.adaptationRate, 0.0f, 10.0f,
+                       "%.2f");
+    ImGui::SliderFloat("Low Percentile",
+                       &exposureSettings_.meteringLowPercentile, 0.0f, 0.99f,
+                       "%.2f");
+    ImGui::SliderFloat("High Percentile",
+                       &exposureSettings_.meteringHighPercentile,
+                       exposureSettings_.meteringLowPercentile + 0.01f, 1.0f,
+                       "%.2f");
+    exposureSettings_.meteringHighPercentile =
+        std::max(exposureSettings_.meteringHighPercentile,
+                 exposureSettings_.meteringLowPercentile + 0.01f);
+  }
   ImGui::Text("Bloom");
   ImGui::Checkbox("Bloom Enabled", &bloomEnabled_);
   if (bloomEnabled_) {
@@ -391,6 +717,40 @@ void GuiManager::drawSceneControls(
     ImGui::SliderFloat("Bloom Knee", &bloomKnee_, 0.0f, 1.0f);
     ImGui::SliderFloat("Bloom Intensity", &bloomIntensity_, 0.0f, 2.0f);
     ImGui::SliderFloat("Bloom Radius", &bloomRadius_, 0.1f, 3.0f);
+  }
+
+  if (ImGui::TreeNode("Shadows")) {
+    ImGui::SliderFloat("Normal Bias Min Texels",
+                       &shadowSettings_.normalBiasMinTexels, 0.0f, 8.0f,
+                       "%.2f");
+    ImGui::SliderFloat("Normal Bias Max Texels",
+                       &shadowSettings_.normalBiasMaxTexels, 0.0f, 12.0f,
+                       "%.2f");
+    shadowSettings_.normalBiasMaxTexels =
+        std::max(shadowSettings_.normalBiasMaxTexels,
+                 shadowSettings_.normalBiasMinTexels);
+    ImGui::SliderFloat("Slope Bias Scale", &shadowSettings_.slopeBiasScale,
+                       0.0f, 0.01f, "%.5f");
+    ImGui::SliderFloat("Receiver Bias Scale",
+                       &shadowSettings_.receiverPlaneBiasScale, 0.0f, 4.0f,
+                       "%.2f");
+    ImGui::SliderFloat("Filter Radius Texels",
+                       &shadowSettings_.filterRadiusTexels, 0.25f, 3.0f,
+                       "%.2f");
+    ImGui::SliderFloat("Cascade Blend", &shadowSettings_.cascadeBlendFraction,
+                       0.0f, 0.45f, "%.2f");
+    ImGui::SliderFloat("Constant Depth Bias",
+                       &shadowSettings_.constantDepthBias, 0.0f, 0.005f,
+                       "%.5f");
+    ImGui::SliderFloat("Max Depth Bias", &shadowSettings_.maxDepthBias,
+                       0.0f, 0.02f, "%.5f");
+    ImGui::SliderFloat("Raster Constant Bias",
+                       &shadowSettings_.rasterConstantBias, -16.0f, 0.0f,
+                       "%.2f");
+    ImGui::SliderFloat("Raster Slope Bias",
+                       &shadowSettings_.rasterSlopeBias, -8.0f, 0.0f,
+                       "%.2f");
+    ImGui::TreePop();
   }
 
   TransformControls editableCameraTransform = cameraTransform;
@@ -425,9 +785,13 @@ void GuiManager::drawSceneControls(
     lightSliderChanged |= ImGui::SliderFloat(
         "Light Radius Scale", &lightingSettings_.radiusScale, 0.05f, 8.0f, "%.2f");
     lightSliderChanged |= ImGui::SliderFloat(
-        "Light Intensity Scale", &lightingSettings_.intensityScale, 0.0f, 16.0f, "%.2f");
+        "Point Intensity Scale", &lightingSettings_.intensityScale, 0.0f,
+        16.0f, "%.2f");
     lightSliderChanged |= ImGui::SliderFloat(
         "Directional Intensity", &lightingSettings_.directionalIntensity, 0.0f, 16.0f, "%.2f");
+    lightSliderChanged |= ImGui::SliderFloat(
+        "Environment Intensity", &lightingSettings_.environmentIntensity,
+        0.0f, 16.0f, "%.2f");
     if (lightSliderChanged) {
       lightingSettings_.preset =
           static_cast<uint32_t>(kLightingPresetLabels.size() - 1u);

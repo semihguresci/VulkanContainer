@@ -1,6 +1,10 @@
 #pragma once
 
 #include "Container/common/CommonMath.h"
+
+#include <cstdint>
+#include <limits>
+
 namespace container::material {
 
 enum class AlphaMode : uint32_t {
@@ -9,10 +13,17 @@ enum class AlphaMode : uint32_t {
   Blend = 2,
 };
 
+struct TextureTransform {
+  glm::vec2 offset{0.0f, 0.0f};
+  glm::vec2 scale{1.0f, 1.0f};
+  float rotation{0.0f};
+  uint32_t texCoord{0};
+};
+
 struct Material {
   glm::vec4 baseColor{1.0f};
   glm::vec3 emissiveColor{0.0f};
-  float metallicFactor{1.0f};
+  float metallicFactor{0.0f};
   float roughnessFactor{1.0f};
   float alphaCutoff{0.5f};
   float normalTextureScale{1.0f};
@@ -58,6 +69,26 @@ struct Material {
   uint32_t sheenRoughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t iridescenceTextureIndex{std::numeric_limits<uint32_t>::max()};
   uint32_t iridescenceThicknessTextureIndex{std::numeric_limits<uint32_t>::max()};
+  TextureTransform baseColorTextureTransform{};
+  TextureTransform normalTextureTransform{};
+  TextureTransform occlusionTextureTransform{};
+  TextureTransform emissiveTextureTransform{};
+  TextureTransform metallicRoughnessTextureTransform{};
+  TextureTransform roughnessTextureTransform{};
+  TextureTransform metalnessTextureTransform{};
+  TextureTransform specularTextureTransform{};
+  TextureTransform heightTextureTransform{};
+  TextureTransform opacityTextureTransform{};
+  TextureTransform transmissionTextureTransform{};
+  TextureTransform specularColorTextureTransform{};
+  TextureTransform clearcoatTextureTransform{};
+  TextureTransform clearcoatRoughnessTextureTransform{};
+  TextureTransform clearcoatNormalTextureTransform{};
+  TextureTransform thicknessTextureTransform{};
+  TextureTransform sheenColorTextureTransform{};
+  TextureTransform sheenRoughnessTextureTransform{};
+  TextureTransform iridescenceTextureTransform{};
+  TextureTransform iridescenceThicknessTextureTransform{};
   AlphaMode alphaMode{AlphaMode::Opaque};
   bool doubleSided{false};
   bool specularGlossinessWorkflow{false};

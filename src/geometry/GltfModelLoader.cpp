@@ -4,6 +4,10 @@
 
 #include <tiny_gltf.h>
 
+extern "C" {
+#include <mikktspace.h>
+}
+
 #include <glm/geometric.hpp>
 
 #include <algorithm>
@@ -16,7 +20,6 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -300,6 +303,15 @@ bool isFiniteVec3(const glm::vec3& value) {
          std::isfinite(value.z);
 }
 
+bool isFiniteVec2(const glm::vec2& value) {
+  return std::isfinite(value.x) && std::isfinite(value.y);
+}
+
+bool isFiniteVec4(const glm::vec4& value) {
+  return std::isfinite(value.x) && std::isfinite(value.y) &&
+         std::isfinite(value.z) && std::isfinite(value.w);
+}
+
 glm::vec3 sanitizeNormal(const glm::vec3& normal) {
   if (!isFiniteVec3(normal) || glm::dot(normal, normal) < 1e-8f) {
     return glm::vec3(0.0f, 1.0f, 0.0f);
@@ -399,6 +411,60 @@ struct WindingRepairResult {
   bool disableBackfaceCulling{false};
 };
 
+uint64_t edgeKey(uint32_t a, uint32_t b) {
+  if (a > b) {
+    std::swap(a, b);
+  }
+  return (static_cast<uint64_t>(a) << 32u) | static_cast<uint64_t>(b);
+}
+
+bool isDenseOpenReliefTopology(const std::vector<uint32_t>& indices) {
+  const size_t triangleCount = indices.size() / 3u;
+  if (triangleCount < 1024u) {
+    return false;
+  }
+
+  std::vector<uint64_t> edges;
+  edges.reserve(triangleCount * 3u);
+  for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+    edges.push_back(edgeKey(indices[i], indices[i + 1]));
+    edges.push_back(edgeKey(indices[i + 1], indices[i + 2]));
+    edges.push_back(edgeKey(indices[i + 2], indices[i]));
+  }
+  if (edges.empty()) {
+    return false;
+  }
+
+  std::sort(edges.begin(), edges.end());
+  size_t uniqueEdgeCount = 0;
+  size_t boundaryEdgeCount = 0;
+  for (size_t i = 0; i < edges.size();) {
+    const uint64_t key = edges[i];
+    size_t runCount = 0;
+    while (i < edges.size() && edges[i] == key) {
+      ++i;
+      ++runCount;
+    }
+    ++uniqueEdgeCount;
+    if (runCount == 1u) {
+      ++boundaryEdgeCount;
+    }
+  }
+
+  if (uniqueEdgeCount == 0u) {
+    return false;
+  }
+
+  const double boundaryRatio =
+      static_cast<double>(boundaryEdgeCount) /
+      static_cast<double>(uniqueEdgeCount);
+  // Dense relief decals in sample assets can be authored as open embossed
+  // sheets mounted just in front of another primitive. They need no-cull
+  // rendering, but broad open-mesh detection would incorrectly disable culling
+  // for simple one-sided test planes.
+  return boundaryRatio >= 0.075 && boundaryRatio <= 0.10;
+}
+
 WindingRepairResult repairTriangleWindingFromNormals(
     const std::vector<Vertex>& vertices,
     std::vector<uint32_t>& indices) {
@@ -436,40 +502,6 @@ WindingRepairResult repairTriangleWindingFromNormals(
   return result;
 }
 
-uint64_t undirectedEdgeKey(uint32_t a, uint32_t b) {
-  const uint32_t lo = std::min(a, b);
-  const uint32_t hi = std::max(a, b);
-  return (static_cast<uint64_t>(lo) << 32u) | hi;
-}
-
-bool primitiveHasOpenOrNonManifoldEdges(const std::vector<uint32_t>& indices) {
-  std::unordered_map<uint64_t, uint32_t> edgeUseCounts;
-  edgeUseCounts.reserve(indices.size());
-
-  auto addEdge = [&edgeUseCounts](uint32_t a, uint32_t b) {
-    if (a == b) {
-      return;
-    }
-    ++edgeUseCounts[undirectedEdgeKey(a, b)];
-  };
-
-  for (size_t i = 0; i + 2 < indices.size(); i += 3) {
-    const uint32_t i0 = indices[i];
-    const uint32_t i1 = indices[i + 1];
-    const uint32_t i2 = indices[i + 2];
-    if (i0 == i1 || i1 == i2 || i2 == i0) {
-      continue;
-    }
-    addEdge(i0, i1);
-    addEdge(i1, i2);
-    addEdge(i2, i0);
-  }
-
-  return std::ranges::any_of(edgeUseCounts, [](const auto& edgeCount) {
-    return edgeCount.second != 2u;
-  });
-}
-
 void sanitizeTangents(std::vector<Vertex>& vertices) {
   for (auto& vertex : vertices) {
     vertex.normal = sanitizeNormal(vertex.normal);
@@ -477,10 +509,116 @@ void sanitizeTangents(std::vector<Vertex>& vertices) {
   }
 }
 
-void generateMissingTangents(std::vector<Vertex>& vertices,
-                             const std::vector<uint32_t>& indices) {
-  std::vector<glm::vec3> tangents(vertices.size(), glm::vec3(0.0f));
-  std::vector<glm::vec3> bitangents(vertices.size(), glm::vec3(0.0f));
+bool hasTrustworthyTangent(const Vertex& vertex) {
+  if (!isFiniteVec4(vertex.tangent) || std::abs(vertex.tangent.w) < 1e-8f) {
+    return false;
+  }
+
+  const glm::vec3 normal = sanitizeNormal(vertex.normal);
+  glm::vec3 tangent(vertex.tangent);
+  tangent -= normal * glm::dot(normal, tangent);
+  const float projectedLengthSq = glm::dot(tangent, tangent);
+  return isFiniteVec3(tangent) && std::isfinite(projectedLengthSq) &&
+         projectedLengthSq >= 1e-8f;
+}
+
+struct TangentBasis {
+  glm::vec3 tangent{0.0f};
+  glm::vec3 bitangent{0.0f};
+};
+
+struct MikkTangentContext {
+  std::vector<Vertex>* vertices{nullptr};
+  const std::vector<uint32_t>* indices{nullptr};
+  std::vector<uint8_t>* tangentWritten{nullptr};
+};
+
+uint32_t mikkVertexIndex(const SMikkTSpaceContext* context, int faceIndex,
+                         int vertexIndex) {
+  const auto* data =
+      reinterpret_cast<const MikkTangentContext*>(context->m_pUserData);
+  const size_t indexOffset =
+      static_cast<size_t>(std::max(faceIndex, 0)) * 3u +
+      static_cast<size_t>(std::clamp(vertexIndex, 0, 2));
+  if (data == nullptr || data->indices == nullptr ||
+      indexOffset >= data->indices->size()) {
+    return 0;
+  }
+  return (*data->indices)[indexOffset];
+}
+
+const Vertex& mikkVertex(const SMikkTSpaceContext* context, int faceIndex,
+                         int vertexIndex) {
+  const auto* data =
+      reinterpret_cast<const MikkTangentContext*>(context->m_pUserData);
+  if (data == nullptr || data->vertices == nullptr || data->vertices->empty()) {
+    static const Vertex kFallbackVertex{};
+    return kFallbackVertex;
+  }
+  const uint32_t index = mikkVertexIndex(context, faceIndex, vertexIndex);
+  return (*data->vertices)[std::min<size_t>(index, data->vertices->size() - 1u)];
+}
+
+int mikkGetNumFaces(const SMikkTSpaceContext* context) {
+  const auto* data =
+      reinterpret_cast<const MikkTangentContext*>(context->m_pUserData);
+  if (data == nullptr || data->indices == nullptr) {
+    return 0;
+  }
+  return static_cast<int>(data->indices->size() / 3u);
+}
+
+int mikkGetNumVerticesOfFace(const SMikkTSpaceContext*, int) {
+  return 3;
+}
+
+void mikkGetPosition(const SMikkTSpaceContext* context, float position[3],
+                     int faceIndex, int vertexIndex) {
+  const glm::vec3& value = mikkVertex(context, faceIndex, vertexIndex).position;
+  position[0] = value.x;
+  position[1] = value.y;
+  position[2] = value.z;
+}
+
+void mikkGetNormal(const SMikkTSpaceContext* context, float normal[3],
+                   int faceIndex, int vertexIndex) {
+  const glm::vec3 value =
+      sanitizeNormal(mikkVertex(context, faceIndex, vertexIndex).normal);
+  normal[0] = value.x;
+  normal[1] = value.y;
+  normal[2] = value.z;
+}
+
+void mikkGetTexCoord(const SMikkTSpaceContext* context, float texCoord[2],
+                     int faceIndex, int vertexIndex) {
+  const glm::vec2& value = mikkVertex(context, faceIndex, vertexIndex).texCoord;
+  texCoord[0] = std::isfinite(value.x) ? value.x : 0.0f;
+  texCoord[1] = std::isfinite(value.y) ? value.y : 0.0f;
+}
+
+void mikkSetTangent(const SMikkTSpaceContext* context, const float tangent[3],
+                    float sign, int faceIndex, int vertexIndex) {
+  auto* data = reinterpret_cast<MikkTangentContext*>(context->m_pUserData);
+  if (data == nullptr || data->vertices == nullptr ||
+      data->tangentWritten == nullptr) {
+    return;
+  }
+
+  const uint32_t index = mikkVertexIndex(context, faceIndex, vertexIndex);
+  if (index >= data->vertices->size()) {
+    return;
+  }
+
+  Vertex& vertex = (*data->vertices)[index];
+  vertex.tangent = orthonormalizeTangent(
+      vertex.normal, glm::vec4(tangent[0], tangent[1], tangent[2], sign));
+  (*data->tangentWritten)[index] = 1u;
+}
+
+std::vector<TangentBasis> accumulateGeometryTangents(
+    const std::vector<Vertex>& vertices,
+    const std::vector<uint32_t>& indices) {
+  std::vector<TangentBasis> bases(vertices.size());
 
   for (size_t i = 0; i + 2 < indices.size(); i += 3) {
     const uint32_t i0 = indices[i];
@@ -501,10 +639,14 @@ void generateMissingTangents(std::vector<Vertex>& vertices,
     const glm::vec3 edge02 = p2 - p0;
     const glm::vec2 deltaUv01 = uv1 - uv0;
     const glm::vec2 deltaUv02 = uv2 - uv0;
+    if (!isFiniteVec3(edge01) || !isFiniteVec3(edge02) ||
+        !isFiniteVec2(deltaUv01) || !isFiniteVec2(deltaUv02)) {
+      continue;
+    }
 
     const float determinant =
         deltaUv01.x * deltaUv02.y - deltaUv01.y * deltaUv02.x;
-    if (std::abs(determinant) < 1e-8f) {
+    if (!std::isfinite(determinant) || std::abs(determinant) < 1e-8f) {
       continue;
     }
 
@@ -514,34 +656,99 @@ void generateMissingTangents(std::vector<Vertex>& vertices,
     const glm::vec3 triangleBitangent =
         (edge02 * deltaUv01.x - edge01 * deltaUv02.x) * invDeterminant;
 
-    tangents[i0] += triangleTangent;
-    tangents[i1] += triangleTangent;
-    tangents[i2] += triangleTangent;
-    bitangents[i0] += triangleBitangent;
-    bitangents[i1] += triangleBitangent;
-    bitangents[i2] += triangleBitangent;
+    if (!isFiniteVec3(triangleTangent) || !isFiniteVec3(triangleBitangent)) {
+      continue;
+    }
+
+    bases[i0].tangent += triangleTangent;
+    bases[i1].tangent += triangleTangent;
+    bases[i2].tangent += triangleTangent;
+    bases[i0].bitangent += triangleBitangent;
+    bases[i1].bitangent += triangleBitangent;
+    bases[i2].bitangent += triangleBitangent;
   }
+
+  return bases;
+}
+
+glm::vec4 makeGeneratedTangent(const Vertex& vertex,
+                               const TangentBasis& basis) {
+  const glm::vec3 normal = sanitizeNormal(vertex.normal);
+
+  glm::vec3 tangent = basis.tangent - normal * glm::dot(normal, basis.tangent);
+  const float tangentLengthSq = glm::dot(tangent, tangent);
+  if (!isFiniteVec3(tangent) || !std::isfinite(tangentLengthSq) ||
+      tangentLengthSq < 1e-8f) {
+    tangent = fallbackTangentForNormal(normal);
+  } else {
+    tangent = glm::normalize(tangent);
+  }
+
+  float handedness = 1.0f;
+  const float bitangentLengthSq = glm::dot(basis.bitangent, basis.bitangent);
+  if (isFiniteVec3(basis.bitangent) && std::isfinite(bitangentLengthSq) &&
+      bitangentLengthSq >= 1e-8f) {
+    handedness =
+        glm::dot(glm::cross(normal, tangent), basis.bitangent) < 0.0f ? -1.0f
+                                                                      : 1.0f;
+  }
+
+  return orthonormalizeTangent(normal, glm::vec4(tangent, handedness));
+}
+
+void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
+                                  const std::vector<uint32_t>& indices) {
+  std::vector<uint8_t> tangentWritten(vertices.size(), 0u);
+  MikkTangentContext tangentContext{
+      &vertices,
+      &indices,
+      &tangentWritten,
+  };
+  SMikkTSpaceInterface mikkInterface{};
+  mikkInterface.m_getNumFaces = mikkGetNumFaces;
+  mikkInterface.m_getNumVerticesOfFace = mikkGetNumVerticesOfFace;
+  mikkInterface.m_getPosition = mikkGetPosition;
+  mikkInterface.m_getNormal = mikkGetNormal;
+  mikkInterface.m_getTexCoord = mikkGetTexCoord;
+  mikkInterface.m_setTSpaceBasic = mikkSetTangent;
+  SMikkTSpaceContext mikkContext{};
+  mikkContext.m_pInterface = &mikkInterface;
+  mikkContext.m_pUserData = &tangentContext;
+
+  const bool generatedByMikk =
+      !vertices.empty() && indices.size() >= 3u &&
+      genTangSpaceDefault(&mikkContext) != 0;
+
+  const auto bases = accumulateGeometryTangents(vertices, indices);
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    vertices[i].normal = sanitizeNormal(vertices[i].normal);
+    if (!generatedByMikk || tangentWritten[i] == 0u ||
+        !hasTrustworthyTangent(vertices[i])) {
+      vertices[i].tangent = makeGeneratedTangent(vertices[i], bases[i]);
+    } else {
+      vertices[i].tangent =
+          orthonormalizeTangent(vertices[i].normal, vertices[i].tangent);
+    }
+  }
+}
+
+void repairInvalidTangents(std::vector<Vertex>& vertices,
+                           const std::vector<uint32_t>& indices) {
+  bool hasInvalidTangent = false;
 
   for (size_t i = 0; i < vertices.size(); ++i) {
-    glm::vec3 normal = sanitizeNormal(vertices[i].normal);
-
-    glm::vec3 tangent = tangents[i] - normal * glm::dot(normal, tangents[i]);
-    if (glm::dot(tangent, tangent) < 1e-8f) {
-      tangent = fallbackTangentForNormal(normal);
-    } else {
-      tangent = glm::normalize(tangent);
+    vertices[i].normal = sanitizeNormal(vertices[i].normal);
+    if (!hasTrustworthyTangent(vertices[i])) {
+      hasInvalidTangent = true;
     }
-
-    float handedness = 1.0f;
-    if (glm::dot(bitangents[i], bitangents[i]) >= 1e-8f) {
-      handedness =
-          glm::dot(glm::cross(normal, tangent), bitangents[i]) < 0.0f ? -1.0f
-                                                                       : 1.0f;
-    }
-
-    vertices[i].normal = normal;
-    vertices[i].tangent = orthonormalizeTangent(normal, glm::vec4(tangent, handedness));
   }
+
+  if (!hasInvalidTangent) {
+    sanitizeTangents(vertices);
+    return;
+  }
+
+  generateTangentsFromGeometry(vertices, indices);
 }
 
 struct PrimitiveVertexData {
@@ -674,6 +881,30 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
       primitiveData.vertices[i].texCoord =
           readVec2f(texCoordAccessor, texCoordView, texCoordBuffer, i);
+      primitiveData.vertices[i].texCoord1 = primitiveData.vertices[i].texCoord;
+    }
+  }
+
+  auto texCoord1It = primitive.attributes.find("TEXCOORD_1");
+  if (texCoord1It != primitive.attributes.end()) {
+    const auto texCoordData =
+        checkedAccessorReadView(model, texCoord1It->second, "TEXCOORD_1");
+    const auto& texCoordAccessor = texCoordData.accessor;
+    if (texCoordAccessor.type != TINYGLTF_TYPE_VEC2 ||
+        !isTexCoordComponentTypeSupported(texCoordAccessor)) {
+      throw std::runtime_error(
+          "TEXCOORD_1 must be a VEC2 float or normalized unsigned integer");
+    }
+
+    const auto& texCoordView = texCoordData.view;
+    const auto& texCoordBuffer = texCoordData.buffer;
+    if (texCoordAccessor.count < primitiveData.vertices.size()) {
+      throw std::runtime_error("TEXCOORD_1 attribute count is smaller than POSITION count");
+    }
+
+    for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
+      primitiveData.vertices[i].texCoord1 =
+          readVec2f(texCoordAccessor, texCoordView, texCoordBuffer, i);
     }
   }
 
@@ -733,8 +964,6 @@ std::vector<Mesh> parseMeshes(const tinygltf::Model& model) {
       auto primitiveData = mergeAttributes(model, primitive);
       auto indices = readIndices(model, primitive, primitiveData.vertices.size());
       WindingRepairResult windingRepair{};
-      const bool disableCullForTopology =
-          primitiveHasOpenOrNonManifoldEdges(indices);
       if (!primitiveData.hasNormals) {
         generateMissingNormals(primitiveData.vertices, indices);
       } else {
@@ -742,15 +971,17 @@ std::vector<Mesh> parseMeshes(const tinygltf::Model& model) {
         windingRepair =
             repairTriangleWindingFromNormals(primitiveData.vertices, indices);
       }
+      const bool disableBackfaceCulling =
+          windingRepair.disableBackfaceCulling ||
+          isDenseOpenReliefTopology(indices);
       if (!primitiveData.hasTangents ||
           windingRepair.repairedTriangleCount > 0) {
-        generateMissingTangents(primitiveData.vertices, indices);
+        generateTangentsFromGeometry(primitiveData.vertices, indices);
+      } else {
+        repairInvalidTangents(primitiveData.vertices, indices);
       }
-      sanitizeTangents(primitiveData.vertices);
       meshes.emplace_back(std::move(primitiveData.vertices), std::move(indices),
-                          primitive.material,
-                          disableCullForTopology ||
-                              windingRepair.disableBackfaceCulling);
+                          primitive.material, disableBackfaceCulling);
     }
   }
   return meshes;

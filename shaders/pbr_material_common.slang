@@ -14,7 +14,11 @@ float4 SamplePbrTexture(uint textureIndex, float2 texCoord, float4 fallback)
     }
 
     uint texIndex = NonUniformResourceIndex(textureIndex);
-    return materialTextures[texIndex].SampleLevel(baseSampler, texCoord, 0.0);
+    uint samplerIndex = NonUniformResourceIndex(
+        min(uTextureMetadata[texIndex].samplerIndex,
+            MATERIAL_SAMPLER_DESCRIPTOR_COUNT - 1u));
+    return materialTextures[texIndex].SampleLevel(
+        materialSamplers[samplerIndex], texCoord, 0.0);
 }
 
 float4 SamplePbrTextureLevel(uint textureIndex, float2 texCoord, float lod,
@@ -26,7 +30,11 @@ float4 SamplePbrTextureLevel(uint textureIndex, float2 texCoord, float lod,
     }
 
     uint texIndex = NonUniformResourceIndex(textureIndex);
-    return materialTextures[texIndex].SampleLevel(baseSampler, texCoord, lod);
+    uint samplerIndex = NonUniformResourceIndex(
+        min(uTextureMetadata[texIndex].samplerIndex,
+            MATERIAL_SAMPLER_DESCRIPTOR_COUNT - 1u));
+    return materialTextures[texIndex].SampleLevel(
+        materialSamplers[samplerIndex], texCoord, lod);
 }
 
 float TextureLuminance(float3 value)
@@ -37,6 +45,26 @@ float TextureLuminance(float3 value)
 float MaxComponent(float3 value)
 {
     return max(max(value.x, value.y), value.z);
+}
+
+float TextureBackedScalarFactor(float factor, uint textureIndex)
+{
+    float value = factor;
+    if (textureIndex != kInvalidMaterialTexture && value <= 0.0)
+    {
+        value = 1.0;
+    }
+    return value;
+}
+
+float3 TextureBackedColorFactor(float3 factor, uint textureIndex)
+{
+    float3 value = max(factor, 0.0.xxx);
+    if (textureIndex != kInvalidMaterialTexture && MaxComponent(value) <= 0.0)
+    {
+        value = 1.0.xxx;
+    }
+    return value;
 }
 
 float EvaluateOpacity(float baseAlpha, uint opacityTextureIndex,
@@ -51,24 +79,29 @@ float EvaluateOpacity(float baseAlpha, uint opacityTextureIndex,
 }
 
 float EvaluateMetalness(float factor, uint metallicRoughnessTextureIndex,
-                        uint metalnessTextureIndex, float2 texCoord)
+                        uint metalnessTextureIndex,
+                        float2 metallicRoughnessTexCoord,
+                        float2 metalnessTexCoord)
 {
     float metalness = factor;
     if (metallicRoughnessTextureIndex != kInvalidMaterialTexture)
     {
         metalness *= SamplePbrTexture(
-            metallicRoughnessTextureIndex, texCoord, 1.0.xxxx).b;
+            metallicRoughnessTextureIndex, metallicRoughnessTexCoord,
+            1.0.xxxx).b;
     }
     if (metalnessTextureIndex != kInvalidMaterialTexture)
     {
         metalness *= SamplePbrTexture(
-            metalnessTextureIndex, texCoord, 1.0.xxxx).r;
+            metalnessTextureIndex, metalnessTexCoord, 1.0.xxxx).r;
     }
     return saturate(metalness);
 }
 
 float EvaluateRoughness(float factor, uint metallicRoughnessTextureIndex,
-                        uint roughnessTextureIndex, float2 texCoord,
+                        uint roughnessTextureIndex,
+                        float2 metallicRoughnessTexCoord,
+                        float2 roughnessTexCoord,
                         uint objectFlags)
 {
     if ((objectFlags & kPbrObjectFlagSpecularGlossiness) != 0u)
@@ -77,7 +110,7 @@ float EvaluateRoughness(float factor, uint metallicRoughnessTextureIndex,
         if (roughnessTextureIndex != kInvalidMaterialTexture)
         {
             glossiness *= SamplePbrTexture(
-                roughnessTextureIndex, texCoord, 1.0.xxxx).a;
+                roughnessTextureIndex, roughnessTexCoord, 1.0.xxxx).a;
         }
         return clamp(1.0 - saturate(glossiness), 0.045, 1.0);
     }
@@ -86,41 +119,45 @@ float EvaluateRoughness(float factor, uint metallicRoughnessTextureIndex,
     if (metallicRoughnessTextureIndex != kInvalidMaterialTexture)
     {
         roughness *= SamplePbrTexture(
-            metallicRoughnessTextureIndex, texCoord, 1.0.xxxx).g;
+            metallicRoughnessTextureIndex, metallicRoughnessTexCoord,
+            1.0.xxxx).g;
     }
     if (roughnessTextureIndex != kInvalidMaterialTexture)
     {
         roughness *= SamplePbrTexture(
-            roughnessTextureIndex, texCoord, 1.0.xxxx).r;
+            roughnessTextureIndex, roughnessTexCoord, 1.0.xxxx).r;
     }
     return clamp(roughness, 0.045, 1.0);
 }
 
 float EvaluateSpecularFactor(float factor, uint specularTextureIndex,
-                             float2 texCoord)
+                             float2 specularTexCoord)
 {
     float specular = factor;
     if (specularTextureIndex != kInvalidMaterialTexture)
     {
-        float4 sample = SamplePbrTexture(specularTextureIndex, texCoord, 1.0.xxxx);
+        float4 sample = SamplePbrTexture(
+            specularTextureIndex, specularTexCoord, 1.0.xxxx);
         specular *= sample.a;
     }
     return saturate(specular);
 }
 
 float3 EvaluateSpecularColor(float3 factor, uint specularColorTextureIndex,
-                             uint specularTextureIndex, float2 texCoord)
+                             float2 specularColorTexCoord,
+                             uint specularTextureIndex,
+                             float2 specularTexCoord)
 {
     float3 color = factor;
     if (specularColorTextureIndex != kInvalidMaterialTexture)
     {
         color *= SamplePbrTexture(
-            specularColorTextureIndex, texCoord, 1.0.xxxx).rgb;
+            specularColorTextureIndex, specularColorTexCoord, 1.0.xxxx).rgb;
     }
     else if (specularTextureIndex != kInvalidMaterialTexture)
     {
         color *= SamplePbrTexture(
-            specularTextureIndex, texCoord, 1.0.xxxx).rgb;
+            specularTextureIndex, specularTexCoord, 1.0.xxxx).rgb;
     }
     return max(color, 0.0.xxx);
 }
@@ -128,7 +165,8 @@ float3 EvaluateSpecularColor(float3 factor, uint specularColorTextureIndex,
 float EvaluateTransmissionFactor(float factor, uint transmissionTextureIndex,
                                  float2 texCoord)
 {
-    float transmission = factor;
+    float transmission =
+        TextureBackedScalarFactor(factor, transmissionTextureIndex);
     if (transmissionTextureIndex != kInvalidMaterialTexture)
     {
         transmission *= SamplePbrTexture(
@@ -140,7 +178,8 @@ float EvaluateTransmissionFactor(float factor, uint transmissionTextureIndex,
 float EvaluateClearcoatFactor(float factor, uint clearcoatTextureIndex,
                               float2 texCoord)
 {
-    float clearcoat = factor;
+    float clearcoat =
+        TextureBackedScalarFactor(factor, clearcoatTextureIndex);
     if (clearcoatTextureIndex != kInvalidMaterialTexture)
     {
         clearcoat *= SamplePbrTexture(
@@ -153,7 +192,8 @@ float EvaluateClearcoatRoughness(float factor,
                                  uint clearcoatRoughnessTextureIndex,
                                  float2 texCoord)
 {
-    float roughness = factor;
+    float roughness =
+        TextureBackedScalarFactor(factor, clearcoatRoughnessTextureIndex);
     if (clearcoatRoughnessTextureIndex != kInvalidMaterialTexture)
     {
         roughness *= SamplePbrTexture(
@@ -177,7 +217,8 @@ float EvaluateThickness(float factor, uint thicknessTextureIndex,
 float3 EvaluateSheenColor(float3 factor, uint sheenColorTextureIndex,
                           float2 texCoord)
 {
-    float3 color = max(factor, 0.0.xxx);
+    float3 color =
+        TextureBackedColorFactor(factor, sheenColorTextureIndex);
     if (sheenColorTextureIndex != kInvalidMaterialTexture)
     {
         color *= SamplePbrTexture(
@@ -189,7 +230,8 @@ float3 EvaluateSheenColor(float3 factor, uint sheenColorTextureIndex,
 float EvaluateSheenRoughness(float factor, uint sheenRoughnessTextureIndex,
                              float2 texCoord)
 {
-    float roughness = factor;
+    float roughness =
+        TextureBackedScalarFactor(factor, sheenRoughnessTextureIndex);
     if (sheenRoughnessTextureIndex != kInvalidMaterialTexture)
     {
         roughness *= SamplePbrTexture(
@@ -201,7 +243,8 @@ float EvaluateSheenRoughness(float factor, uint sheenRoughnessTextureIndex,
 float EvaluateIridescenceFactor(float factor, uint iridescenceTextureIndex,
                                 float2 texCoord)
 {
-    float iridescence = factor;
+    float iridescence =
+        TextureBackedScalarFactor(factor, iridescenceTextureIndex);
     if (iridescenceTextureIndex != kInvalidMaterialTexture)
     {
         iridescence *= SamplePbrTexture(

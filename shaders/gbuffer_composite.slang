@@ -1,5 +1,6 @@
 #include "brdf_common.slang"
 #include "lighting_structs.slang"
+#include "push_constants_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] SamplerState gBufferSampler;
@@ -9,13 +10,8 @@
 [[vk::binding(5, 0)]] Texture2D<float4> gEmissiveTexture;
 [[vk::binding(6, 0)]] Texture2D<float> gDepthTexture;
 
-struct PushConstants
-{
-    uint outputMode;
-};
-
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<GBufferCompositePushConstants> pc;
 
 struct VSOutput
 {

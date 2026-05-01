@@ -102,6 +102,12 @@ void SwapChainManager::createSwapChain(VkSwapchainKHR oldSwapchain) {
   createInfo.imageExtent = extent;
   createInfo.imageArrayLayers = 1;
   createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  supportsTransferSrc_ =
+      (swapChainSupport.capabilities.supportedUsageFlags &
+       VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+  if (supportsTransferSrc_) {
+    createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  }
 
   QueueFamilyIndices indices = FindQueueFamilies(physicalDevice_, surface_);
   uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(),

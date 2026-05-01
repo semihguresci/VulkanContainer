@@ -4,9 +4,11 @@
 
 static const uint MAX_POINT_LIGHTS = 12u;
 static const uint MAX_CLUSTERED_LIGHTS = 8192u;
+static const uint MAX_AREA_LIGHTS = 256u;
 static const uint TILE_SIZE = 16u;
 static const uint CLUSTER_DEPTH_SLICES = 16u;
 static const uint MAX_LIGHTS_PER_TILE = 128u;
+static const float UNBOUNDED_POINT_LIGHT_RANGE = 0.0;
 
 // These structs mirror C++ GPU upload structs in SceneData.h. Keep float4
 // alignment, array sizes, and field order synchronized with the static_asserts.
@@ -20,18 +22,82 @@ struct CameraBuffer
 
 struct PointLightData
 {
+    // positionRadius.w > 0 is the finite fade/cull range; 0 means unbounded.
+    // colorIntensity.a is scene-linear point/spot-light intensity.
     float4 positionRadius;
     float4 colorIntensity;
+    float4 directionInnerCos;
+    float4 coneOuterCosType;
 };
+
+static const float AREA_LIGHT_TYPE_RECTANGLE = 0.0;
+static const float AREA_LIGHT_TYPE_DISK = 1.0;
+
+struct AreaLightData
+{
+    float4 positionRange;
+    float4 colorIntensity;
+    float4 directionType;
+    float4 tangentHalfSize;
+    float4 bitangentHalfSize;
+};
+
+bool PointLightHasFiniteRange(float radius)
+{
+    return isfinite(radius) && radius > UNBOUNDED_POINT_LIGHT_RANGE;
+}
+
+static const float LIGHT_TYPE_SPOT = 1.0;
+
+float3 SafeNormalizeLightDirection(float3 value, float3 fallback)
+{
+    float lengthSq = dot(value, value);
+    if (!all(isfinite(value)) || lengthSq < 1e-8)
+    {
+        return fallback;
+    }
+    return value * rsqrt(lengthSq);
+}
+
+float SpotLightConeAttenuation(float4 directionInnerCos,
+                               float4 coneOuterCosType,
+                               float3 surfaceToLight)
+{
+    if (coneOuterCosType.y < 0.5)
+    {
+        return 1.0;
+    }
+
+    float3 spotDirection =
+        SafeNormalizeLightDirection(directionInnerCos.xyz,
+                                    float3(0.0, 0.0, -1.0));
+    float innerCos = saturate(directionInnerCos.w);
+    float outerCos = saturate(coneOuterCosType.x);
+    float cosTheta = dot(spotDirection, -surfaceToLight);
+    float cone = saturate((cosTheta - outerCos) / max(innerCos - outerCos, 1e-4));
+    return cone * cone;
+}
 
 struct LightingBuffer
 {
     float4 directionalDirection;
     float4 directionalColorIntensity;
     uint pointLightCount;
-    uint3 featureFlags;
+    uint shadowEnabled;
+    uint gtaoEnabled;
+    uint tileCullEnabled;
     uint prefilteredMipCount;
-    uint3 padding;
+    float environmentIntensity;
+    uint areaLightCount;
+    uint padding1;
+};
+
+struct ExposureStateData
+{
+    float exposure;
+    float averageLuminance;
+    float targetExposure;
+    float initialized;
 };
 
 struct TileLightGrid
@@ -98,12 +164,20 @@ struct ShadowCascadeData
 {
     column_major float4x4 viewProj;
     float splitDepth;
-    float3 padding;
+    float texelSize;
+    float worldRadius;
+    float depthRange;
 };
 
 struct ShadowBuffer
 {
     ShadowCascadeData cascades[SHADOW_CASCADE_COUNT];
+    // x = normal-bias min texels, y = normal-bias max texels,
+    // z = slope depth-bias scale, w = receiver-plane depth-bias scale.
+    float4 biasSettings;
+    // x = PCF radius in texels, y = cascade blend fraction,
+    // z = constant depth bias, w = max depth bias.
+    float4 filterSettings;
 };
 
 struct ShadowCascadeCullData

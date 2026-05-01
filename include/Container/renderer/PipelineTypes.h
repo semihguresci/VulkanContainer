@@ -42,6 +42,8 @@ struct GraphicsPipelines {
   VkPipeline postProcess{VK_NULL_HANDLE};
   VkPipeline geometryDebug{VK_NULL_HANDLE};
   VkPipeline normalValidation{VK_NULL_HANDLE};
+  VkPipeline normalValidationFrontCull{VK_NULL_HANDLE};
+  VkPipeline normalValidationNoCull{VK_NULL_HANDLE};
   VkPipeline wireframeDepth{VK_NULL_HANDLE};
   VkPipeline wireframeDepthFrontCull{VK_NULL_HANDLE};
   VkPipeline wireframeNoDepth{VK_NULL_HANDLE};

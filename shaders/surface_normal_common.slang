@@ -71,9 +71,8 @@ SurfaceNormalState EvaluateSurfaceNormal(float3 worldNormal, float4 worldTangent
     state.tangent = tangent;
     state.bitangent = bitangent;
 
-    uint texIndex = NonUniformResourceIndex(normalTextureIndex);
     float3 normalSample =
-        materialTextures[texIndex].Sample(baseSampler, texCoord).xyz * 2.0 - 1.0;
+        SamplePbrTexture(normalTextureIndex, texCoord, 1.0.xxxx).xyz * 2.0 - 1.0;
     normalSample.xy *= normalTextureScale;
     normalSample = SafeNormalize(normalSample, float3(0.0, 0.0, 1.0));
     state.shadingNormal = SafeNormalize(

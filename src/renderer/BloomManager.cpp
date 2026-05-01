@@ -2,6 +2,7 @@
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/FileLoader.h"
 #include "Container/utility/PipelineManager.h"
+#include "Container/utility/SceneData.h"
 #include "Container/utility/ShaderModule.h"
 #include "Container/utility/VulkanDevice.h"
 
@@ -11,6 +12,9 @@
 #include <stdexcept>
 
 namespace container::renderer {
+
+using container::gpu::BloomDownsamplePushConstants;
+using container::gpu::BloomUpsamplePushConstants;
 
 BloomManager::BloomManager(
     std::shared_ptr<container::gpu::VulkanDevice> device,
@@ -247,28 +251,6 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
 
   VkDevice dev = device_->device();
 
-  struct DownsamplePushConstants {
-    uint32_t srcWidth;
-    uint32_t srcHeight;
-    uint32_t dstWidth;
-    uint32_t dstHeight;
-    float    threshold;
-    float    knee;
-    uint32_t mipLevel;
-    uint32_t pad0;
-  };
-
-  struct UpsamplePushConstants {
-    uint32_t srcWidth;
-    uint32_t srcHeight;
-    uint32_t dstWidth;
-    uint32_t dstHeight;
-    float    filterRadius;
-    float    bloomIntensity;
-    uint32_t isFinalPass;
-    uint32_t pad0;
-  };
-
   // ---- Downsample chain ----
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, downsamplePipeline_);
 
@@ -313,7 +295,7 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
     uint32_t srcW = (i == 0) ? sceneWidth : mips_[i - 1].width;
     uint32_t srcH = (i == 0) ? sceneHeight : mips_[i - 1].height;
 
-    DownsamplePushConstants pc{};
+    BloomDownsamplePushConstants pc{};
     pc.srcWidth  = srcW;
     pc.srcHeight = srcH;
     pc.dstWidth  = mips_[i].width;
@@ -323,7 +305,7 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
     pc.mipLevel  = i;
 
     vkCmdPushConstants(cmd, downsamplePipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
-                       0, sizeof(DownsamplePushConstants), &pc);
+                       0, sizeof(BloomDownsamplePushConstants), &pc);
 
     uint32_t dispatchX = (mips_[i].width + 7) / 8;
     uint32_t dispatchY = (mips_[i].height + 7) / 8;
@@ -401,7 +383,7 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, upsamplePipelineLayout_,
                             0, 1, &upsampleSets_[setIdx], 0, nullptr);
 
-    UpsamplePushConstants pc{};
+    BloomUpsamplePushConstants pc{};
     pc.srcWidth       = mips_[srcIdx].width;
     pc.srcHeight      = mips_[srcIdx].height;
     pc.dstWidth       = mips_[dstIdx].width;
@@ -411,7 +393,7 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
     pc.isFinalPass    = (dstIdx == 0) ? 1 : 0;
 
     vkCmdPushConstants(cmd, upsamplePipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
-                       0, sizeof(UpsamplePushConstants), &pc);
+                       0, sizeof(BloomUpsamplePushConstants), &pc);
 
     uint32_t dispatchX = (mips_[dstIdx].width + 7) / 8;
     uint32_t dispatchY = (mips_[dstIdx].height + 7) / 8;
@@ -469,16 +451,9 @@ void BloomManager::createPipelines(const std::filesystem::path& shaderDir) {
     downsampleSetLayout_ = pipelineManager_.createDescriptorSetLayout(
         {bindings.begin(), bindings.end()}, flags);
 
-    struct DownsamplePushConstants {
-      uint32_t srcWidth, srcHeight;
-      uint32_t dstWidth, dstHeight;
-      float    threshold, knee;
-      uint32_t mipLevel, pad0;
-    };
-
     VkPushConstantRange pcRange{};
     pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pcRange.size       = sizeof(DownsamplePushConstants);
+    pcRange.size       = sizeof(BloomDownsamplePushConstants);
 
     downsamplePipelineLayout_ = pipelineManager_.createPipelineLayout(
         {downsampleSetLayout_}, {pcRange});
@@ -514,16 +489,9 @@ void BloomManager::createPipelines(const std::filesystem::path& shaderDir) {
     upsampleSetLayout_ = pipelineManager_.createDescriptorSetLayout(
         {bindings.begin(), bindings.end()}, flags);
 
-    struct UpsamplePushConstants {
-      uint32_t srcWidth, srcHeight;
-      uint32_t dstWidth, dstHeight;
-      float    filterRadius, bloomIntensity;
-      uint32_t isFinalPass, pad0;
-    };
-
     VkPushConstantRange pcRange{};
     pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pcRange.size       = sizeof(UpsamplePushConstants);
+    pcRange.size       = sizeof(BloomUpsamplePushConstants);
 
     upsamplePipelineLayout_ = pipelineManager_.createPipelineLayout(
         {upsampleSetLayout_}, {pcRange});

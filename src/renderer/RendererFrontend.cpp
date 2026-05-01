@@ -5,6 +5,7 @@
 #include "Container/renderer/CameraController.h"
 #include "Container/renderer/CommandBufferManager.h"
 #include "Container/renderer/EnvironmentManager.h"
+#include "Container/renderer/ExposureManager.h"
 #include "Container/renderer/FrameRecorder.h"
 #include "Container/renderer/GpuCullManager.h"
 #include "Container/renderer/GraphicsPipelineBuilder.h"
@@ -15,6 +16,7 @@
 #include "Container/renderer/ShadowManager.h"
 #include "Container/renderer/VulkanContextInitializer.h"
 #include "Container/utility/AllocationManager.h"
+#include "Container/utility/Camera.h"
 #include "Container/utility/DebugMessengerExt.h"
 #include "Container/utility/FrameSyncManager.h"
 #include "Container/utility/GuiManager.h"
@@ -26,7 +28,12 @@
 #include "Container/utility/SceneManager.h"
 #include "Container/utility/SwapChainManager.h"
 
+#include "stb_image_write.h"
+
 #include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -38,6 +45,77 @@ using container::gpu::CameraData;
 using container::gpu::LightingData;
 
 namespace {
+
+glm::vec3 arrayToVec3(const std::array<float, 3> &value) {
+  return {value[0], value[1], value[2]};
+}
+
+container::gpu::ExposureSettings exposureSettingsFromConfig(
+    const container::app::AppConfig &config) {
+  container::gpu::ExposureSettings settings{};
+  if (config.hasManualExposureOverride) {
+    settings.mode = container::gpu::kExposureModeManual;
+    settings.manualExposure = std::max(config.manualExposure, 0.0f);
+  }
+  return settings;
+}
+
+void applyCameraOverride(container::scene::BaseCamera *camera,
+                         const container::app::AppConfig &config) {
+  if (!camera || !config.hasCameraOverride) {
+    return;
+  }
+
+  const glm::vec3 position = arrayToVec3(config.cameraPosition);
+  const glm::vec3 target = arrayToVec3(config.cameraTarget);
+  glm::vec3 forward = target - position;
+  const float length = glm::length(forward);
+  if (length <= 0.0001f) {
+    return;
+  }
+  forward /= length;
+
+  const float pitchDegrees =
+      glm::degrees(std::asin(std::clamp(forward.y, -1.0f, 1.0f)));
+  const float yawDegrees = glm::degrees(std::atan2(-forward.z, forward.x));
+  camera->setPosition(position);
+  camera->setYawPitch(yawDegrees, pitchDegrees);
+  if (auto *perspective =
+          dynamic_cast<container::scene::PerspectiveCamera *>(camera)) {
+    perspective->setFieldOfView(std::clamp(config.cameraVerticalFovDegrees,
+                                           1.0f, 179.0f));
+  }
+}
+
+bool isSupportedScreenshotFormat(VkFormat format) {
+  switch (format) {
+  case VK_FORMAT_B8G8R8A8_SRGB:
+  case VK_FORMAT_B8G8R8A8_UNORM:
+  case VK_FORMAT_R8G8B8A8_SRGB:
+  case VK_FORMAT_R8G8B8A8_UNORM:
+    return true;
+  default:
+    return false;
+  }
+}
+
+std::vector<unsigned char> convertSwapchainBytesToRgba(
+    const unsigned char *src, size_t pixelCount, VkFormat format) {
+  std::vector<unsigned char> rgba(pixelCount * 4u);
+  const bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB ||
+                    format == VK_FORMAT_B8G8R8A8_UNORM;
+  for (size_t i = 0; i < pixelCount; ++i) {
+    const unsigned char c0 = src[i * 4u + 0u];
+    const unsigned char c1 = src[i * 4u + 1u];
+    const unsigned char c2 = src[i * 4u + 2u];
+    const unsigned char c3 = src[i * 4u + 3u];
+    rgba[i * 4u + 0u] = bgra ? c2 : c0;
+    rgba[i * 4u + 1u] = c1;
+    rgba[i * 4u + 2u] = bgra ? c0 : c2;
+    rgba[i * 4u + 3u] = c3;
+  }
+  return rgba;
+}
 
 bool isRenderPassActive(const FrameRecorder *frameRecorder, RenderPassId id) {
   if (frameRecorder == nullptr)
@@ -174,6 +252,7 @@ void RendererFrontend::initialize() {
       svc_.config);
   subs_.sceneManager->initialize(
       svc_.config.modelPath,
+      svc_.config.importScale,
       static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   sceneState_.indexType = subs_.sceneManager->indexType();
 
@@ -183,6 +262,16 @@ void RendererFrontend::initialize() {
   subs_.lightingManager = std::make_unique<LightingManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       subs_.sceneManager.get(), sceneGraph_, subs_.sceneController->world());
+  {
+    auto lightingSettings = subs_.lightingManager->lightingSettings();
+    if (svc_.config.hasEnvironmentIntensityOverride) {
+      lightingSettings.environmentIntensity = svc_.config.environmentIntensity;
+    }
+    if (svc_.config.hasDirectionalIntensityOverride) {
+      lightingSettings.directionalIntensity = svc_.config.directionalIntensity;
+    }
+    subs_.lightingManager->setLightingSettings(lightingSettings);
+  }
   subs_.shadowManager = std::make_unique<ShadowManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
   subs_.shadowManager->createResources(
@@ -214,6 +303,10 @@ void RendererFrontend::initialize() {
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       svc_.commandBufferManager.pool());
   subs_.bloomManager->createResources(container::util::executableDirectory());
+  subs_.exposureManager = std::make_unique<ExposureManager>(
+      svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
+  subs_.exposureManager->createResources(
+      container::util::executableDirectory());
   subs_.frameResourceManager = std::make_unique<FrameResourceManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       svc_.swapChainManager, svc_.commandBufferManager.pool());
@@ -228,30 +321,33 @@ void RendererFrontend::initialize() {
 
   createCamera();
 
-  subs_.guiManager = std::make_unique<container::ui::GuiManager>();
-  subs_.guiManager->initialize(
-      svc_.ctx.instance, svc_.ctx.deviceWrapper->device(),
-      svc_.ctx.deviceWrapper->physicalDevice(),
-      svc_.ctx.deviceWrapper->graphicsQueue(),
-      svc_.ctx.deviceWrapper->queueFamilyIndices().graphicsFamily.value(),
-      resources_.renderPasses.postProcess,
-      static_cast<uint32_t>(svc_.swapChainManager.imageCount()),
-      svc_.nativeWindow, svc_.config.modelPath);
-  subs_.guiManager->setWireframeCapabilities(
-      svc_.ctx.wireframeSupported, svc_.ctx.wireframeRasterModeSupported,
-      svc_.ctx.wireframeWideLinesSupported);
-  if (subs_.environmentManager) {
-    subs_.guiManager->setEnvironmentStatus(
-        subs_.environmentManager->environmentStatus());
+  if (svc_.config.enableGui) {
+    subs_.guiManager = std::make_unique<container::ui::GuiManager>();
+    subs_.guiManager->initialize(
+        svc_.ctx.instance, svc_.ctx.deviceWrapper->device(),
+        svc_.ctx.deviceWrapper->physicalDevice(),
+        svc_.ctx.deviceWrapper->graphicsQueue(),
+        svc_.ctx.deviceWrapper->queueFamilyIndices().graphicsFamily.value(),
+        resources_.renderPasses.postProcess,
+        static_cast<uint32_t>(svc_.swapChainManager.imageCount()),
+        svc_.nativeWindow, svc_.config.modelPath, svc_.config.importScale);
+    subs_.guiManager->setWireframeCapabilities(
+        svc_.ctx.wireframeSupported, svc_.ctx.wireframeRasterModeSupported,
+        svc_.ctx.wireframeWideLinesSupported);
+    if (subs_.environmentManager) {
+      subs_.guiManager->setEnvironmentStatus(
+          subs_.environmentManager->environmentStatus());
+    }
+    if (subs_.sceneController)
+      subs_.sceneController->setGuiManager(subs_.guiManager.get());
   }
-  if (subs_.sceneController)
-    subs_.sceneController->setGuiManager(subs_.guiManager.get());
 
   subs_.frameRecorder = std::make_unique<FrameRecorder>(
       svc_.ctx.deviceWrapper, svc_.swapChainManager, *subs_.oitManager,
       subs_.lightingManager.get(), subs_.environmentManager.get(),
       subs_.sceneController.get(), subs_.gpuCullManager.get(),
       subs_.bloomManager.get(),
+      subs_.exposureManager.get(),
       subs_.cameraController ? subs_.cameraController->camera() : nullptr,
       subs_.guiManager.get());
 
@@ -280,6 +376,11 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     subs_.gpuCullManager->collectStats();
   if (subs_.lightingManager)
     subs_.lightingManager->collectStats();
+  if (subs_.exposureManager) {
+    subs_.exposureManager->collectReadback(
+        subs_.guiManager ? subs_.guiManager->exposureSettings()
+                         : container::gpu::ExposureSettings{});
+  }
 
   uint32_t imageIndex = 0;
   VkResult result = vkAcquireNextImageKHR(
@@ -318,10 +419,20 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     const float aspect =
         static_cast<float>(svc_.swapChainManager.extent().width) /
         static_cast<float>(svc_.swapChainManager.extent().height);
+    const container::gpu::ShadowSettings shadowSettings =
+        subs_.guiManager ? subs_.guiManager->shadowSettings()
+                         : container::gpu::ShadowSettings{};
     subs_.shadowManager->update(subs_.cameraController->camera(), aspect,
-                                glm::vec3(ld.directionalDirection), imageIndex);
+                                glm::vec3(ld.directionalDirection),
+                                shadowSettings, imageIndex);
   }
   updateFrameDescriptorSets(imageIndex);
+
+  const bool screenshotThisFrame = screenshot_.pending;
+  if (screenshotThisFrame) {
+    ensureScreenshotReadbackBuffer(svc_.swapChainManager.extent(),
+                                   svc_.swapChainManager.imageFormat());
+  }
 
   vkResetCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), 0);
   recordCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), imageIndex);
@@ -350,6 +461,15 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                     subs_.frameSyncManager->fence(frame_.currentFrame)) !=
       VK_SUCCESS) {
     throw std::runtime_error("failed to submit draw command buffer!");
+  }
+
+  if (screenshotThisFrame) {
+    const VkFence fence = subs_.frameSyncManager->fence(frame_.currentFrame);
+    if (vkWaitForFences(svc_.ctx.deviceWrapper->device(), 1, &fence, VK_TRUE,
+                        UINT64_MAX) != VK_SUCCESS) {
+      throw std::runtime_error("failed to wait for screenshot frame");
+    }
+    writePendingScreenshotPng();
   }
 
   result = svc_.swapChainManager.present(
@@ -474,11 +594,28 @@ void RendererFrontend::processInput(float deltaTime) {
   (void)svc_.inputManager.update(deltaTime);
 }
 
-bool RendererFrontend::reloadSceneModel(const std::string &path) {
+void RendererFrontend::requestScreenshot(std::filesystem::path outputPath) {
+  if (outputPath.empty()) {
+    throw std::runtime_error("screenshot output path is empty");
+  }
+  if (!svc_.swapChainManager.supportsTransferSrc()) {
+    throw std::runtime_error(
+        "swapchain does not support VK_IMAGE_USAGE_TRANSFER_SRC_BIT");
+  }
+  if (!isSupportedScreenshotFormat(svc_.swapChainManager.imageFormat())) {
+    throw std::runtime_error("unsupported swapchain screenshot format");
+  }
+
+  screenshot_.outputPath = std::move(outputPath);
+  screenshot_.pending = true;
+}
+
+bool RendererFrontend::reloadSceneModel(const std::string &path,
+                                        float importScale) {
   if (!subs_.sceneController)
     return false;
   const bool result = subs_.sceneController->reloadSceneModel(
-      path, buffers_.object, buffers_.objectCapacity,
+      path, importScale, buffers_.object, buffers_.objectCapacity,
       buffers_.cameras.empty() ? container::gpu::AllocatedBuffer{}
                                : buffers_.cameras.front(),
       sceneState_.indexType, sceneState_.rootNode, sceneState_.selectedMeshNode,
@@ -532,6 +669,7 @@ void RendererFrontend::shutdown() {
   subs_.shadowManager.reset();
   subs_.environmentManager.reset();
   subs_.bloomManager.reset();
+  subs_.exposureManager.reset();
   subs_.oitManager.reset();
   subs_.cameraController.reset();
   subs_.pipelineBuilder.reset();
@@ -544,6 +682,10 @@ void RendererFrontend::shutdown() {
   buffers_.cameras.clear();
   if (buffers_.object.buffer != VK_NULL_HANDLE)
     svc_.allocationManager.destroyBuffer(buffers_.object);
+  if (screenshot_.readbackBuffer.buffer != VK_NULL_HANDLE) {
+    svc_.allocationManager.destroyBuffer(screenshot_.readbackBuffer);
+  }
+  screenshot_.readbackSize = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -558,7 +700,7 @@ void RendererFrontend::createRenderPasses() {
       resources_.gBufferFormats.depthStencil,
       resources_.gBufferFormats.sceneColor, resources_.gBufferFormats.albedo,
       resources_.gBufferFormats.normal, resources_.gBufferFormats.material,
-      resources_.gBufferFormats.emissive);
+      resources_.gBufferFormats.emissive, resources_.gBufferFormats.specular);
   resources_.renderPasses = subs_.renderPassManager->passes();
 }
 
@@ -594,6 +736,7 @@ void RendererFrontend::createCamera() {
       sceneGraph_, subs_.sceneManager.get(), subs_.sceneController->world(),
       svc_.inputManager);
   subs_.cameraController->createCamera();
+  applyCameraOverride(subs_.cameraController->camera(), svc_.config);
 }
 
 void RendererFrontend::initializeScene() {
@@ -727,9 +870,9 @@ void RendererFrontend::updateFrameDescriptorSets(uint32_t imageIndex) {
           subs_.environmentManager->isAoEnabled();
       const bool tileCullEnabled =
           isRenderPassActive(subs_.frameRecorder.get(), RenderPassId::TileCull);
-      lightingData.featureFlags[0] = shadowEnabled ? 1u : 0u;
-      lightingData.featureFlags[1] = gtaoEnabled ? 1u : 0u;
-      lightingData.featureFlags[2] = tileCullEnabled ? 1u : 0u;
+      lightingData.shadowEnabled = shadowEnabled ? 1u : 0u;
+      lightingData.gtaoEnabled = gtaoEnabled ? 1u : 0u;
+      lightingData.tileCullEnabled = tileCullEnabled ? 1u : 0u;
       lightingData.prefilteredMipCount =
           subs_.environmentManager
               ? subs_.environmentManager->prefilteredMipCount()
@@ -782,11 +925,19 @@ void RendererFrontend::updateFrameDescriptorSets(uint32_t imageIndex) {
       tileGridBuffer = subs_.lightingManager->tileGridBuffer();
       tileGridBufferSize = subs_.lightingManager->tileGridBufferSize();
     }
+    VkBuffer exposureStateBuffer = VK_NULL_HANDLE;
+    VkDeviceSize exposureStateBufferSize = 0;
+    if (subs_.exposureManager && subs_.exposureManager->isReady()) {
+      exposureStateBuffer = subs_.exposureManager->exposureStateBuffer();
+      exposureStateBufferSize =
+          subs_.exposureManager->exposureStateBufferSize();
+    }
     subs_.frameResourceManager->updateDescriptorSets(
         buffers_.cameras, buffers_.object, shadowView, shadowSampler,
         shadowUbos, irradianceView, prefilteredView, brdfLutView, envSampler,
         brdfLutSampler, aoTextureView, aoSampler, bloomTextureView,
-        bloomSampler, tileGridBuffer, tileGridBufferSize);
+        bloomSampler, tileGridBuffer, tileGridBufferSize,
+        exposureStateBuffer, exposureStateBufferSize);
   }
 }
 
@@ -810,6 +961,97 @@ bool RendererFrontend::growExactOitNodePoolIfNeeded(uint32_t imageIndex) {
     }
   }
   return grew;
+}
+
+void RendererFrontend::ensureScreenshotReadbackBuffer(VkExtent2D extent,
+                                                      VkFormat format) {
+  if (extent.width == 0 || extent.height == 0) {
+    throw std::runtime_error("cannot capture a zero-sized swapchain image");
+  }
+  if (!isSupportedScreenshotFormat(format)) {
+    throw std::runtime_error("unsupported swapchain screenshot format");
+  }
+
+  const VkDeviceSize requiredSize =
+      static_cast<VkDeviceSize>(extent.width) *
+      static_cast<VkDeviceSize>(extent.height) * 4u;
+  if (screenshot_.readbackBuffer.buffer != VK_NULL_HANDLE &&
+      screenshot_.readbackSize == requiredSize &&
+      screenshot_.extent.width == extent.width &&
+      screenshot_.extent.height == extent.height &&
+      screenshot_.format == format) {
+    return;
+  }
+
+  if (screenshot_.readbackBuffer.buffer != VK_NULL_HANDLE) {
+    svc_.allocationManager.destroyBuffer(screenshot_.readbackBuffer);
+  }
+  screenshot_.readbackBuffer = svc_.allocationManager.createBuffer(
+      requiredSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+          VMA_ALLOCATION_CREATE_MAPPED_BIT);
+  screenshot_.readbackSize = requiredSize;
+  screenshot_.extent = extent;
+  screenshot_.format = format;
+}
+
+void RendererFrontend::writePendingScreenshotPng() {
+  if (!screenshot_.pending) {
+    return;
+  }
+  if (screenshot_.readbackBuffer.buffer == VK_NULL_HANDLE ||
+      screenshot_.readbackBuffer.allocation == nullptr ||
+      screenshot_.readbackSize == 0) {
+    throw std::runtime_error("screenshot readback buffer is not initialized");
+  }
+
+  void *mapped = screenshot_.readbackBuffer.allocation_info.pMappedData;
+  bool mappedHere = false;
+  if (mapped == nullptr) {
+    if (vmaMapMemory(svc_.allocationManager.memoryManager()->allocator(),
+                     screenshot_.readbackBuffer.allocation, &mapped) !=
+        VK_SUCCESS) {
+      throw std::runtime_error("failed to map screenshot readback buffer");
+    }
+    mappedHere = true;
+  }
+
+  if (vmaInvalidateAllocation(svc_.allocationManager.memoryManager()->allocator(),
+                              screenshot_.readbackBuffer.allocation, 0,
+                              screenshot_.readbackSize) != VK_SUCCESS) {
+    if (mappedHere) {
+      vmaUnmapMemory(svc_.allocationManager.memoryManager()->allocator(),
+                     screenshot_.readbackBuffer.allocation);
+    }
+    throw std::runtime_error("failed to invalidate screenshot readback buffer");
+  }
+
+  const auto *src = static_cast<const unsigned char *>(mapped);
+  const size_t pixelCount =
+      static_cast<size_t>(screenshot_.extent.width) *
+      static_cast<size_t>(screenshot_.extent.height);
+  std::vector<unsigned char> rgba =
+      convertSwapchainBytesToRgba(src, pixelCount, screenshot_.format);
+
+  if (mappedHere) {
+    vmaUnmapMemory(svc_.allocationManager.memoryManager()->allocator(),
+                   screenshot_.readbackBuffer.allocation);
+  }
+
+  if (!screenshot_.outputPath.parent_path().empty()) {
+    std::filesystem::create_directories(screenshot_.outputPath.parent_path());
+  }
+  const std::string outputPath =
+      container::util::pathToUtf8(screenshot_.outputPath);
+  const int ok = stbi_write_png(outputPath.c_str(),
+                                static_cast<int>(screenshot_.extent.width),
+                                static_cast<int>(screenshot_.extent.height), 4,
+                                rgba.data(),
+                                static_cast<int>(screenshot_.extent.width * 4));
+  screenshot_.pending = false;
+  if (ok == 0) {
+    throw std::runtime_error("failed to write screenshot PNG: " + outputPath);
+  }
 }
 
 void RendererFrontend::presentSceneControls() {
@@ -865,11 +1107,12 @@ void RendererFrontend::presentSceneControls() {
                                 : emptyPointLights;
   subs_.guiManager->drawSceneControls(
       sceneGraph_,
-      [this](const std::string &modelPath) {
-        return reloadSceneModel(modelPath);
+      [this](const std::string &modelPath, float importScale) {
+        return reloadSceneModel(modelPath, importScale);
       },
-      [this]() {
-        return reloadSceneModel(container::app::DefaultAppConfig().modelPath);
+      [this](float importScale) {
+        return reloadSceneModel(container::app::DefaultAppConfig().modelPath,
+                                importScale);
       },
       subs_.cameraController ? subs_.cameraController->cameraTransformControls()
                              : container::ui::TransformControls{},
@@ -949,7 +1192,9 @@ void RendererFrontend::presentSceneControls() {
         guiLightingSettings.intensityScale !=
             currentLightingSettings.intensityScale ||
         guiLightingSettings.directionalIntensity !=
-            currentLightingSettings.directionalIntensity;
+            currentLightingSettings.directionalIntensity ||
+        guiLightingSettings.environmentIntensity !=
+            currentLightingSettings.environmentIntensity;
     if (lightingSettingsChanged) {
       subs_.lightingManager->setLightingSettings(guiLightingSettings);
       subs_.lightingManager->updateLightingData();
@@ -1076,6 +1321,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     p.shadowDescriptorSet = subs_.shadowManager->descriptorSet(imageIndex);
     p.shadowFramebuffers = subs_.shadowManager->framebuffers().data();
     p.shadowData = &subs_.shadowManager->shadowData();
+    p.shadowSettings = subs_.guiManager ? subs_.guiManager->shadowSettings()
+                                        : container::gpu::ShadowSettings{};
     p.shadowManager = subs_.shadowManager.get();
   }
   if (subs_.shadowCullManager) {
@@ -1097,9 +1344,18 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   }
   p.gpuCullManager = subs_.gpuCullManager.get();
   p.bloomManager = subs_.bloomManager.get();
+  p.exposureSettings =
+      subs_.guiManager ? subs_.guiManager->exposureSettings()
+                       : exposureSettingsFromConfig(svc_.config);
   p.objectBuffer = buffers_.object.buffer;
   p.objectBufferSize =
       sizeof(container::gpu::ObjectData) * buffers_.objectCapacity;
+  if (screenshot_.pending) {
+    p.screenshot.enabled = true;
+    p.screenshot.swapChainImage = svc_.swapChainManager.image(imageIndex);
+    p.screenshot.readbackBuffer = screenshot_.readbackBuffer.buffer;
+    p.screenshot.extent = svc_.swapChainManager.extent();
+  }
   return p;
 }
 

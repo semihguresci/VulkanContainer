@@ -1,8 +1,11 @@
 #include "Container/utility/MaterialManager.h"
 #include "Container/utility/MaterialXIntegration.h"
+#include "Container/utility/SceneData.h"
 
 #include <gtest/gtest.h>
 
+#include <cmath>
+#include <filesystem>
 #include <initializer_list>
 #include <limits>
 #include <vector>
@@ -31,7 +34,85 @@ tinygltf::Value textureInfoWithScale(int index, double scale) {
   return tinygltf::Value(std::move(object));
 }
 
+tinygltf::Value textureTransform(std::initializer_list<double> offset,
+                                 double rotation,
+                                 std::initializer_list<double> scale,
+                                 int texCoord) {
+  tinygltf::Value::Object object;
+  object.emplace("offset", numberArray(offset));
+  object.emplace("rotation", tinygltf::Value(rotation));
+  object.emplace("scale", numberArray(scale));
+  object.emplace("texCoord", tinygltf::Value(texCoord));
+  return tinygltf::Value(std::move(object));
+}
+
+tinygltf::Parameter numberParameter(double value) {
+  tinygltf::Parameter parameter;
+  parameter.has_number_value = true;
+  parameter.number_value = value;
+  return parameter;
+}
+
+glm::vec2 applyGltfTextureTransform(
+    const container::material::TextureTransform& transform,
+    const glm::vec2& texCoord) {
+  const float cosRotation = std::cos(transform.rotation);
+  const float sinRotation = std::sin(transform.rotation);
+  return {
+      transform.scale.x * cosRotation * texCoord.x -
+          transform.scale.y * sinRotation * texCoord.y +
+          transform.offset.x,
+      transform.scale.x * sinRotation * texCoord.x +
+          transform.scale.y * cosRotation * texCoord.y +
+          transform.offset.y,
+  };
+}
+
 }  // namespace
+
+TEST(MaterialXIntegration, LoadsSeparateTextureResourcesForDistinctGltfSamplers) {
+  tinygltf::Model model;
+  model.images.resize(1);
+  model.images[0].uri = "shared.png";
+  model.textures.resize(3);
+  for (auto& texture : model.textures) {
+    texture.source = 0;
+  }
+  model.samplers.resize(3);
+  model.samplers[0].wrapS = TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE;
+  model.samplers[0].wrapT = TINYGLTF_TEXTURE_WRAP_REPEAT;
+  model.samplers[1].wrapS = TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT;
+  model.samplers[1].wrapT = TINYGLTF_TEXTURE_WRAP_REPEAT;
+  model.samplers[2].wrapS = TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE;
+  model.samplers[2].wrapT = TINYGLTF_TEXTURE_WRAP_REPEAT;
+  model.textures[0].sampler = 0;
+  model.textures[1].sampler = 1;
+  model.textures[2].sampler = 2;
+
+  container::material::SlangMaterialXBridge bridge;
+  container::material::TextureManager textureManager;
+  uint32_t loadCount = 0;
+  const auto textureToResource = bridge.loadTexturesForGltf(
+      model, std::filesystem::path{}, textureManager,
+      [&](const std::string&, bool) {
+        ++loadCount;
+        return container::material::TextureResource{};
+      });
+
+  ASSERT_EQ(textureToResource.size(), 3u);
+  EXPECT_NE(textureToResource[0], textureToResource[1]);
+  EXPECT_EQ(textureToResource[0], textureToResource[2]);
+  EXPECT_EQ(loadCount, 2u);
+
+  const auto* clampTexture = textureManager.getTexture(textureToResource[0]);
+  const auto* mirrorTexture = textureManager.getTexture(textureToResource[1]);
+  ASSERT_NE(clampTexture, nullptr);
+  ASSERT_NE(mirrorTexture, nullptr);
+  EXPECT_EQ(clampTexture->samplerIndex,
+            container::gpu::kMaterialSamplerWrapClampToEdge);
+  EXPECT_EQ(mirrorTexture->samplerIndex,
+            container::gpu::kMaterialSamplerWrapMirroredRepeat);
+}
 
 TEST(MaterialXIntegration, ImportsKhrMaterialsPbrSpecularGlossiness) {
   tinygltf::Model model;
@@ -212,4 +293,160 @@ TEST(MaterialXIntegration, ImportsLayeredKhrPbrExtensions) {
   EXPECT_NEAR(material->dispersion, 15.0f, 1e-4f);
   EXPECT_TRUE(material->unlit);
   EXPECT_EQ(material->alphaMode, container::material::AlphaMode::Blend);
+}
+
+TEST(MaterialXIntegration, DefaultsUnspecifiedMetallicToDielectric) {
+  tinygltf::Model model;
+  model.images.resize(1);
+  model.textures.resize(1);
+  model.textures[0].source = 0;
+
+  tinygltf::Material gltfMaterial;
+  gltfMaterial.alphaMode = "BLEND";
+  gltfMaterial.doubleSided = true;
+  gltfMaterial.pbrMetallicRoughness.baseColorTexture.index = 0;
+  model.materials.push_back(std::move(gltfMaterial));
+
+  container::material::SlangMaterialXBridge bridge;
+  container::material::MaterialManager materialManager;
+  uint32_t defaultMaterialIndex = std::numeric_limits<uint32_t>::max();
+  const std::vector<uint32_t> imageToTexture{42u};
+
+  bridge.loadMaterialsForGltf(model, imageToTexture, materialManager,
+                              defaultMaterialIndex);
+
+  ASSERT_EQ(materialManager.materialCount(), 1u);
+  const auto* material = materialManager.getMaterial(0);
+  ASSERT_NE(material, nullptr);
+
+  EXPECT_EQ(material->baseColorTextureIndex, 42u);
+  EXPECT_EQ(material->metallicRoughnessTextureIndex,
+            std::numeric_limits<uint32_t>::max());
+  EXPECT_EQ(material->metalnessTextureIndex,
+            std::numeric_limits<uint32_t>::max());
+  EXPECT_NEAR(material->metallicFactor, 0.0f, 1e-6f);
+  EXPECT_NEAR(material->baseColorTextureTransform.offset.x, 0.0f, 1e-6f);
+  EXPECT_NEAR(material->baseColorTextureTransform.offset.y, 0.0f, 1e-6f);
+  EXPECT_NEAR(material->baseColorTextureTransform.scale.x, 1.0f, 1e-6f);
+  EXPECT_NEAR(material->baseColorTextureTransform.scale.y, 1.0f, 1e-6f);
+  EXPECT_NEAR(material->baseColorTextureTransform.rotation, 0.0f, 1e-6f);
+  EXPECT_EQ(material->baseColorTextureTransform.texCoord, 0u);
+}
+
+TEST(MaterialXIntegration, PreservesAuthoredMetallicFactor) {
+  tinygltf::Model model;
+
+  tinygltf::Material gltfMaterial;
+  gltfMaterial.pbrMetallicRoughness.metallicFactor = 1.0;
+  gltfMaterial.values.emplace("metallicFactor", numberParameter(1.0));
+  model.materials.push_back(std::move(gltfMaterial));
+
+  container::material::SlangMaterialXBridge bridge;
+  container::material::MaterialManager materialManager;
+  uint32_t defaultMaterialIndex = std::numeric_limits<uint32_t>::max();
+
+  bridge.loadMaterialsForGltf(model, {}, materialManager, defaultMaterialIndex);
+
+  ASSERT_EQ(materialManager.materialCount(), 1u);
+  const auto* material = materialManager.getMaterial(0);
+  ASSERT_NE(material, nullptr);
+
+  EXPECT_NEAR(material->metallicFactor, 1.0f, 1e-6f);
+}
+
+TEST(MaterialXIntegration, ImportsCoreTextureTransformsAndTexCoordIndices) {
+  tinygltf::Model model;
+  model.images.resize(5);
+  model.textures.resize(5);
+  for (size_t i = 0; i < model.textures.size(); ++i) {
+    model.textures[i].source = static_cast<int>(i);
+  }
+
+  tinygltf::Material gltfMaterial;
+  gltfMaterial.pbrMetallicRoughness.baseColorTexture.index = 0;
+  gltfMaterial.pbrMetallicRoughness.baseColorTexture.texCoord = 0;
+  gltfMaterial.pbrMetallicRoughness.baseColorTexture.extensions.emplace(
+      "KHR_texture_transform",
+      textureTransform({0.25, 0.5}, 1.25, {2.0, 3.0}, 1));
+
+  gltfMaterial.normalTexture.index = 1;
+  gltfMaterial.normalTexture.texCoord = 1;
+
+  gltfMaterial.occlusionTexture.index = 2;
+  gltfMaterial.occlusionTexture.texCoord = 1;
+  gltfMaterial.occlusionTexture.extensions.emplace(
+      "KHR_texture_transform",
+      textureTransform({0.1, 0.2}, 0.5, {0.75, 0.5}, 0));
+
+  gltfMaterial.emissiveTexture.index = 3;
+  gltfMaterial.emissiveTexture.texCoord = 0;
+  gltfMaterial.emissiveTexture.extensions.emplace(
+      "KHR_texture_transform",
+      textureTransform({0.0, 0.125}, 0.75, {1.0, 1.5}, 1));
+
+  gltfMaterial.pbrMetallicRoughness.metallicRoughnessTexture.index = 4;
+  gltfMaterial.pbrMetallicRoughness.metallicRoughnessTexture.texCoord = 1;
+  gltfMaterial.pbrMetallicRoughness.metallicRoughnessTexture.extensions.emplace(
+      "KHR_texture_transform",
+      textureTransform({0.33, 0.44}, -0.25, {0.5, 0.25}, 1));
+  model.materials.push_back(std::move(gltfMaterial));
+
+  container::material::SlangMaterialXBridge bridge;
+  container::material::MaterialManager materialManager;
+  uint32_t defaultMaterialIndex = std::numeric_limits<uint32_t>::max();
+  const std::vector<uint32_t> imageToTexture{10u, 11u, 12u, 13u, 14u};
+
+  bridge.loadMaterialsForGltf(model, imageToTexture, materialManager,
+                              defaultMaterialIndex);
+
+  ASSERT_EQ(materialManager.materialCount(), 1u);
+  const auto* material = materialManager.getMaterial(0);
+  ASSERT_NE(material, nullptr);
+
+  EXPECT_EQ(material->baseColorTextureIndex, 10u);
+  EXPECT_NEAR(material->baseColorTextureTransform.offset.x, 0.25f, 1e-6f);
+  EXPECT_NEAR(material->baseColorTextureTransform.offset.y, 0.5f, 1e-6f);
+  EXPECT_NEAR(material->baseColorTextureTransform.rotation, 1.25f, 1e-6f);
+  EXPECT_NEAR(material->baseColorTextureTransform.scale.x, 2.0f, 1e-6f);
+  EXPECT_NEAR(material->baseColorTextureTransform.scale.y, 3.0f, 1e-6f);
+  EXPECT_EQ(material->baseColorTextureTransform.texCoord, 1u);
+  const glm::vec2 transformedBaseUv = applyGltfTextureTransform(
+      material->baseColorTextureTransform, {0.2f, 0.3f});
+  const float cosBase = std::cos(1.25f);
+  const float sinBase = std::sin(1.25f);
+  EXPECT_NEAR(transformedBaseUv.x,
+              2.0f * cosBase * 0.2f - 3.0f * sinBase * 0.3f + 0.25f,
+              1e-6f);
+  EXPECT_NEAR(transformedBaseUv.y,
+              2.0f * sinBase * 0.2f + 3.0f * cosBase * 0.3f + 0.5f,
+              1e-6f);
+
+  EXPECT_EQ(material->normalTextureIndex, 11u);
+  EXPECT_EQ(material->normalTextureTransform.texCoord, 1u);
+  EXPECT_NEAR(material->normalTextureTransform.scale.x, 1.0f, 1e-6f);
+  EXPECT_NEAR(material->normalTextureTransform.scale.y, 1.0f, 1e-6f);
+
+  EXPECT_EQ(material->occlusionTextureIndex, 12u);
+  EXPECT_EQ(material->occlusionTextureTransform.texCoord, 0u);
+  EXPECT_NEAR(material->occlusionTextureTransform.offset.x, 0.1f, 1e-6f);
+  EXPECT_NEAR(material->occlusionTextureTransform.offset.y, 0.2f, 1e-6f);
+  EXPECT_NEAR(material->occlusionTextureTransform.rotation, 0.5f, 1e-6f);
+
+  EXPECT_EQ(material->emissiveTextureIndex, 13u);
+  EXPECT_EQ(material->emissiveTextureTransform.texCoord, 1u);
+  EXPECT_NEAR(material->emissiveTextureTransform.rotation, 0.75f, 1e-6f);
+  EXPECT_NEAR(material->emissiveTextureTransform.scale.y, 1.5f, 1e-6f);
+
+  EXPECT_EQ(material->metallicRoughnessTextureIndex, 14u);
+  EXPECT_EQ(material->metallicRoughnessTextureTransform.texCoord, 1u);
+  EXPECT_NEAR(material->metallicRoughnessTextureTransform.offset.x,
+              0.33f, 1e-6f);
+  EXPECT_NEAR(material->metallicRoughnessTextureTransform.offset.y,
+              0.44f, 1e-6f);
+  EXPECT_NEAR(material->metallicRoughnessTextureTransform.rotation,
+              -0.25f, 1e-6f);
+  EXPECT_NEAR(material->metallicRoughnessTextureTransform.scale.x,
+              0.5f, 1e-6f);
+  EXPECT_NEAR(material->metallicRoughnessTextureTransform.scale.y,
+              0.25f, 1e-6f);
 }

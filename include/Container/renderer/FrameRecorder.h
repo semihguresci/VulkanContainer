@@ -21,6 +21,7 @@ class VulkanDevice;
 namespace container::renderer {
 class BloomManager;
 class EnvironmentManager;
+class ExposureManager;
 class GpuCullManager;
 class LightingManager;
 class OitManager;
@@ -113,6 +114,7 @@ struct FrameRecordParams {
   // which keeps the frame parameter contract to high-level pass services.
   const VkFramebuffer*              shadowFramebuffers{nullptr};
   const container::gpu::ShadowData*     shadowData{nullptr};
+  container::gpu::ShadowSettings        shadowSettings{};
   bool                                 useGpuShadowCull{false};
   ShadowCullManager*                   shadowCullManager{nullptr};
   const ShadowManager*                  shadowManager{nullptr};
@@ -126,12 +128,21 @@ struct FrameRecordParams {
   // Swapchain framebuffers (for post-process pass)
   const std::vector<VkFramebuffer>* swapChainFramebuffers{nullptr};
 
+  struct ScreenshotCapture {
+    bool enabled{false};
+    VkImage swapChainImage{VK_NULL_HANDLE};
+    VkBuffer readbackBuffer{VK_NULL_HANDLE};
+    VkExtent2D extent{};
+  };
+  ScreenshotCapture screenshot{};
+
   // Diagnostic cube object index (max uint32 = disabled)
   uint32_t                          diagCubeObjectIndex{std::numeric_limits<uint32_t>::max()};
 
   // GPU-driven culling
   GpuCullManager*                   gpuCullManager{nullptr};
   BloomManager*                      bloomManager{nullptr};
+  container::gpu::ExposureSettings   exposureSettings{};
   VkBuffer                          objectBuffer{VK_NULL_HANDLE};
   VkDeviceSize                      objectBufferSize{0};
 };
@@ -151,6 +162,7 @@ class FrameRecorder {
                 const SceneController*                          sceneController,
                 GpuCullManager*                                 gpuCullManager,
                 BloomManager*                                   bloomManager,
+                ExposureManager*                                exposureManager,
                 const container::scene::BaseCamera*              camera,
                 container::ui::GuiManager*                        guiManager);
 
@@ -219,6 +231,9 @@ class FrameRecorder {
                               const FrameRecordParams& p,
                               const std::array<VkDescriptorSet, 2>& postProcessSets) const;
 
+  void recordScreenshotCopy(VkCommandBuffer cmd,
+                            const FrameRecordParams& p) const;
+
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::SwapChainManager&                      swapChainManager_;
   const OitManager&                               oitManager_;
@@ -227,6 +242,7 @@ class FrameRecorder {
   const SceneController*                          sceneController_;
   GpuCullManager*                                 gpuCullManager_;
   BloomManager*                                    bloomManager_;
+  ExposureManager*                                 exposureManager_;
   const container::scene::BaseCamera*              camera_;
   container::ui::GuiManager*                  guiManager_;
 

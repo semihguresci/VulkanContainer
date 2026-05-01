@@ -4,6 +4,8 @@
 #include "Container/utility/TextureResource.h"
 #include "Container/utility/TextureManager.h"
 #include "Container/utility/MaterialManager.h"
+#include "Container/utility/Platform.h"
+#include "Container/utility/SceneData.h"
 #include <MaterialXCore/Material.h>
 #include <MaterialXCore/Util.h>
 #include <MaterialXCore/Value.h>
@@ -75,6 +77,7 @@ std::string resolveImageFileInput(const MaterialX::InputPtr& input) {
 
 constexpr const char* kSpecularGlossinessExtension =
     "KHR_materials_pbrSpecularGlossiness";
+constexpr const char* kTextureTransformExtension = "KHR_texture_transform";
 
 const tinygltf::Value* findMaterialExtension(
     const tinygltf::Material& material, const char* extensionName) {
@@ -174,15 +177,142 @@ float readTextureScaleObject(const tinygltf::Value& textureObject,
   return static_cast<float>(scaleValue.GetNumberAsDouble());
 }
 
+glm::vec2 readTextureTransformVec2(const tinygltf::Value* extension,
+                                   const char* valueName,
+                                   const glm::vec2& fallback) {
+  if (extension == nullptr || !extension->Has(valueName)) {
+    return fallback;
+  }
+
+  const auto& value = extension->Get(valueName);
+  if (!value.IsArray() || value.ArrayLen() < 2) {
+    return fallback;
+  }
+
+  const auto& x = value.Get(0);
+  const auto& y = value.Get(1);
+  if (!x.IsNumber() || !y.IsNumber()) {
+    return fallback;
+  }
+
+  return {static_cast<float>(x.GetNumberAsDouble()),
+          static_cast<float>(y.GetNumberAsDouble())};
+}
+
+uint32_t readTextureTransformTexCoord(const tinygltf::Value* extension,
+                                      uint32_t fallback) {
+  if (extension == nullptr || !extension->Has("texCoord")) {
+    return fallback;
+  }
+
+  const auto& value = extension->Get("texCoord");
+  if (!value.IsNumber()) {
+    return fallback;
+  }
+
+  const int texCoord = value.GetNumberAsInt();
+  return texCoord >= 0 ? static_cast<uint32_t>(texCoord) : fallback;
+}
+
+float readTextureTransformRotation(const tinygltf::Value* extension,
+                                   float fallback) {
+  if (extension == nullptr || !extension->Has("rotation")) {
+    return fallback;
+  }
+
+  const auto& value = extension->Get("rotation");
+  if (!value.IsNumber()) {
+    return fallback;
+  }
+
+  return static_cast<float>(value.GetNumberAsDouble());
+}
+
+template <typename TextureInfo>
+container::material::TextureTransform readTextureTransform(
+    const TextureInfo& textureInfo) {
+  container::material::TextureTransform transform{};
+  transform.texCoord =
+      textureInfo.texCoord >= 0 ? static_cast<uint32_t>(textureInfo.texCoord)
+                                : 0u;
+
+  const auto extensionIt =
+      textureInfo.extensions.find(kTextureTransformExtension);
+  const tinygltf::Value* extension =
+      extensionIt != textureInfo.extensions.end() && extensionIt->second.IsObject()
+          ? &extensionIt->second
+          : nullptr;
+
+  transform.offset = readTextureTransformVec2(
+      extension, "offset", transform.offset);
+  transform.rotation =
+      readTextureTransformRotation(extension, transform.rotation);
+  transform.scale = readTextureTransformVec2(
+      extension, "scale", transform.scale);
+  transform.texCoord =
+      readTextureTransformTexCoord(extension, transform.texCoord);
+  return transform;
+}
+
+container::material::TextureTransform readTextureTransformObject(
+    const tinygltf::Value& textureObject) {
+  container::material::TextureTransform transform{};
+  if (!textureObject.IsObject()) {
+    return transform;
+  }
+
+  if (textureObject.Has("texCoord")) {
+    const auto& texCoordValue = textureObject.Get("texCoord");
+    if (texCoordValue.IsNumber()) {
+      const int texCoord = texCoordValue.GetNumberAsInt();
+      transform.texCoord = texCoord >= 0 ? static_cast<uint32_t>(texCoord) : 0u;
+    }
+  }
+
+  const tinygltf::Value* extension = nullptr;
+  if (textureObject.Has("extensions")) {
+    const auto& extensions = textureObject.Get("extensions");
+    if (extensions.IsObject() && extensions.Has(kTextureTransformExtension)) {
+      const auto& textureTransform = extensions.Get(kTextureTransformExtension);
+      if (textureTransform.IsObject()) {
+        extension = &textureTransform;
+      }
+    }
+  }
+
+  transform.offset = readTextureTransformVec2(
+      extension, "offset", transform.offset);
+  transform.rotation =
+      readTextureTransformRotation(extension, transform.rotation);
+  transform.scale = readTextureTransformVec2(
+      extension, "scale", transform.scale);
+  transform.texCoord =
+      readTextureTransformTexCoord(extension, transform.texCoord);
+  return transform;
+}
+
+const tinygltf::Value* findExtensionTextureObject(
+    const tinygltf::Material& material, const char* extensionName,
+    const char* textureName) {
+  const auto* extension = findMaterialExtension(material, extensionName);
+  if (extension == nullptr || !extension->Has(textureName)) {
+    return nullptr;
+  }
+
+  const auto& textureObject = extension->Get(textureName);
+  return textureObject.IsObject() ? &textureObject : nullptr;
+}
+
 int readExtensionTextureIndex(const tinygltf::Material& material,
                               const char* extensionName,
                               const char* textureName) {
-  const auto* extension = findMaterialExtension(material, extensionName);
-  if (extension == nullptr || !extension->Has(textureName)) {
+  const tinygltf::Value* textureObject =
+      findExtensionTextureObject(material, extensionName, textureName);
+  if (textureObject == nullptr) {
     return -1;
   }
 
-  return readTextureIndexObject(extension->Get(textureName));
+  return readTextureIndexObject(*textureObject);
 }
 
 int readLegacyTextureIndex(const tinygltf::ParameterMap& values,
@@ -203,21 +333,65 @@ float readLegacyFactor(const tinygltf::ParameterMap& values,
   return static_cast<float>(it->second.Factor());
 }
 
+bool hasLegacyNumber(const tinygltf::ParameterMap& values,
+                     const char* factorName) {
+  const auto it = values.find(factorName);
+  return it != values.end() && it->second.has_number_value;
+}
+
+bool hasAuthoredMaterialNumber(const tinygltf::Material& material,
+                               const char* factorName) {
+  return hasLegacyNumber(material.values, factorName) ||
+         hasLegacyNumber(material.additionalValues, factorName);
+}
+
+bool hasAuthoredPbrFactor(const tinygltf::Material& material,
+                          const char* factorName, double parsedValue,
+                          double defaultValue) {
+  return hasAuthoredMaterialNumber(material, factorName) ||
+         std::abs(parsedValue - defaultValue) > 1e-6;
+}
+
 uint32_t resolveTextureIndex(const tinygltf::Model& model,
-                             const std::vector<uint32_t>& imageToTexture,
+                             const std::vector<uint32_t>& textureToResource,
                              int textureIndex) {
   if (textureIndex < 0 ||
       static_cast<size_t>(textureIndex) >= model.textures.size()) {
     return std::numeric_limits<uint32_t>::max();
   }
 
-  const auto& texture = model.textures[static_cast<size_t>(textureIndex)];
-  if (texture.source < 0 ||
-      static_cast<size_t>(texture.source) >= imageToTexture.size()) {
+  if (static_cast<size_t>(textureIndex) >= textureToResource.size()) {
     return std::numeric_limits<uint32_t>::max();
   }
 
-  return imageToTexture[static_cast<size_t>(texture.source)];
+  return textureToResource[static_cast<size_t>(textureIndex)];
+}
+
+uint32_t gltfWrapModeToMaterialSamplerAxis(int wrapMode) {
+  switch (wrapMode) {
+    case TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE:
+      return container::gpu::kMaterialSamplerWrapClampToEdge;
+    case TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT:
+      return container::gpu::kMaterialSamplerWrapMirroredRepeat;
+    case TINYGLTF_TEXTURE_WRAP_REPEAT:
+    default:
+      return container::gpu::kMaterialSamplerWrapRepeat;
+  }
+}
+
+uint32_t gltfTextureSamplerIndex(const tinygltf::Model& model,
+                                 const tinygltf::Texture& texture) {
+  uint32_t wrapS = container::gpu::kMaterialSamplerWrapRepeat;
+  uint32_t wrapT = container::gpu::kMaterialSamplerWrapRepeat;
+  if (texture.sampler >= 0 &&
+      texture.sampler < static_cast<int>(model.samplers.size())) {
+    const tinygltf::Sampler& sampler =
+        model.samplers[static_cast<size_t>(texture.sampler)];
+    wrapS = gltfWrapModeToMaterialSamplerAxis(sampler.wrapS);
+    wrapT = gltfWrapModeToMaterialSamplerAxis(sampler.wrapT);
+  }
+
+  return wrapS + wrapT * container::gpu::kMaterialSamplerWrapModeCount;
 }
 
 float maxComponent(const glm::vec3& color) {
@@ -715,8 +889,8 @@ std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
     container::material::TextureManager& textureManager,
     const std::function<container::material::TextureResource(
         const std::string&, bool)>& textureLoader) const {
-  std::vector<uint32_t> imageToTexture(model.images.size(),
-                                       std::numeric_limits<uint32_t>::max());
+  std::vector<uint32_t> textureToResource(
+      model.textures.size(), std::numeric_limits<uint32_t>::max());
 
   // Classify each glTF image by how materials reference it. Color data
   // (base color, emissive) must be sRGB so sampling yields linear light;
@@ -806,30 +980,43 @@ std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
     }
   }
 
-  for (size_t i = 0; i < model.images.size(); ++i) {
-    const auto& image = model.images[i];
+  for (size_t i = 0; i < model.textures.size(); ++i) {
+    const auto& texture = model.textures[i];
+    if (texture.source < 0 ||
+        texture.source >= static_cast<int>(model.images.size())) {
+      continue;
+    }
+
+    const size_t imageIndex = static_cast<size_t>(texture.source);
+    const auto& image = model.images[imageIndex];
     if (image.uri.empty()) continue;
 
-    const auto fullPath = (baseDir / image.uri).lexically_normal().string();
+    const auto fullPath = container::util::pathToUtf8(
+        (baseDir / container::util::pathFromUtf8(image.uri)).lexically_normal());
+    const uint32_t samplerIndex = gltfTextureSamplerIndex(model, texture);
+    const std::string textureCacheKey =
+        fullPath + "|sampler=" + std::to_string(samplerIndex);
 
-    if (const auto cachedIndex = textureManager.findTextureIndex(fullPath)) {
-      imageToTexture[i] = *cachedIndex;
+    if (const auto cachedIndex = textureManager.findTextureIndex(textureCacheKey)) {
+      textureToResource[i] = *cachedIndex;
       continue;
     }
 
     try {
-      auto resource = textureLoader(fullPath, imageIsSrgb[i]);
-      imageToTexture[i] = textureManager.registerTexture(resource);
+      auto resource = textureLoader(fullPath, imageIsSrgb[imageIndex]);
+      resource.name = textureCacheKey;
+      resource.samplerIndex = samplerIndex;
+      textureToResource[i] = textureManager.registerTexture(resource);
     } catch (const std::exception& exc) {
       std::println(stderr, "Texture load failed for {}: {}", fullPath, exc.what());
     }
   }
 
-  return imageToTexture;
+  return textureToResource;
 }
 
 void SlangMaterialXBridge::loadMaterialsForGltf(
-    const tinygltf::Model& model, const std::vector<uint32_t>& imageToTexture,
+    const tinygltf::Model& model, const std::vector<uint32_t>& textureToResource,
     container::material::MaterialManager& materialManager,
     uint32_t& defaultMaterialIndex) const {
   auto materialDocs = loadGltfMaterials(model);
@@ -840,12 +1027,18 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
       return std::numeric_limits<uint32_t>::max();
     }
 
-    for (size_t i = 0; i < model.images.size(); ++i) {
-      const auto& image = model.images[i];
+    for (size_t i = 0; i < model.textures.size(); ++i) {
+      const auto& texture = model.textures[i];
+      if (texture.source < 0 ||
+          texture.source >= static_cast<int>(model.images.size())) {
+        continue;
+      }
+
+      const auto& image = model.images[static_cast<size_t>(texture.source)];
       const auto fallbackName = "texture_" + std::to_string(i);
       if (uri == image.uri || uri == image.name || uri == fallbackName) {
-        if (i < imageToTexture.size()) {
-          return imageToTexture[i];
+        if (i < textureToResource.size()) {
+          return textureToResource[i];
         }
       }
     }
@@ -858,6 +1051,8 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
     const auto& mat = model.materials[i];
     const auto* specGlossExtension =
         findMaterialExtension(mat, kSpecularGlossinessExtension);
+    const bool hasAuthoredMetallicFactor = hasAuthoredPbrFactor(
+        mat, "metallicFactor", mat.pbrMetallicRoughness.metallicFactor, 1.0);
     container::material::Material material{};
     if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
       material.baseColor = glm::vec4(
@@ -876,6 +1071,20 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
         static_cast<float>(mat.normalTexture.scale);
     material.occlusionStrength =
         static_cast<float>(mat.occlusionTexture.strength);
+    material.baseColorTextureTransform =
+        readTextureTransform(mat.pbrMetallicRoughness.baseColorTexture);
+    material.normalTextureTransform = readTextureTransform(mat.normalTexture);
+    material.occlusionTextureTransform =
+        readTextureTransform(mat.occlusionTexture);
+    material.emissiveTextureTransform =
+        readTextureTransform(mat.emissiveTexture);
+    material.metallicRoughnessTextureTransform =
+        readTextureTransform(
+            mat.pbrMetallicRoughness.metallicRoughnessTexture);
+    material.roughnessTextureTransform =
+        material.metallicRoughnessTextureTransform;
+    material.metalnessTextureTransform =
+        material.metallicRoughnessTextureTransform;
     material.specularFactor = readExtensionNumber(
         findMaterialExtension(mat, "KHR_materials_specular"),
         "specularFactor", material.specularFactor);
@@ -1020,71 +1229,38 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
           extractTextureFileForInput(materialDoc, "specular_roughness");
       auto metallicResolved = resolveTextureIndexFromUri(metallicUri);
       auto roughnessResolved = resolveTextureIndexFromUri(roughnessUri);
-      if (metallicResolved != std::numeric_limits<uint32_t>::max()) {
+      const uint32_t invalidTexture = std::numeric_limits<uint32_t>::max();
+      if (metallicResolved != invalidTexture &&
+          roughnessResolved != invalidTexture &&
+          metallicResolved == roughnessResolved) {
         material.metallicRoughnessTextureIndex = metallicResolved;
-      } else if (roughnessResolved != std::numeric_limits<uint32_t>::max()) {
-        material.metallicRoughnessTextureIndex = roughnessResolved;
+      } else {
+        if (metallicResolved != invalidTexture) {
+          material.metalnessTextureIndex = metallicResolved;
+        }
+        if (roughnessResolved != invalidTexture) {
+          material.roughnessTextureIndex = roughnessResolved;
+        }
       }
     }
 
-    const auto baseIndex = mat.pbrMetallicRoughness.baseColorTexture.index;
-    if (material.baseColorTextureIndex ==
-            std::numeric_limits<uint32_t>::max() &&
-        baseIndex >= 0 &&
-        static_cast<size_t>(baseIndex) < model.textures.size()) {
-      const auto& tex = model.textures[baseIndex];
-      if (tex.source >= 0 &&
-          static_cast<size_t>(tex.source) < imageToTexture.size()) {
-        material.baseColorTextureIndex = imageToTexture[tex.source];
+    auto assignGltfTexture = [&](uint32_t& destination, int textureIndex) {
+      const uint32_t resolved =
+          resolveTextureIndex(model, textureToResource, textureIndex);
+      if (resolved != std::numeric_limits<uint32_t>::max()) {
+        destination = resolved;
       }
-    }
+    };
 
-    const auto metallicIndex =
-        mat.pbrMetallicRoughness.metallicRoughnessTexture.index;
-    if (material.metallicRoughnessTextureIndex ==
-            std::numeric_limits<uint32_t>::max() &&
-        metallicIndex >= 0 &&
-        static_cast<size_t>(metallicIndex) < model.textures.size()) {
-      const auto& tex = model.textures[metallicIndex];
-      if (tex.source >= 0 &&
-          static_cast<size_t>(tex.source) < imageToTexture.size()) {
-        material.metallicRoughnessTextureIndex = imageToTexture[tex.source];
-      }
-    }
-
-    const auto normalIndex = mat.normalTexture.index;
-    if (material.normalTextureIndex == std::numeric_limits<uint32_t>::max() &&
-        normalIndex >= 0 &&
-        static_cast<size_t>(normalIndex) < model.textures.size()) {
-      const auto& tex = model.textures[normalIndex];
-      if (tex.source >= 0 &&
-          static_cast<size_t>(tex.source) < imageToTexture.size()) {
-        material.normalTextureIndex = imageToTexture[tex.source];
-      }
-    }
-
-    const auto occlusionIndex = mat.occlusionTexture.index;
-    if (material.occlusionTextureIndex ==
-            std::numeric_limits<uint32_t>::max() &&
-        occlusionIndex >= 0 &&
-        static_cast<size_t>(occlusionIndex) < model.textures.size()) {
-      const auto& tex = model.textures[occlusionIndex];
-      if (tex.source >= 0 &&
-          static_cast<size_t>(tex.source) < imageToTexture.size()) {
-        material.occlusionTextureIndex = imageToTexture[tex.source];
-      }
-    }
-
-    const auto emissiveIndex = mat.emissiveTexture.index;
-    if (material.emissiveTextureIndex == std::numeric_limits<uint32_t>::max() &&
-        emissiveIndex >= 0 &&
-        static_cast<size_t>(emissiveIndex) < model.textures.size()) {
-      const auto& tex = model.textures[emissiveIndex];
-      if (tex.source >= 0 &&
-          static_cast<size_t>(tex.source) < imageToTexture.size()) {
-        material.emissiveTextureIndex = imageToTexture[tex.source];
-      }
-    }
+    assignGltfTexture(material.baseColorTextureIndex,
+                      mat.pbrMetallicRoughness.baseColorTexture.index);
+    assignGltfTexture(
+        material.metallicRoughnessTextureIndex,
+        mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
+    assignGltfTexture(material.normalTextureIndex, mat.normalTexture.index);
+    assignGltfTexture(material.occlusionTextureIndex,
+                      mat.occlusionTexture.index);
+    assignGltfTexture(material.emissiveTextureIndex, mat.emissiveTexture.index);
 
     if (specGlossExtension != nullptr) {
       const glm::vec4 diffuseFactor = readExtensionVec4(
@@ -1114,15 +1290,25 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
       material.specularTextureIndex = std::numeric_limits<uint32_t>::max();
 
       material.baseColorTextureIndex = resolveTextureIndex(
-          model, imageToTexture,
+          model, textureToResource,
           readTextureIndexObject(specGlossExtension->Get("diffuseTexture")));
+      if (specGlossExtension->Has("diffuseTexture")) {
+        material.baseColorTextureTransform =
+            readTextureTransformObject(specGlossExtension->Get("diffuseTexture"));
+      }
       const uint32_t specularGlossinessTexture = resolveTextureIndex(
-          model, imageToTexture,
+          model, textureToResource,
           readTextureIndexObject(
               specGlossExtension->Get("specularGlossinessTexture")));
       if (specularGlossinessTexture != std::numeric_limits<uint32_t>::max()) {
         material.roughnessTextureIndex = specularGlossinessTexture;
         material.specularColorTextureIndex = specularGlossinessTexture;
+        if (specGlossExtension->Has("specularGlossinessTexture")) {
+          const auto transform = readTextureTransformObject(
+              specGlossExtension->Get("specularGlossinessTexture"));
+          material.roughnessTextureTransform = transform;
+          material.specularColorTextureTransform = transform;
+        }
       }
     }
 
@@ -1131,57 +1317,73 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
         return;
       }
       const uint32_t resolved =
-          resolveTextureIndex(model, imageToTexture, textureIndex);
+          resolveTextureIndex(model, textureToResource, textureIndex);
       if (resolved != std::numeric_limits<uint32_t>::max()) {
         destination = resolved;
       }
     };
 
-    assignOptionalTexture(
-        material.specularTextureIndex,
-        readExtensionTextureIndex(
-            mat, "KHR_materials_specular", "specularTexture"));
-    assignOptionalTexture(
+    auto assignOptionalExtensionTexture =
+        [&](uint32_t& destination,
+            container::material::TextureTransform& destinationTransform,
+            const char* extensionName, const char* textureName) {
+          if (destination != std::numeric_limits<uint32_t>::max()) {
+            return;
+          }
+
+          const tinygltf::Value* textureObject =
+              findExtensionTextureObject(mat, extensionName, textureName);
+          if (textureObject == nullptr) {
+            return;
+          }
+
+          const uint32_t resolved =
+              resolveTextureIndex(model, textureToResource,
+                                  readTextureIndexObject(*textureObject));
+          if (resolved != std::numeric_limits<uint32_t>::max()) {
+            destination = resolved;
+            destinationTransform = readTextureTransformObject(*textureObject);
+          }
+        };
+
+    assignOptionalExtensionTexture(
+        material.specularTextureIndex, material.specularTextureTransform,
+        "KHR_materials_specular", "specularTexture");
+    assignOptionalExtensionTexture(
         material.specularColorTextureIndex,
-        readExtensionTextureIndex(
-            mat, "KHR_materials_specular", "specularColorTexture"));
-    assignOptionalTexture(
-        material.transmissionTextureIndex,
-        readExtensionTextureIndex(
-            mat, "KHR_materials_transmission", "transmissionTexture"));
-    assignOptionalTexture(
-        material.clearcoatTextureIndex,
-        readExtensionTextureIndex(
-            mat, "KHR_materials_clearcoat", "clearcoatTexture"));
-    assignOptionalTexture(
+        material.specularColorTextureTransform, "KHR_materials_specular",
+        "specularColorTexture");
+    assignOptionalExtensionTexture(
+        material.transmissionTextureIndex, material.transmissionTextureTransform,
+        "KHR_materials_transmission", "transmissionTexture");
+    assignOptionalExtensionTexture(
+        material.clearcoatTextureIndex, material.clearcoatTextureTransform,
+        "KHR_materials_clearcoat", "clearcoatTexture");
+    assignOptionalExtensionTexture(
         material.clearcoatRoughnessTextureIndex,
-        readExtensionTextureIndex(
-            mat, "KHR_materials_clearcoat", "clearcoatRoughnessTexture"));
-    assignOptionalTexture(
+        material.clearcoatRoughnessTextureTransform, "KHR_materials_clearcoat",
+        "clearcoatRoughnessTexture");
+    assignOptionalExtensionTexture(
         material.clearcoatNormalTextureIndex,
-        readExtensionTextureIndex(
-            mat, "KHR_materials_clearcoat", "clearcoatNormalTexture"));
-    assignOptionalTexture(
-        material.thicknessTextureIndex,
-        readExtensionTextureIndex(
-            mat, "KHR_materials_volume", "thicknessTexture"));
-    assignOptionalTexture(
-        material.sheenColorTextureIndex,
-        readExtensionTextureIndex(
-            mat, "KHR_materials_sheen", "sheenColorTexture"));
-    assignOptionalTexture(
+        material.clearcoatNormalTextureTransform, "KHR_materials_clearcoat",
+        "clearcoatNormalTexture");
+    assignOptionalExtensionTexture(
+        material.thicknessTextureIndex, material.thicknessTextureTransform,
+        "KHR_materials_volume", "thicknessTexture");
+    assignOptionalExtensionTexture(
+        material.sheenColorTextureIndex, material.sheenColorTextureTransform,
+        "KHR_materials_sheen", "sheenColorTexture");
+    assignOptionalExtensionTexture(
         material.sheenRoughnessTextureIndex,
-        readExtensionTextureIndex(
-            mat, "KHR_materials_sheen", "sheenRoughnessTexture"));
-    assignOptionalTexture(
-        material.iridescenceTextureIndex,
-        readExtensionTextureIndex(
-            mat, "KHR_materials_iridescence", "iridescenceTexture"));
-    assignOptionalTexture(
+        material.sheenRoughnessTextureTransform, "KHR_materials_sheen",
+        "sheenRoughnessTexture");
+    assignOptionalExtensionTexture(
+        material.iridescenceTextureIndex, material.iridescenceTextureTransform,
+        "KHR_materials_iridescence", "iridescenceTexture");
+    assignOptionalExtensionTexture(
         material.iridescenceThicknessTextureIndex,
-        readExtensionTextureIndex(
-            mat, "KHR_materials_iridescence",
-            "iridescenceThicknessTexture"));
+        material.iridescenceThicknessTextureTransform,
+        "KHR_materials_iridescence", "iridescenceThicknessTexture");
 
     assignOptionalTexture(
         material.roughnessTextureIndex,
@@ -1231,6 +1433,13 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
     assignOptionalTexture(
         material.transmissionTextureIndex,
         readLegacyTextureIndex(mat.additionalValues, "transmissionTexture"));
+
+    if (specGlossExtension == nullptr && !hasAuthoredMetallicFactor &&
+        material.metallicRoughnessTextureIndex ==
+            std::numeric_limits<uint32_t>::max() &&
+        material.metalnessTextureIndex == std::numeric_limits<uint32_t>::max()) {
+      material.metallicFactor = 0.0f;
+    }
 
     if (material.alphaMode == AlphaMode::Opaque &&
         (material.opacityFactor < 0.999f ||

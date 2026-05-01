@@ -1,36 +1,28 @@
 #include "brdf_common.slang"
-#include "lighting_structs.slang"
-
-static const uint INVALID_NODE_INDEX = 0xffffffffu;
+#include "area_light_common.slang"
+#include "shadow_common.slang"
+#include "oit_common.slang"
+#include "push_constants_common.slang"
 
 #include "object_data_common.slang"
-
-struct TransparentNode
-{
-    float4 color;
-    float depth;
-    uint next;
-    float2 padding;
-};
-
-struct OitMetadataBuffer
-{
-    uint nodeCapacity;
-    uint viewportWidth;
-    uint viewportHeight;
-    uint reserved;
-};
+#include "material_data_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
-[[vk::binding(2, 0)]] SamplerState baseSampler;
-[[vk::binding(3, 0)]] Texture2D materialTextures[];
+[[vk::binding(2, 0)]] SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT];
+[[vk::binding(3, 0)]] StructuredBuffer<GpuMaterial> uMaterials;
+[[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
+[[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
 [[vk::binding(0, 1)]] ConstantBuffer<LightingBuffer> uLighting;
 [[vk::binding(1, 1)]] StructuredBuffer<PointLightData> uPointLights;
+[[vk::binding(2, 1)]] StructuredBuffer<AreaLightData> uAreaLights;
 [[vk::binding(0, 2)]] RWTexture2D<uint> headPointerImage;
 [[vk::binding(1, 2)]] RWStructuredBuffer<TransparentNode> transparentNodes;
 [[vk::binding(2, 2)]] RWStructuredBuffer<uint> nodeCounter;
 [[vk::binding(3, 2)]] ConstantBuffer<OitMetadataBuffer> uOit;
+[[vk::binding(7, 3)]] ConstantBuffer<ShadowBuffer> uShadow;
+[[vk::binding(8, 3)]] Texture2DArray<float> gShadowAtlas;
+[[vk::binding(9, 3)]] SamplerComparisonState gShadowSampler;
 [[vk::binding(10, 3)]] TextureCube<float4> gIrradianceCubemap;
 [[vk::binding(11, 3)]] TextureCube<float4> gPrefilteredCubemap;
 [[vk::binding(12, 3)]] Texture2D<float2> gBrdfLUT;
@@ -41,13 +33,8 @@ struct OitMetadataBuffer
 #include "pbr_material_common.slang"
 #include "surface_normal_common.slang"
 
-struct PushConstants
-{
-    uint objectIndex;
-};
-
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<BindlessPushConstants> pc;
 
 static const uint kObjectFlagAlphaCutoff = 0x1u;
 static const uint kObjectFlagTransparentOnly = 0x2u;
@@ -60,6 +47,7 @@ struct VSInput
     [[vk::location(2)]] float2 inTexCoord;
     [[vk::location(3)]] float3 inNormal;
     [[vk::location(4)]] float4 inTangent;
+    [[vk::location(5)]] float2 inTexCoord1;
 };
 
 struct VSOutput
@@ -91,32 +79,24 @@ struct VSOutput
     [[vk::location(23)]] float specularFactor;
     [[vk::location(24)]] float transmissionFactor;
     [[vk::location(25)]] uint objectIndex;
+    [[vk::location(26)]] float2 texCoord1;
 };
 
-float3 EvaluateThinSurfaceTransmission(float3 albedo, float3 normal, float3 V,
-                                       float3 L, float3 radiance,
-                                       float alpha, bool isBackFace)
-{
-    float wrappedDiffuse = saturate((dot(normal, L) + 0.45) / 1.45);
-    float backLight = saturate(dot(-normal, L));
-    float viewThrough = pow(saturate(dot(-L, V)), 2.0);
-    float faceWeight = isBackFace ? 1.0 : 0.45;
-    float opacityWeight = saturate(1.0 - alpha * 0.5);
-    float transmission = max(wrappedDiffuse * 0.35, backLight * viewThrough) *
-                         faceWeight * opacityWeight;
-    return albedo * radiance * transmission;
-}
-
 [shader("vertex")]
-VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
+                  uint startInstance : SV_StartInstanceLocation)
 {
     VSOutput output;
-    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID);
+    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID, startInstance);
     ObjectBuffer obj = uObjects[objectIndex];
+    GpuMaterial material = uMaterials[obj.objectInfo.x];
+    float2 heightTexCoord = ApplyGpuTextureTransform(
+        input.inTexCoord, input.inTexCoord1, material.heightTextureTransform);
 
     float3 objectPosition = ApplyHeightDisplacement(
-        input.inPosition, input.inNormal, input.inTexCoord,
-        obj.heightTextureIndex, obj.heightScale, obj.heightOffset);
+        input.inPosition, input.inNormal, heightTexCoord,
+        material.heightTextureIndex, material.heightScale,
+        material.heightOffset);
     float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     float3x3 modelMatrix = (float3x3)obj.model;
     float3 normalVector =
@@ -127,31 +107,33 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
     float4 worldTangent = BuildWorldTangent(modelMatrix, worldNormal, input.inTangent);
 
     output.pos = mul(uCamera.viewProj, worldPos);
-    output.baseColor = obj.color;
+    output.baseColor = material.color;
     output.texCoord = input.inTexCoord;
-    output.baseColorTextureIndex = obj.baseColorTextureIndex;
-    output.normalTextureIndex = obj.normalTextureIndex;
-    output.occlusionTextureIndex = obj.occlusionTextureIndex;
-    output.emissiveTextureIndex = obj.emissiveTextureIndex;
-    output.metallicRoughnessTextureIndex = obj.metallicRoughnessTextureIndex;
-    output.emissiveColor = obj.emissiveColor;
-    output.emissiveStrength = obj.emissiveStrength;
-    output.metallicRoughness = obj.metallicRoughness;
+    output.texCoord1 = input.inTexCoord1;
+    output.baseColorTextureIndex = material.baseColorTextureIndex;
+    output.normalTextureIndex = material.normalTextureIndex;
+    output.occlusionTextureIndex = material.occlusionTextureIndex;
+    output.emissiveTextureIndex = material.emissiveTextureIndex;
+    output.metallicRoughnessTextureIndex =
+        material.metallicRoughnessTextureIndex;
+    output.emissiveColor = material.emissiveColor;
+    output.emissiveStrength = material.emissiveStrength;
+    output.metallicRoughness = material.metallicRoughness;
     output.worldPos = worldPos.xyz;
-    output.alphaCutoff = obj.alphaCutoff;
-    output.normalTextureScale = obj.normalTextureScale;
-    output.occlusionStrength = obj.occlusionStrength;
-    output.flags = obj.flags;
+    output.alphaCutoff = material.alphaCutoff;
+    output.normalTextureScale = material.normalTextureScale;
+    output.occlusionStrength = material.occlusionStrength;
+    output.flags = material.flags | obj.objectInfo.y;
     output.worldNormal = worldNormal;
     output.worldTangent = worldTangent;
-    output.roughnessTextureIndex = obj.roughnessTextureIndex;
-    output.metalnessTextureIndex = obj.metalnessTextureIndex;
-    output.specularTextureIndex = obj.specularTextureIndex;
-    output.opacityTextureIndex = obj.opacityTextureIndex;
-    output.transmissionTextureIndex = obj.transmissionTextureIndex;
-    output.opacityFactor = obj.opacityFactor;
-    output.specularFactor = obj.specularFactor;
-    output.transmissionFactor = obj.transmissionFactor;
+    output.roughnessTextureIndex = material.roughnessTextureIndex;
+    output.metalnessTextureIndex = material.metalnessTextureIndex;
+    output.specularTextureIndex = material.specularTextureIndex;
+    output.opacityTextureIndex = material.opacityTextureIndex;
+    output.transmissionTextureIndex = material.transmissionTextureIndex;
+    output.opacityFactor = material.opacityFactor;
+    output.specularFactor = material.specularFactor;
+    output.transmissionFactor = material.transmissionFactor;
     output.objectIndex = objectIndex;
     return output;
 }
@@ -159,19 +141,79 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 {
+    GpuMaterial material =
+        uMaterials[uObjects[vertIn.objectIndex].objectInfo.x];
+    float2 baseColorTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.baseColorTextureTransform);
+    float2 normalTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.normalTextureTransform);
+    float2 occlusionTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.occlusionTextureTransform);
+    float2 emissiveTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.emissiveTextureTransform);
+    float2 metallicRoughnessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.metallicRoughnessTextureTransform);
+    float2 roughnessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.roughnessTextureTransform);
+    float2 metalnessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.metalnessTextureTransform);
+    float2 specularTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.specularTextureTransform);
+    float2 opacityTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.opacityTextureTransform);
+    float2 transmissionTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.transmissionTextureTransform);
+    float2 specularColorTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.specularColorTextureTransform);
+    float2 clearcoatTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.clearcoatTextureTransform);
+    float2 clearcoatRoughnessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.clearcoatRoughnessTextureTransform);
+    float2 clearcoatNormalTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.clearcoatNormalTextureTransform);
+    float2 thicknessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.thicknessTextureTransform);
+    float2 sheenColorTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.sheenColorTextureTransform);
+    float2 sheenRoughnessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.sheenRoughnessTextureTransform);
+    float2 iridescenceTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.iridescenceTextureTransform);
+    float2 iridescenceThicknessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.iridescenceThicknessTextureTransform);
+
     float3 baseColor = vertIn.baseColor.rgb;
     float baseAlpha = vertIn.baseColor.a;
 
     if (vertIn.baseColorTextureIndex != 0xffffffff)
     {
-        uint texIndex = NonUniformResourceIndex(vertIn.baseColorTextureIndex);
-        float4 texColor = materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord);
+        float4 texColor = SamplePbrTexture(
+            vertIn.baseColorTextureIndex, baseColorTexCoord, 1.0.xxxx);
         baseColor *= texColor.rgb;
         baseAlpha *= texColor.a;
     }
     baseAlpha = EvaluateOpacity(
         baseAlpha, vertIn.opacityTextureIndex, vertIn.opacityFactor,
-        vertIn.texCoord);
+        opacityTexCoord);
 
     if ((vertIn.flags & kObjectFlagAlphaCutoff) != 0u && baseAlpha < vertIn.alphaCutoff)
     {
@@ -185,57 +227,63 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 
     float sampledMetallic = EvaluateMetalness(
         vertIn.metallicRoughness.x, vertIn.metallicRoughnessTextureIndex,
-        vertIn.metalnessTextureIndex, vertIn.texCoord);
+        vertIn.metalnessTextureIndex, metallicRoughnessTexCoord,
+        metalnessTexCoord);
     float sampledRoughness = EvaluateRoughness(
         vertIn.metallicRoughness.y, vertIn.metallicRoughnessTextureIndex,
-        vertIn.roughnessTextureIndex, vertIn.texCoord, vertIn.flags);
+        vertIn.roughnessTextureIndex, metallicRoughnessTexCoord,
+        roughnessTexCoord, vertIn.flags);
     float specularFactor = EvaluateSpecularFactor(
-        vertIn.specularFactor, vertIn.specularTextureIndex, vertIn.texCoord);
+        vertIn.specularFactor, vertIn.specularTextureIndex, specularTexCoord);
     float transmissionFactor = EvaluateTransmissionFactor(
-        vertIn.transmissionFactor, vertIn.transmissionTextureIndex, vertIn.texCoord);
-    ObjectBuffer obj = uObjects[vertIn.objectIndex];
+        vertIn.transmissionFactor, vertIn.transmissionTextureIndex,
+        transmissionTexCoord);
     float3 specularColor = EvaluateSpecularColor(
-        obj.specularColorFactor.rgb, obj.specularColorTextureIndex,
-        vertIn.specularTextureIndex, vertIn.texCoord);
+        material.specularColorFactor.rgb, material.specularColorTextureIndex,
+        specularColorTexCoord, vertIn.specularTextureIndex, specularTexCoord);
     float clearcoat = EvaluateClearcoatFactor(
-        obj.clearcoatFactor, obj.clearcoatTextureIndex, vertIn.texCoord);
+        material.clearcoatFactor, material.clearcoatTextureIndex,
+        clearcoatTexCoord);
     float clearcoatRoughness = EvaluateClearcoatRoughness(
-        obj.clearcoatRoughnessFactor, obj.clearcoatRoughnessTextureIndex,
-        vertIn.texCoord);
+        material.clearcoatRoughnessFactor,
+        material.clearcoatRoughnessTextureIndex, clearcoatRoughnessTexCoord);
     float3 sheenColor = EvaluateSheenColor(
-        obj.sheenColorFactor.rgb, obj.sheenColorTextureIndex, vertIn.texCoord);
+        material.sheenColorFactor.rgb, material.sheenColorTextureIndex,
+        sheenColorTexCoord);
     float sheenRoughness = EvaluateSheenRoughness(
-        obj.sheenRoughnessFactor, obj.sheenRoughnessTextureIndex,
-        vertIn.texCoord);
+        material.sheenRoughnessFactor, material.sheenRoughnessTextureIndex,
+        sheenRoughnessTexCoord);
     float iridescence = EvaluateIridescenceFactor(
-        obj.iridescenceFactor, obj.iridescenceTextureIndex, vertIn.texCoord);
+        material.iridescenceFactor, material.iridescenceTextureIndex,
+        iridescenceTexCoord);
     float iridescenceThickness = EvaluateIridescenceThickness(
-        obj.iridescenceThicknessMinimum, obj.iridescenceThicknessMaximum,
-        obj.iridescenceThicknessTextureIndex, vertIn.texCoord);
+        material.iridescenceThicknessMinimum,
+        material.iridescenceThicknessMaximum,
+        material.iridescenceThicknessTextureIndex, iridescenceThicknessTexCoord);
     float volumeThickness = EvaluateThickness(
-        obj.thicknessFactor, obj.thicknessTextureIndex, vertIn.texCoord);
+        material.thicknessFactor, material.thicknessTextureIndex,
+        thicknessTexCoord);
 
     float faceSign =
         ((vertIn.flags & kObjectFlagDoubleSided) != 0u && !isFrontFace)
             ? -1.0 : 1.0;
     SurfaceNormalState surfaceNormal = EvaluateSurfaceNormal(
-        vertIn.worldNormal, vertIn.worldTangent, vertIn.texCoord,
+        vertIn.worldNormal, vertIn.worldTangent, normalTexCoord,
         vertIn.normalTextureIndex, vertIn.normalTextureScale, faceSign);
 
     float occlusion = 1.0;
     if (vertIn.occlusionTextureIndex != 0xffffffff)
     {
-        uint texIndex = NonUniformResourceIndex(vertIn.occlusionTextureIndex);
-        float sampledOcclusion =
-            materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).r;
+        float sampledOcclusion = SamplePbrTexture(
+            vertIn.occlusionTextureIndex, occlusionTexCoord, 1.0.xxxx).r;
         occlusion = lerp(1.0, sampledOcclusion, saturate(vertIn.occlusionStrength));
     }
 
     float3 emissive = vertIn.emissiveColor;
     if (vertIn.emissiveTextureIndex != 0xffffffff)
     {
-        uint texIndex = NonUniformResourceIndex(vertIn.emissiveTextureIndex);
-        emissive *= materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).rgb;
+        emissive *= SamplePbrTexture(
+            vertIn.emissiveTextureIndex, emissiveTexCoord, 1.0.xxxx).rgb;
     }
     emissive *= vertIn.emissiveStrength;
 
@@ -245,18 +293,24 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                              float3(0.0, 0.0, 1.0));
     float NdotV = max(dot(surfaceNormal.shadingNormal, V), 0.0);
     float3 iridescenceTint = ApproximateIridescenceTint(
-        iridescence, obj.iridescenceIor, iridescenceThickness, NdotV);
+        iridescence, material.iridescenceIor, iridescenceThickness, NdotV);
     float3 F0 = EvaluatePbrF0(
         baseColor, metallic, specularFactor, specularColor * iridescenceTint,
-        obj.ior);
+        material.ior);
 
     float3 F_ibl = FresnelSchlickRoughness(NdotV, F0, roughness);
     float3 kD_ibl = (1.0 - F_ibl) * (1.0 - metallic);
-    float3 irradiance = gIrradianceCubemap.Sample(envSampler, surfaceNormal.shadingNormal).rgb;
+    float environmentIntensity = max(uLighting.environmentIntensity, 0.0);
+    float3 irradiance =
+        gIrradianceCubemap.Sample(envSampler, surfaceNormal.shadingNormal).rgb *
+        environmentIntensity;
     float3 diffuseIBL = irradiance * baseColor;
     float3 R = reflect(-V, surfaceNormal.shadingNormal);
     float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
-    float3 prefilteredColor = gPrefilteredCubemap.SampleLevel(envSampler, R, roughness * maxMipLevel).rgb;
+    float3 prefilteredColor =
+        gPrefilteredCubemap.SampleLevel(envSampler, R,
+                                        roughness * maxMipLevel).rgb *
+        environmentIntensity;
     float2 brdf = gBrdfLUT.Sample(brdfSampler, float2(NdotV, roughness));
     float3 specularIBL =
         EvaluateSpecularIblMultipleScattering(prefilteredColor, F0, brdf);
@@ -276,22 +330,38 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                                         float3(0.0, 1.0, 0.0));
     float3 directionalRadiance =
         uLighting.directionalColorIntensity.rgb * uLighting.directionalColorIntensity.a;
-    if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
-    {
-        lighting += EvaluatePbrDirectLight(
-            baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal, V,
-            directionalL, directionalRadiance);
-    }
     const bool thinSurface =
         (vertIn.flags & (kObjectFlagAlphaCutoff | kObjectFlagDoubleSided)) ==
         (kObjectFlagAlphaCutoff | kObjectFlagDoubleSided);
+    float shadowFactor = 1.0;
+    if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
+    {
+        float3 cameraForward =
+            SafeNormalize(uCamera.cameraForward.xyz, float3(0.0, 0.0, -1.0));
+        float viewDepth =
+            max(dot(vertIn.worldPos - uCamera.cameraWorldPosition.xyz,
+                    cameraForward), 0.0);
+        float NdotLForShadow = dot(surfaceNormal.shadingNormal, directionalL);
+        if (uLighting.shadowEnabled != 0u &&
+            (NdotLForShadow > 0.0 || thinSurface))
+        {
+            shadowFactor = ComputeShadowFactor(
+                vertIn.worldPos, surfaceNormal.shadingNormal,
+                uLighting.directionalDirection.xyz, viewDepth,
+                uShadow, gShadowAtlas, gShadowSampler);
+        }
+        lighting += EvaluatePbrDirectLight(
+            baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal, V,
+            directionalL, directionalRadiance * shadowFactor);
+    }
     if (thinSurface)
     {
         if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
         {
             lighting += EvaluateThinSurfaceTransmission(
                 baseColor, surfaceNormal.shadingNormal, V, directionalL,
-                directionalRadiance, saturate(baseAlpha), !isFrontFace);
+                directionalRadiance * shadowFactor, saturate(baseAlpha),
+                !isFrontFace);
         }
     }
 
@@ -299,18 +369,22 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     {
         PointLightData light = uPointLights[i];
         float3 lightVector = light.positionRadius.xyz - vertIn.worldPos;
-        float lightRadius = max(light.positionRadius.w, 1e-3);
+        float lightRadius = light.positionRadius.w;
         float distanceSq = dot(lightVector, lightVector);
-        if (distanceSq >= lightRadius * lightRadius)
+        if (PointLightHasFiniteRange(lightRadius) &&
+            distanceSq >= lightRadius * lightRadius)
         {
             continue;
         }
 
         float invDistance = rsqrt(max(distanceSq, 1e-8));
         float3 L = lightVector * invDistance;
-        float attenuation = SmoothRangeAttenuation(distanceSq, lightRadius);
+        float attenuation = PointLightAttenuation(distanceSq, lightRadius);
+        float coneAttenuation = SpotLightConeAttenuation(
+            light.directionInnerCos, light.coneOuterCosType, L);
         float3 radiance =
-            light.colorIntensity.rgb * light.colorIntensity.a * attenuation;
+            light.colorIntensity.rgb * light.colorIntensity.a * attenuation *
+            coneAttenuation;
         if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
         {
             lighting += EvaluatePbrDirectLight(
@@ -327,15 +401,44 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 
     if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
     {
+        uint areaLightCount = min(uLighting.areaLightCount, MAX_AREA_LIGHTS);
+        for (uint i = 0u; i < areaLightCount; ++i)
+        {
+            AreaLightData light = uAreaLights[i];
+            AreaLightFrame frame = BuildAreaLightFrame(light);
+            [unroll]
+            for (uint sampleIndex = 0u;
+                 sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT;
+                 ++sampleIndex)
+            {
+                float3 L;
+                float3 radiance = EvaluateAreaLightSampleRadiance(
+                    light, frame, vertIn.worldPos, sampleIndex, L);
+                lighting += EvaluatePbrDirectLight(
+                    baseColor, F0, metallic, roughness,
+                    surfaceNormal.shadingNormal, V, L, radiance);
+                if (thinSurface)
+                {
+                    lighting += EvaluateThinSurfaceTransmission(
+                        baseColor, surfaceNormal.shadingNormal, V, L, radiance,
+                        saturate(baseAlpha), !isFrontFace);
+                }
+            }
+        }
+    }
+
+    if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
+    {
         if (clearcoat > 0.0)
         {
             float3 clearcoatNormal = surfaceNormal.shadingNormal;
-            if (obj.clearcoatNormalTextureIndex != kInvalidMaterialTexture)
+            if (material.clearcoatNormalTextureIndex != kInvalidMaterialTexture)
             {
                 clearcoatNormal = EvaluateSurfaceNormal(
-                    vertIn.worldNormal, vertIn.worldTangent, vertIn.texCoord,
-                    obj.clearcoatNormalTextureIndex,
-                    obj.clearcoatNormalTextureScale, faceSign).shadingNormal;
+                    vertIn.worldNormal, vertIn.worldTangent,
+                    clearcoatNormalTexCoord,
+                    material.clearcoatNormalTextureIndex,
+                    material.clearcoatNormalTextureScale, faceSign).shadingNormal;
             }
             float clearcoatNdotV = max(dot(clearcoatNormal, V), 0.0);
             float3 clearcoatF0 = IorToF0(1.5).xxx;
@@ -353,7 +456,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             lighting += EvaluatePbrDirectLight(
                             0.0.xxx, clearcoatF0, 1.0, clearcoatRoughness,
                             clearcoatNormal, V, directionalL,
-                            directionalRadiance) *
+                            directionalRadiance * shadowFactor) *
                         clearcoat;
         }
 
@@ -363,7 +466,8 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             float grazing = pow(1.0 - NdotV, 2.0);
             float sheenScale = grazing * (1.0 - 0.35 * sheenRoughness);
             lighting = lighting * (1.0 - saturate(sheenWeight * 0.25)) +
-                       sheenColor * (irradiance + directionalRadiance) *
+                       sheenColor *
+                           (irradiance + directionalRadiance * shadowFactor) *
                            sheenScale * 0.35;
         }
     }
@@ -376,8 +480,9 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         float3 transmittedColor = 0.0.xxx;
         if (volumeThickness > 0.0)
         {
-            float safeIor = max(obj.ior, 1.0);
-            float halfSpread = (safeIor - 1.0) * 0.025 * max(obj.dispersion, 0.0);
+            float safeIor = max(material.ior, 1.0);
+            float halfSpread =
+                (safeIor - 1.0) * 0.025 * max(material.dispersion, 0.0);
             float3 iors = max(float3(safeIor - halfSpread, safeIor,
                                      safeIor + halfSpread),
                               1.0.xxx);
@@ -406,8 +511,8 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         if (dot(transmittedColor, transmittedColor) > 0.0)
         {
             transmittedColor = ApplyBeerLambert(
-                transmittedColor * baseColor, obj.attenuationColor.rgb,
-                obj.attenuationDistance, volumeThickness);
+                transmittedColor * baseColor, material.attenuationColor.rgb,
+                material.attenuationDistance, volumeThickness);
             lighting = lerp(lighting, transmittedColor + emissive,
                             transmissionWeight * 0.75);
         }
@@ -431,7 +536,8 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     node.color = float4(lighting, saturate(baseAlpha));
     node.depth = saturate(vertIn.pos.z);
     node.next = INVALID_NODE_INDEX;
-    node.padding = 0.0.xx;
+    node.padding0 = 0.0;
+    node.padding1 = 0.0;
 
     uint previousHead = INVALID_NODE_INDEX;
     InterlockedExchange(headPointerImage[pixelCoord], nodeIndex, previousHead);

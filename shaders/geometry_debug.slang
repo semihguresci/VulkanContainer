@@ -1,10 +1,5 @@
-struct CameraBuffer
-{
-    column_major float4x4 viewProj;
-    column_major float4x4 inverseViewProj;
-    float4 cameraWorldPosition;
-};
-
+#include "lighting_structs.slang"
+#include "push_constants_common.slang"
 #include "object_data_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
@@ -12,13 +7,8 @@ struct CameraBuffer
 
 #include "object_index_common.slang"
 
-struct PushConstants
-{
-    uint objectIndex;
-};
-
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<BindlessPushConstants> pc;
 
 struct VSInput
 {
@@ -45,10 +35,11 @@ float3 hashColor(uint index)
 }
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
+                  uint startInstance : SV_StartInstanceLocation)
 {
     VSOutput output;
-    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID);
+    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID, startInstance);
     ObjectBuffer obj = uObjects[objectIndex];
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));

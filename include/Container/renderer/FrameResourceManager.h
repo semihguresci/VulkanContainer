@@ -21,7 +21,8 @@ struct AllocatedBuffer;
 namespace container::renderer {
 
 // Per-node data in the OIT linked list. The layout is consumed directly by
-// post_process.slang; keep alignment and field order in sync with TransparentNode.
+// shaders/oit_common.slang; keep alignment and field order in sync with
+// TransparentNode.
 struct OitNode {
   alignas(16) glm::vec4 color{0.0f};
   alignas(4)  float     depth{0.0f};
@@ -38,12 +39,21 @@ struct OitMetadata {
 };
 
 static_assert(sizeof(OitNode) == 32,
-              "OitNode must match shaders/post_process.slang TransparentNode.");
+              "OitNode must match shaders/oit_common.slang TransparentNode.");
 static_assert(offsetof(OitNode, color) == 0, "OitNode.color offset");
 static_assert(offsetof(OitNode, depth) == 16, "OitNode.depth offset");
 static_assert(offsetof(OitNode, next) == 20, "OitNode.next offset");
+static_assert(offsetof(OitNode, padding) == 24, "OitNode.padding offset");
 static_assert(sizeof(OitMetadata) == 16,
-              "OitMetadata must match shaders/post_process.slang OitMetadataBuffer.");
+              "OitMetadata must match shaders/oit_common.slang OitMetadataBuffer.");
+static_assert(offsetof(OitMetadata, nodeCapacity) == 0,
+              "OitMetadata.nodeCapacity offset");
+static_assert(offsetof(OitMetadata, viewportWidth) == 4,
+              "OitMetadata.viewportWidth offset");
+static_assert(offsetof(OitMetadata, viewportHeight) == 8,
+              "OitMetadata.viewportHeight offset");
+static_assert(offsetof(OitMetadata, reserved) == 12,
+              "OitMetadata.reserved offset");
 
 // Aggregated format bundle passed into FrameResourceManager::create().
 struct GBufferFormats {
@@ -51,8 +61,9 @@ struct GBufferFormats {
   VkFormat sceneColor{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat albedo{VK_FORMAT_R8G8B8A8_UNORM};
   VkFormat normal{VK_FORMAT_R16G16B16A16_SFLOAT};
-  VkFormat material{VK_FORMAT_R8G8B8A8_UNORM};
+  VkFormat material{VK_FORMAT_R32G32B32A32_SFLOAT};
   VkFormat emissive{VK_FORMAT_R16G16B16A16_SFLOAT};
+  VkFormat specular{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat oitHeadPointer{VK_FORMAT_R32_UINT};
 
   // Returns a GBufferFormats initialised with all defaults except
@@ -110,7 +121,9 @@ class FrameResourceManager {
                             VkImageView bloomTextureView  = VK_NULL_HANDLE,
                             VkSampler   bloomSampler      = VK_NULL_HANDLE,
                             VkBuffer    tileGridBuffer    = VK_NULL_HANDLE,
-                            VkDeviceSize tileGridBufferSize = 0);
+                            VkDeviceSize tileGridBufferSize = 0,
+                            VkBuffer    exposureStateBuffer = VK_NULL_HANDLE,
+                            VkDeviceSize exposureStateBufferSize = 0);
 
   void validateOitFormatSupport() const;
 
@@ -135,6 +148,7 @@ class FrameResourceManager {
   void            transitionToGeneral(VkImage image, VkImageAspectFlags mask) const;
   void            writeOitMetadata(FrameResources& frame) const;
   void            ensureFallbackTileGridBuffer();
+  void            ensureFallbackExposureStateBuffer();
   VkCommandBuffer beginImmediate() const;
   void            endImmediate(VkCommandBuffer cmd) const;
 
@@ -154,6 +168,8 @@ class FrameResourceManager {
     VkSampler   bloomSampler{VK_NULL_HANDLE};
     VkBuffer    tileGridBuffer{VK_NULL_HANDLE};
     VkDeviceSize tileGridBufferSize{0};
+    VkBuffer    exposureStateBuffer{VK_NULL_HANDLE};
+    VkDeviceSize exposureStateBufferSize{0};
 
     bool operator==(const DescriptorUpdateKey&) const = default;
   };
@@ -173,6 +189,7 @@ class FrameResourceManager {
   VkDescriptorPool postProcessPool_{VK_NULL_HANDLE};
   VkDescriptorPool oitPool_{VK_NULL_HANDLE};
   container::gpu::AllocatedBuffer fallbackTileGridBuffer_{};
+  container::gpu::AllocatedBuffer fallbackExposureStateBuffer_{};
 
   GBufferFormats formats_{};
   VkRenderPass   depthPrepassPass_{VK_NULL_HANDLE};

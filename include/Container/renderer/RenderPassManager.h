@@ -27,9 +27,10 @@ class RenderPassManager {
               VkFormat depthStencilFormat,
               VkFormat sceneColorFormat,
               VkFormat albedoFormat,
-              VkFormat normalFormat,
-              VkFormat materialFormat,
-              VkFormat emissiveFormat);
+               VkFormat normalFormat,
+               VkFormat materialFormat,
+               VkFormat emissiveFormat,
+               VkFormat specularFormat);
 
   void destroy();
 

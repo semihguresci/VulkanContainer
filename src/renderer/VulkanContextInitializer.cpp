@@ -43,11 +43,9 @@ VulkanContextResult VulkanContextInitializer::initialize(
     if (config_.enableValidationLayers) {
       debugCI.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
       debugCI.messageSeverity =
-          VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
           VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
           VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
       debugCI.messageType =
-          VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
           VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
           VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
       debugCI.pfnUserCallback = debugCallback;
@@ -64,11 +62,9 @@ VulkanContextResult VulkanContextInitializer::initialize(
     VkDebugUtilsMessengerCreateInfoEXT ci{};
     ci.sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
     ci.messageSeverity =
-        VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
         VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
         VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
     ci.messageType =
-        VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
         VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
         VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT;
     ci.pfnUserCallback = debugCallback;
@@ -98,27 +94,32 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.optionalFeatures.fillModeNonSolid       = VK_TRUE;
     ci.optionalFeatures.wideLines              = VK_TRUE;
 
-    VkPhysicalDeviceDescriptorIndexingFeatures indexingFeatures{};
-    indexingFeatures.sType =
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_INDEXING_FEATURES;
-    indexingFeatures.runtimeDescriptorArray                    = VK_TRUE;
-    indexingFeatures.descriptorBindingPartiallyBound           = VK_TRUE;
-    indexingFeatures.descriptorBindingVariableDescriptorCount  = VK_TRUE;
-    indexingFeatures.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
-
-    VkPhysicalDeviceBufferDeviceAddressFeatures bufferAddrFeatures{};
-    bufferAddrFeatures.sType =
-        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES;
-    bufferAddrFeatures.bufferDeviceAddress = VK_TRUE;
-
     VkPhysicalDeviceVulkan11Features vulkan11Features{};
     vulkan11Features.sType =
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_1_FEATURES;
     vulkan11Features.shaderDrawParameters = VK_TRUE;
 
-    bufferAddrFeatures.pNext = &vulkan11Features;
-    indexingFeatures.pNext   = &bufferAddrFeatures;
-    ci.next                  = &indexingFeatures;
+    VkPhysicalDeviceVulkan12Features vulkan12Features{};
+    vulkan12Features.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES;
+    vulkan12Features.descriptorIndexing = VK_TRUE;
+    vulkan12Features.runtimeDescriptorArray = VK_TRUE;
+    vulkan12Features.descriptorBindingPartiallyBound = VK_TRUE;
+    vulkan12Features.descriptorBindingVariableDescriptorCount = VK_TRUE;
+    vulkan12Features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
+    vulkan12Features.bufferDeviceAddress = VK_TRUE;
+    vulkan12Features.drawIndirectCount = VK_TRUE;
+
+    VkPhysicalDeviceVulkan13Features vulkan13Features{};
+    vulkan13Features.sType =
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES;
+    vulkan13Features.dynamicRendering = VK_TRUE;
+    vulkan13Features.synchronization2 = VK_TRUE;
+    vulkan13Features.maintenance4 = VK_TRUE;
+
+    vulkan13Features.pNext = &vulkan12Features;
+    vulkan12Features.pNext = &vulkan11Features;
+    ci.next = &vulkan13Features;
 
     result.deviceWrapper = std::make_shared<container::gpu::VulkanDevice>(
         result.instance, result.surface, ci);

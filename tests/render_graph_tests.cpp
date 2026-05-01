@@ -597,6 +597,7 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
       RenderPassId::TileCull,
       RenderPassId::GTAO,
       RenderPassId::Lighting,
+      RenderPassId::ExposureAdaptation,
       RenderPassId::OitResolve,
       RenderPassId::Bloom,
       RenderPassId::PostProcess,
@@ -622,6 +623,8 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
   EXPECT_LT(executionPosition(graph, RenderPassId::DepthToReadOnly),
             executionPosition(graph, RenderPassId::Lighting));
   EXPECT_LT(executionPosition(graph, RenderPassId::Lighting),
+            executionPosition(graph, RenderPassId::ExposureAdaptation));
+  EXPECT_LT(executionPosition(graph, RenderPassId::ExposureAdaptation),
             executionPosition(graph, RenderPassId::OitResolve));
   EXPECT_LT(executionPosition(graph, RenderPassId::OitResolve),
             executionPosition(graph, RenderPassId::Bloom));

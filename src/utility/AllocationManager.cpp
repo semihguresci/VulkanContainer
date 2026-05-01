@@ -7,6 +7,8 @@
 
 #include "stb_image.h"
 
+#include "Container/utility/Platform.h"
+
 namespace container::gpu {
 
 namespace {
@@ -194,8 +196,8 @@ container::material::TextureResource AllocationManager::createTextureFromFile(
   }
 
   container::material::TextureResource resource{};
-  resource.name =
-      std::filesystem::path(texturePath).lexically_normal().string();
+  resource.name = container::util::pathToUtf8(
+      container::util::pathFromUtf8(texturePath).lexically_normal());
   resource.image = image;
   resource.imageView = imageView;
 

@@ -1,6 +1,7 @@
 ﻿#include "Container/renderer/FrameRecorder.h"
 #include "Container/renderer/BloomManager.h"
 #include "Container/renderer/EnvironmentManager.h"
+#include "Container/renderer/ExposureManager.h"
 #include "Container/renderer/GpuCullManager.h"
 #include "Container/renderer/LightingManager.h"
 #include "Container/renderer/OitManager.h"
@@ -14,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <future>
 #include <limits>
@@ -48,6 +50,44 @@ VkPipeline choosePipeline(VkPipeline preferred, VkPipeline fallback) {
 
 constexpr uint32_t kIndirectObjectIndex =
     std::numeric_limits<uint32_t>::max();
+
+float finiteOr(float value, float fallback) {
+  return std::isfinite(value) ? value : fallback;
+}
+
+container::gpu::ExposureSettings sanitizeExposureSettings(
+    container::gpu::ExposureSettings settings) {
+  settings.mode = settings.mode == container::gpu::kExposureModeAuto
+                      ? container::gpu::kExposureModeAuto
+                      : container::gpu::kExposureModeManual;
+  settings.manualExposure =
+      std::max(finiteOr(settings.manualExposure, 0.25f), 0.0f);
+  settings.targetLuminance =
+      std::max(finiteOr(settings.targetLuminance, 0.18f), 0.001f);
+  settings.minExposure =
+      std::max(finiteOr(settings.minExposure, 0.03125f), 0.0f);
+  settings.maxExposure =
+      std::max(finiteOr(settings.maxExposure, 8.0f), settings.minExposure);
+  settings.adaptationRate =
+      std::max(finiteOr(settings.adaptationRate, 1.5f), 0.0f);
+  settings.meteringLowPercentile =
+      std::clamp(finiteOr(settings.meteringLowPercentile, 0.50f),
+                 0.0f, 0.99f);
+  settings.meteringHighPercentile =
+      std::clamp(finiteOr(settings.meteringHighPercentile, 0.95f),
+                 settings.meteringLowPercentile + 0.01f, 1.0f);
+  return settings;
+}
+
+float resolvePostProcessExposure(
+    const container::gpu::ExposureSettings& settings) {
+  if (settings.mode == container::gpu::kExposureModeManual) {
+    return settings.manualExposure;
+  }
+
+  return std::clamp(settings.manualExposure, settings.minExposure,
+                    settings.maxExposure);
+}
 
 void pushSceneObjectIndex(VkCommandBuffer cmd,
                           VkPipelineLayout layout,
@@ -93,6 +133,7 @@ FrameRecorder::FrameRecorder(
     const SceneController* sceneController,
     GpuCullManager* gpuCullManager,
     BloomManager* bloomManager,
+    ExposureManager* exposureManager,
     const container::scene::BaseCamera* camera,
     container::ui::GuiManager* guiManager)
     : device_(std::move(device))
@@ -103,6 +144,7 @@ FrameRecorder::FrameRecorder(
     , sceneController_(sceneController)
     , gpuCullManager_(gpuCullManager)
     , bloomManager_(bloomManager)
+    , exposureManager_(exposureManager)
     , camera_(camera)
     , guiManager_(guiManager) {
   buildGraph();
@@ -291,6 +333,35 @@ void FrameRecorder::buildGraph() {
     recordLightingPass(cmd, p, p.sceneDescriptorSet, lightingSets, transparentSets);
   });
 
+  graph_.addPass(RenderPassId::ExposureAdaptation, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+    if (!exposureManager_ || !exposureManager_->isReady()) return;
+    if (!p.frame || p.frame->sceneColor.view == VK_NULL_HANDLE ||
+        p.frame->sceneColor.image == VK_NULL_HANDLE) return;
+
+    const container::gpu::ExposureSettings exposureSettings =
+        sanitizeExposureSettings(p.exposureSettings);
+    if (exposureSettings.mode != container::gpu::kExposureModeAuto) return;
+
+    VkImageMemoryBarrier sceneBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+    sceneBarrier.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    sceneBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    sceneBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    sceneBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    sceneBarrier.image = p.frame->sceneColor.image;
+    sceneBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    sceneBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    sceneBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    vkCmdPipelineBarrier(cmd,
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        0, 0, nullptr, 0, nullptr, 1, &sceneBarrier);
+
+    const auto extent = swapChainManager_.extent();
+    exposureManager_->dispatch(cmd, p.frame->sceneColor.view,
+                               extent.width, extent.height,
+                               exposureSettings);
+  });
+
   graph_.addPass(RenderPassId::OitResolve, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     if (!shouldRecordTransparentOit(p, guiManager_)) return;
     oitManager_.prepareResolve(cmd, *p.frame);
@@ -367,6 +438,9 @@ void FrameRecorder::record(VkCommandBuffer commandBuffer,
   }
 
   graph_.execute(commandBuffer, p);
+  if (p.screenshot.enabled) {
+    recordScreenshotCopy(commandBuffer, p);
+  }
 
   if (vkEndCommandBuffer(commandBuffer) != VK_SUCCESS) {
     throw std::runtime_error("failed to record command buffer!");
@@ -770,6 +844,13 @@ void FrameRecorder::recordShadowPassBody(VkCommandBuffer cmd,
   scissor.extent = {kShadowMapResolution, kShadowMapResolution};
   vkCmdSetScissor(cmd, 0, 1, &scissor);
 
+  // Reverse-Z shadow maps need negative caster bias to push written depth
+  // toward far (0.0). Keep this dynamic so tuning does not rebuild pipelines.
+  vkCmdSetDepthBias(cmd,
+                    p.shadowSettings.rasterConstantBias,
+                    0.0f,
+                    p.shadowSettings.rasterSlopeBias);
+
   std::array<VkDescriptorSet, 2> shadowSets = {
       p.sceneDescriptorSet, p.shadowDescriptorSet};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layouts.shadow, 0,
@@ -993,10 +1074,12 @@ void FrameRecorder::recordLightingPass(
     drawDiagnosticCube(cmd, p.layouts.scene, p.diagCubeObjectIndex,
                        *p.pushConstants.bindless);
   } else {
+    const std::array<VkDescriptorSet, 3> directionalDescriptorSets = {
+        lightingDescriptorSets[0], lightingDescriptorSets[1], sceneSet};
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipelines.directionalLight);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.layouts.lighting, 0,
-                            static_cast<uint32_t>(lightingDescriptorSets.size()),
-                            lightingDescriptorSets.data(), 0, nullptr);
+                            static_cast<uint32_t>(directionalDescriptorSets.size()),
+                            directionalDescriptorSets.data(), 0, nullptr);
     vkCmdDraw(cmd, 3, 1, 0, 0);
   }
 
@@ -1023,8 +1106,8 @@ void FrameRecorder::recordLightingPass(
       // Tiled point light accumulation — single fullscreen triangle.
       vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                         p.pipelines.tiledPointLight);
-      const std::array<VkDescriptorSet, 2> tiledSets = {
-          p.frame->lightingDescriptorSet, p.tiledDescriptorSet};
+      const std::array<VkDescriptorSet, 3> tiledSets = {
+          p.frame->lightingDescriptorSet, p.tiledDescriptorSet, sceneSet};
       vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                               p.layouts.tiledLighting, 0,
                               static_cast<uint32_t>(tiledSets.size()),
@@ -1058,15 +1141,21 @@ void FrameRecorder::recordLightingPass(
           kMaxDeferredPointLights);
 
       if (numLights > 0u) {
+        const std::array<VkDescriptorSet, 3> pointLightingSets = {
+            lightingDescriptorSets[0], lightingDescriptorSets[1], sceneSet};
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                                 p.layouts.lighting, 0,
-                                static_cast<uint32_t>(lightingDescriptorSets.size()),
-                                lightingDescriptorSets.data(), 0, nullptr);
+                                static_cast<uint32_t>(pointLightingSets.size()),
+                                pointLightingSets.data(), 0, nullptr);
       }
       for (uint32_t i = 0; i < numLights; ++i) {
         vkCmdClearAttachments(cmd, 1, &stencilClearAttachment, 1, &stencilClearRect);
         p.pushConstants.light->positionRadius = (*pointLights)[i].positionRadius;
         p.pushConstants.light->colorIntensity = (*pointLights)[i].colorIntensity;
+        p.pushConstants.light->directionInnerCos =
+            (*pointLights)[i].directionInnerCos;
+        p.pushConstants.light->coneOuterCosType =
+            (*pointLights)[i].coneOuterCosType;
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipelines.stencilVolume);
         vkCmdPushConstants(cmd, p.layouts.lighting,
@@ -1130,14 +1219,46 @@ void FrameRecorder::recordLightingPass(
   }
 
   if (showNormalValidation && p.pipelines.normalValidation != VK_NULL_HANDLE) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipelines.normalValidation);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                             p.layouts.normalValidation, 0, 1, &p.sceneDescriptorSet, 0, nullptr);
     bindSceneGeometryBuffers(cmd, p.vertexSlice, p.indexSlice, p.indexType);
-    debugOverlay_.recordNormalValidation(cmd, p.layouts.normalValidation,
-                                         *p.opaqueDrawCommands, *p.transparentDrawCommands,
-                                         guiManager_->normalValidationSettings(),
-                                         *p.pushConstants.normalValidation);
+    const VkPipeline normalValidationFrontCullPipeline =
+        choosePipeline(p.pipelines.normalValidationFrontCull,
+                       p.pipelines.normalValidation);
+    const VkPipeline normalValidationNoCullPipeline =
+        choosePipeline(p.pipelines.normalValidationNoCull,
+                       p.pipelines.normalValidation);
+    static const std::vector<DrawCommand> emptyDrawCommands;
+    const auto drawNormalValidationCommands =
+        [&](const std::vector<DrawCommand>* opaque,
+            const std::vector<DrawCommand>* transparent,
+            VkPipeline pipeline,
+            uint32_t faceClassificationFlags) {
+          if (!hasDrawCommands(opaque) && !hasDrawCommands(transparent)) {
+            return;
+          }
+          vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+          debugOverlay_.recordNormalValidation(
+              cmd, p.layouts.normalValidation,
+              opaque ? *opaque : emptyDrawCommands,
+              transparent ? *transparent : emptyDrawCommands,
+              faceClassificationFlags,
+              guiManager_->normalValidationSettings(),
+              *p.pushConstants.normalValidation);
+        };
+
+    drawNormalValidationCommands(p.opaqueSingleSidedDrawCommands,
+                                 p.transparentSingleSidedDrawCommands,
+                                 p.pipelines.normalValidation,
+                                 0u);
+    drawNormalValidationCommands(p.opaqueWindingFlippedDrawCommands,
+                                 p.transparentWindingFlippedDrawCommands,
+                                 normalValidationFrontCullPipeline,
+                                 kNormalValidationInvertFaceClassification);
+    drawNormalValidationCommands(p.opaqueDoubleSidedDrawCommands,
+                                 p.transparentDoubleSidedDrawCommands,
+                                 normalValidationNoCullPipeline,
+                                 kNormalValidationBothSidesValid);
   }
 
   const bool showSurfaceNormalLines =
@@ -1230,6 +1351,16 @@ void FrameRecorder::recordPostProcessPass(
                           ? 1u
                           : 0u;
   ppPc.bloomIntensity = bloomManager_ ? bloomManager_->intensity() : 0.0f;
+  const container::gpu::ExposureSettings exposureSettings =
+      sanitizeExposureSettings(p.exposureSettings);
+  ppPc.exposure = exposureManager_
+                      ? exposureManager_->resolvedExposure(exposureSettings)
+                      : resolvePostProcessExposure(exposureSettings);
+  ppPc.exposureMode = exposureSettings.mode;
+  ppPc.targetLuminance = exposureSettings.targetLuminance;
+  ppPc.minExposure = exposureSettings.minExposure;
+  ppPc.maxExposure = exposureSettings.maxExposure;
+  ppPc.adaptationRate = exposureSettings.adaptationRate;
   ppPc.cameraNear = p.cameraNear;
   ppPc.cameraFar  = p.cameraFar;
   if (shadowEnabled && p.shadowData) {
@@ -1257,6 +1388,58 @@ void FrameRecorder::recordPostProcessPass(
   if (guiManager_) guiManager_->render(cmd);
 
   vkCmdEndRenderPass(cmd);
+}
+
+void FrameRecorder::recordScreenshotCopy(VkCommandBuffer cmd,
+                                         const FrameRecordParams& p) const {
+  if (p.screenshot.swapChainImage == VK_NULL_HANDLE ||
+      p.screenshot.readbackBuffer == VK_NULL_HANDLE ||
+      p.screenshot.extent.width == 0 || p.screenshot.extent.height == 0) {
+    return;
+  }
+
+  VkImageMemoryBarrier toTransfer{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  toTransfer.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+  toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  toTransfer.oldLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+  toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  toTransfer.image = p.screenshot.swapChainImage;
+  toTransfer.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &toTransfer);
+
+  VkBufferImageCopy copyRegion{};
+  copyRegion.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+  copyRegion.imageSubresource.layerCount = 1;
+  copyRegion.imageExtent = {p.screenshot.extent.width,
+                            p.screenshot.extent.height, 1};
+  vkCmdCopyImageToBuffer(cmd, p.screenshot.swapChainImage,
+                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                         p.screenshot.readbackBuffer, 1, &copyRegion);
+
+  VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+  hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  hostRead.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+  hostRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  hostRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  hostRead.buffer = p.screenshot.readbackBuffer;
+  hostRead.offset = 0;
+  hostRead.size = VK_WHOLE_SIZE;
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr, 1,
+                       &hostRead, 0, nullptr);
+
+  VkImageMemoryBarrier toPresent = toTransfer;
+  toPresent.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+  toPresent.dstAccessMask = 0;
+  toPresent.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+  toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0,
+                       nullptr, 1, &toPresent);
 }
 
 }  // namespace container::renderer

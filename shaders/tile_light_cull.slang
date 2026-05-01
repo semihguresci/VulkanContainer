@@ -3,16 +3,7 @@
 // light list for a 16x16xZ screen-space cluster.
 
 #include "lighting_structs.slang"
-
-struct TileCullPushConstants
-{
-    uint tileCountX;
-    uint tileCountY;
-    uint depthSliceCount;
-    uint totalLights;
-    float cameraNear;
-    float cameraFar;
-};
+#include "push_constants_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<TileCullPushConstants> pc;
@@ -26,7 +17,6 @@ ConstantBuffer<TileCullPushConstants> pc;
 
 groupshared uint sharedVisiblePixelCount;
 groupshared uint sharedLightCount;
-groupshared uint sharedLightIndices[MAX_LIGHTS_PER_TILE];
 groupshared uint sharedGlobalOffset;
 
 bool SphereIntersectsAabb(float3 center, float radius, float3 aabbMin, float3 aabbMax)
@@ -148,15 +138,17 @@ void computeMain(
         // AABB/sphere is conservative but cheap. The small radius inflation
         // avoids dropping lights near cluster boundaries after depth slicing.
         float3 lightPos = uLights[i].positionRadius.xyz;
-        float lightRadius = uLights[i].positionRadius.w * 1.03;
+        float lightRange = uLights[i].positionRadius.w;
+        float lightRadius = lightRange * 1.03;
 
-        if (SphereIntersectsAabb(lightPos, lightRadius, aabbMin, aabbMax))
+        if (!PointLightHasFiniteRange(lightRange) ||
+            SphereIntersectsAabb(lightPos, lightRadius, aabbMin, aabbMax))
         {
             uint idx;
             InterlockedAdd(sharedLightCount, 1u, idx);
             if (idx < MAX_LIGHTS_PER_TILE)
             {
-                sharedLightIndices[idx] = i;
+                uLightIndexList[sharedGlobalOffset + idx] = i;
             }
         }
     }
@@ -176,8 +168,4 @@ void computeMain(
     }
     GroupMemoryBarrierWithGroupSync();
 
-    for (uint i = localIndex; i < lightCount; i += threadsPerCluster)
-    {
-        uLightIndexList[sharedGlobalOffset + i] = sharedLightIndices[i];
-    }
 }

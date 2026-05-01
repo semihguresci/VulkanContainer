@@ -2,13 +2,7 @@
 // Generates a min-reduction mip chain from the depth prepass output.
 // For reverse-Z (near=1, far=0), we take the minimum (conservative far plane).
 
-struct HiZPushConstants
-{
-    uint srcWidth;
-    uint srcHeight;
-    uint dstMipLevel;
-    uint pad0;
-};
+#include "push_constants_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<HiZPushConstants> pc;

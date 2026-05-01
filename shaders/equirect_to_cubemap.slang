@@ -3,11 +3,7 @@
 
 static const float PI = 3.14159265359;
 
-struct EquirectPushConstants
-{
-    uint faceIndex;
-    uint faceSize;
-};
+#include "push_constants_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<EquirectPushConstants> pc;

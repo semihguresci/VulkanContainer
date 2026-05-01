@@ -158,6 +158,8 @@ else()
     message(WARNING "⚠️ STB not found - some features may be disabled")
 endif()
 
+find_package(mikktspace CONFIG REQUIRED)
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Targeted dependency groups (Dep_*)
 #
@@ -213,6 +215,7 @@ target_link_libraries(Dep_SceneIO INTERFACE
     $<IF:$<TARGET_EXISTS:tinygltf::tinygltf>,tinygltf::tinygltf,"">
     $<IF:$<TARGET_EXISTS:stb::stb>,stb::stb,"">
     $<IF:$<TARGET_EXISTS:tinyexr::tinyexr>,tinyexr::tinyexr,"">
+    mikktspace::mikktspace
 )
 
 # -- Dep_Material: MaterialX --------------------------------------------------

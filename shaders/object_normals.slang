@@ -1,29 +1,22 @@
-struct CameraBuffer
-{
-    column_major float4x4 viewProj;
-    column_major float4x4 inverseViewProj;
-    float4 cameraWorldPosition;
-};
-
+#include "lighting_structs.slang"
+#include "push_constants_common.slang"
 #include "object_data_common.slang"
+#include "material_data_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
 
 #include "object_index_common.slang"
-[[vk::binding(2, 0)]] SamplerState baseSampler;
-[[vk::binding(3, 0)]] Texture2D materialTextures[];
+[[vk::binding(2, 0)]] SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT];
+[[vk::binding(3, 0)]] StructuredBuffer<GpuMaterial> uMaterials;
+[[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
+[[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
 
 #include "alpha_mask_common.slang"
 #include "pbr_material_common.slang"
 
-struct PushConstants
-{
-    uint objectIndex;
-};
-
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<BindlessPushConstants> pc;
 
 struct VSInput
 {
@@ -48,25 +41,27 @@ struct VSOutput
 };
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
+                  uint startInstance : SV_StartInstanceLocation)
 {
     VSOutput output;
-    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID);
+    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID, startInstance);
     ObjectBuffer obj = uObjects[objectIndex];
+    GpuMaterial material = uMaterials[obj.objectInfo.x];
 
     float3 objectPosition = ApplyHeightDisplacement(
         input.inPosition, input.inNormal, input.inTexCoord,
-        obj.heightTextureIndex, obj.heightScale, obj.heightOffset);
+        material.heightTextureIndex, material.heightScale, material.heightOffset);
     float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);
     output.objectNormal = normalize(input.inNormal);
     output.texCoord = input.inTexCoord;
-    output.baseColorTextureIndex = obj.baseColorTextureIndex;
-    output.flags = obj.flags;
-    output.alphaCutoff = obj.alphaCutoff;
-    output.baseColorAlpha = obj.color.a;
-    output.opacityTextureIndex = obj.opacityTextureIndex;
-    output.opacityFactor = obj.opacityFactor;
+    output.baseColorTextureIndex = material.baseColorTextureIndex;
+    output.flags = material.flags | obj.objectInfo.y;
+    output.alphaCutoff = material.alphaCutoff;
+    output.baseColorAlpha = material.color.a;
+    output.opacityTextureIndex = material.opacityTextureIndex;
+    output.opacityFactor = material.opacityFactor;
     return output;
 }
 
@@ -81,8 +76,8 @@ float4 fragMain(VSOutput input) : SV_Target0
     float alpha = input.baseColorAlpha;
     if (input.baseColorTextureIndex != 0xffffffff)
     {
-        uint texIndex = NonUniformResourceIndex(input.baseColorTextureIndex);
-        alpha *= materialTextures[texIndex].Sample(baseSampler, input.texCoord).a;
+        alpha *= SamplePbrTexture(
+            input.baseColorTextureIndex, input.texCoord, 1.0.xxxx).a;
     }
     alpha = EvaluateOpacity(
         alpha, input.opacityTextureIndex, input.opacityFactor, input.texCoord);

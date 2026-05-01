@@ -25,6 +25,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/ShadowCullManager.cpp
     renderer/GpuCullManager.cpp
     renderer/BloomManager.cpp
+    renderer/ExposureManager.cpp
     renderer/VulkanContext.cpp
 )
 

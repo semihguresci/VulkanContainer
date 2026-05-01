@@ -78,6 +78,17 @@ add_custom_test(gltf_loader_tests
     VulkanSceneRenderer_geometry
 )
 
+add_custom_test(sample_model_regression_tests
+    ${TESTS_DIR}/sample_model_regression_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+    nlohmann_json::nlohmann_json
+)
+target_compile_definitions(sample_model_regression_tests PRIVATE
+    CONTAINER_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+    CONTAINER_BINARY_DIR="${CMAKE_BINARY_DIR}"
+)
+add_dependencies(sample_model_regression_tests generate_models)
+
 add_custom_test(materialx_integration_tests
     ${TESTS_DIR}/materialx_integration_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_scene
@@ -87,6 +98,24 @@ add_custom_test(rendering_convention_tests
     ${TESTS_DIR}/rendering_convention_tests.cpp  ""  ${TEST_RESULTS_DIR}
     Dep_Math
 )
+
+add_custom_test(realistic_rendering_validation_tests
+    ${TESTS_DIR}/realistic_rendering_validation_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    nlohmann_json::nlohmann_json
+)
+
+add_custom_test(visual_regression_gpu_tests
+    ${TESTS_DIR}/visual_regression_gpu_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    nlohmann_json::nlohmann_json
+    VulkanSceneRenderer_geometry
+)
+target_compile_definitions(visual_regression_gpu_tests PRIVATE
+    CONTAINER_APP_EXECUTABLE="$<TARGET_FILE:VulkanSceneRenderer>"
+    CONTAINER_TEST_RESULTS_DIR="${TEST_RESULTS_DIR}"
+)
+add_dependencies(visual_regression_gpu_tests VulkanSceneRenderer)
+set_tests_properties(visual_regression_gpu_tests
+    PROPERTIES LABELS "requires-vulkan;requires-display;visual-regression")
 
 add_custom_test(render_graph_tests
     ${TESTS_DIR}/render_graph_tests.cpp  ""  ${TEST_RESULTS_DIR}

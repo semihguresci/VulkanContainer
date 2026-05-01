@@ -17,6 +17,7 @@
     "tinygltf",
     "tinyexr",
     "stb",
+    "mikktspace",
     "spdlog",
     "entt",
     "materialx"

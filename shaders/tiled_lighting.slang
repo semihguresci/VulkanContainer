@@ -4,6 +4,8 @@
 
 #include "brdf_common.slang"
 #include "lighting_structs.slang"
+#include "material_data_common.slang"
+#include "push_constants_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(2, 0)]] Texture2D<float4> gAlbedoTexture;
@@ -11,24 +13,17 @@
 [[vk::binding(4, 0)]] Texture2D<float4> gMaterialTexture;
 [[vk::binding(5, 0)]] Texture2D<float4> gEmissiveTexture;
 [[vk::binding(6, 0)]] Texture2D<float> gDepthTexture;
+[[vk::binding(17, 0)]] Texture2D<float4> gSpecularTexture;
 // Bindings 7-9 unused (shadow — not needed for point lights).
 
 // Set 1: tile resources.
 [[vk::binding(0, 1)]] StructuredBuffer<PointLightData> uLights;
 [[vk::binding(1, 1)]] StructuredBuffer<TileLightGrid> uTileGrid;
 [[vk::binding(2, 1)]] StructuredBuffer<uint> uLightIndexList;
-
-struct PushConstants
-{
-    uint tileCountX;
-    uint tileCountY;
-    uint depthSliceCount;
-    float cameraNear;
-    float cameraFar;
-};
+[[vk::binding(3, 2)]] StructuredBuffer<GpuMaterial> uMaterials;
 
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<TiledLightingPushConstants> pc;
 
 struct VSOutput
 {
@@ -98,15 +93,32 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 normal = SafeNormalize(gNormalTexture.Load(int3(pixelCoord, 0)).xyz * 2.0 - 1.0,
                                   float3(0.0, 1.0, 0.0));
     float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
-    float dielectricF0 = saturate(gEmissiveTexture.Load(int3(pixelCoord, 0)).a);
+    float4 specularSample = gSpecularTexture.Load(int3(pixelCoord, 0));
+    uint materialIndex = DecodeGBufferMaterialIndex(material.w);
+    GpuMaterial materialData = uMaterials[materialIndex];
+    // Resolve materialData.clearcoatFactor,
+    // materialData.clearcoatRoughnessFactor, materialData.sheenColorFactor.rgb,
+    // materialData.sheenRoughnessFactor, materialData.iridescenceFactor, and
+    // materialData.transmissionFactor with texture-only deferred fallbacks.
+    DeferredMaterialLayerTerms layerTerms =
+        ResolveDeferredMaterialLayerTerms(materialData);
 
     float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
     float3 worldPosition = ReconstructWorldPosition(uv, depth, uCamera.inverseViewProj);
     float metallic = saturate(material.x);
     float roughness = clamp(material.y, 0.045, 1.0);
+    bool thinSurface = IsThinSurfaceGpuMaterial(materialData.flags);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
-    float3 F0 = EvaluatePbrF0FromDielectricF0(
-        albedo.rgb, metallic, dielectricF0);
+    float NdotV = max(dot(normal, V), 0.0);
+    float iridescenceThickness = EstimateDeferredIridescenceThickness(
+        materialData.iridescenceThicknessMinimum,
+        materialData.iridescenceThicknessMaximum);
+    float3 F0 = EvaluateDeferredPbrF0FromDielectricColor(
+        albedo.rgb, metallic, specularSample.rgb,
+        layerTerms.iridescenceFactor, materialData.iridescenceIor,
+        iridescenceThickness, NdotV);
+    float transmissionWeight =
+        saturate(layerTerms.transmissionFactor * (1.0 - metallic));
 
     float3 totalLighting = 0.0.xxx;
 
@@ -116,19 +128,35 @@ float4 fragMain(VSOutput input) : SV_Target0
         PointLightData light = uLights[lightIdx];
 
         float3 lightVector = light.positionRadius.xyz - worldPosition;
-        float lightRadius = max(light.positionRadius.w, 1e-3);
+        float lightRadius = light.positionRadius.w;
         float distanceSq = dot(lightVector, lightVector);
-        if (distanceSq >= lightRadius * lightRadius)
+        if (PointLightHasFiniteRange(lightRadius) &&
+            distanceSq >= lightRadius * lightRadius)
         {
             continue;
         }
 
         float invDistance = rsqrt(max(distanceSq, 1e-8));
         float3 L = lightVector * invDistance;
-        float attenuation = SmoothRangeAttenuation(distanceSq, lightRadius);
-        float3 radiance = light.colorIntensity.rgb * light.colorIntensity.a * attenuation;
-        totalLighting += EvaluatePbrDirectLight(
-            albedo.rgb, F0, metallic, roughness, normal, V, L, radiance);
+        float attenuation = PointLightAttenuation(distanceSq, lightRadius);
+        float coneAttenuation = SpotLightConeAttenuation(
+            light.directionInnerCos, light.coneOuterCosType, L);
+        float3 radiance =
+            light.colorIntensity.rgb * light.colorIntensity.a * attenuation *
+            coneAttenuation;
+        totalLighting += EvaluateDeferredLayeredDirectLight(
+            albedo.rgb, F0, metallic, roughness, normal, V, L, radiance,
+            layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
+            layerTerms.sheenColor, layerTerms.sheenRoughness);
+        if (thinSurface || transmissionWeight > 0.0)
+        {
+            float transmissionAlpha =
+                thinSurface ? lerp(albedo.a, 0.0, transmissionWeight) : 0.0;
+            float transmissionScale = thinSurface ? 1.0 : transmissionWeight;
+            totalLighting += EvaluateThinSurfaceTransmission(
+                albedo.rgb, normal, V, L, radiance, transmissionAlpha, false) *
+                transmissionScale;
+        }
     }
 
     return float4(totalLighting, 1.0);

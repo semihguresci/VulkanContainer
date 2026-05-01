@@ -1,4 +1,6 @@
 #include "brdf_common.slang"
+#include "area_light_common.slang"
+#include "material_data_common.slang"
 #include "shadow_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
@@ -17,7 +19,10 @@
 [[vk::binding(14, 0)]] SamplerState brdfSampler;
 [[vk::binding(15, 0)]] Texture2D<float> gAOTexture;
 [[vk::binding(16, 0)]] SamplerState aoSampler;
+[[vk::binding(17, 0)]] Texture2D<float4> gSpecularTexture;
 [[vk::binding(0, 1)]] ConstantBuffer<LightingBuffer> uLighting;
+[[vk::binding(2, 1)]] StructuredBuffer<AreaLightData> uAreaLights;
+[[vk::binding(3, 2)]] StructuredBuffer<GpuMaterial> uMaterials;
 
 struct VSOutput
 {
@@ -44,6 +49,45 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
     output.pos = float4(kPositions[vertexIndex], 0.0, 1.0);
     output.texCoord = kTexCoords[vertexIndex];
     return output;
+}
+
+float3 EvaluateDeferredAreaLight(AreaLightData light, float3 albedo,
+                                 float3 F0, float metallic, float roughness,
+                                 float3 normal, float3 V,
+                                 float3 worldPosition,
+                                 DeferredMaterialLayerTerms layerTerms,
+                                 bool thinSurface, float alpha)
+{
+    AreaLightFrame frame = BuildAreaLightFrame(light);
+    float3 directLighting = 0.0.xxx;
+
+    float transmissionWeight =
+        saturate(layerTerms.transmissionFactor * (1.0 - metallic));
+
+    [unroll]
+    for (uint sampleIndex = 0u;
+         sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT; ++sampleIndex)
+    {
+        float3 L;
+        float3 radiance = EvaluateAreaLightSampleRadiance(
+            light, frame, worldPosition, sampleIndex, L);
+        directLighting += EvaluateDeferredLayeredDirectLight(
+            albedo, F0, metallic, roughness, normal, V, L, radiance,
+            layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
+            layerTerms.sheenColor, layerTerms.sheenRoughness);
+
+        if (thinSurface || transmissionWeight > 0.0)
+        {
+            float transmissionAlpha =
+                thinSurface ? lerp(alpha, 0.0, transmissionWeight) : 0.0;
+            float transmissionScale = thinSurface ? 1.0 : transmissionWeight;
+            directLighting += EvaluateThinSurfaceTransmission(
+                albedo, normal, V, L, radiance, transmissionAlpha, false) *
+                transmissionScale;
+        }
+    }
+
+    return directLighting;
 }
 
 [shader("fragment")]
@@ -87,18 +131,27 @@ float4 fragMain(VSOutput input) : SV_Target0
                                   float3(0.0, 1.0, 0.0));
     float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
     float4 emissiveSample = gEmissiveTexture.Load(int3(pixelCoord, 0));
+    float4 specularSample = gSpecularTexture.Load(int3(pixelCoord, 0));
     float3 emissive = emissiveSample.rgb;
-    float dielectricF0 = saturate(emissiveSample.a);
+    uint materialIndex = DecodeGBufferMaterialIndex(material.w);
+    GpuMaterial materialData = uMaterials[materialIndex];
+    // Resolve materialData.clearcoatFactor,
+    // materialData.clearcoatRoughnessFactor, materialData.sheenColorFactor.rgb,
+    // materialData.sheenRoughnessFactor, materialData.iridescenceFactor, and
+    // materialData.transmissionFactor with texture-only deferred fallbacks.
+    DeferredMaterialLayerTerms layerTerms =
+        ResolveDeferredMaterialLayerTerms(materialData);
 
     float metallic = saturate(material.x);
     float roughness = clamp(material.y, 0.045, 1.0);
     float occlusion = saturate(material.z);
-    bool thinSurface = material.w > 0.5;
+    bool thinSurface = IsThinSurfaceGpuMaterial(materialData.flags);
     float3 worldPosition = ReconstructWorldPosition(uv, depth, uCamera.inverseViewProj);
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - worldPosition, float3(0.0, 0.0, 1.0));
     float3 L = SafeNormalize(-uLighting.directionalDirection.xyz, float3(0.0, 1.0, 0.0));
     float3 lightColor =
         uLighting.directionalColorIntensity.rgb * uLighting.directionalColorIntensity.a;
+    float NdotV = max(dot(normal, V), 0.0);
 
     // Positive view-axis depth selects the cascade. Camera forward is uploaded
     // once per frame; reconstructing it here would cost two matrix transforms
@@ -111,7 +164,7 @@ float4 fragMain(VSOutput input) : SV_Target0
     // Shadow evaluation.
     float shadowFactor = 1.0;
     float NdotLForShadow = dot(normal, L);
-    if (uLighting.featureFlags.x != 0u &&
+    if (uLighting.shadowEnabled != 0u &&
         (NdotLForShadow > 0.0 || thinSurface))
     {
         shadowFactor = ComputeShadowFactor(
@@ -119,37 +172,61 @@ float4 fragMain(VSOutput input) : SV_Target0
             viewDepth, uShadow, gShadowAtlas, gShadowSampler);
     }
 
-    float3 F0 = EvaluatePbrF0FromDielectricF0(
-        albedo.rgb, metallic, dielectricF0);
-    float3 directLighting = EvaluatePbrDirectLight(
-        albedo.rgb, F0, metallic, roughness, normal, V, L, lightColor) * shadowFactor;
-    if (thinSurface)
+    float iridescenceThickness = EstimateDeferredIridescenceThickness(
+        materialData.iridescenceThicknessMinimum,
+        materialData.iridescenceThicknessMaximum);
+    float3 F0 = EvaluateDeferredPbrF0FromDielectricColor(
+        albedo.rgb, metallic, specularSample.rgb,
+        layerTerms.iridescenceFactor, materialData.iridescenceIor,
+        iridescenceThickness, NdotV);
+    float3 directLighting = EvaluateDeferredLayeredDirectLight(
+        albedo.rgb, F0, metallic, roughness, normal, V, L, lightColor,
+        layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
+        layerTerms.sheenColor, layerTerms.sheenRoughness) * shadowFactor;
+
+    float transmissionWeight =
+        saturate(layerTerms.transmissionFactor * (1.0 - metallic));
+    if (thinSurface || transmissionWeight > 0.0)
     {
-        float wrappedDiffuse = saturate((dot(normal, L) + 0.45) / 1.45);
-        float backLight = saturate(dot(-normal, L));
-        float viewThrough = pow(saturate(dot(-L, V)), 2.0);
-        float transmission = max(wrappedDiffuse * 0.3, backLight * viewThrough * 0.7);
-        directLighting += albedo.rgb * lightColor * transmission * shadowFactor;
+        float transmissionAlpha =
+            thinSurface ? lerp(albedo.a, 0.0, transmissionWeight) : 0.0;
+        float transmissionScale = thinSurface ? 1.0 : transmissionWeight;
+        directLighting += EvaluateThinSurfaceTransmission(
+            albedo.rgb, normal, V, L, lightColor, transmissionAlpha, false) *
+            transmissionScale * shadowFactor;
+    }
+
+    uint areaLightCount = min(uLighting.areaLightCount, MAX_AREA_LIGHTS);
+    for (uint areaIndex = 0u; areaIndex < areaLightCount; ++areaIndex)
+    {
+        directLighting += EvaluateDeferredAreaLight(
+            uAreaLights[areaIndex], albedo.rgb, F0, metallic, roughness,
+            normal, V, worldPosition, layerTerms, thinSurface, albedo.a);
     }
 
     // IBL ambient lighting (split-sum approximation).
-    float NdotV = max(dot(normal, V), 0.0);
     float3 kS_ibl = FresnelSchlickRoughness(NdotV, F0, roughness);
     float3 kD_ibl = (1.0 - kS_ibl) * (1.0 - metallic);
 
-    float3 irradiance = gIrradianceCubemap.Sample(envSampler, normal).rgb;
+    float environmentIntensity = max(uLighting.environmentIntensity, 0.0);
+    float3 irradiance =
+        gIrradianceCubemap.Sample(envSampler, normal).rgb *
+        environmentIntensity;
     float3 diffuseIBL = irradiance * albedo.rgb;
 
     float3 R = reflect(-V, normal);
     float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
-    float3 prefilteredColor = gPrefilteredCubemap.SampleLevel(envSampler, R, roughness * maxMipLevel).rgb;
+    float3 prefilteredColor =
+        gPrefilteredCubemap.SampleLevel(envSampler, R,
+                                        roughness * maxMipLevel).rgb *
+        environmentIntensity;
     float2 brdf = gBrdfLUT.Sample(brdfSampler, float2(NdotV, roughness));
     float3 specularIBL =
         EvaluateSpecularIblMultipleScattering(prefilteredColor, F0, brdf);
 
     // Screen-space AO (GTAO).
     float ssao = 1.0;
-    if (uLighting.featureFlags.y != 0u)
+    if (uLighting.gtaoEnabled != 0u)
     {
         ssao = gAOTexture.Sample(aoSampler, uv);
     }

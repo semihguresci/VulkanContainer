@@ -1,17 +1,9 @@
 // shadow_cull.slang - Compute shader for per-cascade light-space shadow caster culling.
 
 #include "lighting_structs.slang"
+#include "draw_indirect_common.slang"
 
 #include "object_data_common.slang"
-
-struct DrawIndexedIndirectCommand
-{
-	uint indexCount;
-	uint instanceCount;
-	uint firstIndex;
-	int  vertexOffset;
-	uint firstInstance;
-};
 
 [[vk::push_constant]]
 ConstantBuffer<ShadowCullPushConstants> pc;

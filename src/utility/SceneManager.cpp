@@ -1,10 +1,16 @@
 #include <algorithm>
 #include <array>
+#include <cctype>
+#include <cmath>
+#include <cstring>
 #include <filesystem>
 #include <functional>
+#include <initializer_list>
 #include <limits>
+#include <optional>
 #include <print>
 #include <stdexcept>
+#include <string_view>
 #include <utility>
 
 #include "Container/geometry/GltfModelLoader.h"
@@ -71,6 +77,441 @@ bool isDefaultSceneRequest(std::string_view path) {
 
 bool isProceduralSphereEntry(std::string_view entry) {
   return entry == "__procedural_uv_sphere__";
+}
+
+float sanitizeImportScale(float scale) {
+  if (!std::isfinite(scale) || scale <= 0.0f) {
+    return 1.0f;
+  }
+  return std::clamp(scale, 0.001f, 1000.0f);
+}
+
+glm::mat4 importScaleTransform(float scale) {
+  return glm::scale(glm::mat4(1.0f),
+                    glm::vec3(sanitizeImportScale(scale)));
+}
+
+std::vector<int> activeSceneRootNodes(const tinygltf::Model& model) {
+  if (!model.scenes.empty()) {
+    int sceneIndex = model.defaultScene;
+    if (sceneIndex < 0 || sceneIndex >= static_cast<int>(model.scenes.size())) {
+      sceneIndex = 0;
+    }
+    return model.scenes[sceneIndex].nodes;
+  }
+
+  std::vector<bool> hasParent(model.nodes.size(), false);
+  for (const auto& node : model.nodes) {
+    for (int childIndex : node.children) {
+      if (childIndex >= 0 &&
+          childIndex < static_cast<int>(hasParent.size())) {
+        hasParent[childIndex] = true;
+      }
+    }
+  }
+
+  std::vector<int> rootNodes;
+  rootNodes.reserve(model.nodes.size());
+  for (size_t nodeIndex = 0; nodeIndex < model.nodes.size(); ++nodeIndex) {
+    if (!hasParent[nodeIndex]) {
+      rootNodes.push_back(static_cast<int>(nodeIndex));
+    }
+  }
+  return rootNodes;
+}
+
+glm::vec3 pointLightColorOrDefault(const tinygltf::Light& light) {
+  glm::vec3 color(1.0f);
+  if (light.color.size() >= 3) {
+    color = glm::vec3(static_cast<float>(light.color[0]),
+                      static_cast<float>(light.color[1]),
+                      static_cast<float>(light.color[2]));
+  }
+
+  for (int component = 0; component < 3; ++component) {
+    if (!std::isfinite(color[component]) || color[component] < 0.0f) {
+      color[component] = 1.0f;
+    }
+  }
+  return color;
+}
+
+float pointLightIntensityOrDefault(const tinygltf::Light& light) {
+  if (!std::isfinite(light.intensity) || light.intensity < 0.0) {
+    return 1.0f;
+  }
+  return static_cast<float>(light.intensity);
+}
+
+glm::vec3 normalizeOr(const glm::vec3& value, const glm::vec3& fallback) {
+  const float len2 = glm::dot(value, value);
+  if (!std::isfinite(len2) || len2 <= 1.0e-12f) {
+    return fallback;
+  }
+  return value * (1.0f / std::sqrt(len2));
+}
+
+glm::vec3 gltfDirectionalLightDirection(const glm::mat4& sceneLocalTransform) {
+  return normalizeOr(
+      glm::vec3(sceneLocalTransform * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f)),
+      glm::vec3(0.0f, 0.0f, -1.0f));
+}
+
+float gltfPointLightRange(const tinygltf::Light& light, float importScale) {
+  constexpr float kMinExplicitRange = 0.05f;
+  if (std::isfinite(light.range) && light.range > 0.0) {
+    return std::max(static_cast<float>(light.range) *
+                        sanitizeImportScale(importScale),
+                    kMinExplicitRange);
+  }
+
+  return container::gpu::kUnboundedPointLightRange;
+}
+
+std::pair<float, float> gltfSpotConeCosines(const tinygltf::Light& light) {
+  constexpr float kMaxSpotConeAngle = 1.57079632679f;
+  constexpr float kDefaultOuterConeAngle = 0.7853981634f;
+
+  auto sanitizeAngle = [=](double value, float fallback) {
+    if (!std::isfinite(value)) {
+      return fallback;
+    }
+    return std::clamp(static_cast<float>(value), 0.0f, kMaxSpotConeAngle);
+  };
+
+  const float outerAngle =
+      sanitizeAngle(light.spot.outerConeAngle, kDefaultOuterConeAngle);
+  const float innerAngle =
+      std::min(sanitizeAngle(light.spot.innerConeAngle, 0.0f), outerAngle);
+  return {std::cos(innerAngle), std::cos(outerAngle)};
+}
+
+std::string lowerAscii(std::string value) {
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char c) {
+                   return static_cast<char>(std::tolower(c));
+                 });
+  return value;
+}
+
+std::optional<float> areaLightTypeFromString(std::string_view typeName) {
+  const std::string type = lowerAscii(std::string(typeName));
+  if (type == "rect" || type == "rectangle" || type == "rectangular" ||
+      type == "quad") {
+    return container::gpu::kAreaLightTypeRectangle;
+  }
+  if (type == "disk" || type == "disc" || type == "circle") {
+    return container::gpu::kAreaLightTypeDisk;
+  }
+  return std::nullopt;
+}
+
+std::optional<float> readAreaNumber(
+    const tinygltf::Value* object,
+    std::initializer_list<const char*> valueNames) {
+  if (object == nullptr || !object->IsObject()) {
+    return std::nullopt;
+  }
+
+  for (const char* valueName : valueNames) {
+    if (!object->Has(valueName)) {
+      continue;
+    }
+
+    const tinygltf::Value& value = object->Get(valueName);
+    if (!value.IsNumber()) {
+      continue;
+    }
+
+    const float result = static_cast<float>(value.GetNumberAsDouble());
+    if (std::isfinite(result)) {
+      return result;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> readAreaString(
+    const tinygltf::Value* object,
+    std::initializer_list<const char*> valueNames) {
+  if (object == nullptr || !object->IsObject()) {
+    return std::nullopt;
+  }
+
+  for (const char* valueName : valueNames) {
+    if (!object->Has(valueName)) {
+      continue;
+    }
+
+    const tinygltf::Value& value = object->Get(valueName);
+    if (value.IsString()) {
+      return value.Get<std::string>();
+    }
+  }
+  return std::nullopt;
+}
+
+const tinygltf::Value* valueMember(const tinygltf::Value& object,
+                                   const char* valueName) {
+  if (!object.IsObject() || !object.Has(valueName)) {
+    return nullptr;
+  }
+
+  return &object.Get(valueName);
+}
+
+const tinygltf::Value* objectMember(const tinygltf::Value& object,
+                                    const char* valueName) {
+  const tinygltf::Value* value = valueMember(object, valueName);
+  if (value == nullptr) {
+    return nullptr;
+  }
+  return value->IsObject() ? value : nullptr;
+}
+
+std::optional<float> areaLightTypeFromMetadata(
+    const tinygltf::Value* metadata) {
+  const std::optional<std::string> shape =
+      readAreaString(metadata, {"shape", "type", "kind"});
+  if (!shape) {
+    return std::nullopt;
+  }
+  return areaLightTypeFromString(*shape);
+}
+
+bool metadataLooksLikeAreaLight(const tinygltf::Value* metadata) {
+  if (metadata == nullptr || !metadata->IsObject()) {
+    return false;
+  }
+
+  if (areaLightTypeFromMetadata(metadata)) {
+    return true;
+  }
+
+  return readAreaNumber(metadata, {"width", "height", "radius", "diameter",
+                                   "size", "sizeX", "sizeY", "size_x",
+                                   "size_y"})
+      .has_value();
+}
+
+static constexpr std::array<const char*, 4> kKnownAreaLightExtensions = {
+    "KHR_lights_area",
+    "EXT_lights_area",
+    "WEBGI_lights_area",
+    "WEBGI_area_light",
+};
+
+const tinygltf::Value* findAreaLightMetadata(const tinygltf::Light& light) {
+  for (const char* extensionName : kKnownAreaLightExtensions) {
+    const auto it = light.extensions.find(extensionName);
+    if (it != light.extensions.end() && it->second.IsObject()) {
+      return &it->second;
+    }
+  }
+
+  for (const auto& [extensionName, extensionValue] : light.extensions) {
+    (void)extensionName;
+    if (metadataLooksLikeAreaLight(&extensionValue)) {
+      return &extensionValue;
+    }
+  }
+
+  if (const tinygltf::Value* nested = objectMember(light.extras, "areaLight")) {
+    return nested;
+  }
+  if (metadataLooksLikeAreaLight(&light.extras)) {
+    return &light.extras;
+  }
+  return nullptr;
+}
+
+float positiveOr(float value, float fallback) {
+  return std::isfinite(value) && value > 0.0f ? value : fallback;
+}
+
+float readPositiveAreaNumber(const tinygltf::Value* metadata,
+                             std::initializer_list<const char*> valueNames,
+                             float fallback) {
+  const std::optional<float> value = readAreaNumber(metadata, valueNames);
+  return value ? positiveOr(*value, fallback) : fallback;
+}
+
+float gltfAreaLightRange(const tinygltf::Light& light,
+                         const tinygltf::Value* metadata,
+                         float importScale) {
+  constexpr float kMinExplicitRange = 0.05f;
+  const std::optional<float> metadataRange =
+      readAreaNumber(metadata, {"range", "distance", "maxDistance"});
+  if (metadataRange && *metadataRange > 0.0f) {
+    return std::max(*metadataRange * sanitizeImportScale(importScale),
+                    kMinExplicitRange);
+  }
+  return gltfPointLightRange(light, importScale);
+}
+
+struct GltfAreaLightSpec {
+  float type{container::gpu::kAreaLightTypeRectangle};
+  float halfWidth{0.5f};
+  float halfHeight{0.5f};
+  float range{container::gpu::kUnboundedPointLightRange};
+};
+
+std::optional<GltfAreaLightSpec> gltfAreaLightSpec(
+    const tinygltf::Light& light,
+    float importScale) {
+  const tinygltf::Value* metadata = findAreaLightMetadata(light);
+  std::optional<float> type = areaLightTypeFromString(light.type);
+  if (!type) {
+    type = areaLightTypeFromMetadata(metadata);
+  }
+  if (!type) {
+    return std::nullopt;
+  }
+
+  constexpr float kDefaultAreaSize = 1.0f;
+  constexpr float kMinAreaExtent = 0.001f;
+  const float scale = sanitizeImportScale(importScale);
+
+  GltfAreaLightSpec spec{};
+  spec.type = *type;
+  spec.range = gltfAreaLightRange(light, metadata, importScale);
+
+  if (spec.type == container::gpu::kAreaLightTypeDisk) {
+    const std::optional<float> radius =
+        readAreaNumber(metadata, {"radius"});
+    const float sourceRadius =
+        radius ? positiveOr(*radius, kDefaultAreaSize * 0.5f)
+               : readPositiveAreaNumber(metadata, {"diameter", "size", "width"},
+                                        kDefaultAreaSize) *
+                     0.5f;
+    const float scaledRadius = std::max(sourceRadius * scale, kMinAreaExtent);
+    spec.halfWidth = scaledRadius;
+    spec.halfHeight = scaledRadius;
+  } else {
+    const float sourceWidth =
+        readPositiveAreaNumber(metadata, {"width", "sizeX", "size_x", "size"},
+                               kDefaultAreaSize);
+    const float sourceHeight =
+        readPositiveAreaNumber(metadata, {"height", "sizeY", "size_y"},
+                               sourceWidth);
+    spec.halfWidth = std::max(sourceWidth * scale * 0.5f, kMinAreaExtent);
+    spec.halfHeight = std::max(sourceHeight * scale * 0.5f, kMinAreaExtent);
+  }
+
+  return spec;
+}
+
+glm::vec3 gltfAreaLightTangent(const glm::mat4& sceneLocalTransform) {
+  return normalizeOr(
+      glm::vec3(sceneLocalTransform * glm::vec4(1.0f, 0.0f, 0.0f, 0.0f)),
+      glm::vec3(1.0f, 0.0f, 0.0f));
+}
+
+glm::vec3 gltfAreaLightBitangent(const glm::mat4& sceneLocalTransform) {
+  return normalizeOr(
+      glm::vec3(sceneLocalTransform * glm::vec4(0.0f, 1.0f, 0.0f, 0.0f)),
+      glm::vec3(0.0f, 1.0f, 0.0f));
+}
+
+std::optional<container::gpu::AreaLightData> makeGltfAreaLightData(
+    const tinygltf::Light& lightDefinition,
+    const glm::mat4& sceneLocalTransform,
+    float importScale) {
+  const std::optional<GltfAreaLightSpec> areaSpec =
+      gltfAreaLightSpec(lightDefinition, importScale);
+  if (!areaSpec) {
+    return std::nullopt;
+  }
+
+  const glm::vec3 sceneLocalPosition =
+      glm::vec3(sceneLocalTransform *
+                glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+
+  container::gpu::AreaLightData areaLight{};
+  areaLight.positionRange = glm::vec4(sceneLocalPosition, areaSpec->range);
+  areaLight.colorIntensity =
+      glm::vec4(pointLightColorOrDefault(lightDefinition),
+                pointLightIntensityOrDefault(lightDefinition));
+  areaLight.directionType =
+      glm::vec4(gltfDirectionalLightDirection(sceneLocalTransform),
+                areaSpec->type);
+  areaLight.tangentHalfSize =
+      glm::vec4(gltfAreaLightTangent(sceneLocalTransform),
+                areaSpec->halfWidth);
+  areaLight.bitangentHalfSize =
+      glm::vec4(gltfAreaLightBitangent(sceneLocalTransform),
+                areaSpec->halfHeight);
+  return areaLight;
+}
+
+std::vector<double> readAreaColor(const tinygltf::Value& object) {
+  if (!object.IsObject() || !object.Has("color")) {
+    return {};
+  }
+
+  const tinygltf::Value& color = object.Get("color");
+  if (!color.IsArray() || color.ArrayLen() < 3) {
+    return {};
+  }
+
+  std::vector<double> result(3, 1.0);
+  for (size_t i = 0; i < result.size(); ++i) {
+    const tinygltf::Value& component = color.Get(i);
+    if (!component.IsNumber()) {
+      return {};
+    }
+    result[i] = component.GetNumberAsDouble();
+  }
+  return result;
+}
+
+tinygltf::Light areaLightDefinitionFromValue(const tinygltf::Value& value) {
+  tinygltf::Light light{};
+  light.type =
+      readAreaString(&value, {"type", "shape", "kind"}).value_or("rectangle");
+  light.color = readAreaColor(value);
+  if (const std::optional<float> intensity =
+          readAreaNumber(&value, {"intensity", "power"})) {
+    light.intensity = *intensity;
+  }
+  if (const std::optional<float> range =
+          readAreaNumber(&value, {"range", "distance", "maxDistance"})) {
+    light.range = *range;
+  }
+  light.extras = value;
+  return light;
+}
+
+std::optional<int> readAreaLightIndex(const tinygltf::Value& nodeExtension) {
+  const std::optional<float> index = readAreaNumber(&nodeExtension, {"light"});
+  if (!index || *index < 0.0f) {
+    return std::nullopt;
+  }
+  return static_cast<int>(*index);
+}
+
+const tinygltf::Value* findModelAreaLightDefinition(
+    const tinygltf::Model& model,
+    const char* extensionName,
+    int lightIndex) {
+  if (lightIndex < 0) {
+    return nullptr;
+  }
+
+  const auto extensionIt = model.extensions.find(extensionName);
+  if (extensionIt == model.extensions.end() || !extensionIt->second.IsObject()) {
+    return nullptr;
+  }
+
+  const tinygltf::Value* lights = valueMember(extensionIt->second, "lights");
+  if (lights == nullptr || !lights->IsArray() ||
+      lightIndex >= static_cast<int>(lights->ArrayLen())) {
+    return nullptr;
+  }
+
+  const tinygltf::Value& lightDefinition =
+      lights->Get(static_cast<size_t>(lightIndex));
+  return lightDefinition.IsObject() ? &lightDefinition : nullptr;
 }
 
 glm::mat4 makeDefaultSceneTransform(const glm::vec3& translation, float uniformScale) {
@@ -150,6 +591,159 @@ void appendModelMeshes(const container::geometry::Model& model,
   }
 }
 
+container::gpu::GpuTextureTransform makeGpuTextureTransform(
+    const container::material::TextureTransform& transform) {
+  const float cosRotation = std::cos(transform.rotation);
+  const float sinRotation = std::sin(transform.rotation);
+
+  container::gpu::GpuTextureTransform gpuTransform{};
+  gpuTransform.row0 =
+      glm::vec4(transform.scale.x * cosRotation,
+                -transform.scale.y * sinRotation,
+                transform.offset.x,
+                static_cast<float>(transform.texCoord));
+  gpuTransform.row1 =
+      glm::vec4(transform.scale.x * sinRotation,
+                transform.scale.y * cosRotation,
+                transform.offset.y,
+                0.0f);
+  return gpuTransform;
+}
+
+VkSamplerAddressMode materialSamplerAddressMode(uint32_t wrapMode) {
+  switch (wrapMode) {
+    case container::gpu::kMaterialSamplerWrapClampToEdge:
+      return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    case container::gpu::kMaterialSamplerWrapMirroredRepeat:
+      return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
+    case container::gpu::kMaterialSamplerWrapRepeat:
+    default:
+      return VK_SAMPLER_ADDRESS_MODE_REPEAT;
+  }
+}
+
+container::gpu::GpuMaterial makeGpuMaterial(
+    const container::material::Material& material) {
+  container::gpu::GpuMaterial gpuMaterial{};
+  gpuMaterial.color = material.baseColor;
+  gpuMaterial.emissiveColor = material.emissiveColor;
+  gpuMaterial.emissiveStrength = material.emissiveStrength;
+  gpuMaterial.metallicRoughness =
+      glm::vec2(material.metallicFactor, material.roughnessFactor);
+  gpuMaterial.alphaCutoff = material.alphaCutoff;
+  gpuMaterial.normalTextureScale = material.normalTextureScale;
+  gpuMaterial.occlusionStrength = material.occlusionStrength;
+  gpuMaterial.baseColorTextureIndex = material.baseColorTextureIndex;
+  gpuMaterial.normalTextureIndex = material.normalTextureIndex;
+  gpuMaterial.occlusionTextureIndex = material.occlusionTextureIndex;
+  gpuMaterial.emissiveTextureIndex = material.emissiveTextureIndex;
+  gpuMaterial.metallicRoughnessTextureIndex =
+      material.metallicRoughnessTextureIndex;
+  gpuMaterial.roughnessTextureIndex = material.roughnessTextureIndex;
+  gpuMaterial.metalnessTextureIndex = material.metalnessTextureIndex;
+  gpuMaterial.specularTextureIndex = material.specularTextureIndex;
+  gpuMaterial.heightTextureIndex = material.heightTextureIndex;
+  gpuMaterial.opacityTextureIndex = material.opacityTextureIndex;
+  gpuMaterial.transmissionTextureIndex = material.transmissionTextureIndex;
+  gpuMaterial.specularColorTextureIndex = material.specularColorTextureIndex;
+  gpuMaterial.clearcoatTextureIndex = material.clearcoatTextureIndex;
+  gpuMaterial.clearcoatRoughnessTextureIndex =
+      material.clearcoatRoughnessTextureIndex;
+  gpuMaterial.clearcoatNormalTextureIndex =
+      material.clearcoatNormalTextureIndex;
+  gpuMaterial.thicknessTextureIndex = material.thicknessTextureIndex;
+  gpuMaterial.sheenColorTextureIndex = material.sheenColorTextureIndex;
+  gpuMaterial.sheenRoughnessTextureIndex =
+      material.sheenRoughnessTextureIndex;
+  gpuMaterial.iridescenceTextureIndex = material.iridescenceTextureIndex;
+  gpuMaterial.iridescenceThicknessTextureIndex =
+      material.iridescenceThicknessTextureIndex;
+  gpuMaterial.opacityFactor = material.opacityFactor;
+  gpuMaterial.specularFactor = material.specularFactor;
+  gpuMaterial.heightScale = material.heightScale;
+  gpuMaterial.heightOffset = material.heightOffset;
+  gpuMaterial.transmissionFactor = material.transmissionFactor;
+  gpuMaterial.ior = material.ior;
+  gpuMaterial.dispersion = material.dispersion;
+  gpuMaterial.clearcoatFactor = material.clearcoatFactor;
+  gpuMaterial.clearcoatRoughnessFactor = material.clearcoatRoughnessFactor;
+  gpuMaterial.clearcoatNormalTextureScale =
+      material.clearcoatNormalTextureScale;
+  gpuMaterial.thicknessFactor = material.thicknessFactor;
+  gpuMaterial.attenuationDistance = material.attenuationDistance;
+  gpuMaterial.sheenRoughnessFactor = material.sheenRoughnessFactor;
+  gpuMaterial.iridescenceFactor = material.iridescenceFactor;
+  gpuMaterial.iridescenceIor = material.iridescenceIor;
+  gpuMaterial.iridescenceThicknessMinimum =
+      material.iridescenceThicknessMinimum;
+  gpuMaterial.iridescenceThicknessMaximum =
+      material.iridescenceThicknessMaximum;
+  gpuMaterial.specularColorFactor =
+      glm::vec4(material.specularColorFactor, 0.0f);
+  gpuMaterial.attenuationColor =
+      glm::vec4(material.attenuationColor, 0.0f);
+  gpuMaterial.sheenColorFactor =
+      glm::vec4(material.sheenColorFactor, 0.0f);
+  gpuMaterial.baseColorTextureTransform =
+      makeGpuTextureTransform(material.baseColorTextureTransform);
+  gpuMaterial.normalTextureTransform =
+      makeGpuTextureTransform(material.normalTextureTransform);
+  gpuMaterial.occlusionTextureTransform =
+      makeGpuTextureTransform(material.occlusionTextureTransform);
+  gpuMaterial.emissiveTextureTransform =
+      makeGpuTextureTransform(material.emissiveTextureTransform);
+  gpuMaterial.metallicRoughnessTextureTransform =
+      makeGpuTextureTransform(material.metallicRoughnessTextureTransform);
+  gpuMaterial.roughnessTextureTransform =
+      makeGpuTextureTransform(material.roughnessTextureTransform);
+  gpuMaterial.metalnessTextureTransform =
+      makeGpuTextureTransform(material.metalnessTextureTransform);
+  gpuMaterial.specularTextureTransform =
+      makeGpuTextureTransform(material.specularTextureTransform);
+  gpuMaterial.heightTextureTransform =
+      makeGpuTextureTransform(material.heightTextureTransform);
+  gpuMaterial.opacityTextureTransform =
+      makeGpuTextureTransform(material.opacityTextureTransform);
+  gpuMaterial.transmissionTextureTransform =
+      makeGpuTextureTransform(material.transmissionTextureTransform);
+  gpuMaterial.specularColorTextureTransform =
+      makeGpuTextureTransform(material.specularColorTextureTransform);
+  gpuMaterial.clearcoatTextureTransform =
+      makeGpuTextureTransform(material.clearcoatTextureTransform);
+  gpuMaterial.clearcoatRoughnessTextureTransform =
+      makeGpuTextureTransform(material.clearcoatRoughnessTextureTransform);
+  gpuMaterial.clearcoatNormalTextureTransform =
+      makeGpuTextureTransform(material.clearcoatNormalTextureTransform);
+  gpuMaterial.thicknessTextureTransform =
+      makeGpuTextureTransform(material.thicknessTextureTransform);
+  gpuMaterial.sheenColorTextureTransform =
+      makeGpuTextureTransform(material.sheenColorTextureTransform);
+  gpuMaterial.sheenRoughnessTextureTransform =
+      makeGpuTextureTransform(material.sheenRoughnessTextureTransform);
+  gpuMaterial.iridescenceTextureTransform =
+      makeGpuTextureTransform(material.iridescenceTextureTransform);
+  gpuMaterial.iridescenceThicknessTextureTransform =
+      makeGpuTextureTransform(material.iridescenceThicknessTextureTransform);
+
+  if (material.alphaMode == container::material::AlphaMode::Mask) {
+    gpuMaterial.flags |= container::gpu::kObjectFlagAlphaMask;
+  }
+  if (material.alphaMode == container::material::AlphaMode::Blend) {
+    gpuMaterial.flags |= container::gpu::kObjectFlagAlphaBlend;
+  }
+  if (material.doubleSided) {
+    gpuMaterial.flags |= container::gpu::kObjectFlagDoubleSided;
+  }
+  if (material.specularGlossinessWorkflow) {
+    gpuMaterial.flags |= container::gpu::kObjectFlagSpecularGlossiness;
+  }
+  if (material.unlit) {
+    gpuMaterial.flags |= container::gpu::kObjectFlagUnlit;
+  }
+
+  return gpuMaterial;
+}
+
 }  // namespace
 
 SceneManager::SceneManager(
@@ -170,19 +764,41 @@ SceneManager::~SceneManager() {
   descriptorSetLayout_ = VK_NULL_HANDLE;
 
   VkDevice device = deviceWrapper_->device();
-  if (baseColorSampler_ != VK_NULL_HANDLE) {
-    vkDestroySampler(device, baseColorSampler_, nullptr);
-    baseColorSampler_ = VK_NULL_HANDLE;
+  for (VkSampler& sampler : materialSamplers_) {
+    if (sampler != VK_NULL_HANDLE) {
+      vkDestroySampler(device, sampler, nullptr);
+      sampler = VK_NULL_HANDLE;
+    }
   }
+  materialSamplers_.clear();
+  baseColorSampler_ = VK_NULL_HANDLE;
 }
 
 uint32_t SceneManager::queryTextureDescriptorCapacity() const {
   VkPhysicalDeviceProperties properties{};
   vkGetPhysicalDeviceProperties(deviceWrapper_->physicalDevice(), &properties);
 
-  return std::max(
-      1u, std::min(properties.limits.maxPerStageDescriptorSampledImages,
-                   properties.limits.maxDescriptorSetSampledImages));
+  constexpr uint32_t kReservedSampledImageDescriptors = 64;
+  const uint32_t sampledImageLimit =
+      std::min(properties.limits.maxPerStageDescriptorSampledImages,
+               properties.limits.maxDescriptorSetSampledImages);
+  const uint32_t samplerLimit =
+      std::min(properties.limits.maxPerStageDescriptorSamplers,
+               properties.limits.maxDescriptorSetSamplers);
+  if (sampledImageLimit <
+      container::gpu::kMaterialTextureDescriptorCapacity +
+          kReservedSampledImageDescriptors) {
+    throw std::runtime_error(
+        "Device does not support the renderer material texture descriptor "
+        "capacity");
+  }
+  if (samplerLimit < container::gpu::kMaterialSamplerDescriptorCapacity) {
+    throw std::runtime_error(
+        "Device does not support the renderer material sampler descriptor "
+        "capacity");
+  }
+
+  return container::gpu::kMaterialTextureDescriptorCapacity;
 }
 
 uint32_t SceneManager::resolveLoadedMaterialIndex(int32_t materialIndex) const {
@@ -194,7 +810,22 @@ uint32_t SceneManager::resolveLoadedMaterialIndex(int32_t materialIndex) const {
   return gltfMaterialBaseIndex_ + static_cast<uint32_t>(materialIndex);
 }
 
+uint32_t SceneManager::diagnosticMaterialIndex() const {
+  return resolveGpuMaterialIndex(diagnosticMaterialIndex_);
+}
+
+uint32_t SceneManager::resolveGpuMaterialIndex(uint32_t materialIndex) const {
+  if (materialManager_.getMaterial(materialIndex) != nullptr) {
+    return materialIndex;
+  }
+  if (materialManager_.getMaterial(defaultMaterialIndex_) != nullptr) {
+    return defaultMaterialIndex_;
+  }
+  return 0;
+}
+
 void SceneManager::initialize(const std::string& initialModelPath,
+                              float importScale,
                               uint32_t descriptorSetCount) {
   textureDescriptorCapacity_ = queryTextureDescriptorCapacity();
   createDescriptorSetLayout();
@@ -202,7 +833,10 @@ void SceneManager::initialize(const std::string& initialModelPath,
   loadMaterialXMaterial();
 
   config_.modelPath = initialModelPath;
+  config_.importScale = sanitizeImportScale(importScale);
   loadGltfAssets();
+  uploadMaterialBuffer();
+  uploadTextureMetadataBuffer();
   allocateDescriptorSets(descriptorSetCount);
 }
 
@@ -219,7 +853,8 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
 
   if (gltfModel_.nodes.empty()) {
     const uint32_t rootNode = sceneGraph.createNode(
-        glm::mat4(1.0f), defaultMaterialIndex_, false);
+        importScaleTransform(config_.importScale), defaultMaterialIndex_,
+        false);
     for (size_t primitiveIndex = 0; primitiveIndex < primitiveRanges().size();
          ++primitiveIndex) {
       const auto& primitive = primitiveRanges()[primitiveIndex];
@@ -238,6 +873,13 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
     meshPrimitiveBase[meshIndex] = primitiveOffset;
     primitiveOffset +=
         static_cast<uint32_t>(gltfModel_.meshes[meshIndex].primitives.size());
+  }
+
+  std::optional<uint32_t> importRootNode;
+  if (sanitizeImportScale(config_.importScale) != 1.0f) {
+    importRootNode = sceneGraph.createNode(
+        importScaleTransform(config_.importScale), defaultMaterialIndex_,
+        false);
   }
 
   std::function<void(int, std::optional<uint32_t>)> appendNode =
@@ -287,7 +929,7 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
     }
 
     for (int rootNodeIndex : gltfModel_.scenes[sceneIndex].nodes) {
-      appendNode(rootNodeIndex, std::nullopt);
+      appendNode(rootNodeIndex, importRootNode);
     }
   } else {
     std::vector<bool> hasParent(gltfModel_.nodes.size(), false);
@@ -302,7 +944,7 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
 
     for (size_t nodeIndex = 0; nodeIndex < gltfModel_.nodes.size(); ++nodeIndex) {
       if (!hasParent[nodeIndex]) {
-        appendNode(static_cast<int>(nodeIndex), std::nullopt);
+        appendNode(static_cast<int>(nodeIndex), importRootNode);
       }
     }
   }
@@ -312,9 +954,11 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
 
 bool SceneManager::reloadModel(
     const std::string& path,
+    float importScale,
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
   const std::string previousModelPath = config_.modelPath;
+  const float previousImportScale = config_.importScale;
   auto resetForLoad = [this]() {
     resetLoadedAssets();
     loadMaterialXMaterial();
@@ -326,21 +970,29 @@ bool SceneManager::reloadModel(
 
   resetForLoad();
   config_.modelPath = path;
+  config_.importScale = sanitizeImportScale(importScale);
 
   try {
     loadGltfAssets();
+    uploadMaterialBuffer();
+    uploadTextureMetadataBuffer();
     updateDescriptorSets(cameraBuffers, objectBuffer);
     return true;
   } catch (...) {
     try {
       resetForLoad();
       config_.modelPath = previousModelPath;
+      config_.importScale = previousImportScale;
       loadGltfAssets();
+      uploadMaterialBuffer();
+      uploadTextureMetadataBuffer();
       updateDescriptorSets(cameraBuffers, objectBuffer);
     } catch (const std::exception& e) {
       std::println(stderr, "failed to restore previous model '{}': {}",
                    previousModelPath, e.what());
       resetForLoad();
+      uploadMaterialBuffer();
+      uploadTextureMetadataBuffer();
     }
     return false;
   }
@@ -382,7 +1034,7 @@ glm::vec2 SceneManager::resolveMaterialMetallicRoughnessFactors(
   if (const auto* m = materialManager_.getMaterial(materialIndex)) {
     return {m->metallicFactor, m->roughnessFactor};
   }
-  return {1.0f, 1.0f};
+  return {0.0f, 1.0f};
 }
 
 uint32_t SceneManager::resolveMaterialTextureIndex(
@@ -763,7 +1415,7 @@ bool SceneManager::isMaterialUnlit(uint32_t materialIndex) const {
 /* ---------- Vulkan setup ---------- */
 
 void SceneManager::createDescriptorSetLayout() {
-  std::array<VkDescriptorSetLayoutBinding, 4> bindings{};
+  std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
 
   bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
@@ -774,16 +1426,25 @@ void SceneManager::createDescriptorSetLayout() {
                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                  nullptr};
 
-  bindings[2] = {2, VK_DESCRIPTOR_TYPE_SAMPLER, 1,
+  bindings[2] = {2, VK_DESCRIPTOR_TYPE_SAMPLER,
+                 container::gpu::kMaterialSamplerDescriptorCapacity,
                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                  nullptr};
 
-  bindings[3] = {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, textureDescriptorCapacity_,
+  bindings[3] = {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                  nullptr};
 
-  std::array<VkDescriptorBindingFlags, 4> bindingFlags{
-      0, 0, 0,
+  bindings[4] = {4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                 nullptr};
+
+  bindings[5] = {5, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, textureDescriptorCapacity_,
+                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                 nullptr};
+
+  std::array<VkDescriptorBindingFlags, 6> bindingFlags{
+      0, 0, 0, 0, 0,
       VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
           VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT};
 
@@ -796,25 +1457,42 @@ void SceneManager::createDescriptorSetLayout() {
 }
 
 void SceneManager::createSampler() {
+  if (!materialSamplers_.empty()) {
+    return;
+  }
+
   VkPhysicalDeviceProperties properties{};
   vkGetPhysicalDeviceProperties(deviceWrapper_->physicalDevice(), &properties);
 
-  VkSamplerCreateInfo info{};
-  info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
-  info.magFilter = VK_FILTER_LINEAR;
-  info.minFilter = VK_FILTER_LINEAR;
-  info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
-  info.addressModeU = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  info.addressModeV = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
-  info.anisotropyEnable = VK_TRUE;
-  info.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
-  info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+  materialSamplers_.resize(container::gpu::kMaterialSamplerDescriptorCapacity,
+                           VK_NULL_HANDLE);
+  for (uint32_t wrapT = 0;
+       wrapT < container::gpu::kMaterialSamplerWrapModeCount; ++wrapT) {
+    for (uint32_t wrapS = 0;
+         wrapS < container::gpu::kMaterialSamplerWrapModeCount; ++wrapS) {
+      const uint32_t samplerIndex =
+          wrapS + wrapT * container::gpu::kMaterialSamplerWrapModeCount;
 
-  if (vkCreateSampler(deviceWrapper_->device(), &info, nullptr,
-                      &baseColorSampler_) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create scene texture sampler");
+      VkSamplerCreateInfo info{};
+      info.sType = VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO;
+      info.magFilter = VK_FILTER_LINEAR;
+      info.minFilter = VK_FILTER_LINEAR;
+      info.mipmapMode = VK_SAMPLER_MIPMAP_MODE_LINEAR;
+      info.addressModeU = materialSamplerAddressMode(wrapS);
+      info.addressModeV = materialSamplerAddressMode(wrapT);
+      info.addressModeW = VK_SAMPLER_ADDRESS_MODE_REPEAT;
+      info.anisotropyEnable = VK_TRUE;
+      info.maxAnisotropy = properties.limits.maxSamplerAnisotropy;
+      info.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+
+      if (vkCreateSampler(deviceWrapper_->device(), &info, nullptr,
+                          &materialSamplers_[samplerIndex]) != VK_SUCCESS) {
+        throw std::runtime_error("failed to create scene texture sampler");
+      }
+    }
   }
+
+  baseColorSampler_ = materialSamplers_.front();
 }
 
 /* ---------- Assets ---------- */
@@ -841,7 +1519,7 @@ void SceneManager::loadMaterialXMaterial() {
   }
 
   material.emissiveColor = glm::vec3(0.0f);
-  material.metallicFactor = 1.0f;
+  material.metallicFactor = 0.0f;
   material.roughnessFactor = 1.0f;
 
   materialBaseColor_ = material.baseColor;
@@ -851,11 +1529,24 @@ void SceneManager::loadMaterialXMaterial() {
   } else {
     materialManager_.updateMaterial(defaultMaterialIndex_, material);
   }
+
+  container::material::Material diagnosticMaterial{};
+  diagnosticMaterial.baseColor = glm::vec4(1.0f);
+  diagnosticMaterial.metallicFactor = 0.0f;
+  diagnosticMaterial.roughnessFactor = 0.5f;
+  if (diagnosticMaterialIndex_ == std::numeric_limits<uint32_t>::max()) {
+    diagnosticMaterialIndex_ = materialManager_.createMaterial(diagnosticMaterial);
+  } else {
+    materialManager_.updateMaterial(diagnosticMaterialIndex_, diagnosticMaterial);
+  }
 }
 
 void SceneManager::loadGltfAssets() {
   model_ = container::geometry::Model{};
   gltfModel_ = tinygltf::Model{};
+  authoredPointLights_.clear();
+  authoredDirectionalLights_.clear();
+  authoredAreaLights_.clear();
 
    if (isDefaultSceneRequest(config_.modelPath)) {
     loadDefaultTestSceneAssets();
@@ -868,11 +1559,13 @@ void SceneManager::loadGltfAssets() {
 
   if (!config_.modelPath.empty()) {
     try {
-      std::filesystem::path resolvedPath(config_.modelPath);
+      std::filesystem::path resolvedPath =
+          container::util::pathFromUtf8(config_.modelPath);
       if (resolvedPath.is_relative() && !std::filesystem::exists(resolvedPath)) {
         resolvedPath = resolveSceneAssetPath(config_.modelPath);
       }
-      auto result = container::geometry::gltf::LoadModelWithSource(resolvedPath.string());
+      auto result = container::geometry::gltf::LoadModelWithSource(
+          container::util::pathToUtf8(resolvedPath));
       gltfModel_ = std::move(result.gltfModel);
       model_ = std::move(result.model);
 
@@ -901,6 +1594,7 @@ void SceneManager::loadGltfAssets() {
   vertices_ = model_.vertices();
   indices_ = model_.indices();
   updateModelBounds();
+  collectAuthoredPunctualLights();
   indexType_ = VK_INDEX_TYPE_UINT32;
 }
 
@@ -946,7 +1640,8 @@ void SceneManager::appendSceneAsset(
     const std::filesystem::path& assetPath,
     const glm::mat4& transform,
     std::vector<container::geometry::Mesh>& mergedMeshes) {
-  auto result = container::geometry::gltf::LoadModelWithSource(assetPath.string());
+  auto result = container::geometry::gltf::LoadModelWithSource(
+      container::util::pathToUtf8(assetPath));
 
   const auto imageToTexture = materialXBridge_.loadTexturesForGltf(
       result.gltfModel, assetPath.parent_path(), textureManager_,
@@ -1009,15 +1704,263 @@ void SceneManager::appendSceneAsset(
   }
 }
 
+void SceneManager::collectAuthoredPunctualLights() {
+  authoredPointLights_.clear();
+  authoredDirectionalLights_.clear();
+  authoredAreaLights_.clear();
+  if (gltfModel_.nodes.empty()) {
+    return;
+  }
+
+  std::vector<bool> visited(gltfModel_.nodes.size(), false);
+  std::function<void(int, const glm::mat4&)> traverseNode =
+      [&](int nodeIndex, const glm::mat4& parentTransform) {
+        if (nodeIndex < 0 ||
+            nodeIndex >= static_cast<int>(gltfModel_.nodes.size())) {
+          return;
+        }
+        if (visited[static_cast<size_t>(nodeIndex)]) {
+          return;
+        }
+        visited[static_cast<size_t>(nodeIndex)] = true;
+
+        const tinygltf::Node& node =
+            gltfModel_.nodes[static_cast<size_t>(nodeIndex)];
+        const glm::mat4 sceneLocalTransform =
+            parentTransform * nodeLocalTransform(node);
+
+        if (node.light >= 0 &&
+            node.light < static_cast<int>(gltfModel_.lights.size())) {
+          const tinygltf::Light& lightDefinition =
+              gltfModel_.lights[static_cast<size_t>(node.light)];
+          if (const std::optional<container::gpu::AreaLightData> areaLight =
+                  makeGltfAreaLightData(lightDefinition, sceneLocalTransform,
+                                        config_.importScale)) {
+            authoredAreaLights_.push_back(*areaLight);
+          } else if (lightDefinition.type == "point") {
+            const glm::vec3 sceneLocalPosition =
+                glm::vec3(sceneLocalTransform * glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+
+            container::gpu::PointLightData pointLight{};
+            pointLight.positionRadius =
+                glm::vec4(sceneLocalPosition,
+                          gltfPointLightRange(lightDefinition,
+                                              config_.importScale));
+            pointLight.colorIntensity =
+                glm::vec4(pointLightColorOrDefault(lightDefinition),
+                          pointLightIntensityOrDefault(lightDefinition));
+            authoredPointLights_.push_back(pointLight);
+          } else if (lightDefinition.type == "directional") {
+            AuthoredDirectionalLight directionalLight{};
+            directionalLight.direction =
+                glm::vec4(gltfDirectionalLightDirection(sceneLocalTransform),
+                          0.0f);
+            directionalLight.colorIntensity =
+                glm::vec4(pointLightColorOrDefault(lightDefinition),
+                          pointLightIntensityOrDefault(lightDefinition));
+            authoredDirectionalLights_.push_back(directionalLight);
+          } else if (lightDefinition.type == "spot") {
+            const glm::vec3 sceneLocalPosition =
+                glm::vec3(sceneLocalTransform *
+                          glm::vec4(0.0f, 0.0f, 0.0f, 1.0f));
+            const glm::vec3 sceneLocalDirection =
+                gltfDirectionalLightDirection(sceneLocalTransform);
+            const auto [innerCos, outerCos] =
+                gltfSpotConeCosines(lightDefinition);
+
+            container::gpu::PointLightData spotLight{};
+            spotLight.positionRadius =
+                glm::vec4(sceneLocalPosition,
+                          gltfPointLightRange(lightDefinition,
+                                              config_.importScale));
+            spotLight.colorIntensity =
+                glm::vec4(pointLightColorOrDefault(lightDefinition),
+                          pointLightIntensityOrDefault(lightDefinition));
+            spotLight.directionInnerCos =
+                glm::vec4(sceneLocalDirection, innerCos);
+            spotLight.coneOuterCosType =
+                glm::vec4(outerCos, container::gpu::kLightTypeSpot, 0.0f, 0.0f);
+            authoredPointLights_.push_back(spotLight);
+          }
+        }
+
+        for (const char* extensionName : kKnownAreaLightExtensions) {
+          const auto extensionIt = node.extensions.find(extensionName);
+          if (extensionIt == node.extensions.end()) {
+            continue;
+          }
+
+          const std::optional<int> areaLightIndex =
+              readAreaLightIndex(extensionIt->second);
+          if (!areaLightIndex) {
+            continue;
+          }
+
+          const tinygltf::Value* areaLightValue =
+              findModelAreaLightDefinition(gltfModel_, extensionName,
+                                           *areaLightIndex);
+          if (areaLightValue == nullptr) {
+            continue;
+          }
+
+          const tinygltf::Light areaDefinition =
+              areaLightDefinitionFromValue(*areaLightValue);
+          if (const std::optional<container::gpu::AreaLightData> areaLight =
+                  makeGltfAreaLightData(areaDefinition, sceneLocalTransform,
+                                        config_.importScale)) {
+            authoredAreaLights_.push_back(*areaLight);
+          }
+        }
+
+        for (int childIndex : node.children) {
+          traverseNode(childIndex, sceneLocalTransform);
+        }
+      };
+
+  const glm::mat4 rootTransform = importScaleTransform(config_.importScale);
+  for (int rootNodeIndex : activeSceneRootNodes(gltfModel_)) {
+    traverseNode(rootNodeIndex, rootTransform);
+  }
+}
+
+void SceneManager::uploadMaterialBuffer() {
+  gpuMaterials_.clear();
+  const size_t materialCount = materialManager_.materialCount();
+  gpuMaterials_.reserve(std::max<size_t>(1, materialCount));
+  for (uint32_t i = 0; i < materialCount; ++i) {
+    if (const auto* material = materialManager_.getMaterial(i)) {
+      gpuMaterials_.push_back(makeGpuMaterial(*material));
+    }
+  }
+  if (gpuMaterials_.empty()) {
+    gpuMaterials_.push_back(container::gpu::GpuMaterial{});
+  }
+
+  const size_t requiredCount = gpuMaterials_.size();
+  const VkDeviceSize requiredSize =
+      static_cast<VkDeviceSize>(sizeof(container::gpu::GpuMaterial) *
+                                requiredCount);
+
+  if (materialBuffer_.buffer == VK_NULL_HANDLE ||
+      materialBufferCapacity_ < requiredCount) {
+    if (materialBuffer_.buffer != VK_NULL_HANDLE) {
+      allocationManager_->destroyBuffer(materialBuffer_);
+      materialBufferCapacity_ = 0;
+    }
+    materialBuffer_ = allocationManager_->createBuffer(
+        requiredSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VMA_MEMORY_USAGE_AUTO,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+            VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    materialBufferCapacity_ = requiredCount;
+  }
+
+  void* mapped = materialBuffer_.allocation_info.pMappedData;
+  bool mappedHere = false;
+  if (mapped == nullptr) {
+    if (vmaMapMemory(allocationManager_->memoryManager()->allocator(),
+                     materialBuffer_.allocation, &mapped) != VK_SUCCESS) {
+      throw std::runtime_error("failed to map material buffer for writing");
+    }
+    mappedHere = true;
+  }
+
+  std::memcpy(mapped, gpuMaterials_.data(),
+              static_cast<size_t>(requiredSize));
+  if (vmaFlushAllocation(allocationManager_->memoryManager()->allocator(),
+                         materialBuffer_.allocation, 0,
+                         requiredSize) != VK_SUCCESS) {
+    if (mappedHere) {
+      vmaUnmapMemory(allocationManager_->memoryManager()->allocator(),
+                     materialBuffer_.allocation);
+    }
+    throw std::runtime_error("failed to flush material buffer after writing");
+  }
+
+  if (mappedHere) {
+    vmaUnmapMemory(allocationManager_->memoryManager()->allocator(),
+                   materialBuffer_.allocation);
+  }
+}
+
+void SceneManager::uploadTextureMetadataBuffer() {
+  textureMetadata_.clear();
+  const size_t textureCount = textureManager_.textureCount();
+  textureMetadata_.reserve(std::max<size_t>(1, textureCount));
+  for (uint32_t i = 0; i < textureCount; ++i) {
+    container::gpu::GpuTextureMetadata metadata{};
+    if (const auto* texture = textureManager_.getTexture(i)) {
+      metadata.samplerIndex = std::min(
+          texture->samplerIndex,
+          container::gpu::kMaterialSamplerDescriptorCapacity - 1u);
+    }
+    textureMetadata_.push_back(metadata);
+  }
+  if (textureMetadata_.empty()) {
+    textureMetadata_.push_back(container::gpu::GpuTextureMetadata{});
+  }
+
+  const size_t requiredCount = textureMetadata_.size();
+  const VkDeviceSize requiredSize =
+      static_cast<VkDeviceSize>(sizeof(container::gpu::GpuTextureMetadata) *
+                                requiredCount);
+
+  if (textureMetadataBuffer_.buffer == VK_NULL_HANDLE ||
+      textureMetadataBufferCapacity_ < requiredCount) {
+    if (textureMetadataBuffer_.buffer != VK_NULL_HANDLE) {
+      allocationManager_->destroyBuffer(textureMetadataBuffer_);
+      textureMetadataBufferCapacity_ = 0;
+    }
+    textureMetadataBuffer_ = allocationManager_->createBuffer(
+        requiredSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VMA_MEMORY_USAGE_AUTO,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+            VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    textureMetadataBufferCapacity_ = requiredCount;
+  }
+
+  void* mapped = textureMetadataBuffer_.allocation_info.pMappedData;
+  bool mappedHere = false;
+  if (mapped == nullptr) {
+    if (vmaMapMemory(allocationManager_->memoryManager()->allocator(),
+                     textureMetadataBuffer_.allocation, &mapped) !=
+        VK_SUCCESS) {
+      throw std::runtime_error(
+          "failed to map texture metadata buffer for writing");
+    }
+    mappedHere = true;
+  }
+
+  std::memcpy(mapped, textureMetadata_.data(),
+              static_cast<size_t>(requiredSize));
+  if (vmaFlushAllocation(allocationManager_->memoryManager()->allocator(),
+                         textureMetadataBuffer_.allocation, 0,
+                         requiredSize) != VK_SUCCESS) {
+    if (mappedHere) {
+      vmaUnmapMemory(allocationManager_->memoryManager()->allocator(),
+                     textureMetadataBuffer_.allocation);
+    }
+    throw std::runtime_error(
+        "failed to flush texture metadata buffer after writing");
+  }
+
+  if (mappedHere) {
+    vmaUnmapMemory(allocationManager_->memoryManager()->allocator(),
+                   textureMetadataBuffer_.allocation);
+  }
+}
+
 std::filesystem::path SceneManager::resolveSceneAssetPath(
     std::string_view relativePath) const {
+  const std::filesystem::path requestedPath =
+      container::util::pathFromUtf8(relativePath);
   const std::filesystem::path exeRelative =
-      container::util::executableDirectory() / std::filesystem::path(relativePath);
+      container::util::executableDirectory() / requestedPath;
   if (std::filesystem::exists(exeRelative)) {
     return exeRelative;
   }
 
-  const std::filesystem::path workspaceRelative = std::filesystem::path(relativePath);
+  const std::filesystem::path workspaceRelative = requestedPath;
   if (std::filesystem::exists(workspaceRelative)) {
     return workspaceRelative;
   }
@@ -1033,6 +1976,9 @@ void SceneManager::updateModelBounds() {
 
   auto forEachRenderedPoint =
       [this](const std::function<void(const glm::vec3&)>& visit) {
+        const glm::mat4 rootTransform =
+            importScaleTransform(config_.importScale);
+
         auto emitPrimitive = [&](uint32_t primitiveIndex,
                                  const glm::mat4& transform) {
           if (primitiveIndex >= model_.primitiveRanges().size()) {
@@ -1101,7 +2047,7 @@ void SceneManager::updateModelBounds() {
             }
 
             for (int rootNodeIndex : gltfModel_.scenes[sceneIndex].nodes) {
-              traverseNode(rootNodeIndex, glm::mat4(1.0f));
+              traverseNode(rootNodeIndex, rootTransform);
             }
             return;
           }
@@ -1119,14 +2065,14 @@ void SceneManager::updateModelBounds() {
           for (size_t nodeIndex = 0; nodeIndex < gltfModel_.nodes.size();
                ++nodeIndex) {
             if (!hasParent[nodeIndex]) {
-              traverseNode(static_cast<int>(nodeIndex), glm::mat4(1.0f));
+              traverseNode(static_cast<int>(nodeIndex), rootTransform);
             }
           }
           return;
         }
 
         for (const auto& vertex : vertices_) {
-          visit(vertex.position);
+          visit(glm::vec3(rootTransform * glm::vec4(vertex.position, 1.0f)));
         }
       };
 
@@ -1176,10 +2122,11 @@ void SceneManager::allocateDescriptorSets(uint32_t descriptorSetCount) {
 
   std::vector<VkDescriptorPoolSize> poolSizes = {
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount * 3u},
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
        textureDescriptorCapacity_ * setCount},
-      {VK_DESCRIPTOR_TYPE_SAMPLER, setCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLER,
+       container::gpu::kMaterialSamplerDescriptorCapacity * setCount},
   };
 
   descriptorPool_ = pipelineManager_->createDescriptorPool(poolSizes, setCount, 0);
@@ -1212,10 +2159,26 @@ void SceneManager::writeDescriptorSetContents(
     const container::gpu::AllocatedBuffer& cameraBuffer,
     const container::gpu::AllocatedBuffer& objectBuffer) {
   if (descriptorSet == VK_NULL_HANDLE) return;
+  if (materialBuffer_.buffer == VK_NULL_HANDLE) {
+    uploadMaterialBuffer();
+  }
+  if (textureMetadataBuffer_.buffer == VK_NULL_HANDLE) {
+    uploadTextureMetadataBuffer();
+  }
 
   VkDescriptorBufferInfo cameraInfo{cameraBuffer.buffer, 0, sizeof(container::gpu::CameraData)};
   VkDescriptorBufferInfo objectInfo{
       objectBuffer.buffer, 0, objectBuffer.allocation_info.size};
+  VkDescriptorBufferInfo materialInfo{
+      materialBuffer_.buffer, 0,
+      static_cast<VkDeviceSize>(
+          sizeof(container::gpu::GpuMaterial) *
+          std::max<size_t>(1, gpuMaterials_.size()))};
+  VkDescriptorBufferInfo textureMetadataInfo{
+      textureMetadataBuffer_.buffer, 0,
+      static_cast<VkDeviceSize>(
+          sizeof(container::gpu::GpuTextureMetadata) *
+          std::max<size_t>(1, textureMetadata_.size()))};
 
   std::vector<VkWriteDescriptorSet> writes;
 
@@ -1237,6 +2200,24 @@ void SceneManager::writeDescriptorSetContents(
   objectWrite.pBufferInfo = &objectInfo;
   writes.push_back(objectWrite);
 
+  VkWriteDescriptorSet materialWrite{};
+  materialWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  materialWrite.dstSet = descriptorSet;
+  materialWrite.dstBinding = 3;
+  materialWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  materialWrite.descriptorCount = 1;
+  materialWrite.pBufferInfo = &materialInfo;
+  writes.push_back(materialWrite);
+
+  VkWriteDescriptorSet textureMetadataWrite{};
+  textureMetadataWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  textureMetadataWrite.dstSet = descriptorSet;
+  textureMetadataWrite.dstBinding = 4;
+  textureMetadataWrite.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+  textureMetadataWrite.descriptorCount = 1;
+  textureMetadataWrite.pBufferInfo = &textureMetadataInfo;
+  writes.push_back(textureMetadataWrite);
+
   std::vector<VkDescriptorImageInfo> imageInfos;
   const size_t texCount = textureManager_.textureCount();
   if (texCount > textureDescriptorCapacity_) {
@@ -1255,23 +2236,32 @@ void SceneManager::writeDescriptorSetContents(
     VkWriteDescriptorSet imageWrite{};
     imageWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
     imageWrite.dstSet = descriptorSet;
-    imageWrite.dstBinding = 3;
+    imageWrite.dstBinding = 5;
     imageWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     imageWrite.descriptorCount = static_cast<uint32_t>(imageInfos.size());
     imageWrite.pImageInfo = imageInfos.data();
     writes.push_back(imageWrite);
   }
 
-  VkDescriptorImageInfo samplerInfo{baseColorSampler_, VK_NULL_HANDLE,
-                                    VK_IMAGE_LAYOUT_UNDEFINED};
+  std::array<VkDescriptorImageInfo,
+             container::gpu::kMaterialSamplerDescriptorCapacity>
+      samplerInfos{};
+  for (uint32_t i = 0; i < container::gpu::kMaterialSamplerDescriptorCapacity;
+       ++i) {
+    samplerInfos[i].sampler =
+        i < materialSamplers_.size() ? materialSamplers_[i] : baseColorSampler_;
+    samplerInfos[i].imageView = VK_NULL_HANDLE;
+    samplerInfos[i].imageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  }
 
   VkWriteDescriptorSet samplerWrite{};
   samplerWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
   samplerWrite.dstSet = descriptorSet;
   samplerWrite.dstBinding = 2;
   samplerWrite.descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-  samplerWrite.descriptorCount = 1;
-  samplerWrite.pImageInfo = &samplerInfo;
+  samplerWrite.descriptorCount =
+      container::gpu::kMaterialSamplerDescriptorCapacity;
+  samplerWrite.pImageInfo = samplerInfos.data();
   writes.push_back(samplerWrite);
 
   vkUpdateDescriptorSets(deviceWrapper_->device(),
@@ -1280,13 +2270,27 @@ void SceneManager::writeDescriptorSetContents(
 }
 
 void SceneManager::resetLoadedAssets() {
+  if (materialBuffer_.buffer != VK_NULL_HANDLE) {
+    allocationManager_->destroyBuffer(materialBuffer_);
+  }
+  if (textureMetadataBuffer_.buffer != VK_NULL_HANDLE) {
+    allocationManager_->destroyBuffer(textureMetadataBuffer_);
+  }
+  materialBufferCapacity_ = 0;
+  textureMetadataBufferCapacity_ = 0;
+  gpuMaterials_.clear();
+  textureMetadata_.clear();
   allocationManager_->resetTextureAllocations();
   materialManager_ = container::material::MaterialManager{};
   textureManager_ = container::material::TextureManager{};
   defaultMaterialIndex_ = std::numeric_limits<uint32_t>::max();
+  diagnosticMaterialIndex_ = std::numeric_limits<uint32_t>::max();
   gltfMaterialBaseIndex_ = 0;
   materialBaseColor_ = glm::vec4(1.0f);
   modelBounds_ = ModelBounds{};
+  authoredPointLights_.clear();
+  authoredDirectionalLights_.clear();
+  authoredAreaLights_.clear();
 }
 
 }  // namespace container::scene

@@ -4,25 +4,10 @@
 // VkDrawIndexedIndirectCommand to the output buffer.
 
 #include "lighting_structs.slang"
+#include "push_constants_common.slang"
+#include "draw_indirect_common.slang"
 
 #include "object_data_common.slang"
-
-struct DrawIndexedIndirectCommand
-{
-    uint indexCount;
-    uint instanceCount;
-    uint firstIndex;
-    int  vertexOffset;
-    uint firstInstance;  // Encodes objectIndex.
-};
-
-struct CullPushConstants
-{
-    uint objectCount;
-    uint pad0;
-    uint pad1;
-    uint pad2;
-};
 
 [[vk::push_constant]]
 ConstantBuffer<CullPushConstants> pc;

@@ -2,6 +2,7 @@
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/FileLoader.h"
 #include "Container/utility/PipelineManager.h"
+#include "Container/utility/SceneData.h"
 #include "Container/utility/ShaderModule.h"
 #include "Container/utility/VulkanDevice.h"
 
@@ -18,6 +19,12 @@
 #include <vector>
 
 namespace container::renderer {
+
+using container::gpu::BlurPushConstants;
+using container::gpu::EquirectPushConstants;
+using container::gpu::GtaoPushConstants;
+using container::gpu::IrradiancePushConstants;
+using container::gpu::PrefilterPushConstants;
 
 EnvironmentManager::EnvironmentManager(
     std::shared_ptr<container::gpu::VulkanDevice> device,
@@ -300,9 +307,6 @@ void EnvironmentManager::destroyEnvironmentCubemaps() {
 
 namespace {
 
-struct Face2Push { uint32_t faceIndex; uint32_t faceSize; };
-struct PrefilterPush { uint32_t faceIndex; uint32_t faceSize; float roughness; uint32_t sourceMipCount; };
-
 std::string EnvironmentStatusWithPath(std::string_view state,
                                       const std::filesystem::path& path) {
   return std::string(state) + ": " + path.string();
@@ -365,13 +369,13 @@ void EnvironmentManager::createIblPipelines(
 
   equirectToCubemapPipeline_ = buildPipeline(
       shaderDir / "spv_shaders" / "equirect_to_cubemap.comp.spv",
-      sizeof(Face2Push), equirectToCubemapPipelineLayout_);
+      sizeof(EquirectPushConstants), equirectToCubemapPipelineLayout_);
   irradiancePipeline_ = buildPipeline(
       shaderDir / "spv_shaders" / "irradiance_convolution.comp.spv",
-      sizeof(Face2Push), irradiancePipelineLayout_);
+      sizeof(IrradiancePushConstants), irradiancePipelineLayout_);
   prefilterPipeline_ = buildPipeline(
       shaderDir / "spv_shaders" / "prefilter_specular.comp.spv",
-      sizeof(PrefilterPush), prefilterPipelineLayout_);
+      sizeof(PrefilterPushConstants), prefilterPipelineLayout_);
 }
 
 bool EnvironmentManager::loadHdrEnvironment(
@@ -428,50 +432,6 @@ bool EnvironmentManager::loadHdrEnvironment(
   const VkDeviceSize equirectBytes =
       static_cast<VkDeviceSize>(exrW) * static_cast<VkDeviceSize>(exrH) *
       4ull * sizeof(float);
-
-  // Normalize HDR intensity so the IBL energy sits in a range comparable to
-  // the 1.0 placeholder cubemap. Outdoor EXRs frequently have sun pixels at
-  // 50-500 nits while the average sky is 1-5; feeding those raw numbers into
-  // the split-sum integral produces washed-out diffuse and mirror-bright
-  // specular IBL on any low-roughness material.
-  //
-  // Pass 1: clamp per-component firefly pixels (sun disc) to avoid blowing
-  //         up the specular prefilter.
-  // Pass 2: scale so the MEAN luminance matches kTargetMeanLuminance, which
-  //         matches the unit-white placeholder's contribution.
-  {
-    constexpr float kFireflyClamp       = 50.0f;   // cap each channel
-    constexpr float kTargetMeanLuminance = 0.5f;   // roughly matches old placeholder
-
-    const size_t pixelCount =
-        static_cast<size_t>(exrW) * static_cast<size_t>(exrH);
-    double luminanceSum = 0.0;
-    for (size_t i = 0; i < pixelCount; ++i) {
-      float* p = rgba + i * 4;
-      p[0] = std::min(std::max(p[0], 0.0f), kFireflyClamp);
-      p[1] = std::min(std::max(p[1], 0.0f), kFireflyClamp);
-      p[2] = std::min(std::max(p[2], 0.0f), kFireflyClamp);
-      const float lum = 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2];
-      luminanceSum += static_cast<double>(lum);
-    }
-
-    const double meanLuminance =
-        pixelCount > 0 ? luminanceSum / static_cast<double>(pixelCount) : 0.0;
-    float scale = 1.0f;
-    if (meanLuminance > 1e-4) {
-      scale = static_cast<float>(kTargetMeanLuminance / meanLuminance);
-    }
-    for (size_t i = 0; i < pixelCount; ++i) {
-      float* p = rgba + i * 4;
-      p[0] *= scale;
-      p[1] *= scale;
-      p[2] *= scale;
-    }
-
-    std::println(
-        "[HDR] Normalized: meanLum={:.3f} -> scale={:.4f} (target={:.2f})",
-        meanLuminance, scale, kTargetMeanLuminance);
-  }
 
   std::println("[HDR] Loaded {} ({}x{})", hdrPath.string(), exrW, exrH);
 
@@ -752,7 +712,7 @@ bool EnvironmentManager::loadHdrEnvironment(
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, equirectToCubemapPipelineLayout_,
                           0, 1, &equirectSet, 0, nullptr);
   for (uint32_t face = 0; face < 6; ++face) {
-    Face2Push push{face, kEnvSize};
+    EquirectPushConstants push{face, kEnvSize};
     vkCmdPushConstants(cmd, equirectToCubemapPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(push), &push);
     const uint32_t g = (kEnvSize + 15) / 16;
@@ -806,7 +766,7 @@ bool EnvironmentManager::loadHdrEnvironment(
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, irradiancePipelineLayout_,
                           0, 1, &irradianceSet, 0, nullptr);
   for (uint32_t face = 0; face < 6; ++face) {
-    Face2Push push{face, kIrradianceSize};
+    IrradiancePushConstants push{face, kIrradianceSize};
     vkCmdPushConstants(cmd, irradiancePipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(push), &push);
     const uint32_t g = (kIrradianceSize + 7) / 8;
@@ -822,7 +782,7 @@ bool EnvironmentManager::loadHdrEnvironment(
     const float roughness  = (kPrefilterMips <= 1) ? 0.0f :
         static_cast<float>(mip) / static_cast<float>(kPrefilterMips - 1);
     for (uint32_t face = 0; face < 6; ++face) {
-      PrefilterPush push{face, mipSize, roughness, kEnvMips};
+      PrefilterPushConstants push{face, mipSize, roughness, kEnvMips};
       vkCmdPushConstants(cmd, prefilterPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                          0, sizeof(push), &push);
       const uint32_t g = (mipSize + 15) / 16;
@@ -1095,17 +1055,6 @@ void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shader
     gtaoSetLayout_ = pipelineManager_.createDescriptorSetLayout(
         {bindings.begin(), bindings.end()}, flags);
 
-    struct GtaoPushConstants {
-      float    aoRadius;
-      float    aoIntensity;
-      uint32_t sampleCount;
-      uint32_t pad0;
-      uint32_t fullWidth;
-      uint32_t fullHeight;
-      uint32_t pad1;
-      uint32_t pad2;
-    };
-
     VkPushConstantRange pcRange{};
     pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pcRange.size       = sizeof(GtaoPushConstants);
@@ -1144,17 +1093,6 @@ void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shader
     const std::vector<VkDescriptorBindingFlags> flags(bindings.size(), 0);
     gtaoBlurSetLayout_ = pipelineManager_.createDescriptorSetLayout(
         {bindings.begin(), bindings.end()}, flags);
-
-    struct BlurPushConstants {
-      uint32_t width;
-      uint32_t height;
-      float    depthThreshold;
-      float    cameraNear;
-      float    cameraFar;
-      float    pad0;
-      float    pad1;
-      float    pad2;
-    };
 
     VkPushConstantRange pcRange{};
     pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1434,17 +1372,6 @@ void EnvironmentManager::dispatchGtao(
     vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
   }
 
-  struct GtaoPushConstants {
-    float    aoRadius;
-    float    aoIntensity;
-    uint32_t sampleCount;
-    uint32_t pad0;
-    uint32_t fullWidth;
-    uint32_t fullHeight;
-    uint32_t pad1;
-    uint32_t pad2;
-  };
-
   GtaoPushConstants pc{};
   pc.aoRadius    = aoRadius_;
   pc.aoIntensity = aoIntensity_;
@@ -1512,17 +1439,6 @@ void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd,
     vkUpdateDescriptorSets(device_->device(), static_cast<uint32_t>(w.size()),
                            w.data(), 0, nullptr);
   }
-
-  struct BlurPushConstants {
-    uint32_t width;
-    uint32_t height;
-    float    depthThreshold;
-    float    cameraNear;
-    float    cameraFar;
-    float    pad0;
-    float    pad1;
-    float    pad2;
-  };
 
   BlurPushConstants pc{};
   pc.width          = gtaoWidth_;

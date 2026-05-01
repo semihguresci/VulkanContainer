@@ -7,6 +7,7 @@
 #include "Container/utility/VulkanMemoryManager.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -42,9 +43,22 @@ struct SceneLightingAnchor {
 struct LightPushConstants {
   glm::vec4 positionRadius{0.0f, 0.0f, 0.0f, 1.0f};
   glm::vec4 colorIntensity{1.0f, 1.0f, 1.0f, 1.0f};
+  glm::vec4 directionInnerCos{0.0f, 0.0f, -1.0f, 1.0f};
+  glm::vec4 coneOuterCosType{0.0f, 0.0f, 0.0f, 0.0f};
 };
+static_assert(sizeof(LightPushConstants) == 64,
+              "LightPushConstants size mismatch with "
+              "shaders/push_constants_common.slang LightPushConstants.");
+static_assert(offsetof(LightPushConstants, positionRadius) == 0,
+              "LightPushConstants.positionRadius offset");
+static_assert(offsetof(LightPushConstants, colorIntensity) == 16,
+              "LightPushConstants.colorIntensity offset");
+static_assert(offsetof(LightPushConstants, directionInnerCos) == 32,
+              "LightPushConstants.directionInnerCos offset");
+static_assert(offsetof(LightPushConstants, coneOuterCosType) == 48,
+              "LightPushConstants.coneOuterCosType offset");
 
-// Manages the LightingData uniform buffer, directional + point lights,
+// Manages the LightingData uniform buffer, directional + point/area lights,
 // tiled light culling resources, and the light-gizmo draw helper.
 class LightingManager {
 public:
@@ -162,6 +176,9 @@ public:
   const std::vector<container::gpu::PointLightData> &pointLightsSsbo() const {
     return pointLightsSsbo_;
   }
+  const std::vector<container::gpu::AreaLightData> &areaLightsSsbo() const {
+    return areaLightsSsbo_;
+  }
 
   // Tile grid SSBO accessors for debug visualization (heat map).
   VkBuffer tileGridBuffer() const { return tileGridSsbo_.buffer; }
@@ -170,9 +187,13 @@ public:
   }
 
 private:
-  void publishGeneratedPointLights();
+  bool applyAuthoredDirectionalLight(const SceneLightingAnchor &anchor);
+  void appendAuthoredPointLights(const SceneLightingAnchor &anchor);
+  void appendAuthoredAreaLights(const SceneLightingAnchor &anchor);
+  void publishPointLights();
+  void publishAreaLights();
   void rebuildPointLightSsboFromEcs();
-  void writeLightDescriptorPointBuffers() const;
+  void writeLightDescriptorStorageBuffers() const;
   void allocateClusterBuffers(VkExtent2D extent);
   void writeTiledResourceDescriptors() const;
   std::shared_ptr<container::gpu::VulkanDevice> device_;
@@ -196,9 +217,11 @@ private:
 
   // ---- Tiled light culling ------------------------------------------------
   std::vector<container::gpu::PointLightData> pointLightsSsbo_{};
+  std::vector<container::gpu::AreaLightData> areaLightsSsbo_{};
 
   // SSBOs
   container::gpu::AllocatedBuffer lightSsbo_{};
+  container::gpu::AllocatedBuffer areaLightSsbo_{};
   container::gpu::AllocatedBuffer tileGridSsbo_{};
   container::gpu::AllocatedBuffer lightIndexListSsbo_{};
   container::gpu::AllocatedBuffer lightStatsBuffer_{};
@@ -234,6 +257,7 @@ private:
   mutable uint32_t lastDispatchClusterCount_{0};
 
   void uploadLightSsbo() const;
+  void uploadAreaLightSsbo() const;
 };
 
 } // namespace container::renderer

@@ -413,7 +413,7 @@ void GpuCullManager::dispatchHiZGenerate(VkCommandBuffer cmd,
     // Update descriptor set for this mip level.
     VkDescriptorImageInfo srcInfo{};
     srcInfo.imageLayout = (mip == 0)
-        ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
         : VK_IMAGE_LAYOUT_GENERAL;
     srcInfo.imageView = (mip == 0) ? depthView : hizMipViews_[mip - 1];
 

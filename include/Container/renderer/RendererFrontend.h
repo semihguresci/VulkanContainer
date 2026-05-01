@@ -7,6 +7,7 @@
 #include "Container/utility/VulkanMemoryManager.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -23,6 +24,7 @@ class BloomManager;
 class CameraController;
 class CommandBufferManager;
 class EnvironmentManager;
+class ExposureManager;
 class FrameRecorder;
 class FrameResourceManager;
 class GraphicsPipelineBuilder;
@@ -92,8 +94,11 @@ class RendererFrontend {
   // Process keyboard / camera input for this tick.
   void processInput(float deltaTime);
 
+  // Capture the next submitted swapchain image to an sRGB PNG.
+  void requestScreenshot(std::filesystem::path outputPath);
+
   // Scene operations forwarded from the application.
-  bool reloadSceneModel(const std::string& path);
+  bool reloadSceneModel(const std::string& path, float importScale = 1.0f);
 
   // Shutdown: wait idle and release all Vulkan resources in dependency order.
   void shutdown();
@@ -121,6 +126,7 @@ class RendererFrontend {
     std::unique_ptr<EnvironmentManager>                  environmentManager;
     std::unique_ptr<GpuCullManager>                      gpuCullManager;
     std::unique_ptr<BloomManager>                          bloomManager;
+    std::unique_ptr<ExposureManager>                       exposureManager;
     std::unique_ptr<GraphicsPipelineBuilder>             pipelineBuilder;
     std::unique_ptr<FrameRecorder>                      frameRecorder;
     std::unique_ptr<container::ui::GuiManager>          guiManager;
@@ -168,6 +174,16 @@ class RendererFrontend {
   };
   FrameState frame_{};
 
+  struct ScreenshotState {
+    std::filesystem::path outputPath{};
+    bool pending{false};
+    container::gpu::AllocatedBuffer readbackBuffer{};
+    VkDeviceSize readbackSize{0};
+    VkExtent2D extent{};
+    VkFormat format{VK_FORMAT_UNDEFINED};
+  };
+  ScreenshotState screenshot_{};
+
   // ---- internal init helpers --------------------------------------------------
   void createRenderPasses();
   void createGraphicsPipelines();
@@ -185,6 +201,8 @@ class RendererFrontend {
   void updateFrameDescriptorSets(uint32_t imageIndex = UINT32_MAX);
   void destroyGBufferResources();
   bool growExactOitNodePoolIfNeeded(uint32_t imageIndex);
+  void ensureScreenshotReadbackBuffer(VkExtent2D extent, VkFormat format);
+  void writePendingScreenshotPng();
   void presentSceneControls();
   void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
   [[nodiscard]] FrameRecordParams buildFrameRecordParams(uint32_t imageIndex);
