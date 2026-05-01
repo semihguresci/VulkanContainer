@@ -61,6 +61,39 @@ TEST(SceneGraph, CreateNodeIncreasesCount) {
   EXPECT_EQ(graph.nodeCount(), 2u);
 }
 
+TEST(SceneGraph, MutationsAdvanceRevision) {
+  SceneGraph graph;
+  const uint64_t initialRevision = graph.revision();
+
+  const uint32_t parent = graph.createNode(glm::mat4(1.0f), 0);
+  EXPECT_GT(graph.revision(), initialRevision);
+  const uint64_t createRevision = graph.revision();
+
+  const uint32_t child = graph.createNode(glm::mat4(1.0f), 0, false);
+  graph.setParent(child, parent);
+  EXPECT_GT(graph.revision(), createRevision);
+  const uint64_t parentRevision = graph.revision();
+
+  graph.setLocalTransform(child, glm::translate(glm::mat4(1.0f), glm::vec3(1.0f)));
+  EXPECT_GT(graph.revision(), parentRevision);
+  const uint64_t transformRevision = graph.revision();
+
+  graph.setRenderable(child, true);
+  EXPECT_GT(graph.revision(), transformRevision);
+}
+
+TEST(SceneGraph, NoOpMutationsDoNotAdvanceRevision) {
+  SceneGraph graph;
+  const uint32_t node = graph.createNode(glm::mat4(1.0f), 0, true, 0);
+  const uint64_t revision = graph.revision();
+
+  graph.setParent(node, std::nullopt);
+  graph.setLocalTransform(node, glm::mat4(1.0f));
+  graph.setRenderable(node, true);
+
+  EXPECT_EQ(graph.revision(), revision);
+}
+
 TEST(SceneGraph, CreateNodeReturnsSequentialIndices) {
   SceneGraph graph;
   EXPECT_EQ(graph.createNode(glm::mat4(1.0f), 0), 0u);

@@ -8,7 +8,9 @@
 #include "Container/utility/SceneData.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -25,6 +27,8 @@ class ExposureManager;
 class GpuCullManager;
 class LightingManager;
 class OitManager;
+class RenderPassGpuProfiler;
+class RendererTelemetry;
 class SceneController;
 class ShadowCullManager;
 class ShadowManager;
@@ -41,16 +45,24 @@ class BaseCamera;
 
 namespace container::renderer {
 
-// All per-frame render state needed by FrameRecorder::record().
-struct FrameRecordParams {
-  // Per-frame GPU resources
+struct FrameRuntimeResources {
   const FrameResources*             frame{nullptr};
   uint32_t                          imageIndex{0};
+};
 
-  // Scene geometry
+struct FrameSceneGeometry {
   container::gpu::BufferSlice      vertexSlice{};
   container::gpu::BufferSlice      indexSlice{};
   VkIndexType                       indexType{VK_INDEX_TYPE_UINT32};
+  const std::vector<container::gpu::ObjectData>* objectData{nullptr};
+  uint64_t                         objectDataRevision{0};
+  VkBuffer                          objectBuffer{VK_NULL_HANDLE};
+  VkDeviceSize                      objectBufferSize{0};
+  uint32_t                          diagCubeObjectIndex{
+      std::numeric_limits<uint32_t>::max()};
+};
+
+struct FrameDrawLists {
   const std::vector<DrawCommand>*   opaqueDrawCommands{nullptr};
   const std::vector<DrawCommand>*   transparentDrawCommands{nullptr};
   // Split draw lists let the recorder route fast GPU-driven single-sided draws
@@ -61,55 +73,55 @@ struct FrameRecordParams {
   const std::vector<DrawCommand>*   transparentSingleSidedDrawCommands{nullptr};
   const std::vector<DrawCommand>*   transparentWindingFlippedDrawCommands{nullptr};
   const std::vector<DrawCommand>*   transparentDoubleSidedDrawCommands{nullptr};
-  const std::vector<container::gpu::ObjectData>* objectData{nullptr};
+};
 
-  // Descriptor sets
+struct FrameDescriptorSets {
   VkDescriptorSet                   sceneDescriptorSet{VK_NULL_HANDLE};
   VkDescriptorSet                   lightDescriptorSet{VK_NULL_HANDLE};
   VkDescriptorSet                   shadowDescriptorSet{VK_NULL_HANDLE};
   VkDescriptorSet                   tiledDescriptorSet{VK_NULL_HANDLE};
+};
 
+struct FrameCameraResources {
   // Shared camera/depth resources sampled by compute passes such as tile cull,
   // GTAO, and occlusion cull.
   VkBuffer                          cameraBuffer{VK_NULL_HANDLE};
   VkDeviceSize                      cameraBufferSize{0};
   VkSampler                         gBufferSampler{VK_NULL_HANDLE};
+  float                             nearPlane{0.1f};
+  float                             farPlane{100.0f};
+};
 
-  // Render passes
-  struct RenderPassHandles {
-    VkRenderPass depthPrepass{VK_NULL_HANDLE};
-    VkRenderPass gBuffer{VK_NULL_HANDLE};
-    VkRenderPass shadow{VK_NULL_HANDLE};
-    VkRenderPass lighting{VK_NULL_HANDLE};
-    VkRenderPass postProcess{VK_NULL_HANDLE};
-  };
-  RenderPassHandles                 renderPasses{};
+struct FrameRenderPassHandles {
+  VkRenderPass depthPrepass{VK_NULL_HANDLE};
+  VkRenderPass gBuffer{VK_NULL_HANDLE};
+  VkRenderPass shadow{VK_NULL_HANDLE};
+  VkRenderPass lighting{VK_NULL_HANDLE};
+  VkRenderPass postProcess{VK_NULL_HANDLE};
+};
 
-  // Pipelines
+struct FramePipelineState {
   PipelineLayouts                   layouts{};
   GraphicsPipelines                 pipelines{};
+};
 
-  // Debug flags
+struct FrameDebugState {
   bool                              debugDirectionalOnly{false};
   bool                              debugVisualizePointLightStencil{false};
   bool                              debugFreezeCulling{false};
   bool                              wireframeRasterModeSupported{false};
   bool                              wireframeWideLinesSupported{false};
+};
 
-  // Push constant state (mutated during recording)
-  struct PushConstantState {
-    container::gpu::BindlessPushConstants*            bindless{nullptr};
-    LightPushConstants*               light{nullptr};
-    WireframePushConstants*           wireframe{nullptr};
-    NormalValidationPushConstants*    normalValidation{nullptr};
-    SurfaceNormalPushConstants*       surfaceNormal{nullptr};
-  };
-  PushConstantState                 pushConstants{};
+struct FramePushConstantState {
+  container::gpu::BindlessPushConstants* bindless{nullptr};
+  LightPushConstants*                    light{nullptr};
+  WireframePushConstants*                wireframe{nullptr};
+  NormalValidationPushConstants*         normalValidation{nullptr};
+  SurfaceNormalPushConstants*            surfaceNormal{nullptr};
+};
 
-  // Camera near/far planes (for depth linearization)
-  float                             cameraNear{0.1f};
-  float                             cameraFar{100.0f};
-
+struct FrameShadowResources {
   // Shadow cascade framebuffers. GPU-cull buffers are owned by ShadowCullManager,
   // which keeps the frame parameter contract to high-level pass services.
   const VkFramebuffer*              shadowFramebuffers{nullptr};
@@ -124,27 +136,46 @@ struct FrameRecordParams {
   bool                                  useShadowSecondaryCommandBuffers{false};
   std::array<VkCommandBuffer, container::gpu::kShadowCascadeCount>
       shadowSecondaryCommandBuffers{};
+};
 
-  // Swapchain framebuffers (for post-process pass)
+struct FrameSwapchainResources {
   const std::vector<VkFramebuffer>* swapChainFramebuffers{nullptr};
+};
 
-  struct ScreenshotCapture {
-    bool enabled{false};
-    VkImage swapChainImage{VK_NULL_HANDLE};
-    VkBuffer readbackBuffer{VK_NULL_HANDLE};
-    VkExtent2D extent{};
-  };
-  ScreenshotCapture screenshot{};
+struct FrameScreenshotCapture {
+  bool enabled{false};
+  VkImage swapChainImage{VK_NULL_HANDLE};
+  VkBuffer readbackBuffer{VK_NULL_HANDLE};
+  VkExtent2D extent{};
+};
 
-  // Diagnostic cube object index (max uint32 = disabled)
-  uint32_t                          diagCubeObjectIndex{std::numeric_limits<uint32_t>::max()};
-
-  // GPU-driven culling
+struct FramePassServices {
   GpuCullManager*                   gpuCullManager{nullptr};
   BloomManager*                      bloomManager{nullptr};
+  RendererTelemetry*                 telemetry{nullptr};
+  RenderPassGpuProfiler*             gpuProfiler{nullptr};
+};
+
+struct FramePostProcessState {
   container::gpu::ExposureSettings   exposureSettings{};
-  VkBuffer                          objectBuffer{VK_NULL_HANDLE};
-  VkDeviceSize                      objectBufferSize{0};
+};
+
+// All per-frame render state needed by FrameRecorder::record().
+struct FrameRecordParams {
+  FrameRuntimeResources runtime{};
+  FrameSceneGeometry scene{};
+  FrameDrawLists draws{};
+  FrameDescriptorSets descriptors{};
+  FrameCameraResources camera{};
+  FrameRenderPassHandles renderPasses{};
+  FramePipelineState pipeline{};
+  FrameDebugState debug{};
+  FramePushConstantState pushConstants{};
+  FrameShadowResources shadows{};
+  FrameSwapchainResources swapchain{};
+  FrameScreenshotCapture screenshot{};
+  FramePassServices services{};
+  FramePostProcessState postProcess{};
 };
 
 // Records a complete frame into a command buffer.
@@ -215,9 +246,19 @@ class FrameRecorder {
   [[nodiscard]] bool canRecordShadowPass(
       const FrameRecordParams& p,
       uint32_t cascadeIndex) const;
+  [[nodiscard]] bool shouldPrepareShadowCascadeDrawCommands(
+      const FrameRecordParams& p) const;
+  [[nodiscard]] bool useGpuShadowCullForCascade(
+      const FrameRecordParams& p,
+      uint32_t cascadeIndex) const;
+  [[nodiscard]] size_t shadowCascadeCpuCommandCount(
+      const FrameRecordParams& p,
+      uint32_t cascadeIndex) const;
   [[nodiscard]] bool shouldUseShadowSecondaryCommandBuffer(
       const FrameRecordParams& p,
       uint32_t cascadeIndex) const;
+  [[nodiscard]] uint64_t shadowCascadeDrawCommandSignature(
+      const FrameRecordParams& p) const;
 
   void prepareShadowCascadeDrawCommands(const FrameRecordParams& p) const;
 
@@ -254,6 +295,8 @@ class FrameRecorder {
       shadowCascadeWindingFlippedDrawCommands_;
   mutable std::array<std::vector<DrawCommand>, container::gpu::kShadowCascadeCount>
       shadowCascadeDoubleSidedDrawCommands_;
+  mutable uint64_t shadowCascadeDrawCommandSignature_{0};
+  mutable bool shadowCascadeDrawCommandCacheValid_{false};
 };
 
 }  // namespace container::renderer

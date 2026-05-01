@@ -8,6 +8,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/RenderPassManager.cpp
     renderer/OitManager.cpp
     renderer/DebugOverlayRenderer.cpp
+    renderer/DebugUiPresenter.cpp
     renderer/FrameResourceManager.cpp
     renderer/SceneController.cpp
     renderer/CameraController.cpp
@@ -17,6 +18,8 @@ add_library(VulkanSceneRenderer_renderer
     renderer/GraphicsPipelineBuilder.cpp
     renderer/FrameRecorder.cpp
     renderer/RenderGraph.cpp
+    renderer/RenderPassGpuProfiler.cpp
+    renderer/RendererTelemetry.cpp
     renderer/VulkanContextInitializer.cpp
     renderer/WindowInputBridge.cpp
     renderer/CommandBufferManager.cpp

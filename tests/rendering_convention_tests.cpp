@@ -483,7 +483,7 @@ TEST(RenderingConventionTests, NormalValidationUsesSceneCullVariants) {
                        "normal_validation_front_cull_pipeline"));
   EXPECT_TRUE(contains(pipelineBuilder, "normal_validation_no_cull_pipeline"));
   EXPECT_TRUE(contains(frameRecorder,
-                       "p.opaqueWindingFlippedDrawCommands"));
+                       "p.draws.opaqueWindingFlippedDrawCommands"));
   EXPECT_TRUE(contains(frameRecorder,
                        "normalValidationFrontCullPipeline"));
   EXPECT_TRUE(contains(frameRecorder, "normalValidationNoCullPipeline"));
@@ -953,12 +953,28 @@ TEST(RenderingConventionTests, DeferredPointLightsUseMaterialFlagsForThinSurface
 TEST(RenderingConventionTests, MaterialOverviewLoadsMetadataWithoutFiltering) {
   const std::string postProcess = readRepoTextFile("shaders/post_process.slang");
 
-  EXPECT_TRUE(contains(postProcess, "float2 panelUV = RectUV(screenUV, materialInner);"));
-  EXPECT_TRUE(contains(postProcess, "uint2 panelPixel"));
+  EXPECT_TRUE(contains(postProcess, "else if (slot == 3u) panelMode = 3u;"));
+  EXPECT_TRUE(contains(postProcess, "uint2 panelPixel = TexturePixelFromUV(panelUV, width, height);"));
   EXPECT_TRUE(contains(postProcess,
-                       "gMaterialTexture.Load(int3(panelPixel, 0))"));
+                       "DebugTextureViewColor(panelMode, panelUV, panelPixel"));
+  EXPECT_TRUE(contains(postProcess,
+                       "gMaterialTexture.Load(int3(pixelCoord, 0))"));
   EXPECT_EQ(postProcess.find("gMaterialTexture.SampleLevel(gBufferSampler, panelUV, 0.0)"),
             std::string::npos);
+}
+
+TEST(RenderingConventionTests, OverviewViewIncludesAllTextureDebugPanels) {
+  const std::string postProcess = readRepoTextFile("shaders/post_process.slang");
+
+  EXPECT_TRUE(contains(postProcess, "static const uint OVERVIEW_COLUMNS = 3u"));
+  EXPECT_TRUE(contains(postProcess, "static const uint OVERVIEW_ROWS = 4u"));
+  EXPECT_TRUE(contains(postProcess, "else if (slot == 6u) panelMode = 6u;"));
+  EXPECT_TRUE(contains(postProcess, "else if (slot == 7u) panelMode = 7u;"));
+  EXPECT_TRUE(contains(postProcess, "else if (slot == 8u) panelMode = 11u;"));
+  EXPECT_TRUE(contains(postProcess, "else if (slot == 9u) panelMode = 12u;"));
+  EXPECT_TRUE(contains(postProcess, "else if (slot == 10u) panelMode = 13u;"));
+  EXPECT_TRUE(contains(postProcess, "else if (slot == 11u) panelMode = 14u;"));
+  EXPECT_TRUE(contains(postProcess, "DebugTextureViewColor(panelMode, panelUV, panelPixel"));
 }
 
 TEST(RenderingConventionTests, GBufferMaterialMetadataRoundTripsWithinCapacity) {
@@ -1227,7 +1243,7 @@ TEST(RenderingConventionTests, PostProcessShaderUsesExposurePushConstant) {
   EXPECT_NE(postProcess.find("pc.maxExposure"), std::string::npos);
   EXPECT_NE(postProcess.find("finalHdr * resolvedExposure"),
             std::string::npos);
-  EXPECT_NE(postProcess.find("litColor *= resolvedExposure"),
+  EXPECT_NE(postProcess.find("compositedColor * resolvedExposure"),
             std::string::npos);
   EXPECT_NE(postProcess.find("overviewCompositedColor * resolvedExposure"),
             std::string::npos);
@@ -1469,7 +1485,9 @@ TEST(RenderingConventionTests, ShadowRasterDepthBiasIsDynamicFrameSetting) {
   EXPECT_TRUE(contains(sceneData, "float rasterSlopeBias{-1.5f}"));
   EXPECT_TRUE(contains(frameRecorderHeader,
                        "container::gpu::ShadowSettings"));
-  EXPECT_TRUE(contains(rendererFrontend, "p.shadowSettings = subs_.guiManager"));
+  EXPECT_TRUE(contains(rendererFrontend, "p.shadows.shadowSettings"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "subs_.guiManager ? subs_.guiManager->shadowSettings()"));
   EXPECT_TRUE(contains(rendererFrontend,
                        ": container::gpu::ShadowSettings{}"));
 
@@ -1482,8 +1500,10 @@ TEST(RenderingConventionTests, ShadowRasterDepthBiasIsDynamicFrameSetting) {
   EXPECT_TRUE(contains(pipelineBuilder, "sdPCI.pDynamicState       = &shadowDynState"));
 
   EXPECT_TRUE(contains(frameRecorder, "vkCmdSetDepthBias(cmd"));
-  EXPECT_TRUE(contains(frameRecorder, "p.shadowSettings.rasterConstantBias"));
-  EXPECT_TRUE(contains(frameRecorder, "p.shadowSettings.rasterSlopeBias"));
+  EXPECT_TRUE(contains(frameRecorder,
+                       "p.shadows.shadowSettings.rasterConstantBias"));
+  EXPECT_TRUE(contains(frameRecorder,
+                       "p.shadows.shadowSettings.rasterSlopeBias"));
 
   EXPECT_TRUE(contains(guiManager, "\"Raster Constant Bias\""));
   EXPECT_TRUE(contains(guiManager, "&shadowSettings_.rasterConstantBias"));
@@ -1658,6 +1678,7 @@ TEST(RenderingConventionTests, DefaultConfigUsesRuntimeSponzaScene) {
 
   EXPECT_EQ(config.modelPath, container::app::kDefaultModelRelativePath);
   EXPECT_NE(config.modelPath, container::app::kDefaultSceneModelToken);
+  EXPECT_FALSE(config.enableValidationLayers);
 }
 
 TEST(RenderingConventionTests, DefaultSceneModelListContainsTriangleCubeAndSphere) {

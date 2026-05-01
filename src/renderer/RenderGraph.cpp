@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <limits>
 #include <stdexcept>
@@ -83,6 +84,7 @@ static_assert(kRenderResourceNames.size() == kRenderResourceIdCount);
 
 constexpr std::array<RenderPassId, 0> kNoDependencies{};
 constexpr std::array<RenderResourceId, 0> kNoResources{};
+constexpr std::array<RenderResourceTransition, 0> kNoTransitions{};
 constexpr std::array kHiZDependencies{RenderPassId::DepthPrepass};
 constexpr std::array kOcclusionDependencies{
     RenderPassId::FrustumCull,
@@ -341,6 +343,35 @@ constexpr std::array kPostProcessWrites{
     RenderResourceId::SwapchainImage,
 };
 
+constexpr std::array<RenderResourceTransition, 2> kHiZTransitions{{
+    {RenderResourceId::SceneDepth,
+     RenderResourceState::DepthStencilAttachment,
+     RenderResourceState::DepthStencilReadOnly},
+    {RenderResourceId::SceneDepth,
+     RenderResourceState::DepthStencilReadOnly,
+     RenderResourceState::DepthStencilAttachment},
+}};
+constexpr std::array<RenderResourceTransition, 1> kDepthToReadOnlyTransitions{{
+    {RenderResourceId::SceneDepth,
+     RenderResourceState::DepthStencilAttachment,
+     RenderResourceState::DepthStencilReadOnly},
+}};
+constexpr std::array<RenderResourceTransition, 1> kExposureAdaptationTransitions{{
+    {RenderResourceId::SceneColor,
+     RenderResourceState::ColorAttachment,
+     RenderResourceState::ShaderRead},
+}};
+constexpr std::array<RenderResourceTransition, 1> kBloomTransitions{{
+    {RenderResourceId::SceneColor,
+     RenderResourceState::ColorAttachment,
+     RenderResourceState::ShaderRead},
+}};
+constexpr std::array<RenderResourceTransition, 1> kPostProcessTransitions{{
+    {RenderResourceId::SwapchainImage,
+     RenderResourceState::Present,
+     RenderResourceState::ColorAttachment},
+}};
+
 bool isValidId(RenderPassId id) {
   return static_cast<size_t>(id) < kRenderPassIdCount;
 }
@@ -414,6 +445,18 @@ void validateReadAccessOverlap(
         "render graph pass " + std::string(renderPassName(passId)) +
         " declares " + std::string(renderResourceName(read)) +
         " as both required and optional read");
+  }
+}
+
+void validateResourceTransitions(
+    RenderPassId passId,
+    std::span<const RenderResourceTransition> transitions) {
+  for (const RenderResourceTransition& transition : transitions) {
+    if (isValidResource(transition.resource)) continue;
+
+    throw std::runtime_error(
+        "render graph pass " + std::string(renderPassName(passId)) +
+        " declares invalid transition resource");
   }
 }
 
@@ -657,6 +700,46 @@ std::span<const RenderResourceId> renderPassResourceWrites(RenderPassId id) {
   }
 }
 
+std::span<const RenderResourceTransition> renderPassResourceTransitions(
+    RenderPassId id) {
+  switch (id) {
+    case RenderPassId::HiZGenerate:
+      return kHiZTransitions;
+    case RenderPassId::DepthToReadOnly:
+      return kDepthToReadOnlyTransitions;
+    case RenderPassId::ExposureAdaptation:
+      return kExposureAdaptationTransitions;
+    case RenderPassId::Bloom:
+      return kBloomTransitions;
+    case RenderPassId::PostProcess:
+      return kPostProcessTransitions;
+    default:
+      return kNoTransitions;
+  }
+}
+
+std::string_view renderResourceStateName(RenderResourceState state) {
+  switch (state) {
+    case RenderResourceState::Undefined:
+      return "undefined";
+    case RenderResourceState::ColorAttachment:
+      return "color attachment";
+    case RenderResourceState::DepthStencilAttachment:
+      return "depth/stencil attachment";
+    case RenderResourceState::DepthStencilReadOnly:
+      return "depth/stencil read-only";
+    case RenderResourceState::ShaderRead:
+      return "shader read";
+    case RenderResourceState::ShaderWrite:
+      return "shader write";
+    case RenderResourceState::TransferRead:
+      return "transfer read";
+    case RenderResourceState::Present:
+      return "present";
+  }
+  return {};
+}
+
 std::string_view renderPassSkipReasonName(RenderPassSkipReason reason) {
   switch (reason) {
     case RenderPassSkipReason::None:
@@ -720,10 +803,12 @@ const RenderPassNode& RenderGraph::addPass(
   const auto reads = renderPassResourceReads(id);
   const auto optionalReads = renderPassOptionalResourceReads(id);
   const auto writes = renderPassResourceWrites(id);
+  const auto transitions = renderPassResourceTransitions(id);
   validateResourceAccess(id, "read", reads);
   validateResourceAccess(id, "optional read", optionalReads);
   validateResourceAccess(id, "write", writes);
   validateReadAccessOverlap(id, reads, optionalReads);
+  validateResourceTransitions(id, transitions);
 
   passes_.push_back({
       id,
@@ -733,6 +818,8 @@ const RenderPassNode& RenderGraph::addPass(
       std::vector<RenderResourceId>(reads.begin(), reads.end()),
       std::vector<RenderResourceId>(optionalReads.begin(), optionalReads.end()),
       std::vector<RenderResourceId>(writes.begin(), writes.end()),
+      std::vector<RenderResourceTransition>(
+          transitions.begin(), transitions.end()),
       true,
       std::move(fn)});
   if (isValidId(id)) {
@@ -815,13 +902,30 @@ void RenderGraph::compile() {
 
 void RenderGraph::execute(VkCommandBuffer cmd,
                           const FrameRecordParams& params) const {
+  execute(cmd, params, RenderPassExecutionHooks{});
+}
+
+void RenderGraph::execute(VkCommandBuffer cmd,
+                          const FrameRecordParams& params,
+                          const RenderPassExecutionHooks& hooks) const {
   ensureActivePlan();
 
   const std::vector<uint32_t> executionOrder = activeExecutionOrder_;
   for (uint32_t index : executionOrder) {
     const auto& pass = passes_[index];
     if (pass.record) {
+      if (hooks.beginPass) {
+        hooks.beginPass(pass.id, cmd);
+      }
+      const auto start = std::chrono::steady_clock::now();
       pass.record(cmd, params);
+      if (hooks.endPass) {
+        const auto elapsed =
+            std::chrono::duration<float, std::milli>(
+                std::chrono::steady_clock::now() - start)
+                .count();
+        hooks.endPass(pass.id, cmd, elapsed);
+      }
     }
   }
 }
@@ -900,6 +1004,26 @@ bool RenderGraph::setPassResourceAccess(
   pass->writes.assign(writes.begin(), writes.end());
   executionOrderDirty_ = true;
   activePlanDirty_ = true;
+  return true;
+}
+
+bool RenderGraph::setPassResourceTransitions(
+    RenderPassId id,
+    std::initializer_list<RenderResourceTransition> transitions) {
+  return setPassResourceTransitions(
+      id,
+      std::span<const RenderResourceTransition>(
+          transitions.begin(), transitions.size()));
+}
+
+bool RenderGraph::setPassResourceTransitions(
+    RenderPassId id,
+    std::span<const RenderResourceTransition> transitions) {
+  RenderPassNode* pass = mutablePass(id);
+  if (pass == nullptr) return false;
+
+  validateResourceTransitions(id, transitions);
+  pass->transitions.assign(transitions.begin(), transitions.end());
   return true;
 }
 

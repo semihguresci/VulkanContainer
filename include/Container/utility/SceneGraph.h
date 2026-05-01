@@ -37,6 +37,7 @@ class SceneGraph {
   [[nodiscard]] const SceneNode* getNode(uint32_t nodeIndex) const;
   [[nodiscard]] SceneNode* getNode(uint32_t nodeIndex);
   [[nodiscard]] size_t nodeCount() const { return nodes_.size(); }
+  [[nodiscard]] uint64_t revision() const { return revision_; }
 
  private:
   [[nodiscard]] bool isDescendant(uint32_t ancestor,
@@ -48,6 +49,7 @@ class SceneGraph {
   std::vector<SceneNode> nodes_{};
   std::vector<uint32_t> roots_{};
   std::vector<uint32_t> renderableNodes_{};
+  uint64_t revision_{0};
 };
 
 }  // namespace container::scene

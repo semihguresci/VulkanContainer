@@ -14,6 +14,7 @@ uint32_t SceneGraph::createNode(const glm::mat4& localTransform,
   if (renderable) {
     renderableNodes_.push_back(nodeIndex);
   }
+  ++revision_;
   return nodeIndex;
 }
 
@@ -30,6 +31,12 @@ void SceneGraph::setParent(uint32_t child, std::optional<uint32_t> parentIndex) 
   }
 
   SceneNode& childNode = nodes_[child];
+  const uint32_t newParent =
+      parentIndex.has_value() ? parentIndex.value() : kInvalidNode;
+  if (childNode.parent == newParent) {
+    return;
+  }
+
   if (childNode.parent != kInvalidNode) {
     auto& siblings = nodes_[childNode.parent].children;
     std::erase(siblings, child);
@@ -44,6 +51,7 @@ void SceneGraph::setParent(uint32_t child, std::optional<uint32_t> parentIndex) 
     childNode.parent = kInvalidNode;
     roots_.push_back(child);
   }
+  ++revision_;
 }
 
 bool SceneGraph::isDescendant(uint32_t ancestor, uint32_t candidate) const {
@@ -60,17 +68,21 @@ bool SceneGraph::isDescendant(uint32_t ancestor, uint32_t candidate) const {
 void SceneGraph::setLocalTransform(uint32_t nodeIndex,
                                    const glm::mat4& localTransform) {
   if (nodeIndex >= nodes_.size()) return;
+  if (nodes_[nodeIndex].localTransform == localTransform) return;
   nodes_[nodeIndex].localTransform = localTransform;
+  ++revision_;
 }
 
 void SceneGraph::setRenderable(uint32_t nodeIndex, bool renderable) {
   if (nodeIndex >= nodes_.size()) return;
+  if (nodes_[nodeIndex].renderable == renderable) return;
   nodes_[nodeIndex].renderable = renderable;
   if (renderable) {
     registerRenderable(nodeIndex);
   } else {
     unregisterRenderable(nodeIndex);
   }
+  ++revision_;
 }
 
 void SceneGraph::updateWorldTransforms() {

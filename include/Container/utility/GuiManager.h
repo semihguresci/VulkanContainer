@@ -9,6 +9,7 @@
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonMath.h"
 
+#include "Container/renderer/RendererTelemetry.h"
 #include "Container/utility/SceneData.h"
 
 struct GLFWwindow;
@@ -132,6 +133,8 @@ class GuiManager {
                                 bool wideLineSupported);
   void setCullStats(uint32_t total, uint32_t frustumPassed, uint32_t occlusionPassed);
   void setLightCullingStats(const container::gpu::LightCullingStats& stats);
+  void setRendererTelemetry(
+      const container::renderer::RendererTelemetryView& telemetry);
   void setLightingSettings(const container::gpu::LightingSettings& settings);
   [[nodiscard]] const container::gpu::LightingSettings& lightingSettings() const {
     return lightingSettings_;
@@ -165,6 +168,7 @@ class GuiManager {
  private:
   void ensureInitialized() const;
   void discoverSampleModels();
+  void drawRendererTelemetryWindow();
   [[nodiscard]] int sampleModelIndexForPath(const std::string& path) const;
 
   struct SampleModelOption {
@@ -196,6 +200,7 @@ class GuiManager {
   uint32_t cullStatsFrustum_{0};
   uint32_t cullStatsOcclusion_{0};
   container::gpu::LightCullingStats lightCullingStats_{};
+  container::renderer::RendererTelemetryView rendererTelemetry_{};
   container::gpu::LightingSettings lightingSettings_{};
   container::gpu::ShadowSettings shadowSettings_{};
   bool freezeCulling_{false};

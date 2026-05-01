@@ -2,13 +2,64 @@
 #include "Container/utility/SwapChainManager.h"  // FindQueueFamilies, QuerySwapChainSupport
 
 #include <array>
+#include <algorithm>
 #include <cstring>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace container::gpu {
+
+namespace {
+
+std::vector<VkExtensionProperties> enumerateDeviceExtensions(
+    VkPhysicalDevice device) {
+  uint32_t extensionCount = 0;
+  VkResult res = vkEnumerateDeviceExtensionProperties(device, nullptr,
+                                                      &extensionCount, nullptr);
+  if (res != VK_SUCCESS) {
+    return {};
+  }
+
+  std::vector<VkExtensionProperties> availableExtensions(extensionCount);
+  res = vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
+                                             availableExtensions.data());
+  if (res != VK_SUCCESS) {
+    return {};
+  }
+  return availableExtensions;
+}
+
+bool hasExtension(std::span<const VkExtensionProperties> extensions,
+                  const char* name) {
+  return std::ranges::any_of(extensions, [name](const auto& extension) {
+    return std::strcmp(extension.extensionName, name) == 0;
+  });
+}
+
+bool hasExtensionName(const std::vector<const char*>& extensions,
+                      const char* name) {
+  return std::ranges::any_of(extensions, [name](const char* extension) {
+    return extension != nullptr && std::strcmp(extension, name) == 0;
+  });
+}
+
+bool supportsPerformanceQueryFeature(VkPhysicalDevice device) {
+  VkPhysicalDevicePerformanceQueryFeaturesKHR performanceFeatures{};
+  performanceFeatures.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PERFORMANCE_QUERY_FEATURES_KHR;
+
+  VkPhysicalDeviceFeatures2 features2{};
+  features2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+  features2.pNext = &performanceFeatures;
+  vkGetPhysicalDeviceFeatures2(device, &features2);
+
+  return performanceFeatures.performanceCounterQueryPools == VK_TRUE;
+}
+
+}  // namespace
 
 VulkanDevice::VulkanDevice(VkInstance instance, VkSurfaceKHR surface,
                            const DeviceCreateInfo& createInfo)
@@ -95,17 +146,58 @@ void VulkanDevice::createLogicalDevice() {
 
   std::memcpy(&enabledFeatures_, enabledArr.data(), sizeof(VkPhysicalDeviceFeatures));
 
+  const std::vector<VkExtensionProperties> availableExtensions =
+      enumerateDeviceExtensions(physicalDevice_);
+  std::vector<const char*> enabledExtensions;
+  enabledExtensions.reserve(createInfo_.requiredExtensions.size() +
+                            createInfo_.optionalExtensions.size());
+  const auto addEnabledExtension = [&enabledExtensions](const char* name) {
+    if (name == nullptr || hasExtensionName(enabledExtensions, name)) {
+      return;
+    }
+    enabledExtensions.push_back(name);
+  };
+
+  for (const char* requiredExtension : createInfo_.requiredExtensions) {
+    addEnabledExtension(requiredExtension);
+  }
+
+  bool enablePerformanceQuery = false;
+  for (const char* optionalExtension : createInfo_.optionalExtensions) {
+    if (optionalExtension == nullptr) {
+      continue;
+    }
+    if (!hasExtension(availableExtensions, optionalExtension)) {
+      continue;
+    }
+    if (std::strcmp(optionalExtension,
+                    VK_KHR_PERFORMANCE_QUERY_EXTENSION_NAME) == 0) {
+      if (!supportsPerformanceQueryFeature(physicalDevice_)) {
+        continue;
+      }
+      enablePerformanceQuery = true;
+    }
+    addEnabledExtension(optionalExtension);
+  }
+
+  VkPhysicalDevicePerformanceQueryFeaturesKHR performanceQueryFeatures{};
+  performanceQueryFeatures.sType =
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PERFORMANCE_QUERY_FEATURES_KHR;
+  performanceQueryFeatures.performanceCounterQueryPools =
+      enablePerformanceQuery ? VK_TRUE : VK_FALSE;
+  performanceQueryFeatures.pNext = const_cast<void*>(createInfo_.next);
+
   VkDeviceCreateInfo deviceCreateInfo{};
   deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
   deviceCreateInfo.queueCreateInfoCount =
       static_cast<uint32_t>(queueCreateInfos.size());
   deviceCreateInfo.pQueueCreateInfos = queueCreateInfos.data();
   deviceCreateInfo.pEnabledFeatures = &enabledFeatures_;
-  deviceCreateInfo.pNext = createInfo_.next;
+  deviceCreateInfo.pNext =
+      enablePerformanceQuery ? &performanceQueryFeatures : createInfo_.next;
   deviceCreateInfo.enabledExtensionCount =
-      static_cast<uint32_t>(createInfo_.requiredExtensions.size());
-  deviceCreateInfo.ppEnabledExtensionNames =
-      createInfo_.requiredExtensions.data();
+      static_cast<uint32_t>(enabledExtensions.size());
+  deviceCreateInfo.ppEnabledExtensionNames = enabledExtensions.data();
 
   if (createInfo_.enableValidationLayers) {
     deviceCreateInfo.enabledLayerCount =
@@ -148,19 +240,9 @@ bool VulkanDevice::isDeviceSuitable(VkPhysicalDevice device) const {
 }
 
 bool VulkanDevice::checkDeviceExtensionSupport(VkPhysicalDevice device) const {
-  uint32_t extensionCount = 0;
-  VkResult res = vkEnumerateDeviceExtensionProperties(device, nullptr,
-                                                      &extensionCount, nullptr);
-
-  if (res != VK_SUCCESS) {
-    return false;
-  }
-
-  std::vector<VkExtensionProperties> availableExtensions(extensionCount);
-  res = vkEnumerateDeviceExtensionProperties(device, nullptr, &extensionCount,
-                                             availableExtensions.data());
-
-  if (res != VK_SUCCESS) {
+  const std::vector<VkExtensionProperties> availableExtensions =
+      enumerateDeviceExtensions(device);
+  if (availableExtensions.empty()) {
     return false;
   }
 

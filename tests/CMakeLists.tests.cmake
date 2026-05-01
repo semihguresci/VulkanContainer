@@ -122,6 +122,11 @@ add_custom_test(render_graph_tests
     VulkanSceneRenderer_renderer
 )
 
+add_custom_test(renderer_telemetry_tests
+    ${TESTS_DIR}/renderer_telemetry_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
 # ── Tests that need Vulkan / windowing runtime ───────────────────────────────
 
 if(ENABLE_WINDOWED_TESTS)

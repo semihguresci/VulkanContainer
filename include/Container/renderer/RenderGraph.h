@@ -94,6 +94,23 @@ struct RenderResourceEdge {
   RenderPassId     reader{RenderPassId::Invalid};
 };
 
+enum class RenderResourceState : uint8_t {
+  Undefined,
+  ColorAttachment,
+  DepthStencilAttachment,
+  DepthStencilReadOnly,
+  ShaderRead,
+  ShaderWrite,
+  TransferRead,
+  Present,
+};
+
+struct RenderResourceTransition {
+  RenderResourceId    resource{RenderResourceId::Invalid};
+  RenderResourceState before{RenderResourceState::Undefined};
+  RenderResourceState after{RenderResourceState::Undefined};
+};
+
 enum class RenderPassSkipReason : uint8_t {
   None,
   Disabled,
@@ -122,6 +139,8 @@ struct RenderPassExecutionStatus {
 [[nodiscard]] std::span<const RenderResourceId> renderPassResourceReads(RenderPassId id);
 [[nodiscard]] std::span<const RenderResourceId> renderPassOptionalResourceReads(RenderPassId id);
 [[nodiscard]] std::span<const RenderResourceId> renderPassResourceWrites(RenderPassId id);
+[[nodiscard]] std::span<const RenderResourceTransition> renderPassResourceTransitions(RenderPassId id);
+[[nodiscard]] std::string_view renderResourceStateName(RenderResourceState state);
 [[nodiscard]] std::string_view renderPassSkipReasonName(RenderPassSkipReason reason);
 [[nodiscard]] std::span<const RenderPassId> shadowCullPassIds();
 [[nodiscard]] std::span<const RenderPassId> shadowCascadePassIds();
@@ -135,6 +154,7 @@ struct RenderPassNode {
   std::vector<RenderResourceId> reads;
   std::vector<RenderResourceId> optionalReads;
   std::vector<RenderResourceId> writes;
+  std::vector<RenderResourceTransition> transitions;
   bool         enabled{true};
 
   // The recording callback. Receives the command buffer and the current
@@ -143,13 +163,18 @@ struct RenderPassNode {
   RecordFn record;
 };
 
+struct RenderPassExecutionHooks {
+  std::function<void(RenderPassId, VkCommandBuffer)> beginPass;
+  std::function<void(RenderPassId, VkCommandBuffer, float)> endPass;
+};
+
 // Ordered sequence of render pass nodes.
 // Nodes are scheduled from their dependency edges; disabled nodes are skipped.
 //
-// The graph performs dependency validation and topological sorting, but it does
-// not perform automatic resource lifetime or barrier insertion. FrameRecorder
-// still keeps Vulkan image layout transitions close to the concrete passes that
-// need them.
+// The graph performs dependency validation, topological sorting, and owns the
+// pass-level resource transition intent. FrameRecorder still emits the concrete
+// Vulkan barriers while the transition executor is kept close to pass-specific
+// attachment handles.
 class RenderGraph {
  public:
   RenderGraph();
@@ -173,6 +198,9 @@ class RenderGraph {
 
   // Execute all enabled passes in dependency order.
   void execute(VkCommandBuffer cmd, const FrameRecordParams& params) const;
+  void execute(VkCommandBuffer cmd,
+               const FrameRecordParams& params,
+               const RenderPassExecutionHooks& hooks) const;
 
   // Update a pass toggle and invalidate the active execution plan when it
   // changes. Returns false when the pass is not registered.
@@ -194,6 +222,12 @@ class RenderGraph {
       std::span<const RenderResourceId> reads,
       std::span<const RenderResourceId> optionalReads,
       std::span<const RenderResourceId> writes);
+  bool setPassResourceTransitions(
+      RenderPassId id,
+      std::initializer_list<RenderResourceTransition> transitions);
+  bool setPassResourceTransitions(
+      RenderPassId id,
+      std::span<const RenderResourceTransition> transitions);
 
   // Access a pass by stable ID. Returns nullptr when the graph has not
   // registered that pass.

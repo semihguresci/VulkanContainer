@@ -241,6 +241,29 @@ void CheckVkResult(VkResult result) {
   }
 }
 
+constexpr size_t TelemetryPhaseIndex(
+    container::renderer::RendererTelemetryPhase phase) {
+  return static_cast<size_t>(phase);
+}
+
+float TelemetryPhaseMs(
+    const container::renderer::RendererTelemetrySnapshot& snapshot,
+    container::renderer::RendererTelemetryPhase phase) {
+  if (phase == container::renderer::RendererTelemetryPhase::Count) {
+    return 0.0f;
+  }
+  return snapshot.timing.cpuMs[TelemetryPhaseIndex(phase)];
+}
+
+float PercentOf(float value, float total) {
+  return total > 0.0f ? (value / total) * 100.0f : 0.0f;
+}
+
+void ImGuiTextStringView(const char* label, std::string_view value) {
+  ImGui::Text("%s: %.*s", label, static_cast<int>(value.size()),
+              value.data());
+}
+
 bool DrawTransformControls(const char* label,
                            TransformControls& transform,
                            float dragSpeed = 0.05f) {
@@ -894,6 +917,272 @@ void GuiManager::drawSceneControls(
   }
 
   ImGui::End();
+
+  drawRendererTelemetryWindow();
+}
+
+void GuiManager::drawRendererTelemetryWindow() {
+  if (!initialized_) return;
+
+  const auto& telemetry = rendererTelemetry_;
+  if (!ImGui::Begin("Renderer Telemetry")) {
+    ImGui::End();
+    return;
+  }
+
+  const auto& latest = telemetry.latest;
+  if (!latest.valid) {
+    ImGui::TextDisabled("No renderer telemetry captured yet");
+    ImGui::End();
+    return;
+  }
+
+  const float frameMs = TelemetryPhaseMs(
+      latest, container::renderer::RendererTelemetryPhase::Frame);
+  const float fps = frameMs > 0.0f ? 1000.0f / frameMs : 0.0f;
+  const float gpuKnownMs = latest.timing.gpuKnownMs;
+
+  if (ImGui::BeginTable("TelemetrySummary", 4,
+                        ImGuiTableFlags_BordersInnerV |
+                            ImGuiTableFlags_SizingStretchSame)) {
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("FPS");
+    ImGui::Text("%.1f", fps);
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("CPU frame");
+    ImGui::Text("%.3f ms", frameMs);
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("GPU known");
+    ImGui::Text("%.3f ms", gpuKnownMs);
+    ImGui::TableNextColumn();
+    ImGui::TextDisabled("CPU p95");
+    ImGui::Text("%.3f ms", telemetry.summary.p95CpuFrameMs);
+    ImGui::EndTable();
+  }
+
+  ImGui::Text("Frame: %llu  Image: %u  Slot: %u / %u",
+              static_cast<unsigned long long>(latest.frameIndex),
+              latest.imageIndex, latest.sync.frameSlot,
+              latest.sync.maxFramesInFlight);
+  ImGuiTextStringView(
+      "GPU timing source",
+      container::renderer::rendererGpuTimingSourceName(
+          latest.timing.gpuSource));
+  ImGui::Text("GPU profiler: %s",
+              latest.gpuProfiler.available ? "available" : "unavailable");
+  if (latest.gpuProfiler.resultLatencyFrames > 0u) {
+    ImGui::Text("GPU result latency: %u frame",
+                latest.gpuProfiler.resultLatencyFrames);
+  }
+  if (!latest.gpuProfiler.status.empty()) {
+    ImGui::TextWrapped("%s", latest.gpuProfiler.status.c_str());
+  }
+  ImGui::Text("Swapchain: %ux%u, %u images",
+              latest.resources.swapchainWidth,
+              latest.resources.swapchainHeight,
+              latest.resources.swapchainImageCount);
+  if (latest.sync.serializedConcurrency) {
+    ImGui::TextColored(ImVec4(1.0f, 0.68f, 0.22f, 1.0f),
+                       "Concurrency: serialized");
+    if (!latest.sync.concurrencyReason.empty()) {
+      ImGui::TextWrapped("%s", latest.sync.concurrencyReason.c_str());
+    }
+  } else {
+    ImGui::Text("Concurrency: current frame fence");
+  }
+
+  if (!telemetry.history.empty()) {
+    std::vector<float> cpuHistory;
+    std::vector<float> gpuHistory;
+    cpuHistory.reserve(telemetry.history.size());
+    gpuHistory.reserve(telemetry.history.size());
+    for (const auto& sample : telemetry.history) {
+      cpuHistory.push_back(sample.cpuFrameMs);
+      gpuHistory.push_back(sample.gpuKnownMs);
+    }
+
+    const float cpuScaleMax =
+        std::max({16.67f, telemetry.summary.maxCpuFrameMs, frameMs});
+    ImGui::PlotLines("CPU frame ms", cpuHistory.data(),
+                     static_cast<int>(cpuHistory.size()), 0, nullptr, 0.0f,
+                     cpuScaleMax, ImVec2(0.0f, 72.0f));
+    const float gpuScaleMax =
+        std::max({1.0f, telemetry.summary.maxGpuKnownMs, gpuKnownMs});
+    ImGui::PlotLines("Known GPU ms", gpuHistory.data(),
+                     static_cast<int>(gpuHistory.size()), 0, nullptr, 0.0f,
+                     gpuScaleMax, ImVec2(0.0f, 72.0f));
+  }
+
+  if (ImGui::CollapsingHeader("CPU phases", ImGuiTreeNodeFlags_DefaultOpen)) {
+    static constexpr std::array<container::renderer::RendererTelemetryPhase, 12>
+        kPhases{{
+            container::renderer::RendererTelemetryPhase::WaitForFrame,
+            container::renderer::RendererTelemetryPhase::Readbacks,
+            container::renderer::RendererTelemetryPhase::AcquireImage,
+            container::renderer::RendererTelemetryPhase::ImageFenceWait,
+            container::renderer::RendererTelemetryPhase::ResourceGrowth,
+            container::renderer::RendererTelemetryPhase::Gui,
+            container::renderer::RendererTelemetryPhase::SceneUpdate,
+            container::renderer::RendererTelemetryPhase::DescriptorUpdate,
+            container::renderer::RendererTelemetryPhase::CommandRecord,
+            container::renderer::RendererTelemetryPhase::QueueSubmit,
+            container::renderer::RendererTelemetryPhase::Screenshot,
+            container::renderer::RendererTelemetryPhase::Present,
+        }};
+    static constexpr std::array<const char*, kPhases.size()> kLabels{{
+        "Frame wait",
+        "Readbacks",
+        "Acquire image",
+        "Image fence",
+        "Resource growth",
+        "GUI",
+        "Scene update",
+        "Descriptors",
+        "Command record",
+        "Queue submit",
+        "Screenshot",
+        "Present",
+    }};
+
+    if (ImGui::BeginTable("TelemetryCpuPhases", 3,
+                          ImGuiTableFlags_Borders |
+                              ImGuiTableFlags_RowBg |
+                              ImGuiTableFlags_SizingStretchProp)) {
+      ImGui::TableSetupColumn("Phase");
+      ImGui::TableSetupColumn("CPU ms");
+      ImGui::TableSetupColumn("Frame %");
+      ImGui::TableHeadersRow();
+      for (size_t i = 0; i < kPhases.size(); ++i) {
+        const float phaseMs = TelemetryPhaseMs(latest, kPhases[i]);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(kLabels[i]);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.3f", phaseMs);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.1f%%", PercentOf(phaseMs, frameMs));
+      }
+      ImGui::EndTable();
+    }
+  }
+
+  if (ImGui::CollapsingHeader("Workload and culling",
+                              ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Text("Objects: %u / capacity %u", latest.workload.objectCount,
+                latest.resources.objectBufferCapacity);
+    ImGui::Text("Draws: %u total, %u opaque, %u transparent",
+                latest.workload.totalDrawCount,
+                latest.workload.opaqueDrawCount,
+                latest.workload.transparentDrawCount);
+    ImGui::Text("OIT nodes: %u", latest.resources.oitNodeCapacity);
+
+    const uint32_t frustumCulled =
+        latest.culling.inputCount >= latest.culling.frustumPassedCount
+            ? latest.culling.inputCount - latest.culling.frustumPassedCount
+            : 0u;
+    const uint32_t occlusionCulled =
+        latest.culling.frustumPassedCount >=
+                latest.culling.occlusionPassedCount
+            ? latest.culling.frustumPassedCount -
+                  latest.culling.occlusionPassedCount
+            : 0u;
+    ImGui::Separator();
+    ImGui::Text("Culling");
+    ImGui::Text("Input: %u", latest.culling.inputCount);
+    ImGui::Text("Frustum passed: %u, culled: %u",
+                latest.culling.frustumPassedCount, frustumCulled);
+    ImGui::Text("Occlusion passed: %u, culled: %u",
+                latest.culling.occlusionPassedCount, occlusionCulled);
+
+    ImGui::Separator();
+    ImGui::Text("Lighting");
+    ImGui::Text("Submitted lights: %u", latest.lightCulling.submittedLights);
+    ImGui::Text("Active clusters: %u / %u",
+                latest.lightCulling.activeClusters,
+                latest.lightCulling.totalClusters);
+    ImGui::Text("Max lights per cluster: %u",
+                latest.lightCulling.maxLightsPerCluster);
+    ImGui::Text("Dropped light refs: %u",
+                latest.lightCulling.droppedLightReferences);
+    ImGui::Text("Cluster cull GPU: %.3f ms",
+                latest.lightCulling.clusterCullMs);
+    ImGui::Text("Clustered lighting GPU: %.3f ms",
+                latest.lightCulling.clusteredLightingMs);
+  }
+
+  if (ImGui::CollapsingHeader("Render graph",
+                              ImGuiTreeNodeFlags_DefaultOpen)) {
+    ImGui::Text("Passes: %u total, %u enabled, %u active, %u skipped",
+                latest.graph.totalPasses, latest.graph.enabledPasses,
+                latest.graph.activePasses, latest.graph.skippedPasses);
+    ImGui::Text("Timed passes: %u CPU, %u GPU",
+                latest.graph.cpuTimedPasses, latest.graph.gpuTimedPasses);
+    if (ImGui::BeginTable("TelemetryRenderGraph", 6,
+                          ImGuiTableFlags_Borders |
+                              ImGuiTableFlags_RowBg |
+                              ImGuiTableFlags_ScrollY,
+                          ImVec2(0.0f, 220.0f))) {
+      ImGui::TableSetupColumn("Pass");
+      ImGui::TableSetupColumn("Enabled");
+      ImGui::TableSetupColumn("State");
+      ImGui::TableSetupColumn("CPU ms");
+      ImGui::TableSetupColumn("Known GPU ms");
+      ImGui::TableSetupColumn("Blocker");
+      ImGui::TableHeadersRow();
+      for (const auto& pass : latest.passes) {
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(pass.name.c_str());
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(pass.enabled ? "yes" : "no");
+        ImGui::TableNextColumn();
+        if (pass.active) {
+          ImGui::TextColored(ImVec4(0.25f, 0.85f, 0.38f, 1.0f), "Active");
+        } else {
+          ImGui::TextColored(ImVec4(0.9f, 0.55f, 0.18f, 1.0f), "%s",
+                             pass.status.c_str());
+        }
+        ImGui::TableNextColumn();
+        ImGui::Text("%.3f", pass.cpuRecordMs);
+        ImGui::TableNextColumn();
+        if (pass.gpuTimed) {
+          ImGui::Text("%.3f", pass.gpuKnownMs);
+        } else {
+          ImGui::TextDisabled("-");
+        }
+        ImGui::TableNextColumn();
+        ImGui::TextUnformatted(pass.blocker.c_str());
+      }
+      ImGui::EndTable();
+    }
+  }
+
+  if (ImGui::CollapsingHeader("Synchronization")) {
+    ImGui::Text("Wait for frame: %.3f ms",
+                TelemetryPhaseMs(
+                    latest,
+                    container::renderer::RendererTelemetryPhase::WaitForFrame));
+    ImGui::Text("Image fence wait: %.3f ms",
+                TelemetryPhaseMs(
+                    latest,
+                    container::renderer::RendererTelemetryPhase::ImageFenceWait));
+    ImGui::Text("Acquire image: %.3f ms",
+                TelemetryPhaseMs(
+                    latest,
+                    container::renderer::RendererTelemetryPhase::AcquireImage));
+    ImGui::Text("Present: %.3f ms",
+                TelemetryPhaseMs(
+                    latest,
+                    container::renderer::RendererTelemetryPhase::Present));
+    ImGui::Text("Swapchain recreates: %llu",
+                static_cast<unsigned long long>(
+                    latest.sync.swapchainRecreateCount));
+    ImGui::Text("Device wait idle calls: %llu",
+                static_cast<unsigned long long>(
+                    latest.sync.deviceWaitIdleCount));
+  }
+
+  ImGui::End();
 }
 
 bool GuiManager::isCapturingInput() const {
@@ -926,6 +1215,11 @@ void GuiManager::setCullStats(uint32_t total, uint32_t frustumPassed,
 void GuiManager::setLightCullingStats(
     const container::gpu::LightCullingStats& stats) {
   lightCullingStats_ = stats;
+}
+
+void GuiManager::setRendererTelemetry(
+    const container::renderer::RendererTelemetryView& telemetry) {
+  rendererTelemetry_ = telemetry;
 }
 
 void GuiManager::setLightingSettings(

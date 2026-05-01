@@ -824,6 +824,28 @@ uint32_t SceneManager::resolveGpuMaterialIndex(uint32_t materialIndex) const {
   return 0;
 }
 
+MaterialRenderProperties SceneManager::materialRenderProperties(
+    uint32_t materialIndex) const {
+  MaterialRenderProperties properties{};
+  properties.gpuMaterialIndex = resolveGpuMaterialIndex(materialIndex);
+
+  const auto* material =
+      materialManager_.getMaterial(properties.gpuMaterialIndex);
+  if (material == nullptr) {
+    return properties;
+  }
+
+  properties.transparent =
+      material->alphaMode == container::material::AlphaMode::Blend;
+  properties.alphaMasked =
+      material->alphaMode == container::material::AlphaMode::Mask;
+  properties.doubleSided = material->doubleSided;
+  properties.specularGlossiness = material->specularGlossinessWorkflow;
+  properties.unlit = material->unlit;
+  properties.heightScale = material->heightScale;
+  return properties;
+}
+
 void SceneManager::initialize(const std::string& initialModelPath,
                               float importScale,
                               uint32_t descriptorSetCount) {

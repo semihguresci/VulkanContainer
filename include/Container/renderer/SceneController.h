@@ -143,6 +143,7 @@ class SceneController {
     return transparentDoubleSidedDrawCommands_;
   }
   const std::vector<container::gpu::ObjectData>&  objectData()              const { return objectData_; }
+  uint64_t objectDataRevision() const { return objectDataRevision_; }
 
   container::gpu::BufferSlice vertexSlice()         const { return vertexSlice_; }
   container::gpu::BufferSlice indexSlice()          const { return indexSlice_; }
@@ -156,6 +157,16 @@ class SceneController {
   const container::ecs::World& world() const;
 
  private:
+  struct PrimitiveBounds {
+    glm::vec3 center{0.0f};
+    float radius{0.0f};
+    bool valid{false};
+  };
+
+  void rebuildPrimitiveBoundsCache();
+  void invalidateObjectDataCache();
+  void refreshObjectDataCache(bool showDiagCube);
+
   std::shared_ptr<container::gpu::VulkanDevice>  device_;
   container::gpu::AllocationManager&             allocationManager_;
   container::gpu::PipelineManager&             pipelineManager_;
@@ -175,6 +186,13 @@ class SceneController {
   std::vector<DrawCommand>  transparentSingleSidedDrawCommands_;
   std::vector<DrawCommand>  transparentWindingFlippedDrawCommands_;
   std::vector<DrawCommand>  transparentDoubleSidedDrawCommands_;
+  std::vector<PrimitiveBounds> primitiveBounds_;
+
+  uint64_t cachedSceneGraphRevision_{std::numeric_limits<uint64_t>::max()};
+  uint64_t objectDataRevision_{0};
+  bool cachedShowDiagCube_{false};
+  bool objectDataCacheValid_{false};
+  bool objectBufferUploadDirty_{true};
 
   container::gpu::BufferSlice vertexSlice_{};
   container::gpu::BufferSlice indexSlice_{};

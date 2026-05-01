@@ -254,6 +254,244 @@ float EdgeDistance01(float2 uv)
     return min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
 }
 
+uint2 TexturePixelFromUV(float2 uv, uint width, uint height)
+{
+    uint2 maxPixel = uint2(max(width, 1u) - 1u, max(height, 1u) - 1u);
+    return min(uint2(saturate(uv) * float2(max(width, 1u), max(height, 1u))), maxPixel);
+}
+
+uint2 OitPixelFromUV(float2 uv)
+{
+    uint2 maxPixel = uint2(max(uOit.viewportWidth, 1u) - 1u,
+                           max(uOit.viewportHeight, 1u) - 1u);
+    return min(uint2(saturate(uv) * float2(max(uOit.viewportWidth, 1u),
+                                           max(uOit.viewportHeight, 1u))),
+               maxPixel);
+}
+
+float ViewDepthFromDeviceDepth(float depthSample)
+{
+    float n = pc.cameraNear;
+    float f = pc.cameraFar;
+    return (n * f) / (depthSample * (f - n) + n);
+}
+
+uint CascadeIndexForViewDepth(float viewZ)
+{
+    uint cascadeIndex = 3u;
+    for (uint i = 0u; i < 3u; ++i)
+    {
+        if (viewZ < pc.cascadeSplits[i])
+        {
+            cascadeIndex = i;
+            break;
+        }
+    }
+    return cascadeIndex;
+}
+
+float3 LitViewColor(float2 uv, uint2 pixelCoord, float resolvedExposure,
+                    bool oitAvailable)
+{
+    float3 litColor = sceneColorTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb;
+    float3 compositedColor = litColor;
+    if (oitAvailable)
+    {
+        OitResolveResult oit = ResolveOitPixel(pixelCoord, litColor);
+        compositedColor = oit.compositedColor;
+    }
+
+    if (pc.bloomEnabled != 0u)
+    {
+        float3 bloom = gBloomTexture.SampleLevel(bloomSampler, uv, 0.0).rgb;
+        compositedColor += bloom * pc.bloomIntensity;
+    }
+
+    return ToSwapchainLinear(ToneMapACES(compositedColor * resolvedExposure));
+}
+
+float3 ShadowCascadeViewColor(uint2 pixelCoord, float3 sceneRgb)
+{
+    float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
+    if (depthSample == 0.0)
+    {
+        return 0.0.xxx;
+    }
+
+    float viewZ = ViewDepthFromDeviceDepth(depthSample);
+
+    static const float3 cascadeColors[4] = {
+        float3(0.2, 0.8, 0.2),
+        float3(0.2, 0.5, 0.9),
+        float3(0.9, 0.7, 0.1),
+        float3(0.9, 0.2, 0.2),
+    };
+
+    uint cascadeIndex = CascadeIndexForViewDepth(viewZ);
+
+    float blendIndicator = 0.0;
+    if (cascadeIndex < 3u)
+    {
+        float splitDepth = pc.cascadeSplits[cascadeIndex];
+        float prevSplit = (cascadeIndex == 0u) ? 0.0 : pc.cascadeSplits[cascadeIndex - 1u];
+        float cascadeRange = splitDepth - prevSplit;
+        float blendFraction = clamp(uShadow.filterSettings.y, 0.0, 0.45);
+        float blendZone = cascadeRange * blendFraction;
+        float blendStart = splitDepth - blendZone;
+        if (viewZ > blendStart)
+        {
+            blendIndicator = saturate((viewZ - blendStart) / max(blendZone, 1e-6));
+        }
+    }
+
+    float3 color = cascadeColors[cascadeIndex];
+    if (blendIndicator > 0.0 && cascadeIndex < 3u)
+    {
+        color = lerp(color, cascadeColors[cascadeIndex + 1u], blendIndicator);
+    }
+
+    float3 sceneGray = dot(sceneRgb, float3(0.299, 0.587, 0.114)).xxx;
+    return sceneGray * 0.15 + color * 0.5;
+}
+
+float3 ShadowTexelDensityViewColor(uint2 pixelCoord)
+{
+    float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
+    if (depthSample == 0.0)
+    {
+        return 0.0.xxx;
+    }
+
+    uint cascadeIndex = CascadeIndexForViewDepth(ViewDepthFromDeviceDepth(depthSample));
+    float texelSize = max(uShadow.cascades[cascadeIndex].texelSize, 1e-6);
+    float texelsPerMeter = 1.0 / texelSize;
+    float density = saturate(log2(max(texelsPerMeter, 1e-4)) / 8.0);
+    return lerp(float3(0.05, 0.08, 0.14), float3(0.15, 0.8, 1.0), density);
+}
+
+float3 TileLightHeatViewColor(uint2 pixelCoord, uint width, uint height,
+                              float3 sceneRgb)
+{
+    if (pc.totalLights == 0u)
+    {
+        return 0.0.xxx;
+    }
+
+    static const uint TILE_SIZE = 16u;
+    float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
+
+    uint2 tileCoord = pixelCoord / TILE_SIZE;
+    uint safeDepthSliceCount = max(pc.depthSliceCount, 1u);
+    uint tileCountY = (height + TILE_SIZE - 1u) / TILE_SIZE;
+    uint sliceZ = DepthToClusterSlice(depthSample, pc.cameraNear, pc.cameraFar,
+                                      safeDepthSliceCount);
+    uint clusterIndex =
+        (sliceZ * tileCountY + tileCoord.y) * pc.tileCountX + tileCoord.x;
+    uint lightCount = uTileGrid[clusterIndex].count;
+
+    float maxLights = max(float(pc.totalLights), 1.0);
+    float t = saturate(float(lightCount) / maxLights);
+
+    float3 heatColor;
+    if (t < 0.2)
+    {
+        heatColor = lerp(float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 1.0), t / 0.2);
+    }
+    else if (t < 0.4)
+    {
+        heatColor = lerp(float3(0.0, 0.0, 1.0), float3(0.0, 1.0, 1.0), (t - 0.2) / 0.2);
+    }
+    else if (t < 0.6)
+    {
+        heatColor = lerp(float3(0.0, 1.0, 1.0), float3(0.0, 1.0, 0.0), (t - 0.4) / 0.2);
+    }
+    else if (t < 0.8)
+    {
+        heatColor = lerp(float3(0.0, 1.0, 0.0), float3(1.0, 1.0, 0.0), (t - 0.6) / 0.2);
+    }
+    else
+    {
+        heatColor = lerp(float3(1.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), (t - 0.8) / 0.2);
+    }
+
+    float3 sceneGray = dot(sceneRgb, float3(0.299, 0.587, 0.114)).xxx;
+    float3 result = sceneGray * 0.15 + heatColor * 0.65;
+    bool onTileBorder = (pixelCoord.x % TILE_SIZE == 0) || (pixelCoord.y % TILE_SIZE == 0);
+    return onTileBorder ? lerp(result, float3(0.3, 0.3, 0.3), 0.5) : result;
+}
+
+float3 DebugTextureViewColor(uint mode, float2 uv, uint2 pixelCoord,
+                             uint width, uint height, float resolvedExposure,
+                             bool oitAvailable)
+{
+    if (mode == 0u)
+    {
+        return LitViewColor(uv, pixelCoord, resolvedExposure, oitAvailable);
+    }
+    if (mode == 1u)
+    {
+        return gAlbedoTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb;
+    }
+    if (mode == 2u)
+    {
+        return NormalVisual(gNormalTexture.SampleLevel(gBufferSampler, uv, 0.0));
+    }
+    if (mode == 3u)
+    {
+        return MaterialVisual(gMaterialTexture.Load(int3(pixelCoord, 0)));
+    }
+    if (mode == 4u)
+    {
+        return DepthVisual(gDepthTexture.SampleLevel(gBufferSampler, uv, 0.0));
+    }
+    if (mode == 5u)
+    {
+        float3 emissive = gEmissiveTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb;
+        return ToSwapchainLinear(ToneMapACES(emissive * 2.0));
+    }
+    if (mode == 6u || mode == 7u)
+    {
+        if (!oitAvailable)
+        {
+            return 0.0.xxx;
+        }
+        OitResolveResult oit = ResolveOitPixel(pixelCoord, 0.0.xxx);
+        return mode == 6u ? oit.transparentColor : oit.revealage.xxx;
+    }
+    if (mode == 11u)
+    {
+        if (pc.cascadeSplits[0] <= 0.0)
+        {
+            return 0.0.xxx;
+        }
+        return ShadowCascadeViewColor(pixelCoord,
+                                      sceneColorTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb);
+    }
+    if (mode == 12u)
+    {
+        return TileLightHeatViewColor(pixelCoord, width, height,
+                                      sceneColorTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb);
+    }
+    if (mode == 13u)
+    {
+        if (pc.cascadeSplits[0] <= 0.0)
+        {
+            return 0.0.xxx;
+        }
+        return ShadowTexelDensityViewColor(pixelCoord);
+    }
+    if (mode == 14u)
+    {
+        if (pc.bloomEnabled == 0u)
+        {
+            return 0.0.xxx;
+        }
+        return ToSwapchainLinear(ToneMapACES(
+            gBloomTexture.SampleLevel(bloomSampler, uv, 0.0).rgb * max(pc.bloomIntensity, 1.0)));
+    }
+    return 0.0.xxx;
+}
+
 [shader("vertex")]
 VSOutput vertMain(uint vertexIndex : SV_VertexID)
 {
@@ -315,6 +553,10 @@ float4 fragMain(VSOutput input) : SV_Target0
 
     if (outputMode == 6u || outputMode == 7u)
     {
+        if (pc.oitEnabled == 0u)
+        {
+            return float4(0.0, 0.0, 0.0, 1.0);
+        }
         OitResolveResult oit = ResolveOitPixel(pixelCoord, 0.0.xxx);
         if (outputMode == 6u)
         {
@@ -340,114 +582,61 @@ float4 fragMain(VSOutput input) : SV_Target0
 
     if (outputMode == 8u)
     {
-        Rect centerRect = { float2(0.20, 0.18), float2(0.80, 0.82) };
-        Rect albedoRect = { float2(0.02, 0.68), float2(0.18, 0.92) };
-        Rect normalRect = { float2(0.82, 0.68), float2(0.98, 0.92) };
-        Rect materialRect = { float2(0.02, 0.08), float2(0.18, 0.32) };
-        Rect emissiveRect = { float2(0.82, 0.08), float2(0.98, 0.32) };
-        Rect depthRect = { float2(0.82, 0.36), float2(0.98, 0.64) };
-
+        Rect overviewRect = { float2(0.02, 0.04), float2(0.98, 0.96) };
         const float panelPadding = 0.006;
         const float3 panelBorderColor = float3(0.60, 0.62, 0.66);
         const float3 panelTileBackgroundColor = float3(0.12, 0.12, 0.13);
 
-        if (IsPanelBorder(screenUV, centerRect, panelPadding) ||
-            IsPanelBorder(screenUV, albedoRect, panelPadding) ||
-            IsPanelBorder(screenUV, normalRect, panelPadding) ||
-            IsPanelBorder(screenUV, materialRect, panelPadding) ||
-            IsPanelBorder(screenUV, emissiveRect, panelPadding) ||
-            IsPanelBorder(screenUV, depthRect, panelPadding))
+        if (InRect(screenUV, overviewRect))
         {
-            return float4(panelBorderColor, 1.0);
-        }
+            static const uint OVERVIEW_COLUMNS = 3u;
+            static const uint OVERVIEW_ROWS = 4u;
+            float2 gridUV = RectUV(screenUV, overviewRect);
+            uint column = min(uint(gridUV.x * float(OVERVIEW_COLUMNS)), OVERVIEW_COLUMNS - 1u);
+            uint row = min(uint(gridUV.y * float(OVERVIEW_ROWS)), OVERVIEW_ROWS - 1u);
+            uint slot = row * OVERVIEW_COLUMNS + column;
 
-        Rect centerInner = InsetRect(centerRect, panelPadding);
-        Rect albedoInner = InsetRect(albedoRect, panelPadding);
-        Rect normalInner = InsetRect(normalRect, panelPadding);
-        Rect materialInner = InsetRect(materialRect, panelPadding);
-        Rect emissiveInner = InsetRect(emissiveRect, panelPadding);
-        Rect depthInner = InsetRect(depthRect, panelPadding);
+            uint panelMode = 0u;
+            if (slot == 0u) panelMode = 0u;       // Lit
+            else if (slot == 1u) panelMode = 1u;  // Albedo
+            else if (slot == 2u) panelMode = 2u;  // Normals
+            else if (slot == 3u) panelMode = 3u;  // Material
+            else if (slot == 4u) panelMode = 4u;  // Depth
+            else if (slot == 5u) panelMode = 5u;  // Emissive
+            else if (slot == 6u) panelMode = 6u;  // Transparency
+            else if (slot == 7u) panelMode = 7u;  // Revealage
+            else if (slot == 8u) panelMode = 11u; // Shadow cascades
+            else if (slot == 9u) panelMode = 12u; // Tile light heat map
+            else if (slot == 10u) panelMode = 13u; // Shadow texel density
+            else if (slot == 11u) panelMode = 14u; // Bloom texture
 
-        if (InRect(screenUV, centerRect))
-        {
-            if (!InRect(screenUV, centerInner))
+            float2 cellSize =
+                (overviewRect.max - overviewRect.min) /
+                float2(float(OVERVIEW_COLUMNS), float(OVERVIEW_ROWS));
+            Rect panelRect;
+            panelRect.min = overviewRect.min + cellSize * float2(float(column), float(row));
+            panelRect.max = panelRect.min + cellSize;
+
+            if (IsPanelBorder(screenUV, panelRect, panelPadding))
+            {
+                return float4(panelBorderColor, 1.0);
+            }
+
+            Rect panelInner = InsetRect(panelRect, panelPadding);
+            if (!InRect(screenUV, panelInner))
             {
                 return float4(panelTileBackgroundColor, 1.0);
             }
 
-            float2 panelUV = RectUV(screenUV, centerInner);
-            float3 litColor = sceneColorTexture.SampleLevel(gBufferSampler, panelUV, 0.0).rgb;
-            litColor *= resolvedExposure;
-
-            float3 panelCompositedColor = litColor;
-
-            if (oitAvailable)
+            float2 panelUV = RectUV(screenUV, panelInner);
+            uint2 panelPixel = TexturePixelFromUV(panelUV, width, height);
+            if (panelMode == 6u || panelMode == 7u)
             {
-                uint2 panelPixel = uint2(panelUV * float2(uOit.viewportWidth, uOit.viewportHeight));
-                OitResolveResult panelOit = ResolveOitPixel(panelPixel, litColor);
-                panelCompositedColor = panelOit.compositedColor;
+                panelPixel = OitPixelFromUV(panelUV);
             }
-
-            float3 mappedCenter = ToneMapACES(panelCompositedColor);
-            return float4(ToSwapchainLinear(mappedCenter), 1.0);
-        }
-
-        if (InRect(screenUV, albedoRect))
-        {
-            if (!InRect(screenUV, albedoInner))
-            {
-                return float4(panelTileBackgroundColor, 1.0);
-            }
-            float2 panelUV = RectUV(screenUV, albedoInner);
-            return float4(gAlbedoTexture.SampleLevel(gBufferSampler, panelUV, 0.0).rgb, 1.0);
-        }
-
-        if (InRect(screenUV, normalRect))
-        {
-            if (!InRect(screenUV, normalInner))
-            {
-                return float4(panelTileBackgroundColor, 1.0);
-            }
-            float2 panelUV = RectUV(screenUV, normalInner);
-            float4 panelNormal = gNormalTexture.SampleLevel(gBufferSampler, panelUV, 0.0);
-            return float4(NormalVisual(panelNormal), 1.0);
-        }
-
-        if (InRect(screenUV, materialRect))
-        {
-            if (!InRect(screenUV, materialInner))
-            {
-                return float4(panelTileBackgroundColor, 1.0);
-            }
-            float2 panelUV = RectUV(screenUV, materialInner);
-            uint2 panelPixel = uint2(panelUV * float2(width, height));
-            panelPixel =
-                min(panelPixel, uint2(max(width, 1u) - 1u, max(height, 1u) - 1u));
-            float4 panelMaterial = gMaterialTexture.Load(int3(panelPixel, 0));
-            return float4(MaterialVisual(panelMaterial), 1.0);
-        }
-
-        if (InRect(screenUV, emissiveRect))
-        {
-            if (!InRect(screenUV, emissiveInner))
-            {
-                return float4(panelTileBackgroundColor, 1.0);
-            }
-            float2 panelUV = RectUV(screenUV, emissiveInner);
-            float3 panelEmissive = gEmissiveTexture.SampleLevel(gBufferSampler, panelUV, 0.0).rgb;
-            float3 mappedEmissive = ToneMapACES(panelEmissive * 2.0);
-            return float4(ToSwapchainLinear(mappedEmissive), 1.0);
-        }
-
-        if (InRect(screenUV, depthRect))
-        {
-            if (!InRect(screenUV, depthInner))
-            {
-                return float4(panelTileBackgroundColor, 1.0);
-            }
-            float2 panelUV = RectUV(screenUV, depthInner);
-            float panelDepth = gDepthTexture.SampleLevel(gBufferSampler, panelUV, 0.0);
-            return float4(DepthVisual(panelDepth), 1.0);
+            return float4(DebugTextureViewColor(panelMode, panelUV, panelPixel,
+                                                width, height, resolvedExposure,
+                                                oitAvailable), 1.0);
         }
 
         float3 overviewCompositedColor = sceneColor.rgb;

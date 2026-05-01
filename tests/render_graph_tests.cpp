@@ -373,6 +373,44 @@ TEST(RenderGraphTests, SetPassResourceAccessRejectsInvalidResources) {
   EXPECT_EQ(pass->writes.front(), RenderResourceId::FrustumCullDraws);
 }
 
+TEST(RenderGraphTests, AddPassCopiesDefaultTransitionMetadata) {
+  RenderGraph graph;
+  graph.addPass(RenderPassId::DepthToReadOnly, {}, noopRecord());
+
+  const RenderPassNode* pass = graph.findPass(RenderPassId::DepthToReadOnly);
+  ASSERT_NE(pass, nullptr);
+  ASSERT_EQ(pass->transitions.size(), 1u);
+  EXPECT_EQ(pass->transitions.front().resource, RenderResourceId::SceneDepth);
+  EXPECT_EQ(pass->transitions.front().before,
+            container::renderer::RenderResourceState::DepthStencilAttachment);
+  EXPECT_EQ(pass->transitions.front().after,
+            container::renderer::RenderResourceState::DepthStencilReadOnly);
+}
+
+TEST(RenderGraphTests, SetPassResourceTransitionsRejectsInvalidResource) {
+  RenderGraph graph;
+  graph.addPass(RenderPassId::Bloom, {}, noopRecord());
+
+  EXPECT_THROW(
+      graph.setPassResourceTransitions(
+          RenderPassId::Bloom,
+          {{RenderResourceId::Invalid,
+            container::renderer::RenderResourceState::ColorAttachment,
+            container::renderer::RenderResourceState::ShaderRead}}),
+      std::runtime_error);
+
+  ASSERT_TRUE(graph.setPassResourceTransitions(
+      RenderPassId::Bloom,
+      {{RenderResourceId::SceneColor,
+        container::renderer::RenderResourceState::ColorAttachment,
+        container::renderer::RenderResourceState::ShaderRead}}));
+
+  const RenderPassNode* pass = graph.findPass(RenderPassId::Bloom);
+  ASSERT_NE(pass, nullptr);
+  ASSERT_EQ(pass->transitions.size(), 1u);
+  EXPECT_EQ(pass->transitions.front().resource, RenderResourceId::SceneColor);
+}
+
 TEST(RenderGraphTests, ActivePredicateFollowsExecutionStatus) {
   RenderGraph graph;
   graph.addPass(RenderPassId::Bloom, {}, noopRecord());

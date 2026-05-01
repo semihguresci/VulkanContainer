@@ -17,7 +17,7 @@ struct PushConstantBlock {
   SurfaceNormalPushConstants            surfaceNormal{};
 
   // Build the pointer-based view consumed by FrameRecordParams.
-  FrameRecordParams::PushConstantState state() {
+  FramePushConstantState state() {
     return {&bindless, &light, &wireframe, &normalValidation, &surfaceNormal};
   }
 };

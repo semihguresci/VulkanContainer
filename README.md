@@ -33,6 +33,8 @@ ctest --test-dir out/build/windows-release --output-on-failure
   commands, helper scripts, and known test status.
 - [Development guide](docs/development-guide.md) - renderer conventions,
   shader/C++ layout contracts, and commenting guidance.
+- [Renderer telemetry](docs/renderer-telemetry.md) - live frame timing,
+  GPU query backends, render graph metrics, and validation commands.
 - [Coordinate conventions](docs/coordinate-conventions.md) - source of truth
   for coordinate systems, reverse-Z depth, viewports, culling, and matrix rules.
 - [Lighting system plan](docs/lighting-system-improvement-plan.md) - lighting,

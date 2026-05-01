@@ -59,6 +59,70 @@ SceneController::~SceneController() = default;
 container::ecs::World& SceneController::world() { return *world_; }
 const container::ecs::World& SceneController::world() const { return *world_; }
 
+void SceneController::rebuildPrimitiveBoundsCache() {
+  const auto& primitiveRanges = sceneManager_.primitiveRanges();
+  const auto& verts = sceneManager_.vertices();
+  const auto& indices = sceneManager_.indices();
+
+  primitiveBounds_.assign(primitiveRanges.size(), {});
+  for (size_t primitiveIndex = 0; primitiveIndex < primitiveRanges.size();
+       ++primitiveIndex) {
+    const auto& primitive = primitiveRanges[primitiveIndex];
+    const size_t begin = primitive.firstIndex;
+    if (begin >= indices.size() || primitive.indexCount == 0u) {
+      continue;
+    }
+    const size_t end =
+        std::min(indices.size(), begin + static_cast<size_t>(primitive.indexCount));
+
+    bool hasVertex = false;
+    glm::vec3 localMin(std::numeric_limits<float>::max());
+    glm::vec3 localMax(std::numeric_limits<float>::lowest());
+    for (size_t i = begin; i < end; ++i) {
+      const uint32_t vertexIndex = indices[i];
+      if (vertexIndex >= verts.size()) {
+        continue;
+      }
+      const glm::vec3& pos = verts[vertexIndex].position;
+      localMin = glm::min(localMin, pos);
+      localMax = glm::max(localMax, pos);
+      hasVertex = true;
+    }
+    if (!hasVertex) {
+      continue;
+    }
+
+    const glm::vec3 localCenter = (localMin + localMax) * 0.5f;
+    float localRadius = 0.0f;
+    for (size_t i = begin; i < end; ++i) {
+      const uint32_t vertexIndex = indices[i];
+      if (vertexIndex >= verts.size()) {
+        continue;
+      }
+      localRadius = std::max(
+          localRadius, glm::length(verts[vertexIndex].position - localCenter));
+    }
+    primitiveBounds_[primitiveIndex] = {localCenter, localRadius, true};
+  }
+}
+
+void SceneController::invalidateObjectDataCache() {
+  objectDataCacheValid_ = false;
+  cachedSceneGraphRevision_ = std::numeric_limits<uint64_t>::max();
+  objectBufferUploadDirty_ = true;
+}
+
+void SceneController::refreshObjectDataCache(bool showDiagCube) {
+  const uint64_t sceneGraphRevision = sceneGraph_.revision();
+  if (objectDataCacheValid_ &&
+      cachedSceneGraphRevision_ == sceneGraphRevision &&
+      cachedShowDiagCube_ == showDiagCube) {
+    return;
+  }
+
+  syncObjectDataFromSceneGraph(showDiagCube);
+}
+
 // ---------------------------------------------------------------------------
 // Static buffer helpers
 // ---------------------------------------------------------------------------
@@ -159,6 +223,8 @@ void SceneController::createGeometryBuffers() {
   diagCubeIndexSlice_.size =
       static_cast<VkDeviceSize>(cube.indices().size()) * sizeof(uint32_t);
   diagCubeIndexCount_ = static_cast<uint32_t>(cube.indices().size());
+  rebuildPrimitiveBoundsCache();
+  invalidateObjectDataCache();
 }
 
 void SceneController::createSceneBuffers(
@@ -168,7 +234,7 @@ void SceneController::createSceneBuffers(
   ensureObjectBufferCapacity(allocationManager_, objectBuffer,
                              objectBufferCapacity,
                              sceneGraph_.renderableNodes().size());
-  syncObjectDataFromSceneGraph(false);
+  refreshObjectDataCache(false);
   // Upload is deferred to updateObjectBuffer; descriptor sets updated by caller.
 }
 
@@ -213,8 +279,9 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
 
         const auto& primitive =
             sceneManager_.primitiveRanges()[mesh.primitiveIndex];
-        const uint32_t materialIndex =
-            sceneManager_.resolveGpuMaterialIndex(material.materialIndex);
+        const auto materialProperties =
+            sceneManager_.materialRenderProperties(material.materialIndex);
+        const uint32_t materialIndex = materialProperties.gpuMaterialIndex;
 
         ObjectData object{};
         object.model = transform.worldTransform;
@@ -226,10 +293,8 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
           object.normalMatrix1 = glm::vec4(normal3[1], 0.0f);
           object.normalMatrix2 = glm::vec4(normal3[2], 0.0f);
         }
-        const bool materialDoubleSided =
-            sceneManager_.isMaterialDoubleSided(materialIndex);
-        const bool materialTransparent =
-            sceneManager_.isMaterialTransparent(materialIndex);
+        const bool materialDoubleSided = materialProperties.doubleSided;
+        const bool materialTransparent = materialProperties.transparent;
         const bool rasterDoubleSided =
             materialDoubleSided || primitive.disableBackfaceCulling;
         const bool windingFlipped =
@@ -237,37 +302,19 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         object.objectInfo.y =
             rasterDoubleSided ? container::gpu::kObjectFlagDoubleSided : 0u;
 
-        // Compute world-space bounding sphere from primitive vertices.
-        {
-          const auto& verts   = sceneManager_.vertices();
-          const auto& indices = sceneManager_.indices();
-          glm::vec3 localMin(std::numeric_limits<float>::max());
-          glm::vec3 localMax(std::numeric_limits<float>::lowest());
-          const uint32_t endIdx = primitive.firstIndex + primitive.indexCount;
-          for (uint32_t i = primitive.firstIndex; i < endIdx && i < indices.size(); ++i) {
-            const glm::vec3& pos = verts[indices[i]].position;
-            localMin = glm::min(localMin, pos);
-            localMax = glm::max(localMax, pos);
-          }
-          if (primitive.indexCount > 0) {
-            const glm::vec3 localCenter = (localMin + localMax) * 0.5f;
-            float localRadius = 0.0f;
-            for (uint32_t i = primitive.firstIndex; i < endIdx && i < indices.size(); ++i) {
-              localRadius = std::max(localRadius,
-                  glm::length(verts[indices[i]].position - localCenter));
-            }
-            const glm::vec3 worldCenter =
-                glm::vec3(transform.worldTransform * glm::vec4(localCenter, 1.0f));
+        if (mesh.primitiveIndex < primitiveBounds_.size()) {
+          const auto& bounds = primitiveBounds_[mesh.primitiveIndex];
+          if (bounds.valid) {
+            const glm::vec3 worldCenter = glm::vec3(
+                transform.worldTransform * glm::vec4(bounds.center, 1.0f));
             const float scaleMax = std::max({
                 glm::length(glm::vec3(transform.worldTransform[0])),
                 glm::length(glm::vec3(transform.worldTransform[1])),
                 glm::length(glm::vec3(transform.worldTransform[2]))});
             const float heightInflation =
-                std::abs(sceneManager_.resolveMaterialHeightScale(
-                    materialIndex)) *
-                scaleMax;
+                std::abs(materialProperties.heightScale) * scaleMax;
             object.boundingSphere =
-                glm::vec4(worldCenter, localRadius * scaleMax + heightInflation);
+                glm::vec4(worldCenter, bounds.radius * scaleMax + heightInflation);
           }
         }
 
@@ -326,6 +373,12 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
     diagCubeObjectIndex_ = static_cast<uint32_t>(objectData_.size());
     objectData_.push_back(cubeObject);
   }
+
+  cachedSceneGraphRevision_ = sceneGraph_.revision();
+  cachedShowDiagCube_ = showDiagCube;
+  objectDataCacheValid_ = true;
+  objectBufferUploadDirty_ = true;
+  ++objectDataRevision_;
 }
 
 // ---------------------------------------------------------------------------
@@ -339,16 +392,22 @@ bool SceneController::updateObjectBuffer(
   const bool showDiagCube =
       guiManager_ && guiManager_->showNormalDiagCube() &&
       diagCubeVertexSlice_.buffer != VK_NULL_HANDLE;
-  syncObjectDataFromSceneGraph(showDiagCube);
+  refreshObjectDataCache(showDiagCube);
 
   const bool bufferRecreated = ensureObjectBufferCapacity(
       allocationManager_, objectBuffer, objectBufferCapacity,
       objectData_.size());
+  if (bufferRecreated) {
+    objectBufferUploadDirty_ = true;
+  }
   if (objectBuffer.buffer == VK_NULL_HANDLE || objectData_.empty())
     return bufferRecreated;
 
-  writeToBuffer(allocationManager_, objectBuffer, objectData_.data(),
-                sizeof(ObjectData) * objectData_.size());
+  if (objectBufferUploadDirty_) {
+    writeToBuffer(allocationManager_, objectBuffer, objectData_.data(),
+                  sizeof(ObjectData) * objectData_.size());
+    objectBufferUploadDirty_ = false;
+  }
   return bufferRecreated;
 }
 
@@ -385,6 +444,7 @@ void SceneController::buildSceneGraph(uint32_t& outRootNode,
     outSelectedMeshNode = renderable.front();
   }
   outCubeNode = container::scene::SceneGraph::kInvalidNode;
+  invalidateObjectDataCache();
 }
 
 void SceneController::addSceneObject(
@@ -402,7 +462,6 @@ void SceneController::addSceneObject(
   const uint32_t node = sceneGraph_.createNode(
       transform, sceneManager_.defaultMaterialIndex(), true);
   sceneGraph_.setParent(node, rootNode);
-  sceneGraph_.updateWorldTransforms();
   updateObjectBuffer(objectBuffer, objectBufferCapacity, cameraBuffer);
   if (guiManager_) {
     guiManager_->setStatusMessage("Added object to scene");

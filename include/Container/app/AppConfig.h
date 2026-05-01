@@ -33,7 +33,7 @@ struct AppConfig {
   uint32_t maxFramesInFlight{2};
   // Upper bound for the per-object SSBO. This is scene capacity, not a draw-call budget.
   uint32_t maxSceneObjects{4096};
-  bool enableValidationLayers{true};
+  bool enableValidationLayers{false};
   bool enableGui{true};
   bool windowVisible{true};
   std::string modelPath{std::string(kDefaultModelRelativePath)};
@@ -57,6 +57,8 @@ struct AppConfig {
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,
       VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME,
       VK_EXT_DESCRIPTOR_INDEXING_EXTENSION_NAME};
+  std::vector<const char*> optionalDeviceExtensions{
+      VK_KHR_PERFORMANCE_QUERY_EXTENSION_NAME};
 };
 
 [[nodiscard]] inline AppConfig DefaultAppConfig() { return AppConfig{}; }

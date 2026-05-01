@@ -85,6 +85,7 @@ VulkanContextResult VulkanContextInitializer::initialize(
   {
     container::gpu::DeviceCreateInfo ci{};
     ci.requiredExtensions     = config_.deviceExtensions;
+    ci.optionalExtensions     = config_.optionalDeviceExtensions;
     ci.validationLayers       = config_.validationLayers;
     ci.enableValidationLayers  = config_.enableValidationLayers;
     ci.enabledFeatures.samplerAnisotropy       = VK_TRUE;

@@ -9,6 +9,7 @@ namespace container::gpu {
 
 struct DeviceCreateInfo {
   std::vector<const char*> requiredExtensions{};
+  std::vector<const char*> optionalExtensions{};
   std::vector<const char*> validationLayers{};
   bool enableValidationLayers{false};
   VkPhysicalDeviceFeatures enabledFeatures{};  // Required features.

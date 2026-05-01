@@ -4,13 +4,17 @@
 #include "Container/renderer/BloomManager.h"
 #include "Container/renderer/CameraController.h"
 #include "Container/renderer/CommandBufferManager.h"
+#include "Container/renderer/DebugUiPresenter.h"
 #include "Container/renderer/EnvironmentManager.h"
 #include "Container/renderer/ExposureManager.h"
+#include "Container/renderer/FrameConcurrencyPolicy.h"
 #include "Container/renderer/FrameRecorder.h"
 #include "Container/renderer/GpuCullManager.h"
 #include "Container/renderer/GraphicsPipelineBuilder.h"
 #include "Container/renderer/LightingManager.h"
 #include "Container/renderer/OitManager.h"
+#include "Container/renderer/RenderPassGpuProfiler.h"
+#include "Container/renderer/RendererTelemetry.h"
 #include "Container/renderer/SceneController.h"
 #include "Container/renderer/ShadowCullManager.h"
 #include "Container/renderer/ShadowManager.h"
@@ -31,12 +35,13 @@
 #include "stb_image_write.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <limits>
 #include <stdexcept>
 #include <string>
-#include <string_view>
 #include <vector>
 
 namespace container::renderer {
@@ -45,6 +50,19 @@ using container::gpu::CameraData;
 using container::gpu::LightingData;
 
 namespace {
+
+using TelemetryClock = std::chrono::steady_clock;
+
+float elapsedMilliseconds(TelemetryClock::time_point start,
+                          TelemetryClock::time_point end =
+                              TelemetryClock::now()) {
+  return std::chrono::duration<float, std::milli>(end - start).count();
+}
+
+uint32_t saturatingU32(size_t value) {
+  return static_cast<uint32_t>(
+      std::min<size_t>(value, std::numeric_limits<uint32_t>::max()));
+}
 
 glm::vec3 arrayToVec3(const std::array<float, 3> &value) {
   return {value[0], value[1], value[2]};
@@ -123,101 +141,23 @@ bool isRenderPassActive(const FrameRecorder *frameRecorder, RenderPassId id) {
   return frameRecorder->graph().isPassActive(id);
 }
 
-container::ui::RenderPassToggle *
-findRenderPassToggle(std::vector<container::ui::RenderPassToggle> &toggles,
-                     RenderPassId id) {
-  const std::string_view name = renderPassName(id);
-  for (auto &toggle : toggles) {
-    if (toggle.name == name)
-      return &toggle;
-  }
-  return nullptr;
+container::ui::GBufferViewMode currentDisplayMode(
+    const container::ui::GuiManager* guiManager) {
+  return guiManager ? guiManager->gBufferViewMode()
+                    : container::ui::GBufferViewMode::Overview;
 }
 
-const container::ui::RenderPassToggle *findRenderPassToggle(
-    const std::vector<container::ui::RenderPassToggle> &toggles,
-    RenderPassId id) {
-  const std::string_view name = renderPassName(id);
-  for (const auto &toggle : toggles) {
-    if (toggle.name == name)
-      return &toggle;
-  }
-  return nullptr;
+bool displayModeRecordsShadowAtlas(container::ui::GBufferViewMode mode) {
+  return mode == container::ui::GBufferViewMode::Lit;
 }
 
-std::string dependencyNoteForPass(
-    const std::vector<container::ui::RenderPassToggle> &toggles,
-    RenderPassId id) {
-  for (RenderPassId dependencyId : renderPassDependencies(id)) {
-    const auto *dependency = findRenderPassToggle(toggles, dependencyId);
-    if (dependency != nullptr && !dependency->enabled) {
-      return "requires " + std::string(renderPassName(dependencyId));
-    }
-  }
-  return {};
+bool displayModeRecordsTileCull(container::ui::GBufferViewMode mode) {
+  return mode == container::ui::GBufferViewMode::Lit ||
+         mode == container::ui::GBufferViewMode::TileLightHeatMap;
 }
 
-std::string executionNoteForPass(const RenderGraph &graph, RenderPassId id) {
-  if (id == RenderPassId::Invalid)
-    return {};
-
-  const auto *status = graph.executionStatus(id);
-  if (status == nullptr || status->active)
-    return {};
-
-  switch (status->skipReason) {
-  case RenderPassSkipReason::Disabled:
-  case RenderPassSkipReason::None:
-    return {};
-  case RenderPassSkipReason::MissingPassDependency:
-    return "inactive: requires " +
-           std::string(renderPassName(status->blockingPass));
-  case RenderPassSkipReason::MissingResource:
-    return "inactive: missing " +
-           std::string(renderResourceName(status->blockingResource));
-  case RenderPassSkipReason::MissingRecordCallback:
-    return "inactive: no recorder";
-  }
-
-  return {};
-}
-
-bool enforceRenderPassDependencies(
-    std::vector<container::ui::RenderPassToggle> &toggles) {
-  bool changed = false;
-
-  // Keep structural passes enabled. Disabling them would leave later graph
-  // nodes with missing attachments/layout transitions rather than a useful
-  // view.
-  for (auto &toggle : toggles) {
-    const RenderPassId id = renderPassIdFromName(toggle.name);
-    if (isProtectedRenderPass(id) && !toggle.enabled) {
-      toggle.enabled = true;
-      changed = true;
-    }
-  }
-
-  bool madeProgress = true;
-  while (madeProgress) {
-    madeProgress = false;
-
-    for (auto &toggle : toggles) {
-      if (!toggle.enabled)
-        continue;
-      const RenderPassId id = renderPassIdFromName(toggle.name);
-      for (RenderPassId dependencyId : renderPassDependencies(id)) {
-        const auto *dependency = findRenderPassToggle(toggles, dependencyId);
-        if (dependency != nullptr && !dependency->enabled) {
-          toggle.enabled = false;
-          changed = true;
-          madeProgress = true;
-          break;
-        }
-      }
-    }
-  }
-
-  return changed;
+bool displayModeRecordsGtao(container::ui::GBufferViewMode mode) {
+  return mode == container::ui::GBufferViewMode::Lit;
 }
 
 } // namespace
@@ -360,18 +300,59 @@ void RendererFrontend::initialize() {
       static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   frame_.imagesInFlight.assign(svc_.swapChainManager.imageCount(),
                                VK_NULL_HANDLE);
+  subs_.renderPassGpuProfiler = std::make_unique<RenderPassGpuProfiler>();
+  subs_.renderPassGpuProfiler->initialize(
+      svc_.ctx.deviceWrapper->device(), svc_.ctx.instance,
+      svc_.ctx.deviceWrapper->physicalDevice(),
+      svc_.ctx.deviceWrapper->queueFamilyIndices().graphicsFamily.value(),
+      static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+  container::log::ContainerLogger::instance().renderer()->info(
+      "GPU pass profiler: {}",
+      subs_.renderPassGpuProfiler->backendStatus());
+  subs_.rendererTelemetry = std::make_unique<RendererTelemetry>();
 
   initializeScene();
 }
 
 bool RendererFrontend::drawFrame(bool &framebufferResized) {
-  // Several render subsystems still rewrite shared descriptor sets or GPU
-  // buffers during command recording (GTAO, tile cull, frame descriptors,
-  // cull stats/readback). Keep only one submitted frame live until every such
-  // resource is per-frame or uses update-after-bind safe lifetime rules.
-  subs_.frameSyncManager->waitForAllFrames();
+  const auto frameStart = TelemetryClock::now();
+  const auto concurrencyPolicy =
+      FrameConcurrencyPolicy::serializedGpuResources(
+          "shared object buffer plus GPU cull, tile cull, GTAO, bloom, "
+          "exposure, and readback resources are not yet per-frame");
+  auto* telemetry = subs_.rendererTelemetry.get();
+  if (telemetry) {
+    telemetry->beginFrame(
+        frame_.submittedFrameCount, frame_.currentFrame,
+        svc_.config.maxFramesInFlight,
+        concurrencyPolicy.mode() ==
+            FrameConcurrencyMode::SerializedGpuResources,
+        concurrencyPolicy.reason());
+  }
+
+  auto phaseStart = TelemetryClock::now();
+  concurrencyPolicy.waitBeforeAcquire(*subs_.frameSyncManager,
+                                      frame_.currentFrame);
+  if (telemetry) {
+    telemetry->setCpuPhase(RendererTelemetryPhase::WaitForFrame,
+                           elapsedMilliseconds(phaseStart));
+    if (subs_.renderPassGpuProfiler) {
+      const auto gpuTimings = subs_.renderPassGpuProfiler->collectLatest();
+      telemetry->setPassGpuTimings(gpuTimings,
+                                   subs_.renderPassGpuProfiler->timingSource());
+      telemetry->setGpuProfilerStatus(RendererGpuProfilerTelemetry{
+          .source = subs_.renderPassGpuProfiler->timingSource(),
+          .available = subs_.renderPassGpuProfiler->isReady(),
+          .resultLatencyFrames =
+              subs_.renderPassGpuProfiler->resultLatencyFrames(),
+          .status =
+              std::string(subs_.renderPassGpuProfiler->backendStatus()),
+      });
+    }
+  }
 
   // Collect culling statistics from the previous frame (now safe after fence).
+  phaseStart = TelemetryClock::now();
   if (subs_.gpuCullManager)
     subs_.gpuCullManager->collectStats();
   if (subs_.lightingManager)
@@ -381,32 +362,77 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
         subs_.guiManager ? subs_.guiManager->exposureSettings()
                          : container::gpu::ExposureSettings{});
   }
+  if (telemetry) {
+    telemetry->setCpuPhase(RendererTelemetryPhase::Readbacks,
+                           elapsedMilliseconds(phaseStart));
+    if (subs_.gpuCullManager) {
+      telemetry->setCullingStats(subs_.gpuCullManager->cullStats());
+    }
+    if (subs_.lightingManager) {
+      telemetry->setLightCullingStats(
+          subs_.lightingManager->lightCullingStats());
+    }
+  }
 
   uint32_t imageIndex = 0;
+  phaseStart = TelemetryClock::now();
   VkResult result = vkAcquireNextImageKHR(
       svc_.ctx.deviceWrapper->device(), svc_.swapChainManager.swapChain(),
       UINT64_MAX, subs_.frameSyncManager->imageAvailable(frame_.currentFrame),
       VK_NULL_HANDLE, &imageIndex);
+  if (telemetry) {
+    telemetry->setCpuPhase(RendererTelemetryPhase::AcquireImage,
+                           elapsedMilliseconds(phaseStart));
+  }
 
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
+    phaseStart = TelemetryClock::now();
     handleResize();
+    if (telemetry) {
+      telemetry->addCpuPhase(RendererTelemetryPhase::ResourceGrowth,
+                             elapsedMilliseconds(phaseStart));
+      telemetry->setCpuPhase(RendererTelemetryPhase::Frame,
+                             elapsedMilliseconds(frameStart));
+      telemetry->endFrame();
+    }
+    ++frame_.submittedFrameCount;
     return true;
   } else if (result != VK_SUCCESS && result != VK_SUBOPTIMAL_KHR) {
     throw std::runtime_error("failed to acquire swap chain image!");
   }
+  if (telemetry) {
+    telemetry->setImageIndex(imageIndex);
+  }
 
+  phaseStart = TelemetryClock::now();
   if (frame_.imagesInFlight[imageIndex]) {
     vkWaitForFences(svc_.ctx.deviceWrapper->device(), 1,
                     &frame_.imagesInFlight[imageIndex], VK_TRUE, UINT64_MAX);
   }
+  if (telemetry) {
+    telemetry->setCpuPhase(RendererTelemetryPhase::ImageFenceWait,
+                           elapsedMilliseconds(phaseStart));
+  }
 
+  phaseStart = TelemetryClock::now();
   growExactOitNodePoolIfNeeded(imageIndex);
+  if (telemetry) {
+    telemetry->setCpuPhase(RendererTelemetryPhase::ResourceGrowth,
+                           elapsedMilliseconds(phaseStart));
+  }
 
   subs_.frameSyncManager->resetFence(frame_.currentFrame);
   frame_.imagesInFlight[imageIndex] =
       subs_.frameSyncManager->fence(frame_.currentFrame);
 
+  phaseStart = TelemetryClock::now();
   presentSceneControls();
+  if (telemetry) {
+    telemetry->setCpuPhase(RendererTelemetryPhase::Gui,
+                           elapsedMilliseconds(phaseStart));
+  }
+
+  phaseStart = TelemetryClock::now();
   updateObjectBuffer();
   updateCameraBuffer(imageIndex);
 
@@ -426,19 +452,50 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                                 glm::vec3(ld.directionalDirection),
                                 shadowSettings, imageIndex);
   }
+  if (telemetry) {
+    telemetry->setCpuPhase(RendererTelemetryPhase::SceneUpdate,
+                           elapsedMilliseconds(phaseStart));
+  }
+
+  phaseStart = TelemetryClock::now();
   updateFrameDescriptorSets(imageIndex);
+  if (telemetry) {
+    telemetry->setCpuPhase(RendererTelemetryPhase::DescriptorUpdate,
+                           elapsedMilliseconds(phaseStart));
+  }
 
   const bool screenshotThisFrame = screenshot_.pending;
   if (screenshotThisFrame) {
+    phaseStart = TelemetryClock::now();
     ensureScreenshotReadbackBuffer(svc_.swapChainManager.extent(),
                                    svc_.swapChainManager.imageFormat());
+    if (telemetry) {
+      telemetry->addCpuPhase(RendererTelemetryPhase::ResourceGrowth,
+                             elapsedMilliseconds(phaseStart));
+    }
   }
 
+  phaseStart = TelemetryClock::now();
   vkResetCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), 0);
   recordCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), imageIndex);
+  if (telemetry) {
+    telemetry->setCpuPhase(RendererTelemetryPhase::CommandRecord,
+                           elapsedMilliseconds(phaseStart));
+    if (subs_.frameRecorder) {
+      telemetry->setRenderGraph(subs_.frameRecorder->graph());
+    }
+  }
 
   VkSubmitInfo submitInfo{};
   submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+  VkPerformanceQuerySubmitInfoKHR performanceSubmitInfo{};
+  if (subs_.renderPassGpuProfiler &&
+      subs_.renderPassGpuProfiler->usesPerformanceQueries()) {
+    performanceSubmitInfo.sType =
+        VK_STRUCTURE_TYPE_PERFORMANCE_QUERY_SUBMIT_INFO_KHR;
+    performanceSubmitInfo.counterPassIndex = 0u;
+    submitInfo.pNext = &performanceSubmitInfo;
+  }
 
   VkSemaphore waitSemaphores[] = {
       subs_.frameSyncManager->imageAvailable(frame_.currentFrame)};
@@ -457,39 +514,103 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   submitInfo.signalSemaphoreCount = 1;
   submitInfo.pSignalSemaphores = signalSemaphores;
 
+  phaseStart = TelemetryClock::now();
   if (vkQueueSubmit(svc_.ctx.deviceWrapper->graphicsQueue(), 1, &submitInfo,
                     subs_.frameSyncManager->fence(frame_.currentFrame)) !=
       VK_SUCCESS) {
     throw std::runtime_error("failed to submit draw command buffer!");
   }
+  if (telemetry) {
+    telemetry->setCpuPhase(RendererTelemetryPhase::QueueSubmit,
+                           elapsedMilliseconds(phaseStart));
+  }
 
   if (screenshotThisFrame) {
+    phaseStart = TelemetryClock::now();
     const VkFence fence = subs_.frameSyncManager->fence(frame_.currentFrame);
     if (vkWaitForFences(svc_.ctx.deviceWrapper->device(), 1, &fence, VK_TRUE,
                         UINT64_MAX) != VK_SUCCESS) {
       throw std::runtime_error("failed to wait for screenshot frame");
     }
     writePendingScreenshotPng();
+    if (telemetry) {
+      telemetry->setCpuPhase(RendererTelemetryPhase::Screenshot,
+                             elapsedMilliseconds(phaseStart));
+    }
   }
 
+  phaseStart = TelemetryClock::now();
   result = svc_.swapChainManager.present(
       svc_.ctx.deviceWrapper->presentQueue(), imageIndex,
       subs_.frameSyncManager->renderFinishedForImage(imageIndex));
+  if (telemetry) {
+    telemetry->setCpuPhase(RendererTelemetryPhase::Present,
+                           elapsedMilliseconds(phaseStart));
+  }
 
   if (result == VK_ERROR_OUT_OF_DATE_KHR || result == VK_SUBOPTIMAL_KHR ||
       framebufferResized) {
     framebufferResized = false;
+    phaseStart = TelemetryClock::now();
     handleResize();
+    if (telemetry) {
+      telemetry->addCpuPhase(RendererTelemetryPhase::ResourceGrowth,
+                             elapsedMilliseconds(phaseStart));
+    }
   } else if (result != VK_SUCCESS) {
     throw std::runtime_error("failed to present swap chain image!");
   }
 
+  if (telemetry) {
+    RendererWorkloadTelemetry workload{};
+    if (subs_.sceneController) {
+      workload.objectCount =
+          saturatingU32(subs_.sceneController->objectData().size());
+      workload.opaqueDrawCount =
+          saturatingU32(subs_.sceneController->opaqueDrawCommands().size());
+      workload.transparentDrawCount = saturatingU32(
+          subs_.sceneController->transparentDrawCommands().size());
+      workload.totalDrawCount = saturatingU32(
+          static_cast<size_t>(workload.opaqueDrawCount) +
+          static_cast<size_t>(workload.transparentDrawCount));
+    }
+    if (subs_.lightingManager) {
+      workload.submittedLights =
+          subs_.lightingManager->lightCullingStats().submittedLights;
+    }
+    telemetry->setWorkload(workload);
+
+    RendererResourceTelemetry resources{};
+    const VkExtent2D extent = svc_.swapChainManager.extent();
+    resources.swapchainWidth = extent.width;
+    resources.swapchainHeight = extent.height;
+    resources.swapchainImageCount =
+        saturatingU32(svc_.swapChainManager.imageCount());
+    resources.cameraBufferCount = saturatingU32(buffers_.cameras.size());
+    resources.objectBufferCapacity = saturatingU32(buffers_.objectCapacity);
+    if (subs_.frameResourceManager &&
+        imageIndex < subs_.frameResourceManager->frameCount()) {
+      if (const auto* frame = subs_.frameResourceManager->frame(imageIndex)) {
+        resources.oitNodeCapacity = frame->oitNodeCapacity;
+      }
+    }
+    telemetry->setResources(resources);
+    telemetry->setCpuPhase(RendererTelemetryPhase::Frame,
+                           elapsedMilliseconds(frameStart));
+    telemetry->endFrame();
+  }
+
   frame_.currentFrame =
       (frame_.currentFrame + 1) % svc_.config.maxFramesInFlight;
+  ++frame_.submittedFrameCount;
   return true;
 }
 
 void RendererFrontend::handleResize() {
+  if (subs_.rendererTelemetry) {
+    subs_.rendererTelemetry->noteDeviceWaitIdle();
+    subs_.rendererTelemetry->noteSwapchainRecreate();
+  }
   vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
 
   destroyGBufferResources();
@@ -527,6 +648,10 @@ void RendererFrontend::handleResize() {
       svc_.swapChainManager.imageCount());
   frame_.imagesInFlight.assign(svc_.swapChainManager.imageCount(),
                                VK_NULL_HANDLE);
+  if (subs_.renderPassGpuProfiler) {
+    subs_.renderPassGpuProfiler->recreate(
+        static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+  }
 
   for (uint32_t imageIndex = 0;
        imageIndex < static_cast<uint32_t>(buffers_.cameras.size());
@@ -650,6 +775,7 @@ void RendererFrontend::shutdown() {
 
   subs_.frameSyncManager.reset();
   subs_.frameRecorder.reset();
+  subs_.renderPassGpuProfiler.reset();
 
   destroyGBufferResources();
   subs_.frameResourceManager.reset();
@@ -658,6 +784,7 @@ void RendererFrontend::shutdown() {
     subs_.guiManager->shutdown(svc_.ctx.deviceWrapper->device());
     subs_.guiManager.reset();
   }
+  subs_.rendererTelemetry.reset();
 
   subs_.renderPassManager.reset();
   resources_.renderPasses = {};
@@ -846,10 +973,12 @@ void RendererFrontend::updateObjectBuffer() {
                                : buffers_.cameras.front());
   if (recreated && subs_.sceneManager)
     subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.object);
-  if (subs_.shadowCullManager) {
+  if ((recreated || !buffers_.shadowObjectDescriptorReady) &&
+      subs_.shadowCullManager) {
     subs_.shadowCullManager->updateObjectSsboDescriptor(
         buffers_.object.buffer,
         sizeof(container::gpu::ObjectData) * buffers_.objectCapacity);
+    buffers_.shadowObjectDescriptorReady = true;
   }
   sceneState_.diagCubeObjectIndex =
       subs_.sceneController->diagCubeObjectIndex();
@@ -859,16 +988,20 @@ void RendererFrontend::updateFrameDescriptorSets(uint32_t imageIndex) {
   if (subs_.frameResourceManager) {
     if (subs_.lightingManager) {
       auto &lightingData = subs_.lightingManager->lightingData();
+      const auto displayMode = currentDisplayMode(subs_.guiManager.get());
       const bool shadowEnabled =
+          displayModeRecordsShadowAtlas(displayMode) &&
           std::ranges::any_of(shadowCascadePassIds(), [this](RenderPassId id) {
             return isRenderPassActive(subs_.frameRecorder.get(), id);
           });
       const bool gtaoEnabled =
+          displayModeRecordsGtao(displayMode) &&
           isRenderPassActive(subs_.frameRecorder.get(), RenderPassId::GTAO) &&
           subs_.environmentManager &&
           subs_.environmentManager->isGtaoReady() &&
           subs_.environmentManager->isAoEnabled();
       const bool tileCullEnabled =
+          displayModeRecordsTileCull(displayMode) &&
           isRenderPassActive(subs_.frameRecorder.get(), RenderPassId::TileCull);
       lightingData.shadowEnabled = shadowEnabled ? 1u : 0u;
       lightingData.gtaoEnabled = gtaoEnabled ? 1u : 0u;
@@ -1070,6 +1203,9 @@ void RendererFrontend::presentSceneControls() {
     subs_.guiManager->setLightingSettings(
         subs_.lightingManager->lightingSettings());
   }
+  if (subs_.rendererTelemetry) {
+    subs_.guiManager->setRendererTelemetry(subs_.rendererTelemetry->view());
+  }
 
   // Sync freeze-culling: push debug state into GUI before rendering.
   subs_.guiManager->setFreezeCulling(debugState_.freezeCulling);
@@ -1084,20 +1220,8 @@ void RendererFrontend::presentSceneControls() {
 
   // Sync render pass toggles: push graph pass list into GUI before rendering.
   if (subs_.frameRecorder) {
-    auto &graph = subs_.frameRecorder->graph();
-    std::vector<container::ui::RenderPassToggle> passList;
-    passList.reserve(graph.passes().size());
-    for (const auto &node : graph.passes()) {
-      const std::string executionNote = executionNoteForPass(graph, node.id);
-      container::ui::RenderPassToggle toggle{};
-      toggle.name = node.name;
-      toggle.enabled = node.enabled;
-      toggle.locked = isProtectedRenderPass(node.id);
-      toggle.autoDisabled = !executionNote.empty();
-      toggle.dependencyNote = executionNote;
-      passList.push_back(std::move(toggle));
-    }
-    subs_.guiManager->setRenderPassList(passList);
+    DebugUiPresenter::publishRenderPasses(*subs_.guiManager,
+                                          subs_.frameRecorder->graph());
   }
 
   subs_.guiManager->startFrame();
@@ -1211,26 +1335,10 @@ void RendererFrontend::presentSceneControls() {
   // graph.
   if (subs_.frameRecorder) {
     auto &graph = subs_.frameRecorder->graph();
-    auto &toggles = subs_.guiManager->renderPassToggles();
-    if (enforceRenderPassDependencies(toggles)) {
+    if (DebugUiPresenter::applyRenderPassToggles(*subs_.guiManager, graph)) {
       subs_.guiManager->setStatusMessage(
           "Protected passes stay enabled; dependent optional passes are "
           "disabled automatically.");
-    }
-    for (const auto &toggle : toggles) {
-      graph.setPassEnabled(renderPassIdFromName(toggle.name), toggle.enabled);
-    }
-    for (auto &toggle : toggles) {
-      const RenderPassId id = renderPassIdFromName(toggle.name);
-      toggle.locked = isProtectedRenderPass(id);
-      const std::string dependencyNote = dependencyNoteForPass(toggles, id);
-      const std::string executionNote = executionNoteForPass(graph, id);
-      toggle.autoDisabled = !dependencyNote.empty() || !executionNote.empty();
-      if (!dependencyNote.empty()) {
-        toggle.dependencyNote = dependencyNote;
-      } else {
-        toggle.dependencyNote = executionNote;
-      }
     }
   }
 }
@@ -1252,78 +1360,85 @@ void RendererFrontend::recordCommandBuffer(VkCommandBuffer commandBuffer,
 FrameRecordParams
 RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   FrameRecordParams p{};
-  p.frame = subs_.frameResourceManager->frame(imageIndex);
-  p.imageIndex = imageIndex;
-  p.vertexSlice = sceneState_.vertexSlice;
-  p.indexSlice = sceneState_.indexSlice;
-  p.indexType = sceneState_.indexType;
-  p.opaqueDrawCommands = &subs_.sceneController->opaqueDrawCommands();
-  p.transparentDrawCommands = &subs_.sceneController->transparentDrawCommands();
-  p.opaqueSingleSidedDrawCommands =
+  p.runtime.frame = subs_.frameResourceManager->frame(imageIndex);
+  p.runtime.imageIndex = imageIndex;
+  p.scene.vertexSlice = sceneState_.vertexSlice;
+  p.scene.indexSlice = sceneState_.indexSlice;
+  p.scene.indexType = sceneState_.indexType;
+  p.draws.opaqueDrawCommands = &subs_.sceneController->opaqueDrawCommands();
+  p.draws.transparentDrawCommands =
+      &subs_.sceneController->transparentDrawCommands();
+  p.draws.opaqueSingleSidedDrawCommands =
       &subs_.sceneController->opaqueSingleSidedDrawCommands();
-  p.opaqueWindingFlippedDrawCommands =
+  p.draws.opaqueWindingFlippedDrawCommands =
       &subs_.sceneController->opaqueWindingFlippedDrawCommands();
-  p.opaqueDoubleSidedDrawCommands =
+  p.draws.opaqueDoubleSidedDrawCommands =
       &subs_.sceneController->opaqueDoubleSidedDrawCommands();
-  p.transparentSingleSidedDrawCommands =
+  p.draws.transparentSingleSidedDrawCommands =
       &subs_.sceneController->transparentSingleSidedDrawCommands();
-  p.transparentWindingFlippedDrawCommands =
+  p.draws.transparentWindingFlippedDrawCommands =
       &subs_.sceneController->transparentWindingFlippedDrawCommands();
-  p.transparentDoubleSidedDrawCommands =
+  p.draws.transparentDoubleSidedDrawCommands =
       &subs_.sceneController->transparentDoubleSidedDrawCommands();
-  p.objectData = &subs_.sceneController->objectData();
-  p.sceneDescriptorSet = subs_.sceneManager->descriptorSet(imageIndex);
-  p.lightDescriptorSet =
+  p.scene.objectData = &subs_.sceneController->objectData();
+  p.scene.objectDataRevision = subs_.sceneController->objectDataRevision();
+  p.descriptors.sceneDescriptorSet =
+      subs_.sceneManager->descriptorSet(imageIndex);
+  p.descriptors.lightDescriptorSet =
       subs_.lightingManager
           ? subs_.lightingManager->lightDescriptorSet(imageIndex)
           : VK_NULL_HANDLE;
-  p.tiledDescriptorSet =
+  p.descriptors.tiledDescriptorSet =
       (subs_.lightingManager && subs_.lightingManager->isTiledLightingReady())
           ? subs_.lightingManager->tiledDescriptorSet()
           : VK_NULL_HANDLE;
-  p.cameraBuffer = imageIndex < buffers_.cameras.size()
-                       ? buffers_.cameras[imageIndex].buffer
-                       : VK_NULL_HANDLE;
-  p.cameraBufferSize = sizeof(container::gpu::CameraData);
-  p.gBufferSampler = subs_.frameResourceManager
-                         ? subs_.frameResourceManager->gBufferSampler()
-                         : VK_NULL_HANDLE;
+  p.camera.cameraBuffer = imageIndex < buffers_.cameras.size()
+                              ? buffers_.cameras[imageIndex].buffer
+                              : VK_NULL_HANDLE;
+  p.camera.cameraBufferSize = sizeof(container::gpu::CameraData);
+  p.camera.gBufferSampler = subs_.frameResourceManager
+                                ? subs_.frameResourceManager->gBufferSampler()
+                                : VK_NULL_HANDLE;
   p.renderPasses = {
       resources_.renderPasses.depthPrepass, resources_.renderPasses.gBuffer,
       resources_.renderPasses.shadow, resources_.renderPasses.lighting,
       resources_.renderPasses.postProcess};
-  p.layouts = resources_.builtPipelines.layouts;
-  p.pipelines = resources_.builtPipelines.pipelines;
-  p.debugDirectionalOnly = debugState_.directionalOnly;
-  p.debugVisualizePointLightStencil = debugState_.visualizePointLightStencil;
-  p.debugFreezeCulling = debugState_.freezeCulling;
-  p.wireframeRasterModeSupported = svc_.ctx.wireframeRasterModeSupported;
-  p.wireframeWideLinesSupported = svc_.ctx.wireframeWideLinesSupported;
+  p.pipeline.layouts = resources_.builtPipelines.layouts;
+  p.pipeline.pipelines = resources_.builtPipelines.pipelines;
+  p.debug.debugDirectionalOnly = debugState_.directionalOnly;
+  p.debug.debugVisualizePointLightStencil =
+      debugState_.visualizePointLightStencil;
+  p.debug.debugFreezeCulling = debugState_.freezeCulling;
+  p.debug.wireframeRasterModeSupported =
+      svc_.ctx.wireframeRasterModeSupported;
+  p.debug.wireframeWideLinesSupported = svc_.ctx.wireframeWideLinesSupported;
   p.pushConstants = pushConstants_.state();
-  p.swapChainFramebuffers = &svc_.swapChainManager.framebuffers();
-  p.diagCubeObjectIndex = sceneState_.diagCubeObjectIndex;
+  p.swapchain.swapChainFramebuffers = &svc_.swapChainManager.framebuffers();
+  p.scene.diagCubeObjectIndex = sceneState_.diagCubeObjectIndex;
   const auto *activeCamera = subs_.sceneController
                                  ? subs_.sceneController->world().activeCamera()
                                  : nullptr;
   if (activeCamera) {
-    p.cameraNear = activeCamera->nearPlane;
-    p.cameraFar = activeCamera->farPlane;
+    p.camera.nearPlane = activeCamera->nearPlane;
+    p.camera.farPlane = activeCamera->farPlane;
   } else if (subs_.cameraController) {
     const auto *perspCam =
         dynamic_cast<const container::scene::PerspectiveCamera *>(
             subs_.cameraController->camera());
     if (perspCam) {
-      p.cameraNear = perspCam->nearPlane();
-      p.cameraFar = perspCam->farPlane();
+      p.camera.nearPlane = perspCam->nearPlane();
+      p.camera.farPlane = perspCam->farPlane();
     }
   }
   if (subs_.shadowManager) {
-    p.shadowDescriptorSet = subs_.shadowManager->descriptorSet(imageIndex);
-    p.shadowFramebuffers = subs_.shadowManager->framebuffers().data();
-    p.shadowData = &subs_.shadowManager->shadowData();
-    p.shadowSettings = subs_.guiManager ? subs_.guiManager->shadowSettings()
-                                        : container::gpu::ShadowSettings{};
-    p.shadowManager = subs_.shadowManager.get();
+    p.descriptors.shadowDescriptorSet =
+        subs_.shadowManager->descriptorSet(imageIndex);
+    p.shadows.shadowFramebuffers = subs_.shadowManager->framebuffers().data();
+    p.shadows.shadowData = &subs_.shadowManager->shadowData();
+    p.shadows.shadowSettings =
+        subs_.guiManager ? subs_.guiManager->shadowSettings()
+                         : container::gpu::ShadowSettings{};
+    p.shadows.shadowManager = subs_.shadowManager.get();
   }
   if (subs_.shadowCullManager) {
     if (subs_.shadowManager) {
@@ -1331,24 +1446,26 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
           imageIndex, subs_.shadowManager->shadowCullUbo(imageIndex).buffer,
           sizeof(container::gpu::ShadowCullData));
     }
-    p.shadowCullManager = subs_.shadowCullManager.get();
-    p.useGpuShadowCull = subs_.shadowCullManager->isReady();
+    p.shadows.shadowCullManager = subs_.shadowCullManager.get();
+    p.shadows.useGpuShadowCull = subs_.shadowCullManager->isReady();
   }
-  p.useShadowSecondaryCommandBuffers =
+  p.shadows.useShadowSecondaryCommandBuffers =
       svc_.commandBufferManager.secondaryWorkerCount() >=
       container::gpu::kShadowCascadeCount;
   for (uint32_t cascadeIndex = 0;
        cascadeIndex < container::gpu::kShadowCascadeCount; ++cascadeIndex) {
-    p.shadowSecondaryCommandBuffers[cascadeIndex] =
+    p.shadows.shadowSecondaryCommandBuffers[cascadeIndex] =
         svc_.commandBufferManager.secondaryBuffer(imageIndex, cascadeIndex, 0);
   }
-  p.gpuCullManager = subs_.gpuCullManager.get();
-  p.bloomManager = subs_.bloomManager.get();
-  p.exposureSettings =
+  p.services.gpuCullManager = subs_.gpuCullManager.get();
+  p.services.bloomManager = subs_.bloomManager.get();
+  p.services.telemetry = subs_.rendererTelemetry.get();
+  p.services.gpuProfiler = subs_.renderPassGpuProfiler.get();
+  p.postProcess.exposureSettings =
       subs_.guiManager ? subs_.guiManager->exposureSettings()
                        : exposureSettingsFromConfig(svc_.config);
-  p.objectBuffer = buffers_.object.buffer;
-  p.objectBufferSize =
+  p.scene.objectBuffer = buffers_.object.buffer;
+  p.scene.objectBufferSize =
       sizeof(container::gpu::ObjectData) * buffers_.objectCapacity;
   if (screenshot_.pending) {
     p.screenshot.enabled = true;

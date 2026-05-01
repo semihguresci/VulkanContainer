@@ -46,6 +46,16 @@ struct AuthoredDirectionalLight {
   glm::vec4 colorIntensity{1.0f, 1.0f, 1.0f, 1.0f};
 };
 
+struct MaterialRenderProperties {
+  uint32_t gpuMaterialIndex{0};
+  bool transparent{false};
+  bool alphaMasked{false};
+  bool doubleSided{false};
+  bool specularGlossiness{false};
+  bool unlit{false};
+  float heightScale{0.0f};
+};
+
 class SceneManager {
  public:
   SceneManager(container::gpu::AllocationManager& allocationManager,
@@ -100,6 +110,8 @@ class SceneManager {
   }
   bool isDefaultTestSceneActive() const;
   void populateSceneGraph(SceneGraph& sceneGraph) const;
+  [[nodiscard]] MaterialRenderProperties materialRenderProperties(
+      uint32_t materialIndex) const;
 
   glm::vec4 resolveMaterialColor(uint32_t materialIndex) const;
   glm::vec4 resolveMaterialEmissive(uint32_t materialIndex) const;

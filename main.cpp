@@ -98,6 +98,10 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.directionalIntensity =
           parseFloat(requireValue(argc, argv, i, arg), arg);
       config.hasDirectionalIntensityOverride = true;
+    } else if (arg == "--validation") {
+      config.enableValidationLayers = true;
+    } else if (arg == "--no-validation") {
+      config.enableValidationLayers = false;
     } else if (arg == "--no-ui") {
       config.enableGui = false;
     } else if (arg == "--hidden") {

@@ -30,6 +30,8 @@ class FrameResourceManager;
 class GraphicsPipelineBuilder;
 class GpuCullManager;
 class OitManager;
+class RenderPassGpuProfiler;
+class RendererTelemetry;
 class SceneController;
 class ShadowCullManager;
 class ShadowManager;
@@ -129,6 +131,8 @@ class RendererFrontend {
     std::unique_ptr<ExposureManager>                       exposureManager;
     std::unique_ptr<GraphicsPipelineBuilder>             pipelineBuilder;
     std::unique_ptr<FrameRecorder>                      frameRecorder;
+    std::unique_ptr<RenderPassGpuProfiler>               renderPassGpuProfiler;
+    std::unique_ptr<RendererTelemetry>                   rendererTelemetry;
     std::unique_ptr<container::ui::GuiManager>          guiManager;
     std::unique_ptr<container::gpu::FrameSyncManager>   frameSyncManager;
   };
@@ -160,6 +164,7 @@ class RendererFrontend {
     container::gpu::AllocatedBuffer object{};
     size_t                          objectCapacity{0};
     container::gpu::CameraData      cameraData{};
+    bool                            shadowObjectDescriptorReady{false};
   };
   SceneBufferState buffers_{};
 
@@ -171,6 +176,7 @@ class RendererFrontend {
   struct FrameState {
     std::vector<VkFence> imagesInFlight;
     uint32_t             currentFrame{0};
+    uint64_t             submittedFrameCount{0};
   };
   FrameState frame_{};
 
