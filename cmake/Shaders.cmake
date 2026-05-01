@@ -4,22 +4,18 @@
 set(SHADERS_DIR "${CMAKE_SOURCE_DIR}/shaders")
 set(COMPILED_SHADERS_DIR "${CMAKE_BINARY_DIR}/spv_shaders")
 
-if(NOT TARGET glslang::validator)
-    add_executable(glslang::validator IMPORTED GLOBAL)
-endif()
-
-find_program(GLSLANG_VALIDATOR
-    glslangValidator
-    HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
-    REQUIRED
-)
-set_property(TARGET glslang::validator PROPERTY IMPORTED_LOCATION "${GLSLANG_VALIDATOR}")
-
-find_program(SLANGC_EXECUTABLE
+find_program(SLANGC_VULKAN_SDK_EXECUTABLE
     slangc
     HINTS "$ENV{VULKAN_SDK}/Bin" "$ENV{VULKAN_SDK}/bin"
-    REQUIRED
+    NO_DEFAULT_PATH
 )
+
+if(SLANGC_VULKAN_SDK_EXECUTABLE)
+    set(SLANGC_EXECUTABLE "${SLANGC_VULKAN_SDK_EXECUTABLE}" CACHE FILEPATH
+        "Slang compiler" FORCE)
+else()
+    find_program(SLANGC_EXECUTABLE slangc REQUIRED)
+endif()
 
 if(NOT SLANGC_EXECUTABLE)
     message(WARNING "slangc not found — shader compilation disabled")
@@ -37,10 +33,34 @@ set(SLANG_SPIRV_FLAGS
 )
 
 file(GLOB SLANG_SOURCES CONFIGURE_DEPENDS "${SHADERS_DIR}/*.slang")
+set(SLANG_INCLUDE_SOURCES
+    "${SHADERS_DIR}/surface_normal_common.slang"
+    "${SHADERS_DIR}/pbr_material_common.slang"
+    "${SHADERS_DIR}/object_data_common.slang"
+    "${SHADERS_DIR}/material_data_common.slang"
+    "${SHADERS_DIR}/alpha_mask_common.slang"
+    "${SHADERS_DIR}/object_index_common.slang"
+    "${SHADERS_DIR}/brdf_common.slang"
+    "${SHADERS_DIR}/area_light_common.slang"
+    "${SHADERS_DIR}/lighting_structs.slang"
+    "${SHADERS_DIR}/shadow_common.slang"
+    "${SHADERS_DIR}/oit_common.slang"
+    "${SHADERS_DIR}/push_constants_common.slang"
+    "${SHADERS_DIR}/draw_indirect_common.slang"
+)
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/surface_normal_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/pbr_material_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/object_data_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/material_data_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/alpha_mask_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/object_index_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/brdf_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/area_light_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/lighting_structs\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/shadow_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/oit_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/push_constants_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/draw_indirect_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/tile_light_cull\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/brdf_lut\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/equirect_to_cubemap\\.slang$")
@@ -54,6 +74,8 @@ list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/occlusion_cull\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/shadow_cull\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/bloom_downsample\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/bloom_upsample\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/exposure_histogram\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/exposure_adapt\\.slang$")
 
 if(NOT SLANG_SOURCES)
     message(WARNING "No Slang shaders found in ${SHADERS_DIR}")
@@ -217,11 +239,25 @@ if(EXISTS "${BLOOM_UPSAMPLE_SOURCE}")
         SHADER_BUILD_SCRIPT_CONTENT "${BLOOM_UPSAMPLE_SOURCE}" "computeMain" "${BLOOM_UPSAMPLE_OUTPUT}")
 endif()
 
+set(EXPOSURE_HISTOGRAM_SOURCE "${SHADERS_DIR}/exposure_histogram.slang")
+if(EXISTS "${EXPOSURE_HISTOGRAM_SOURCE}")
+    set(EXPOSURE_HISTOGRAM_OUTPUT "${COMPILED_SHADERS_DIR}/exposure_histogram.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${EXPOSURE_HISTOGRAM_SOURCE}" "computeMain" "${EXPOSURE_HISTOGRAM_OUTPUT}")
+endif()
+
+set(EXPOSURE_ADAPT_SOURCE "${SHADERS_DIR}/exposure_adapt.slang")
+if(EXISTS "${EXPOSURE_ADAPT_SOURCE}")
+    set(EXPOSURE_ADAPT_OUTPUT "${COMPILED_SHADERS_DIR}/exposure_adapt.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${EXPOSURE_ADAPT_SOURCE}" "computeMain" "${EXPOSURE_ADAPT_OUTPUT}")
+endif()
+
 file(WRITE "${SHADER_BUILD_SCRIPT}" "${SHADER_BUILD_SCRIPT_CONTENT}")
 
 add_custom_target(shaders_all
     COMMAND ${CMAKE_COMMAND} -P "${SHADER_BUILD_SCRIPT}"
-    DEPENDS ${SLANG_SOURCES} "${CMAKE_CURRENT_LIST_FILE}"
+    DEPENDS ${SLANG_SOURCES} ${SLANG_INCLUDE_SOURCES} "${CMAKE_CURRENT_LIST_FILE}"
     COMMENT "Rebuilding all Slang shaders"
     VERBATIM
 )

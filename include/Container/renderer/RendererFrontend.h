@@ -7,6 +7,7 @@
 #include "Container/utility/VulkanMemoryManager.h"
 
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
@@ -23,6 +24,7 @@ class BloomManager;
 class CameraController;
 class CommandBufferManager;
 class EnvironmentManager;
+class ExposureManager;
 class FrameRecorder;
 class FrameResourceManager;
 class GraphicsPipelineBuilder;
@@ -68,14 +70,9 @@ struct RendererFrontendCreateInfo {
   container::window::InputManager*        inputManager{nullptr};
 };
 
-// RendererFrontend owns the complete Vulkan rendering pipeline.
-// It is constructed with a live VulkanContextResult + window surface and
-// manages all subsystems from render passes through frame submission.
-//
-// HelloTriangleApplication is responsible only for:
-//   - Window + GLFW lifecycle
-//   - VulkanContextInitializer::initialize()
-//   - Constructing and driving RendererFrontend
+// RendererFrontend owns the renderer-facing lifetime graph. The application
+// handles window/input setup, while this class creates render passes, frame
+// resources, scene systems, pipelines, and per-frame submission state.
 class RendererFrontend {
  public:
   explicit RendererFrontend(RendererFrontendCreateInfo info);
@@ -97,8 +94,11 @@ class RendererFrontend {
   // Process keyboard / camera input for this tick.
   void processInput(float deltaTime);
 
+  // Capture the next submitted swapchain image to an sRGB PNG.
+  void requestScreenshot(std::filesystem::path outputPath);
+
   // Scene operations forwarded from the application.
-  bool reloadSceneModel(const std::string& path);
+  bool reloadSceneModel(const std::string& path, float importScale = 1.0f);
 
   // Shutdown: wait idle and release all Vulkan resources in dependency order.
   void shutdown();
@@ -110,7 +110,9 @@ class RendererFrontend {
   const SceneState& sceneState() const { return sceneState_; }
 
  private:
-  // All heap-allocated subsystems owned by the frontend.
+  // Owned subsystems are listed roughly in construction/use order. shutdown()
+  // releases them in dependency-aware order because many destructors touch
+  // Vulkan objects owned by earlier services.
   struct OwnedSubsystems {
     std::unique_ptr<RenderPassManager>                  renderPassManager;
     std::unique_ptr<OitManager>                         oitManager;
@@ -124,13 +126,16 @@ class RendererFrontend {
     std::unique_ptr<EnvironmentManager>                  environmentManager;
     std::unique_ptr<GpuCullManager>                      gpuCullManager;
     std::unique_ptr<BloomManager>                          bloomManager;
+    std::unique_ptr<ExposureManager>                       exposureManager;
     std::unique_ptr<GraphicsPipelineBuilder>             pipelineBuilder;
     std::unique_ptr<FrameRecorder>                      frameRecorder;
     std::unique_ptr<container::ui::GuiManager>          guiManager;
     std::unique_ptr<container::gpu::FrameSyncManager>   frameSyncManager;
   };
 
-  // External services passed in at construction (not owned).
+  // External services passed in at construction. These must outlive the
+  // frontend; they wrap the device, swapchain, allocator, command pool, and
+  // app configuration supplied by the application layer.
   struct BorrowedServices {
     VulkanContextResult&                  ctx;
     container::gpu::PipelineManager&     pipelineManager;
@@ -166,9 +171,18 @@ class RendererFrontend {
   struct FrameState {
     std::vector<VkFence> imagesInFlight;
     uint32_t             currentFrame{0};
-    uint32_t             exactOitNodeCapacityFloor{0};
   };
   FrameState frame_{};
+
+  struct ScreenshotState {
+    std::filesystem::path outputPath{};
+    bool pending{false};
+    container::gpu::AllocatedBuffer readbackBuffer{};
+    VkDeviceSize readbackSize{0};
+    VkExtent2D extent{};
+    VkFormat format{VK_FORMAT_UNDEFINED};
+  };
+  ScreenshotState screenshot_{};
 
   // ---- internal init helpers --------------------------------------------------
   void createRenderPasses();
@@ -184,9 +198,11 @@ class RendererFrontend {
   // ---- per-frame helpers ------------------------------------------------------
   void updateCameraBuffer(uint32_t imageIndex);
   void updateObjectBuffer();
-  void updateFrameDescriptorSets();
+  void updateFrameDescriptorSets(uint32_t imageIndex = UINT32_MAX);
   void destroyGBufferResources();
   bool growExactOitNodePoolIfNeeded(uint32_t imageIndex);
+  void ensureScreenshotReadbackBuffer(VkExtent2D extent, VkFormat format);
+  void writePendingScreenshotPng();
   void presentSceneControls();
   void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
   [[nodiscard]] FrameRecordParams buildFrameRecordParams(uint32_t imageIndex);

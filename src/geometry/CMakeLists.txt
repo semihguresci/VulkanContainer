@@ -1,5 +1,5 @@
 # Geometry component
-add_library(VulkanContainer_geometry
+add_library(VulkanSceneRenderer_geometry
     GltfModelLoader.cpp
     Mesh.cpp
     Model.cpp
@@ -7,14 +7,14 @@ add_library(VulkanContainer_geometry
     vma_impl.cpp 
     stb_impl.cpp)
 
-target_compile_features(VulkanContainer_geometry PUBLIC cxx_std_23)
+target_compile_features(VulkanSceneRenderer_geometry PUBLIC cxx_std_23)
 
 
-target_include_directories(VulkanContainer_geometry PUBLIC
+target_include_directories(VulkanSceneRenderer_geometry PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/../../include/
 )
 
-target_link_libraries(VulkanContainer_geometry PUBLIC
+target_link_libraries(VulkanSceneRenderer_geometry PUBLIC
     Dep_VulkanCore
     Dep_Math
     Dep_SceneIO

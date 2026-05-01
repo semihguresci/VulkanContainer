@@ -2,6 +2,7 @@
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/FileLoader.h"
 #include "Container/utility/PipelineManager.h"
+#include "Container/utility/SceneData.h"
 #include "Container/utility/ShaderModule.h"
 #include "Container/utility/VulkanDevice.h"
 
@@ -11,6 +12,9 @@
 #include <stdexcept>
 
 namespace container::renderer {
+
+using container::gpu::BloomDownsamplePushConstants;
+using container::gpu::BloomUpsamplePushConstants;
 
 BloomManager::BloomManager(
     std::shared_ptr<container::gpu::VulkanDevice> device,
@@ -93,6 +97,42 @@ void BloomManager::createTextures(uint32_t width, uint32_t height) {
     h = std::max(h / 2u, 1u);
   }
 
+  for (uint32_t i = 0; i + 1 < mipCount_; ++i) {
+    MipLevel mip{};
+    mip.width = mips_[i].width;
+    mip.height = mips_[i].height;
+
+    VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    ii.imageType   = VK_IMAGE_TYPE_2D;
+    ii.format      = VK_FORMAT_R16G16B16A16_SFLOAT;
+    ii.extent      = {mip.width, mip.height, 1};
+    ii.mipLevels   = 1;
+    ii.arrayLayers = 1;
+    ii.samples     = VK_SAMPLE_COUNT_1_BIT;
+    ii.tiling      = VK_IMAGE_TILING_OPTIMAL;
+    ii.usage       = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+    ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+    VmaAllocationCreateInfo ai{};
+    ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+    if (vmaCreateImage(allocationManager_.memoryManager()->allocator(), &ii, &ai,
+                       &mip.image, &mip.allocation, nullptr) != VK_SUCCESS)
+      throw std::runtime_error("failed to create bloom upsample image");
+
+    VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    vi.image    = mip.image;
+    vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    vi.format   = VK_FORMAT_R16G16B16A16_SFLOAT;
+    vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+    if (vkCreateImageView(device_->device(), &vi, nullptr, &mip.view) != VK_SUCCESS)
+      throw std::runtime_error("failed to create bloom upsample view");
+
+    upsampleMips_.push_back(mip);
+    upsampleViews_.push_back(mip.view);
+  }
+
   // Transition all mip images to GENERAL layout.
   {
     VkCommandBuffer cmd{VK_NULL_HANDLE};
@@ -106,7 +146,7 @@ void BloomManager::createTextures(uint32_t width, uint32_t height) {
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     vkBeginCommandBuffer(cmd, &bi);
 
-    for (auto& m : mips_) {
+    auto transitionToGeneral = [cmd](const MipLevel& m) {
       VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
       barrier.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
       barrier.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
@@ -119,7 +159,10 @@ void BloomManager::createTextures(uint32_t width, uint32_t height) {
       vkCmdPipelineBarrier(cmd,
           VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
           0, 0, nullptr, 0, nullptr, 1, &barrier);
-    }
+    };
+
+    for (auto& m : mips_) transitionToGeneral(m);
+    for (auto& m : upsampleMips_) transitionToGeneral(m);
 
     vkEndCommandBuffer(cmd);
 
@@ -208,28 +251,6 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
 
   VkDevice dev = device_->device();
 
-  struct DownsamplePushConstants {
-    uint32_t srcWidth;
-    uint32_t srcHeight;
-    uint32_t dstWidth;
-    uint32_t dstHeight;
-    float    threshold;
-    float    knee;
-    uint32_t mipLevel;
-    uint32_t pad0;
-  };
-
-  struct UpsamplePushConstants {
-    uint32_t srcWidth;
-    uint32_t srcHeight;
-    uint32_t dstWidth;
-    uint32_t dstHeight;
-    float    filterRadius;
-    float    bloomIntensity;
-    uint32_t isFinalPass;
-    uint32_t pad0;
-  };
-
   // ---- Downsample chain ----
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, downsamplePipeline_);
 
@@ -274,7 +295,7 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
     uint32_t srcW = (i == 0) ? sceneWidth : mips_[i - 1].width;
     uint32_t srcH = (i == 0) ? sceneHeight : mips_[i - 1].height;
 
-    DownsamplePushConstants pc{};
+    BloomDownsamplePushConstants pc{};
     pc.srcWidth  = srcW;
     pc.srcHeight = srcH;
     pc.dstWidth  = mips_[i].width;
@@ -284,7 +305,7 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
     pc.mipLevel  = i;
 
     vkCmdPushConstants(cmd, downsamplePipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
-                       0, sizeof(DownsamplePushConstants), &pc);
+                       0, sizeof(BloomDownsamplePushConstants), &pc);
 
     uint32_t dispatchX = (mips_[i].width + 7) / 8;
     uint32_t dispatchY = (mips_[i].height + 7) / 8;
@@ -306,7 +327,7 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
   }
 
   // ---- Upsample chain ----
-  if (mipCount_ < 2) return;
+  if (mipCount_ < 2 || upsampleViews_.size() != mipCount_ - 1) return;
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, upsamplePipeline_);
 
@@ -316,7 +337,9 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
     uint32_t setIdx = mipCount_ - 1 - i;  // upsample set index
 
     VkDescriptorImageInfo srcInfo{};
-    srcInfo.imageView   = mipViews_[srcIdx];
+    srcInfo.imageView   = srcIdx < upsampleViews_.size()
+                              ? upsampleViews_[srcIdx]
+                              : mipViews_[srcIdx];
     srcInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkDescriptorImageInfo sampInfo{};
@@ -327,7 +350,7 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
     dstReadInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     VkDescriptorImageInfo dstWriteInfo{};
-    dstWriteInfo.imageView   = mipViews_[dstIdx];
+    dstWriteInfo.imageView   = upsampleViews_[dstIdx];
     dstWriteInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     std::array<VkWriteDescriptorSet, 4> w{};
@@ -360,7 +383,7 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, upsamplePipelineLayout_,
                             0, 1, &upsampleSets_[setIdx], 0, nullptr);
 
-    UpsamplePushConstants pc{};
+    BloomUpsamplePushConstants pc{};
     pc.srcWidth       = mips_[srcIdx].width;
     pc.srcHeight      = mips_[srcIdx].height;
     pc.dstWidth       = mips_[dstIdx].width;
@@ -370,7 +393,7 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
     pc.isFinalPass    = (dstIdx == 0) ? 1 : 0;
 
     vkCmdPushConstants(cmd, upsamplePipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
-                       0, sizeof(UpsamplePushConstants), &pc);
+                       0, sizeof(BloomUpsamplePushConstants), &pc);
 
     uint32_t dispatchX = (mips_[dstIdx].width + 7) / 8;
     uint32_t dispatchY = (mips_[dstIdx].height + 7) / 8;
@@ -380,7 +403,7 @@ void BloomManager::dispatch(VkCommandBuffer cmd,
     VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     barrier.oldLayout     = VK_IMAGE_LAYOUT_GENERAL;
     barrier.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.image         = mips_[dstIdx].image;
+    barrier.image         = upsampleMips_[dstIdx].image;
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -428,16 +451,9 @@ void BloomManager::createPipelines(const std::filesystem::path& shaderDir) {
     downsampleSetLayout_ = pipelineManager_.createDescriptorSetLayout(
         {bindings.begin(), bindings.end()}, flags);
 
-    struct DownsamplePushConstants {
-      uint32_t srcWidth, srcHeight;
-      uint32_t dstWidth, dstHeight;
-      float    threshold, knee;
-      uint32_t mipLevel, pad0;
-    };
-
     VkPushConstantRange pcRange{};
     pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pcRange.size       = sizeof(DownsamplePushConstants);
+    pcRange.size       = sizeof(BloomDownsamplePushConstants);
 
     downsamplePipelineLayout_ = pipelineManager_.createPipelineLayout(
         {downsampleSetLayout_}, {pcRange});
@@ -473,16 +489,9 @@ void BloomManager::createPipelines(const std::filesystem::path& shaderDir) {
     upsampleSetLayout_ = pipelineManager_.createDescriptorSetLayout(
         {bindings.begin(), bindings.end()}, flags);
 
-    struct UpsamplePushConstants {
-      uint32_t srcWidth, srcHeight;
-      uint32_t dstWidth, dstHeight;
-      float    filterRadius, bloomIntensity;
-      uint32_t isFinalPass, pad0;
-    };
-
     VkPushConstantRange pcRange{};
     pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pcRange.size       = sizeof(UpsamplePushConstants);
+    pcRange.size       = sizeof(BloomUpsamplePushConstants);
 
     upsamplePipelineLayout_ = pipelineManager_.createPipelineLayout(
         {upsampleSetLayout_}, {pcRange});
@@ -531,6 +540,16 @@ void BloomManager::destroyTextures() {
   }
   mips_.clear();
   mipViews_.clear();
+  for (auto& m : upsampleMips_) {
+    if (m.view != VK_NULL_HANDLE) {
+      vkDestroyImageView(dev, m.view, nullptr);
+    }
+    if (m.image != VK_NULL_HANDLE) {
+      vmaDestroyImage(allocationManager_.memoryManager()->allocator(), m.image, m.allocation);
+    }
+  }
+  upsampleMips_.clear();
+  upsampleViews_.clear();
   mipCount_ = 0;
 }
 

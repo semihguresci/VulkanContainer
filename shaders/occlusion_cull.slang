@@ -4,43 +4,10 @@
 // to the indirect draw buffer for the G-Buffer pass.
 
 #include "lighting_structs.slang"
+#include "push_constants_common.slang"
+#include "draw_indirect_common.slang"
 
-struct ObjectBuffer
-{
-    column_major float4x4 model;
-    column_major float4x4 normalMatrix;
-    float4 color;
-    float3 emissiveColor;
-    float emissiveStrength;
-    float2 metallicRoughness;
-    float alphaCutoff;
-    float normalTextureScale;
-    float occlusionStrength;
-    uint baseColorTextureIndex;
-    uint normalTextureIndex;
-    uint occlusionTextureIndex;
-    uint emissiveTextureIndex;
-    uint metallicRoughnessTextureIndex;
-    uint flags;
-    float4 boundingSphere;
-};
-
-struct DrawIndexedIndirectCommand
-{
-    uint indexCount;
-    uint instanceCount;
-    uint firstIndex;
-    int  vertexOffset;
-    uint firstInstance;
-};
-
-struct CullPushConstants
-{
-    uint objectCount;
-    uint pad0;
-    uint pad1;
-    uint pad2;
-};
+#include "object_data_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<CullPushConstants> pc;
@@ -143,26 +110,54 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
             float maxExtent = max(sizePixels.x, sizePixels.y);
             float mipLevel = max(0.0, ceil(log2(maxExtent)) - 1.0);
 
-            float2 sampleUV = (minUV + maxUV) * 0.5;
-            float hizDepth = gHiZPyramid.SampleLevel(gHiZSampler, sampleUV, mipLevel);
-            float hizDepth01 = gHiZPyramid.SampleLevel(gHiZSampler, minUV, mipLevel);
-            float hizDepth10 = gHiZPyramid.SampleLevel(gHiZSampler, maxUV, mipLevel);
-            float hizDepth11 =
-                gHiZPyramid.SampleLevel(gHiZSampler, float2(maxUV.x, minUV.y), mipLevel);
-
-            // Reverse-Z Hi-Z stores the minimum depth in the region, i.e. the
-            // farthest visible surface. If even the sphere point nearest the
-            // camera is still farther away than that surface, the whole sphere
-            // is occluded.
-            float conservativeHiZ = min(min(hizDepth, hizDepth01),
-                                        min(hizDepth10, hizDepth11));
-            // Keep the test biased toward visibility. A strict comparison can
-            // falsely reject thin reliefs or objects embedded near a wall after
-            // the depth prepass has populated Hi-Z with nearby surfaces.
-            const float visibilityBias = 0.001;
-            if (closestDepth + visibilityBias < conservativeHiZ)
+            // Large projected bounds are poor occlusion-cull candidates with a
+            // current-frame Hi-Z pyramid: wall reliefs and other attached
+            // details can share screen space with the occluder that was just
+            // written by the depth prepass. Keep those visible and let the
+            // hardware depth test reject fragments instead.
+            const float largeProjectedExtentPixels = 96.0;
+            if (maxExtent <= largeProjectedExtentPixels)
             {
-                visible = false;
+                float2 centerUV = (minUV + maxUV) * 0.5;
+                float2 minMaxXUV = float2(maxUV.x, minUV.y);
+                float2 maxMinXUV = float2(minUV.x, maxUV.y);
+                float2 midTopUV = float2(centerUV.x, minUV.y);
+                float2 midBottomUV = float2(centerUV.x, maxUV.y);
+                float2 midLeftUV = float2(minUV.x, centerUV.y);
+                float2 midRightUV = float2(maxUV.x, centerUV.y);
+
+                // Reverse-Z Hi-Z stores the minimum depth in the sampled
+                // region, i.e. the farthest visible surface. Use several
+                // samples over the projected bounds so elongated or edge-aligned
+                // meshes are not rejected by a single optimistic texel.
+                float conservativeHiZ = gHiZPyramid.SampleLevel(
+                    gHiZSampler, centerUV, mipLevel);
+                conservativeHiZ = min(conservativeHiZ,
+                    gHiZPyramid.SampleLevel(gHiZSampler, minUV, mipLevel));
+                conservativeHiZ = min(conservativeHiZ,
+                    gHiZPyramid.SampleLevel(gHiZSampler, maxUV, mipLevel));
+                conservativeHiZ = min(conservativeHiZ,
+                    gHiZPyramid.SampleLevel(gHiZSampler, minMaxXUV, mipLevel));
+                conservativeHiZ = min(conservativeHiZ,
+                    gHiZPyramid.SampleLevel(gHiZSampler, maxMinXUV, mipLevel));
+                conservativeHiZ = min(conservativeHiZ,
+                    gHiZPyramid.SampleLevel(gHiZSampler, midTopUV, mipLevel));
+                conservativeHiZ = min(conservativeHiZ,
+                    gHiZPyramid.SampleLevel(gHiZSampler, midBottomUV, mipLevel));
+                conservativeHiZ = min(conservativeHiZ,
+                    gHiZPyramid.SampleLevel(gHiZSampler, midLeftUV, mipLevel));
+                conservativeHiZ = min(conservativeHiZ,
+                    gHiZPyramid.SampleLevel(gHiZSampler, midRightUV, mipLevel));
+
+                // Keep the test biased toward visibility. A strict comparison
+                // can falsely reject thin reliefs or objects embedded near a
+                // wall after the depth prepass has populated Hi-Z with nearby
+                // surfaces.
+                const float visibilityBias = 0.005;
+                if (closestDepth + visibilityBias < conservativeHiZ)
+                {
+                    visible = false;
+                }
             }
         }
     }

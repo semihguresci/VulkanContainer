@@ -76,6 +76,7 @@ class ShadowCullManager {
 	uint32_t objectCount_{0};
   VkDeviceSize objectSsboSize_{0};
   VkDeviceSize shadowCullUboSize_{0};
+  std::vector<container::gpu::GpuDrawIndexedIndirectCommand> uploadScratch_{};
 
 	std::vector<VkBuffer> shadowCullBuffers_{};
 	VkBuffer objectSsboBuffer_{VK_NULL_HANDLE};

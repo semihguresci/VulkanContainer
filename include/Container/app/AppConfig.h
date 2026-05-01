@@ -10,6 +10,8 @@
 
 namespace container::app {
 
+// Sentinel used by SceneManager to build the local diagnostic scene from
+// multiple generated/sample assets instead of loading a single glTF file.
 inline constexpr std::string_view kDefaultSceneModelToken = "__default_test_scene__";
 inline constexpr std::array<std::string_view, 3> kDefaultSceneModelRelativePaths = {{
     "models/glTF-Sample-Models/2.0/Triangle/glTF/Triangle.gltf",
@@ -20,6 +22,8 @@ inline constexpr std::array<std::string_view, 3> kDefaultSceneModelRelativePaths
 inline constexpr std::string_view kDefaultEnvironmentHdrRelativePath =
     "hdr/citrus_orchard_road_puresky_4k.exr";
 
+// Runtime default for normal application startup. Tests can still exercise the
+// diagnostic scene through kDefaultSceneModelToken without changing this path.
 inline constexpr std::string_view kDefaultModelRelativePath =
     "models/glTF-Sample-Models/2.0/Sponza/glTF/Sponza.gltf";
 
@@ -27,9 +31,27 @@ struct AppConfig {
   uint32_t windowWidth{800};
   uint32_t windowHeight{600};
   uint32_t maxFramesInFlight{2};
+  // Upper bound for the per-object SSBO. This is scene capacity, not a draw-call budget.
   uint32_t maxSceneObjects{4096};
   bool enableValidationLayers{true};
+  bool enableGui{true};
+  bool windowVisible{true};
   std::string modelPath{std::string(kDefaultModelRelativePath)};
+  float importScale{1.0f};
+  std::string screenshotCapturePath{};
+  uint32_t screenshotWarmupFrames{8};
+  uint32_t screenshotCaptureFrame{9};
+  float screenshotFixedTimestepSeconds{1.0f / 60.0f};
+  bool hasCameraOverride{false};
+  std::array<float, 3> cameraPosition{0.0f, 0.0f, 3.0f};
+  std::array<float, 3> cameraTarget{0.0f, 0.0f, 0.0f};
+  float cameraVerticalFovDegrees{60.0f};
+  bool hasManualExposureOverride{false};
+  float manualExposure{0.25f};
+  bool hasEnvironmentIntensityOverride{false};
+  float environmentIntensity{1.0f};
+  bool hasDirectionalIntensityOverride{false};
+  float directionalIntensity{2.0f};
   std::vector<const char*> validationLayers{"VK_LAYER_KHRONOS_validation"};
   std::vector<const char*> deviceExtensions{
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,

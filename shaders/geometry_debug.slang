@@ -1,40 +1,14 @@
-struct CameraBuffer
-{
-    column_major float4x4 viewProj;
-    column_major float4x4 inverseViewProj;
-    float4 cameraWorldPosition;
-};
-
-struct ObjectBuffer
-{
-    column_major float4x4 model;
-    column_major float4x4 normalMatrix;
-    float4 color;
-    float3 emissiveColor;
-    float emissiveStrength;
-    float2 metallicRoughness;
-    float alphaCutoff;
-    float normalTextureScale;
-    float occlusionStrength;
-    uint baseColorTextureIndex;
-    uint normalTextureIndex;
-    uint occlusionTextureIndex;
-    uint emissiveTextureIndex;
-    uint metallicRoughnessTextureIndex;
-    uint flags;
-    float4 boundingSphere;
-};
+#include "lighting_structs.slang"
+#include "push_constants_common.slang"
+#include "object_data_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
 
-struct PushConstants
-{
-    uint objectIndex;
-};
+#include "object_index_common.slang"
 
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<BindlessPushConstants> pc;
 
 struct VSInput
 {
@@ -61,10 +35,11 @@ float3 hashColor(uint index)
 }
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
+                  uint startInstance : SV_StartInstanceLocation)
 {
     VSOutput output;
-    uint objectIndex = instanceID;
+    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID, startInstance);
     ObjectBuffer obj = uObjects[objectIndex];
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));

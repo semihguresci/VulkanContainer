@@ -1,83 +1,26 @@
-struct CameraBuffer
-{
-    column_major float4x4 viewProj;
-    column_major float4x4 inverseViewProj;
-    float4 cameraWorldPosition;
-};
-
-struct ObjectBuffer
-{
-    column_major float4x4 model;
-    column_major float4x4 normalMatrix;
-    float4 color;
-    float3 emissiveColor;
-    float emissiveStrength;
-    float2 metallicRoughness;
-    float alphaCutoff;
-    float normalTextureScale;
-    float occlusionStrength;
-    uint baseColorTextureIndex;
-    uint normalTextureIndex;
-    uint occlusionTextureIndex;
-    uint emissiveTextureIndex;
-    uint metallicRoughnessTextureIndex;
-    uint flags;
-    float4 boundingSphere;
-};
+#include "lighting_structs.slang"
+#include "push_constants_common.slang"
+#include "object_data_common.slang"
+#include "material_data_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
-[[vk::binding(2, 0)]] SamplerState baseSampler;
-[[vk::binding(3, 0)]] Texture2D materialTextures[];
+[[vk::binding(2, 0)]] SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT];
+[[vk::binding(3, 0)]] StructuredBuffer<GpuMaterial> uMaterials;
+[[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
+[[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
 
+#include "alpha_mask_common.slang"
+#include "object_index_common.slang"
+#include "pbr_material_common.slang"
 #include "surface_normal_common.slang"
 
-struct PushConstants
-{
-    uint objectIndex;
-};
-
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<BindlessPushConstants> pc;
 
 static const uint kObjectFlagAlphaMask = 0x1u;
 static const uint kObjectFlagTransparentOnly = 0x2u;
 static const uint kObjectFlagDoubleSided = 0x4u;
-
-float Bayer4x4Threshold(uint2 pixelCoord)
-{
-    uint index = (pixelCoord.x & 3u) | ((pixelCoord.y & 3u) << 2u);
-    uint bayer = 0u;
-    switch (index)
-    {
-    case 0u:  bayer = 0u;  break;
-    case 1u:  bayer = 8u;  break;
-    case 2u:  bayer = 2u;  break;
-    case 3u:  bayer = 10u; break;
-    case 4u:  bayer = 12u; break;
-    case 5u:  bayer = 4u;  break;
-    case 6u:  bayer = 14u; break;
-    case 7u:  bayer = 6u;  break;
-    case 8u:  bayer = 3u;  break;
-    case 9u:  bayer = 11u; break;
-    case 10u: bayer = 1u;  break;
-    case 11u: bayer = 9u;  break;
-    case 12u: bayer = 15u; break;
-    case 13u: bayer = 7u;  break;
-    case 14u: bayer = 13u; break;
-    default:  bayer = 5u;  break;
-    }
-    return (float(bayer) + 0.5) / 16.0;
-}
-
-bool AlphaMaskPass(float alpha, float cutoff, float4 pixelPosition)
-{
-    float alphaWidth = max(abs(ddx(alpha)) + abs(ddy(alpha)), 1e-4);
-    float coverage = saturate((alpha - cutoff) / alphaWidth + 0.5);
-    if (coverage <= 0.0) return false;
-    if (coverage >= 1.0) return true;
-    return coverage >= Bayer4x4Threshold(uint2(pixelPosition.xy));
-}
 
 struct VSInput
 {
@@ -86,6 +29,7 @@ struct VSInput
     [[vk::location(2)]] float2 inTexCoord;
     [[vk::location(3)]] float3 inNormal;
     [[vk::location(4)]] float4 inTangent;
+    [[vk::location(5)]] float2 inTexCoord1;
 };
 
 struct VSOutput
@@ -108,6 +52,14 @@ struct VSOutput
     [[vk::location(14)]] uint flags;
     [[vk::location(15)]] float3 worldNormal;
     [[vk::location(16)]] float4 worldTangent;
+    [[vk::location(17)]] uint roughnessTextureIndex;
+    [[vk::location(18)]] uint metalnessTextureIndex;
+    [[vk::location(19)]] uint specularTextureIndex;
+    [[vk::location(20)]] uint opacityTextureIndex;
+    [[vk::location(21)]] float opacityFactor;
+    [[vk::location(22)]] float specularFactor;
+    [[vk::location(23)]] uint objectIndex;
+    [[vk::location(24)]] float2 texCoord1;
 };
 
 struct PSOutput
@@ -116,38 +68,60 @@ struct PSOutput
     float4 normal : SV_Target1;
     float4 material : SV_Target2;
     float4 emissive : SV_Target3;
+    float4 specular : SV_Target4;
 };
 
 [shader("vertex")]
-VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
+                  uint startInstance : SV_StartInstanceLocation)
 {
     VSOutput output;
-    uint objectIndex = instanceID;
+    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID, startInstance);
     ObjectBuffer obj = uObjects[objectIndex];
+    GpuMaterial material = uMaterials[obj.objectInfo.x];
+    float2 heightTexCoord = ApplyGpuTextureTransform(
+        input.inTexCoord, input.inTexCoord1, material.heightTextureTransform);
 
-    float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
+    float3 objectPosition = ApplyHeightDisplacement(
+        input.inPosition, input.inNormal, heightTexCoord,
+        material.heightTextureIndex, material.heightScale,
+        material.heightOffset);
+    float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     float3x3 modelMatrix = (float3x3)obj.model;
-    float3 worldNormal = BuildWorldNormal((float3x3)obj.normalMatrix, input.inNormal);
+    float3 normalVector =
+        obj.normalMatrix0.xyz * input.inNormal.x +
+        obj.normalMatrix1.xyz * input.inNormal.y +
+        obj.normalMatrix2.xyz * input.inNormal.z;
+    float3 worldNormal = SafeNormalize(normalVector, float3(0.0, 1.0, 0.0));
     float4 worldTangent = BuildWorldTangent(modelMatrix, worldNormal, input.inTangent);
 
     output.pos = mul(uCamera.viewProj, worldPos);
-    output.baseColor = obj.color;
+    output.baseColor = material.color;
     output.texCoord = input.inTexCoord;
-    output.baseColorTextureIndex = obj.baseColorTextureIndex;
-    output.normalTextureIndex = obj.normalTextureIndex;
-    output.occlusionTextureIndex = obj.occlusionTextureIndex;
-    output.emissiveTextureIndex = obj.emissiveTextureIndex;
-    output.metallicRoughnessTextureIndex = obj.metallicRoughnessTextureIndex;
-    output.emissiveColor = obj.emissiveColor;
-    output.emissiveStrength = obj.emissiveStrength;
-    output.metallicRoughness = obj.metallicRoughness;
+    output.texCoord1 = input.inTexCoord1;
+    output.baseColorTextureIndex = material.baseColorTextureIndex;
+    output.normalTextureIndex = material.normalTextureIndex;
+    output.occlusionTextureIndex = material.occlusionTextureIndex;
+    output.emissiveTextureIndex = material.emissiveTextureIndex;
+    output.metallicRoughnessTextureIndex =
+        material.metallicRoughnessTextureIndex;
+    output.emissiveColor = material.emissiveColor;
+    output.emissiveStrength = material.emissiveStrength;
+    output.metallicRoughness = material.metallicRoughness;
     output.worldPos = worldPos.xyz;
-    output.alphaCutoff = obj.alphaCutoff;
-    output.normalTextureScale = obj.normalTextureScale;
-    output.occlusionStrength = obj.occlusionStrength;
-    output.flags = obj.flags;
+    output.alphaCutoff = material.alphaCutoff;
+    output.normalTextureScale = material.normalTextureScale;
+    output.occlusionStrength = material.occlusionStrength;
+    output.flags = material.flags | obj.objectInfo.y;
     output.worldNormal = worldNormal;
     output.worldTangent = worldTangent;
+    output.roughnessTextureIndex = material.roughnessTextureIndex;
+    output.metalnessTextureIndex = material.metalnessTextureIndex;
+    output.specularTextureIndex = material.specularTextureIndex;
+    output.opacityTextureIndex = material.opacityTextureIndex;
+    output.opacityFactor = material.opacityFactor;
+    output.specularFactor = material.specularFactor;
+    output.objectIndex = objectIndex;
     return output;
 }
 
@@ -159,16 +133,70 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         discard;
     }
 
+    uint materialIndex = uObjects[vertIn.objectIndex].objectInfo.x;
+    GpuMaterial material = uMaterials[materialIndex];
+    float2 baseColorTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.baseColorTextureTransform);
+    float2 normalTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.normalTextureTransform);
+    float2 occlusionTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.occlusionTextureTransform);
+    float2 emissiveTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.emissiveTextureTransform);
+    float2 metallicRoughnessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.metallicRoughnessTextureTransform);
+    float2 roughnessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.roughnessTextureTransform);
+    float2 metalnessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.metalnessTextureTransform);
+    float2 specularTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.specularTextureTransform);
+    float2 opacityTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.opacityTextureTransform);
+    float2 specularColorTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.specularColorTextureTransform);
+    float2 clearcoatTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.clearcoatTextureTransform);
+    float2 clearcoatRoughnessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.clearcoatRoughnessTextureTransform);
+    float2 sheenColorTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.sheenColorTextureTransform);
+    float2 sheenRoughnessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.sheenRoughnessTextureTransform);
+    float2 iridescenceTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.iridescenceTextureTransform);
+    float2 iridescenceThicknessTexCoord = ApplyGpuTextureTransform(
+        vertIn.texCoord, vertIn.texCoord1,
+        material.iridescenceThicknessTextureTransform);
+
     float3 baseColor = vertIn.baseColor.rgb;
     float baseAlpha = vertIn.baseColor.a;
 
     if (vertIn.baseColorTextureIndex != 0xffffffff)
     {
-        uint texIndex = NonUniformResourceIndex(vertIn.baseColorTextureIndex);
-        float4 texColor = materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord);
+        float4 texColor = SamplePbrTexture(
+            vertIn.baseColorTextureIndex, baseColorTexCoord, 1.0.xxxx);
         baseColor *= texColor.rgb;
         baseAlpha *= texColor.a;
     }
+    baseAlpha = EvaluateOpacity(
+        baseAlpha, vertIn.opacityTextureIndex, vertIn.opacityFactor,
+        opacityTexCoord);
 
     if ((vertIn.flags & kObjectFlagAlphaMask) != 0u &&
         !AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, vertIn.pos))
@@ -176,49 +204,116 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         discard;
     }
 
-    float sampledMetallic = vertIn.metallicRoughness.x;
-    float sampledRoughness = vertIn.metallicRoughness.y;
-    if (vertIn.metallicRoughnessTextureIndex != 0xffffffff)
-    {
-        uint texIndex = NonUniformResourceIndex(vertIn.metallicRoughnessTextureIndex);
-        float4 mrSample = materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord);
-        sampledRoughness *= mrSample.g;
-        sampledMetallic *= mrSample.b;
-    }
+    float sampledMetallic = EvaluateMetalness(
+        vertIn.metallicRoughness.x, vertIn.metallicRoughnessTextureIndex,
+        vertIn.metalnessTextureIndex, metallicRoughnessTexCoord,
+        metalnessTexCoord);
+    float sampledRoughness = EvaluateRoughness(
+        vertIn.metallicRoughness.y, vertIn.metallicRoughnessTextureIndex,
+        vertIn.roughnessTextureIndex, metallicRoughnessTexCoord,
+        roughnessTexCoord, vertIn.flags);
+    float specularFactor = EvaluateSpecularFactor(
+        vertIn.specularFactor, vertIn.specularTextureIndex, specularTexCoord);
+    float3 specularColor = EvaluateSpecularColor(
+        material.specularColorFactor.rgb, material.specularColorTextureIndex,
+        specularColorTexCoord, vertIn.specularTextureIndex, specularTexCoord);
+    float3 dielectricF0Color = EvaluateDielectricF0Color(
+        specularFactor, specularColor, material.ior);
+    float dielectricF0 = EvaluateDielectricF0(
+        specularFactor, specularColor, material.ior);
 
+    float faceSign =
+        ((vertIn.flags & kObjectFlagDoubleSided) != 0u && !isFrontFace)
+            ? -1.0 : 1.0;
     SurfaceNormalState surfaceNormal = EvaluateSurfaceNormal(
-        vertIn.worldNormal, vertIn.worldTangent, vertIn.texCoord,
-        vertIn.normalTextureIndex, vertIn.normalTextureScale);
-    if ((vertIn.flags & kObjectFlagDoubleSided) != 0u && !isFrontFace)
-    {
-        surfaceNormal.shadingNormal = -surfaceNormal.shadingNormal;
-    }
-    const bool thinSurface =
-        (vertIn.flags & (kObjectFlagAlphaMask | kObjectFlagDoubleSided)) ==
-        (kObjectFlagAlphaMask | kObjectFlagDoubleSided);
+        vertIn.worldNormal, vertIn.worldTangent, normalTexCoord,
+        vertIn.normalTextureIndex, vertIn.normalTextureScale, faceSign);
+    const bool thinSurface = IsThinSurfaceGpuMaterial(vertIn.flags);
+    const float materialMetadata =
+        EncodeGBufferMaterialMetadata(materialIndex, thinSurface);
 
     float occlusion = 1.0;
     if (vertIn.occlusionTextureIndex != 0xffffffff)
     {
-        uint texIndex = NonUniformResourceIndex(vertIn.occlusionTextureIndex);
-        float sampledOcclusion =
-            materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).r;
+        float sampledOcclusion = SamplePbrTexture(
+            vertIn.occlusionTextureIndex, occlusionTexCoord, 1.0.xxxx).r;
         occlusion = lerp(1.0, sampledOcclusion, saturate(vertIn.occlusionStrength));
     }
 
-    float3 emissive = vertIn.emissiveColor * vertIn.emissiveStrength;
+    float3 emissive = vertIn.emissiveColor;
     if (vertIn.emissiveTextureIndex != 0xffffffff)
     {
-        uint texIndex = NonUniformResourceIndex(vertIn.emissiveTextureIndex);
-        emissive += materialTextures[texIndex].Sample(baseSampler, vertIn.texCoord).rgb
-                    * vertIn.emissiveStrength;
+        emissive *= SamplePbrTexture(
+            vertIn.emissiveTextureIndex, emissiveTexCoord, 1.0.xxxx).rgb;
+    }
+    emissive *= vertIn.emissiveStrength;
+
+    float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - vertIn.worldPos,
+                             float3(0.0, 0.0, 1.0));
+    float NdotV = saturate(dot(surfaceNormal.shadingNormal, V));
+
+    float clearcoat = EvaluateClearcoatFactor(
+        material.clearcoatFactor, material.clearcoatTextureIndex,
+        clearcoatTexCoord);
+    if (clearcoat > 0.0)
+    {
+        float clearcoatRoughness = EvaluateClearcoatRoughness(
+            material.clearcoatRoughnessFactor,
+            material.clearcoatRoughnessTextureIndex,
+            clearcoatRoughnessTexCoord);
+        sampledRoughness =
+            lerp(sampledRoughness, min(sampledRoughness, clearcoatRoughness),
+                 clearcoat * 0.35);
+        dielectricF0 = saturate(dielectricF0 + clearcoat * 0.01);
+    }
+
+    float3 sheenColor = EvaluateSheenColor(
+        material.sheenColorFactor.rgb, material.sheenColorTextureIndex,
+        sheenColorTexCoord);
+    float sheenWeight = MaxComponent(sheenColor);
+    if (sheenWeight > 0.0)
+    {
+        float sheenRoughness = EvaluateSheenRoughness(
+            material.sheenRoughnessFactor,
+            material.sheenRoughnessTextureIndex, sheenRoughnessTexCoord);
+        float grazing = pow(1.0 - NdotV, 2.0) * (1.0 - 0.35 * sheenRoughness);
+        emissive += sheenColor * grazing * 0.08;
+        dielectricF0 = saturate(dielectricF0 + sheenWeight * grazing * 0.004);
+    }
+
+    float iridescence = EvaluateIridescenceFactor(
+        material.iridescenceFactor, material.iridescenceTextureIndex,
+        iridescenceTexCoord);
+    if (iridescence > 0.0)
+    {
+        float thickness = EvaluateIridescenceThickness(
+            material.iridescenceThicknessMinimum,
+            material.iridescenceThicknessMaximum,
+            material.iridescenceThicknessTextureIndex,
+            iridescenceThicknessTexCoord);
+        baseColor *= ApproximateIridescenceTint(
+            iridescence * 0.25, material.iridescenceIor, thickness, NdotV);
+        dielectricF0 = saturate(dielectricF0 + iridescence * 0.006);
+    }
+
+    if ((vertIn.flags & kPbrObjectFlagUnlit) != 0u)
+    {
+        PSOutput unlitOutput;
+        unlitOutput.albedo = float4(0.0, 0.0, 0.0, baseAlpha);
+        unlitOutput.normal =
+            float4(surfaceNormal.shadingNormal * 0.5 + 0.5, 1.0);
+        unlitOutput.material = float4(0.0, 1.0, 1.0, materialMetadata);
+        unlitOutput.emissive = float4(baseColor + emissive, 0.0);
+        unlitOutput.specular = 0.0.xxxx;
+        return unlitOutput;
     }
 
     PSOutput output;
     output.albedo = float4(baseColor, baseAlpha);
     output.normal = float4(surfaceNormal.shadingNormal * 0.5 + 0.5, 1.0);
     output.material = float4(sampledMetallic, sampledRoughness, occlusion,
-                             thinSurface ? 1.0 : 0.0);
-    output.emissive = float4(emissive, 1.0);
+                             materialMetadata);
+    output.emissive = float4(emissive, dielectricF0);
+    output.specular = float4(dielectricF0Color, dielectricF0);
     return output;
 }

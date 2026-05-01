@@ -10,6 +10,7 @@
 
 #include <array>
 #include <stdexcept>
+#include <vector>
 
 namespace container::renderer {
 
@@ -31,13 +32,39 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
     const PipelineRenderPasses&      renderPasses) const {
 
   // ---- shader loading helpers -----------------------------------------------
-  const auto loadModule = [&](const char* path) {
-    std::filesystem::path shaderPath(path);
-    if (shaderPath.is_relative()) {
-      shaderPath = shaderDir / shaderPath;
+  struct ShaderModuleStore {
+    VkDevice device{VK_NULL_HANDLE};
+    std::vector<VkShaderModule> modules{};
+
+    ~ShaderModuleStore() {
+      for (VkShaderModule module : modules) {
+        if (module != VK_NULL_HANDLE) {
+          vkDestroyShaderModule(device, module, nullptr);
+        }
+      }
     }
-    const auto fileData = container::util::readFile(shaderPath);
-    return container::gpu::createShaderModule(device_->device(), fileData);
+
+    VkShaderModule load(const std::filesystem::path& shaderBaseDir,
+                        const char* path) {
+      std::filesystem::path shaderPath(path);
+      if (shaderPath.is_relative()) {
+        shaderPath = shaderBaseDir / shaderPath;
+      }
+      const auto fileData = container::util::readFile(shaderPath);
+      modules.push_back(VK_NULL_HANDLE);
+      try {
+        modules.back() = container::gpu::createShaderModule(device, fileData);
+      } catch (...) {
+        modules.pop_back();
+        throw;
+      }
+      return modules.back();
+    }
+  };
+
+  ShaderModuleStore shaderModules{device_->device()};
+  const auto loadModule = [&](const char* path) {
+    return shaderModules.load(shaderDir, path);
   };
 
   const auto makeStage = [](VkShaderModule module, VkShaderStageFlagBits stage) {
@@ -153,6 +180,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   const auto bindingDesc   = container::geometry::Vertex::bindingDescription();
   const auto attribDescs   = container::geometry::Vertex::attributeDescriptions();
 
+  // Pipeline variants intentionally use the smallest vertex layout each shader
+  // needs. Depth and shadow passes skip normal/tangent attributes, while the
+  // G-buffer keeps the full layout for material and normal-map evaluation.
   VkPipelineVertexInputStateCreateInfo fullVertexInput{};
   fullVertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
   fullVertexInput.vertexBindingDescriptionCount   = 1;
@@ -163,7 +193,13 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
 
   std::array<VkVertexInputAttributeDescription, 1> posOnlyAttribs   = {attribDescs[0]};
   std::array<VkVertexInputAttributeDescription, 2> posTexAttribs    = {attribDescs[0], attribDescs[2]};
-  std::array<VkVertexInputAttributeDescription, 3> posTexNormAttribs= {attribDescs[0], attribDescs[2], attribDescs[3]};
+  std::array<VkVertexInputAttributeDescription, 4> posTexNormAttribs =
+      {attribDescs[0], attribDescs[2], attribDescs[3], attribDescs[5]};
+  std::array<VkVertexInputAttributeDescription, 3> posTexNormNoTex1Attribs =
+      {attribDescs[0], attribDescs[2], attribDescs[3]};
+  std::array<VkVertexInputAttributeDescription, 5> posTexNormTangentAttribs =
+      {attribDescs[0], attribDescs[2], attribDescs[3], attribDescs[4],
+       attribDescs[5]};
 
   VkPipelineVertexInputStateCreateInfo posOnlyInput = fullVertexInput;
   posOnlyInput.vertexAttributeDescriptionCount = 1;
@@ -174,8 +210,22 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   posTexInput.pVertexAttributeDescriptions    = posTexAttribs.data();
 
   VkPipelineVertexInputStateCreateInfo posTexNormInput = fullVertexInput;
-  posTexNormInput.vertexAttributeDescriptionCount = 3;
+  posTexNormInput.vertexAttributeDescriptionCount =
+      static_cast<uint32_t>(posTexNormAttribs.size());
   posTexNormInput.pVertexAttributeDescriptions    = posTexNormAttribs.data();
+
+  VkPipelineVertexInputStateCreateInfo posTexNormNoTex1Input =
+      fullVertexInput;
+  posTexNormNoTex1Input.vertexAttributeDescriptionCount =
+      static_cast<uint32_t>(posTexNormNoTex1Attribs.size());
+  posTexNormNoTex1Input.pVertexAttributeDescriptions =
+      posTexNormNoTex1Attribs.data();
+
+  VkPipelineVertexInputStateCreateInfo posTexNormTangentInput = fullVertexInput;
+  posTexNormTangentInput.vertexAttributeDescriptionCount =
+      static_cast<uint32_t>(posTexNormTangentAttribs.size());
+  posTexNormTangentInput.pVertexAttributeDescriptions =
+      posTexNormTangentAttribs.data();
 
   VkPipelineVertexInputStateCreateInfo emptyVertexInput{};
   emptyVertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -202,19 +252,24 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   sceneRaster.sType       = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
   sceneRaster.polygonMode = VK_POLYGON_MODE_FILL;
   sceneRaster.lineWidth   = 1.0f;
-  // Match Blender's material preview behavior for imported scenes. Some glTF
-  // assets include thin wall-mounted reliefs whose effective winding does not
-  // survive the full projection/viewport path consistently; culling them makes
-  // whole details, such as Sponza's lion reliefs, disappear.
-  sceneRaster.cullMode    = VK_CULL_MODE_NONE;
-  // glTF authors geometry with counter-clockwise front faces in clip/NDC
-  // space. Scene passes use a negative-height viewport, which flips Y during
-  // viewport transform, so those faces are clockwise in framebuffer space.
-  sceneRaster.frontFace   = VK_FRONT_FACE_CLOCKWISE;
+  // Imported glTF winding is repaired during load. Single-sided primitives,
+  // including open surfaces, use back-face culling; materially double-sided
+  // and ambiguous mixed-winding primitives route to the no-cull variants.
+  sceneRaster.cullMode    = VK_CULL_MODE_BACK_BIT;
+  // glTF authors geometry with counter-clockwise front faces. Keep that
+  // winding as the raster front face for scene passes; compensating for the
+  // negative-height viewport here causes the G-buffer to shade back faces and
+  // makes direct lighting reject visible surfaces.
+  sceneRaster.frontFace   = VK_FRONT_FACE_COUNTER_CLOCKWISE;
 
   VkPipelineRasterizationStateCreateInfo noCullRaster = sceneRaster;
   noCullRaster.cullMode = VK_CULL_MODE_NONE;
 
+  VkPipelineRasterizationStateCreateInfo frontCullRaster = sceneRaster;
+  frontCullRaster.cullMode = VK_CULL_MODE_FRONT_BIT;
+
+  // Fullscreen passes draw a synthetic triangle from SV_VertexID and should not
+  // inherit scene culling assumptions.
   VkPipelineRasterizationStateCreateInfo fullscreenRaster = sceneRaster;
   fullscreenRaster.cullMode = VK_CULL_MODE_NONE;
 
@@ -222,11 +277,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   normalLineRaster.cullMode = VK_CULL_MODE_NONE;
 
   VkPipelineRasterizationStateCreateInfo wfFbRaster = sceneRaster;
-  wfFbRaster.cullMode = VK_CULL_MODE_NONE;
 
   VkPipelineRasterizationStateCreateInfo wfRaster = sceneRaster;
   wfRaster.polygonMode = VK_POLYGON_MODE_LINE;
-  wfRaster.cullMode    = VK_CULL_MODE_NONE;
   wfRaster.lineWidth   = 1.0f;
 
   VkPipelineRasterizationStateCreateInfo wfDepthRaster = wfRaster;
@@ -241,6 +294,18 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   wfFbDepthRaster.depthBiasEnable         = VK_TRUE;
   wfFbDepthRaster.depthBiasConstantFactor = 1.0f;
   wfFbDepthRaster.depthBiasSlopeFactor    = 1.0f;
+
+  VkPipelineRasterizationStateCreateInfo wfFrontCullRaster = wfRaster;
+  wfFrontCullRaster.cullMode = VK_CULL_MODE_FRONT_BIT;
+
+  VkPipelineRasterizationStateCreateInfo wfDepthFrontCullRaster = wfDepthRaster;
+  wfDepthFrontCullRaster.cullMode = VK_CULL_MODE_FRONT_BIT;
+
+  VkPipelineRasterizationStateCreateInfo wfFbFrontCullRaster = wfFbRaster;
+  wfFbFrontCullRaster.cullMode = VK_CULL_MODE_FRONT_BIT;
+
+  VkPipelineRasterizationStateCreateInfo wfFbDepthFrontCullRaster = wfFbDepthRaster;
+  wfFbDepthFrontCullRaster.cullMode = VK_CULL_MODE_FRONT_BIT;
 
   // ---- multisample ----------------------------------------------------------
   VkPipelineMultisampleStateCreateInfo msaa{};
@@ -274,8 +339,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkPipelineColorBlendAttachmentState noColorAttach = opaqueAttach;
   noColorAttach.colorWriteMask = 0;
 
-  std::array<VkPipelineColorBlendAttachmentState, 4> gBufAttachs =
-      {opaqueAttach, opaqueAttach, opaqueAttach, opaqueAttach};
+  std::array<VkPipelineColorBlendAttachmentState, 5> gBufAttachs =
+      {opaqueAttach, opaqueAttach, opaqueAttach, opaqueAttach, opaqueAttach};
   std::array<VkPipelineColorBlendAttachmentState, 1> opaqueArr    = {opaqueAttach};
   std::array<VkPipelineColorBlendAttachmentState, 1> additiveArr  = {additiveAttach};
   std::array<VkPipelineColorBlendAttachmentState, 1> overlayArr   = {overlayAttach};
@@ -292,7 +357,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   };
 
   VkPipelineColorBlendStateCreateInfo noBlend      = makeBlend(nullptr, 0);
-  VkPipelineColorBlendStateCreateInfo gBufBlend    = makeBlend(gBufAttachs.data(), 4);
+  VkPipelineColorBlendStateCreateInfo gBufBlend =
+      makeBlend(gBufAttachs.data(), static_cast<uint32_t>(gBufAttachs.size()));
   VkPipelineColorBlendStateCreateInfo opaqueBlend  = makeBlend(opaqueArr.data(), 1);
   VkPipelineColorBlendStateCreateInfo addBlend     = makeBlend(additiveArr.data(), 1);
   VkPipelineColorBlendStateCreateInfo overlayBlend = makeBlend(overlayArr.data(), 1);
@@ -304,6 +370,10 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       VK_DYNAMIC_STATE_VIEWPORT,
       VK_DYNAMIC_STATE_SCISSOR,
       VK_DYNAMIC_STATE_LINE_WIDTH};
+  std::array<VkDynamicState, 3> shadowDynStates = {
+      VK_DYNAMIC_STATE_VIEWPORT,
+      VK_DYNAMIC_STATE_SCISSOR,
+      VK_DYNAMIC_STATE_DEPTH_BIAS};
   VkPipelineDynamicStateCreateInfo dynState{};
   dynState.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
   dynState.dynamicStateCount = static_cast<uint32_t>(dynStates.size());
@@ -313,6 +383,13 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   lineDynState.sType             = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
   lineDynState.dynamicStateCount = static_cast<uint32_t>(lineDynStates.size());
   lineDynState.pDynamicStates    = lineDynStates.data();
+
+  VkPipelineDynamicStateCreateInfo shadowDynState{};
+  shadowDynState.sType =
+      VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+  shadowDynState.dynamicStateCount =
+      static_cast<uint32_t>(shadowDynStates.size());
+  shadowDynState.pDynamicStates = shadowDynStates.data();
 
   // ---- depth/stencil states -------------------------------------------------
   VkPipelineDepthStencilStateCreateInfo depthPrepassDS{};
@@ -397,15 +474,19 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   // ---- pipeline layouts -----------------------------------------------------
   PipelineLayouts layouts;
   layouts.scene = pipelineManager_.createPipelineLayout(
-      {descriptorLayouts.scene}, {snPCR});
+      {descriptorLayouts.scene}, {scenePCR});
   layouts.transparent = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.scene, descriptorLayouts.light, descriptorLayouts.oit,
        descriptorLayouts.lighting},
       {scenePCR});
   layouts.lighting = pipelineManager_.createPipelineLayout(
-      {descriptorLayouts.lighting, descriptorLayouts.light}, {lightPCR});
+      {descriptorLayouts.lighting, descriptorLayouts.light,
+       descriptorLayouts.scene},
+      {lightPCR});
   layouts.tiledLighting = pipelineManager_.createPipelineLayout(
-      {descriptorLayouts.lighting, descriptorLayouts.tiled}, {tiledLightPCR});
+      {descriptorLayouts.lighting, descriptorLayouts.tiled,
+       descriptorLayouts.scene},
+      {tiledLightPCR});
   layouts.shadow = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.scene, descriptorLayouts.shadow}, {shadowPCR});
   layouts.postProcess = pipelineManager_.createPipelineLayout(
@@ -449,7 +530,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   // scene mesh base (transparent / debug variants)
   VkGraphicsPipelineCreateInfo meshPCI{};
   meshPCI.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-  meshPCI.pVertexInputState   = &fullVertexInput;
+  meshPCI.pVertexInputState   = &posTexNormTangentInput;
   meshPCI.pInputAssemblyState = &triAssembly;
   meshPCI.pViewportState      = &vpState;
   meshPCI.pRasterizationState = &sceneRaster;
@@ -459,15 +540,23 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   meshPCI.pDynamicState       = &dynState;
   meshPCI.layout              = layouts.transparent;
   meshPCI.renderPass          = renderPasses.lighting;
+  meshPCI.stageCount          = static_cast<uint32_t>(transStages.size());
+  meshPCI.pStages             = transStages.data();
 
   // ---- create pipelines -----------------------------------------------------
   GraphicsPipelines pipelines;
 
   // Depth prepass
+  scenePCI.pVertexInputState = &posTexNormInput;
   scenePCI.stageCount = static_cast<uint32_t>(depthPrepassStages.size());
   scenePCI.pStages    = depthPrepassStages.data();
   pipelines.depthPrepass = pipelineManager_.createGraphicsPipeline(
       scenePCI, "depth_prepass_pipeline");
+
+  VkGraphicsPipelineCreateInfo depthFrontCullPCI = scenePCI;
+  depthFrontCullPCI.pRasterizationState = &frontCullRaster;
+  pipelines.depthPrepassFrontCull = pipelineManager_.createGraphicsPipeline(
+      depthFrontCullPCI, "depth_prepass_front_cull_pipeline");
 
   VkGraphicsPipelineCreateInfo depthNoCullPCI = scenePCI;
   depthNoCullPCI.pRasterizationState = &noCullRaster;
@@ -479,13 +568,19 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   gBufPCI.stageCount          = static_cast<uint32_t>(gBufferStages.size());
   gBufPCI.pStages             = gBufferStages.data();
   // The deferred G-buffer shader consumes normal and tangent attributes in
-  // addition to position/UV, so it must use the full vertex layout.
-  gBufPCI.pVertexInputState   = &fullVertexInput;
+  // addition to position/UV. Vertex color is intentionally omitted because the
+  // shader does not read it.
+  gBufPCI.pVertexInputState   = &posTexNormTangentInput;
   gBufPCI.pDepthStencilState  = &gBufDS;
   gBufPCI.pColorBlendState    = &gBufBlend;
   gBufPCI.renderPass          = renderPasses.gBuffer;
   pipelines.gBuffer = pipelineManager_.createGraphicsPipeline(
       gBufPCI, "gbuffer_pipeline");
+
+  VkGraphicsPipelineCreateInfo gBufFrontCullPCI = gBufPCI;
+  gBufFrontCullPCI.pRasterizationState = &frontCullRaster;
+  pipelines.gBufferFrontCull = pipelineManager_.createGraphicsPipeline(
+      gBufFrontCullPCI, "gbuffer_front_cull_pipeline");
 
   VkGraphicsPipelineCreateInfo gBufNoCullPCI = gBufPCI;
   gBufNoCullPCI.pRasterizationState = &noCullRaster;
@@ -497,29 +592,34 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   // Shadow cascades render with a positive-height viewport, so they preserve
   // glTF's native CCW winding in framebuffer space.
   shadowRaster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
-  // Keep shadow caster winding policy aligned with the scene passes. Imported
-  // assets can contain reliefs and thin surfaces with mixed effective winding;
-  // culling them in the shadow pass makes those details stop casting.
-  shadowRaster.cullMode = VK_CULL_MODE_NONE;
+  // Keep shadow caster winding policy aligned with the single-sided scene path.
+  shadowRaster.cullMode = VK_CULL_MODE_BACK_BIT;
   shadowRaster.depthBiasEnable         = VK_TRUE;
-  // Negative bias for reverse-Z: pushes stored depth towards far (0.0),
-  // making the shadow surface appear slightly farther from the light
-  // to avoid self-shadowing.
-  shadowRaster.depthBiasConstantFactor = -4.0f;
-  shadowRaster.depthBiasSlopeFactor    = -1.5f;
+  shadowRaster.depthBiasConstantFactor = 0.0f;
+  shadowRaster.depthBiasClamp          = 0.0f;
+  shadowRaster.depthBiasSlopeFactor    = 0.0f;
 
   VkGraphicsPipelineCreateInfo sdPCI = scenePCI;
   sdPCI.stageCount          = static_cast<uint32_t>(sdStages.size());
   sdPCI.pStages             = sdStages.data();
-  sdPCI.pVertexInputState   = &posTexInput;
+  sdPCI.pVertexInputState   = &posTexNormInput;
   sdPCI.pInputAssemblyState = &triAssembly;
   sdPCI.pRasterizationState = &shadowRaster;
   sdPCI.pDepthStencilState  = &depthPrepassDS;
   sdPCI.pColorBlendState    = &noBlend;
+  sdPCI.pDynamicState       = &shadowDynState;
   sdPCI.layout              = layouts.shadow;
   sdPCI.renderPass          = renderPasses.shadow;
   pipelines.shadowDepth = pipelineManager_.createGraphicsPipeline(
       sdPCI, "shadow_depth_pipeline");
+
+  VkPipelineRasterizationStateCreateInfo shadowFrontCullRaster = shadowRaster;
+  shadowFrontCullRaster.cullMode = VK_CULL_MODE_FRONT_BIT;
+
+  VkGraphicsPipelineCreateInfo sdFrontCullPCI = sdPCI;
+  sdFrontCullPCI.pRasterizationState = &shadowFrontCullRaster;
+  pipelines.shadowDepthFrontCull = pipelineManager_.createGraphicsPipeline(
+      sdFrontCullPCI, "shadow_depth_front_cull_pipeline");
 
   VkPipelineRasterizationStateCreateInfo shadowNoCullRaster = shadowRaster;
   shadowNoCullRaster.cullMode = VK_CULL_MODE_NONE;
@@ -565,6 +665,11 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.transparent = pipelineManager_.createGraphicsPipeline(
       meshPCI, "transparent_pipeline");
 
+  VkGraphicsPipelineCreateInfo transparentFrontCullPCI = meshPCI;
+  transparentFrontCullPCI.pRasterizationState = &frontCullRaster;
+  pipelines.transparentFrontCull = pipelineManager_.createGraphicsPipeline(
+      transparentFrontCullPCI, "transparent_front_cull_pipeline");
+
   VkGraphicsPipelineCreateInfo transparentNoCullPCI = meshPCI;
   transparentNoCullPCI.pRasterizationState = &noCullRaster;
   pipelines.transparentNoCull = pipelineManager_.createGraphicsPipeline(
@@ -595,7 +700,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkGraphicsPipelineCreateInfo nvPCI = meshPCI;
   nvPCI.stageCount           = static_cast<uint32_t>(nvStages.size());
   nvPCI.pStages              = nvStages.data();
-  nvPCI.pVertexInputState    = &fullVertexInput;
+  nvPCI.pVertexInputState    = &posTexNormNoTex1Input;
   nvPCI.pInputAssemblyState  = &triAssembly;
   nvPCI.pColorBlendState     = &overlayBlend;
   nvPCI.pDepthStencilState   = &normalLineDS;
@@ -604,11 +709,23 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.normalValidation = pipelineManager_.createGraphicsPipeline(
       nvPCI, "normal_validation_pipeline");
 
+  VkGraphicsPipelineCreateInfo nvFrontCullPCI = nvPCI;
+  nvFrontCullPCI.pRasterizationState = &frontCullRaster;
+  pipelines.normalValidationFrontCull =
+      pipelineManager_.createGraphicsPipeline(
+          nvFrontCullPCI, "normal_validation_front_cull_pipeline");
+
+  VkGraphicsPipelineCreateInfo nvNoCullPCI = nvPCI;
+  nvNoCullPCI.pRasterizationState = &noCullRaster;
+  pipelines.normalValidationNoCull = pipelineManager_.createGraphicsPipeline(
+      nvNoCullPCI, "normal_validation_no_cull_pipeline");
+
   // Wireframe depth + wireframe no-depth
   const bool useNativeWireframe =
       device_->enabledFeatures().fillModeNonSolid == VK_TRUE;
 
   VkGraphicsPipelineCreateInfo wfPCI = meshPCI;
+  wfPCI.pVertexInputState   = &posTexNormNoTex1Input;
   wfPCI.pInputAssemblyState = &triAssembly;
   wfPCI.pColorBlendState    = &overlayBlend;
   wfPCI.layout              = layouts.wireframe;
@@ -629,6 +746,14 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       wfPCI, "wireframe_depth_pipeline");
 
   if (useNativeWireframe) {
+    wfPCI.pRasterizationState = &wfDepthFrontCullRaster;
+  } else {
+    wfPCI.pRasterizationState = &wfFbDepthFrontCullRaster;
+  }
+  pipelines.wireframeDepthFrontCull = pipelineManager_.createGraphicsPipeline(
+      wfPCI, "wireframe_depth_front_cull_pipeline");
+
+  if (useNativeWireframe) {
     wfPCI.pRasterizationState = &wfRaster;
   } else {
     wfPCI.pRasterizationState = &wfFbRaster;
@@ -638,11 +763,19 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.wireframeNoDepth = pipelineManager_.createGraphicsPipeline(
       wfPCI, "wireframe_no_depth_pipeline");
 
+  if (useNativeWireframe) {
+    wfPCI.pRasterizationState = &wfFrontCullRaster;
+  } else {
+    wfPCI.pRasterizationState = &wfFbFrontCullRaster;
+  }
+  pipelines.wireframeNoDepthFrontCull = pipelineManager_.createGraphicsPipeline(
+      wfPCI, "wireframe_no_depth_front_cull_pipeline");
+
   // Surface normal lines
   VkGraphicsPipelineCreateInfo snPCI = meshPCI;
   snPCI.stageCount           = static_cast<uint32_t>(snStages.size());
   snPCI.pStages              = snStages.data();
-  snPCI.pVertexInputState    = &fullVertexInput;
+  snPCI.pVertexInputState    = &posTexNormNoTex1Input;
   snPCI.pInputAssemblyState  = &triAssembly;
   snPCI.pRasterizationState  = &normalLineRaster;
   snPCI.pColorBlendState     = &overlayBlend;
@@ -657,12 +790,18 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkGraphicsPipelineCreateInfo onPCI = meshPCI;
   onPCI.stageCount           = static_cast<uint32_t>(onStages.size());
   onPCI.pStages              = onStages.data();
-  onPCI.pVertexInputState    = &posTexNormInput;
+  onPCI.pVertexInputState    = &posTexNormNoTex1Input;
   onPCI.pColorBlendState     = &overlayBlend;
   onPCI.pDepthStencilState   = &normalLineDS;
   onPCI.layout               = layouts.scene;
   pipelines.objectNormalDebug = pipelineManager_.createGraphicsPipeline(
       onPCI, "object_normal_debug_pipeline");
+
+  VkGraphicsPipelineCreateInfo onFrontCullPCI = onPCI;
+  onFrontCullPCI.pRasterizationState = &frontCullRaster;
+  pipelines.objectNormalDebugFrontCull =
+      pipelineManager_.createGraphicsPipeline(
+          onFrontCullPCI, "object_normal_debug_front_cull_pipeline");
 
   VkGraphicsPipelineCreateInfo onNoCullPCI = onPCI;
   onNoCullPCI.pRasterizationState = &noCullRaster;
@@ -693,29 +832,6 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   tlPCI.renderPass          = renderPasses.lighting;
   pipelines.tiledPointLight = pipelineManager_.createGraphicsPipeline(
       tlPCI, "tiled_point_light_pipeline");
-
-  // ---- destroy shader modules -----------------------------------------------
-  const std::array<VkShaderModule, 39> modules = {
-      depthPrepassVert, depthPrepassFrag,
-      gBufferVert,      gBufferFrag,
-      dirVert,          dirFrag,
-      stencilVert,      stencilFrag,
-      pointVert,        pointFrag,
-      pointDbgVert,     pointDbgFrag,
-      transVert,        transFrag,
-      postVert,         postFrag,
-      dbgVert,          dbgFrag,
-      nvVert,           nvGeom,  nvFrag,
-      wfVert,           wfFrag,
-      wfFbVert,         wfFbGeom, wfFbFrag,
-      snVert,           snGeom,  snFrag,
-      onVert,           onFrag,
-      lgVert,           lgFrag,
-      sdVert,           sdFrag,
-      tlVert,           tlFrag};
-  for (VkShaderModule m : modules) {
-    vkDestroyShaderModule(device_->device(), m, nullptr);
-  }
 
   return {layouts, pipelines};
 }

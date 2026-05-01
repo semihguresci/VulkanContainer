@@ -1,6 +1,7 @@
 #include <algorithm>
 #include <limits>
 #include <stdexcept>
+#include <utility>
 
 #include "Container/utility/SwapChainManager.h"
 
@@ -17,35 +18,63 @@ SwapChainManager::SwapChainManager(GLFWwindow* window,
 SwapChainManager::~SwapChainManager() { cleanup(); }
 
 void SwapChainManager::initialize() {
+  waitForNonZeroFramebufferExtent();
   createSwapChain();
   createImageViews();
 }
 
 void SwapChainManager::recreate(VkRenderPass renderPass) {
-  cleanup();
-  createSwapChain();
+  waitForNonZeroFramebufferExtent();
+
+  const VkSwapchainKHR oldSwapchain = swapChain_;
+  createSwapChain(oldSwapchain);
+
+  destroyFramebuffers();
+  destroyImageViews();
+  if (oldSwapchain != VK_NULL_HANDLE) {
+    vkDestroySwapchainKHR(device_, oldSwapchain, nullptr);
+  }
+
   createImageViews();
   createFramebuffers(renderPass);
 }
 
 void SwapChainManager::cleanup() {
-  for (VkFramebuffer framebuffer : swapChainFramebuffers_) {
-    vkDestroyFramebuffer(device_, framebuffer, nullptr);
-  }
-  swapChainFramebuffers_.clear();
-
-  for (VkImageView imageView : swapChainImageViews_) {
-    vkDestroyImageView(device_, imageView, nullptr);
-  }
-  swapChainImageViews_.clear();
+  destroyFramebuffers();
+  destroyImageViews();
 
   if (swapChain_ != VK_NULL_HANDLE) {
     vkDestroySwapchainKHR(device_, swapChain_, nullptr);
     swapChain_ = VK_NULL_HANDLE;
   }
+  swapChainImages_.clear();
 }
 
-void SwapChainManager::createSwapChain() {
+void SwapChainManager::destroyFramebuffers() {
+  for (VkFramebuffer framebuffer : swapChainFramebuffers_) {
+    vkDestroyFramebuffer(device_, framebuffer, nullptr);
+  }
+  swapChainFramebuffers_.clear();
+}
+
+void SwapChainManager::destroyImageViews() {
+  for (VkImageView imageView : swapChainImageViews_) {
+    vkDestroyImageView(device_, imageView, nullptr);
+  }
+  swapChainImageViews_.clear();
+}
+
+void SwapChainManager::waitForNonZeroFramebufferExtent() const {
+  int width = 0;
+  int height = 0;
+  glfwGetFramebufferSize(window_, &width, &height);
+  while (!glfwWindowShouldClose(window_) && (width == 0 || height == 0)) {
+    glfwWaitEvents();
+    glfwGetFramebufferSize(window_, &width, &height);
+  }
+}
+
+void SwapChainManager::createSwapChain(VkSwapchainKHR oldSwapchain) {
   SwapChainSupportDetails swapChainSupport =
       QuerySwapChainSupport(physicalDevice_, surface_);
 
@@ -54,6 +83,9 @@ void SwapChainManager::createSwapChain() {
   VkPresentModeKHR presentMode =
       chooseSwapPresentMode(swapChainSupport.presentModes);
   VkExtent2D extent = chooseSwapExtent(swapChainSupport.capabilities);
+  if (extent.width == 0 || extent.height == 0) {
+    throw std::runtime_error("cannot create a zero-sized swap chain");
+  }
 
   uint32_t imageCount = swapChainSupport.capabilities.minImageCount + 1;
   if (swapChainSupport.capabilities.maxImageCount > 0 &&
@@ -70,6 +102,12 @@ void SwapChainManager::createSwapChain() {
   createInfo.imageExtent = extent;
   createInfo.imageArrayLayers = 1;
   createInfo.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+  supportsTransferSrc_ =
+      (swapChainSupport.capabilities.supportedUsageFlags &
+       VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
+  if (supportsTransferSrc_) {
+    createInfo.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  }
 
   QueueFamilyIndices indices = FindQueueFamilies(physicalDevice_, surface_);
   uint32_t queueFamilyIndices[] = {indices.graphicsFamily.value(),
@@ -87,22 +125,25 @@ void SwapChainManager::createSwapChain() {
   createInfo.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
   createInfo.presentMode = presentMode;
   createInfo.clipped = VK_TRUE;
-  createInfo.oldSwapchain = VK_NULL_HANDLE;
+  createInfo.oldSwapchain = oldSwapchain;
 
+  VkSwapchainKHR newSwapchain = VK_NULL_HANDLE;
   VkResult res =
-      vkCreateSwapchainKHR(device_, &createInfo, nullptr, &swapChain_);
+      vkCreateSwapchainKHR(device_, &createInfo, nullptr, &newSwapchain);
 
   if (res != VK_SUCCESS) {
     throw std::runtime_error("failed to create swap chain!");
   }
 
   uint32_t swapImageCount = 0;
-  vkGetSwapchainImagesKHR(device_, swapChain_, &swapImageCount, nullptr);
+  vkGetSwapchainImagesKHR(device_, newSwapchain, &swapImageCount, nullptr);
 
-  swapChainImages_.resize(swapImageCount);
-  vkGetSwapchainImagesKHR(device_, swapChain_, &swapImageCount,
-                          swapChainImages_.data());
+  std::vector<VkImage> newImages(swapImageCount);
+  vkGetSwapchainImagesKHR(device_, newSwapchain, &swapImageCount,
+                          newImages.data());
 
+  swapChain_ = newSwapchain;
+  swapChainImages_ = std::move(newImages);
   swapChainImageFormat_ = surfaceFormat.format;
   swapChainExtent_ = extent;
 }

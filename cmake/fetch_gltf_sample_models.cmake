@@ -13,7 +13,9 @@ if(EXISTS "${STAMP_FILE}" AND EXISTS "${DESTINATION}")
     return()
 endif()
 
-set(REPO_ARCHIVE_URL "https://github.com/KhronosGroup/glTF-Sample-Models/archive/refs/heads/master.zip")
+if(NOT DEFINED REPO_ARCHIVE_URL)
+    set(REPO_ARCHIVE_URL "https://github.com/KhronosGroup/glTF-Sample-Models/archive/d7a3cc8e51d7c573771ae77a57f16b0662a905c6.zip")
+endif()
 set(TEMP_DIR "${DESTINATION}.tmp")
 set(ARCHIVE_PATH "${TEMP_DIR}/glTF-Sample-Models.zip")
 
@@ -25,6 +27,8 @@ file(DOWNLOAD
     "${ARCHIVE_PATH}"
     STATUS download_status
     LOG download_log
+    TLS_VERIFY ON
+    TIMEOUT 120
     SHOW_PROGRESS
 )
 

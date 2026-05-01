@@ -4,13 +4,19 @@
 
 #include <tiny_gltf.h>
 
+extern "C" {
+#include <mikktspace.h>
+}
+
 #include <glm/geometric.hpp>
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <iostream>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -40,16 +46,131 @@ size_t componentSizeBytes(int componentType) {
   return static_cast<size_t>(size);
 }
 
+template <typename T>
+T readUnalignedScalar(const uint8_t* data) {
+  T value{};
+  std::memcpy(&value, data, sizeof(T));
+  return value;
+}
+
+[[nodiscard]] std::runtime_error gltfError(std::string_view label,
+                                           std::string_view message) {
+  return std::runtime_error(std::string(label) + ": " + std::string(message));
+}
+
+const tinygltf::Accessor& checkedAccessor(const tinygltf::Model& model,
+                                          int accessorIndex,
+                                          std::string_view label) {
+  if (accessorIndex < 0 ||
+      static_cast<size_t>(accessorIndex) >= model.accessors.size()) {
+    throw gltfError(label, "accessor index is out of range");
+  }
+  const auto& accessor = model.accessors[static_cast<size_t>(accessorIndex)];
+  if (accessor.sparse.isSparse) {
+    throw gltfError(label, "sparse accessors are not supported");
+  }
+  return accessor;
+}
+
+const tinygltf::BufferView& checkedBufferView(const tinygltf::Model& model,
+                                              const tinygltf::Accessor& accessor,
+                                              std::string_view label) {
+  if (accessor.bufferView < 0 ||
+      static_cast<size_t>(accessor.bufferView) >= model.bufferViews.size()) {
+    throw gltfError(label, "accessor is missing a valid buffer view");
+  }
+  return model.bufferViews[static_cast<size_t>(accessor.bufferView)];
+}
+
+const tinygltf::Buffer& checkedBuffer(const tinygltf::Model& model,
+                                      const tinygltf::BufferView& view,
+                                      std::string_view label) {
+  if (view.buffer < 0 || static_cast<size_t>(view.buffer) >= model.buffers.size()) {
+    throw gltfError(label, "buffer view is missing a valid buffer");
+  }
+  return model.buffers[static_cast<size_t>(view.buffer)];
+}
+
+size_t accessorElementSizeBytes(const tinygltf::Accessor& accessor,
+                                std::string_view label) {
+  const int componentCount = tinygltf::GetNumComponentsInType(accessor.type);
+  if (componentCount <= 0) {
+    throw gltfError(label, "unsupported accessor type");
+  }
+  return static_cast<size_t>(componentCount) *
+         componentSizeBytes(accessor.componentType);
+}
+
+size_t accessorStrideBytes(const tinygltf::Accessor& accessor,
+                           const tinygltf::BufferView& view,
+                           std::string_view label) {
+  const int stride = accessor.ByteStride(view);
+  if (stride < 0) {
+    throw gltfError(label, "invalid accessor byte stride");
+  }
+  const size_t elementSize = accessorElementSizeBytes(accessor, label);
+  const size_t strideBytes = stride == 0 ? elementSize : static_cast<size_t>(stride);
+  if (strideBytes < elementSize) {
+    throw gltfError(label, "accessor byte stride is smaller than element size");
+  }
+  return strideBytes;
+}
+
+void validateAccessorRange(const tinygltf::Accessor& accessor,
+                           const tinygltf::BufferView& view,
+                           const tinygltf::Buffer& buffer,
+                           std::string_view label) {
+  if (view.byteOffset > buffer.data.size()) {
+    throw gltfError(label, "buffer view offset is outside the buffer");
+  }
+  if (view.byteLength > buffer.data.size() - view.byteOffset) {
+    throw gltfError(label, "buffer view range is outside the buffer");
+  }
+  if (accessor.byteOffset > view.byteLength) {
+    throw gltfError(label, "accessor offset is outside the buffer view");
+  }
+
+  const size_t elementSize = accessorElementSizeBytes(accessor, label);
+  const size_t stride = accessorStrideBytes(accessor, view, label);
+  if (accessor.count == 0) return;
+
+  const size_t maxOffset = std::numeric_limits<size_t>::max();
+  const size_t lastIndex = accessor.count - 1;
+  if (lastIndex > (maxOffset - accessor.byteOffset) / stride) {
+    throw gltfError(label, "accessor byte range overflows size_t");
+  }
+
+  const size_t lastElementOffset = accessor.byteOffset + lastIndex * stride;
+  if (lastElementOffset > view.byteLength ||
+      elementSize > view.byteLength - lastElementOffset) {
+    throw gltfError(label, "accessor byte range is outside the buffer view");
+  }
+}
+
+struct AccessorReadView {
+  const tinygltf::Accessor& accessor;
+  const tinygltf::BufferView& view;
+  const tinygltf::Buffer& buffer;
+};
+
+AccessorReadView checkedAccessorReadView(const tinygltf::Model& model,
+                                         int accessorIndex,
+                                         std::string_view label) {
+  const auto& accessor = checkedAccessor(model, accessorIndex, label);
+  const auto& view = checkedBufferView(model, accessor, label);
+  const auto& buffer = checkedBuffer(model, view, label);
+  validateAccessorRange(accessor, view, buffer, label);
+  return {accessor, view, buffer};
+}
+
 const uint8_t* accessorElementData(const tinygltf::Accessor& accessor,
                                    const tinygltf::BufferView& view,
                                    const tinygltf::Buffer& buffer,
                                    size_t index) {
-  size_t stride = accessor.ByteStride(view);
-  if (stride == 0) {
-    stride = static_cast<size_t>(
-        tinygltf::GetNumComponentsInType(accessor.type) *
-        tinygltf::GetComponentSizeInBytes(accessor.componentType));
+  if (index >= accessor.count) {
+    throw std::runtime_error("glTF accessor read index is out of range");
   }
+  const size_t stride = accessorStrideBytes(accessor, view, "accessor read");
   const auto* dataStart = buffer.data.data() + view.byteOffset + accessor.byteOffset;
   return dataStart + index * stride;
 }
@@ -58,26 +179,26 @@ float readComponentAsFloat(const uint8_t* data, int componentType,
                            bool normalized) {
   switch (componentType) {
     case TINYGLTF_COMPONENT_TYPE_FLOAT:
-      return *reinterpret_cast<const float*>(data);
+      return readUnalignedScalar<float>(data);
     case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE: {
-      const auto value = static_cast<float>(*reinterpret_cast<const uint8_t*>(data));
+      const auto value = static_cast<float>(readUnalignedScalar<uint8_t>(data));
       return normalized ? value / 255.0f : value;
     }
     case TINYGLTF_COMPONENT_TYPE_BYTE: {
-      const auto value = static_cast<float>(*reinterpret_cast<const int8_t*>(data));
+      const auto value = static_cast<float>(readUnalignedScalar<int8_t>(data));
       return normalized ? std::max(value / 127.0f, -1.0f) : value;
     }
     case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
       const auto value =
-          static_cast<float>(*reinterpret_cast<const uint16_t*>(data));
+          static_cast<float>(readUnalignedScalar<uint16_t>(data));
       return normalized ? value / 65535.0f : value;
     }
     case TINYGLTF_COMPONENT_TYPE_SHORT: {
-      const auto value = static_cast<float>(*reinterpret_cast<const int16_t*>(data));
+      const auto value = static_cast<float>(readUnalignedScalar<int16_t>(data));
       return normalized ? std::max(value / 32767.0f, -1.0f) : value;
     }
     case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-      return static_cast<float>(*reinterpret_cast<const uint32_t*>(data));
+      return static_cast<float>(readUnalignedScalar<uint32_t>(data));
     default:
       throw std::runtime_error("Unsupported glTF component type");
   }
@@ -182,6 +303,15 @@ bool isFiniteVec3(const glm::vec3& value) {
          std::isfinite(value.z);
 }
 
+bool isFiniteVec2(const glm::vec2& value) {
+  return std::isfinite(value.x) && std::isfinite(value.y);
+}
+
+bool isFiniteVec4(const glm::vec4& value) {
+  return std::isfinite(value.x) && std::isfinite(value.y) &&
+         std::isfinite(value.z) && std::isfinite(value.w);
+}
+
 glm::vec3 sanitizeNormal(const glm::vec3& normal) {
   if (!isFiniteVec3(normal) || glm::dot(normal, normal) < 1e-8f) {
     return glm::vec3(0.0f, 1.0f, 0.0f);
@@ -247,6 +377,131 @@ void normalizeLoadedNormals(std::vector<Vertex>& vertices) {
   }
 }
 
+bool triangleNormalAgreement(
+    const std::vector<Vertex>& vertices,
+    uint32_t i0,
+    uint32_t i1,
+    uint32_t i2,
+    float& agreement) {
+  if (i0 >= vertices.size() || i1 >= vertices.size() || i2 >= vertices.size()) {
+    return false;
+  }
+
+  const glm::vec3 edge01 = vertices[i1].position - vertices[i0].position;
+  const glm::vec3 edge02 = vertices[i2].position - vertices[i0].position;
+  const glm::vec3 faceNormal = glm::cross(edge01, edge02);
+  if (!isFiniteVec3(faceNormal) || glm::dot(faceNormal, faceNormal) < 1e-12f) {
+    return false;
+  }
+
+  const glm::vec3 vertexNormal =
+      vertices[i0].normal + vertices[i1].normal + vertices[i2].normal;
+  if (!isFiniteVec3(vertexNormal) ||
+      glm::dot(vertexNormal, vertexNormal) < 1e-12f) {
+    return false;
+  }
+
+  agreement = glm::dot(glm::normalize(faceNormal),
+                       glm::normalize(vertexNormal));
+  return true;
+}
+
+struct WindingRepairResult {
+  size_t repairedTriangleCount{0};
+  bool disableBackfaceCulling{false};
+};
+
+uint64_t edgeKey(uint32_t a, uint32_t b) {
+  if (a > b) {
+    std::swap(a, b);
+  }
+  return (static_cast<uint64_t>(a) << 32u) | static_cast<uint64_t>(b);
+}
+
+bool isDenseOpenReliefTopology(const std::vector<uint32_t>& indices) {
+  const size_t triangleCount = indices.size() / 3u;
+  if (triangleCount < 1024u) {
+    return false;
+  }
+
+  std::vector<uint64_t> edges;
+  edges.reserve(triangleCount * 3u);
+  for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+    edges.push_back(edgeKey(indices[i], indices[i + 1]));
+    edges.push_back(edgeKey(indices[i + 1], indices[i + 2]));
+    edges.push_back(edgeKey(indices[i + 2], indices[i]));
+  }
+  if (edges.empty()) {
+    return false;
+  }
+
+  std::sort(edges.begin(), edges.end());
+  size_t uniqueEdgeCount = 0;
+  size_t boundaryEdgeCount = 0;
+  for (size_t i = 0; i < edges.size();) {
+    const uint64_t key = edges[i];
+    size_t runCount = 0;
+    while (i < edges.size() && edges[i] == key) {
+      ++i;
+      ++runCount;
+    }
+    ++uniqueEdgeCount;
+    if (runCount == 1u) {
+      ++boundaryEdgeCount;
+    }
+  }
+
+  if (uniqueEdgeCount == 0u) {
+    return false;
+  }
+
+  const double boundaryRatio =
+      static_cast<double>(boundaryEdgeCount) /
+      static_cast<double>(uniqueEdgeCount);
+  // Dense relief decals in sample assets can be authored as open embossed
+  // sheets mounted just in front of another primitive. They need no-cull
+  // rendering, but broad open-mesh detection would incorrectly disable culling
+  // for simple one-sided test planes.
+  return boundaryRatio >= 0.075 && boundaryRatio <= 0.10;
+}
+
+WindingRepairResult repairTriangleWindingFromNormals(
+    const std::vector<Vertex>& vertices,
+    std::vector<uint32_t>& indices) {
+  size_t agreeingTriangleCount = 0;
+  size_t disagreeingTriangleCount = 0;
+
+  for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+    float agreement = 0.0f;
+    if (!triangleNormalAgreement(vertices, indices[i], indices[i + 1],
+                                 indices[i + 2], agreement)) {
+      continue;
+    }
+    if (agreement > 0.25f) {
+      ++agreeingTriangleCount;
+    } else if (agreement < -0.25f) {
+      ++disagreeingTriangleCount;
+    }
+  }
+
+  const size_t evidenceTriangleCount =
+      agreeingTriangleCount + disagreeingTriangleCount;
+  if (evidenceTriangleCount == 0 || disagreeingTriangleCount == 0) {
+    return {};
+  }
+
+  if (disagreeingTriangleCount * 4 < evidenceTriangleCount * 3) {
+    return {0, agreeingTriangleCount > 0};
+  }
+
+  WindingRepairResult result{};
+  for (size_t i = 0; i + 2 < indices.size(); i += 3) {
+    std::swap(indices[i + 1], indices[i + 2]);
+    ++result.repairedTriangleCount;
+  }
+  return result;
+}
+
 void sanitizeTangents(std::vector<Vertex>& vertices) {
   for (auto& vertex : vertices) {
     vertex.normal = sanitizeNormal(vertex.normal);
@@ -254,10 +509,116 @@ void sanitizeTangents(std::vector<Vertex>& vertices) {
   }
 }
 
-void generateMissingTangents(std::vector<Vertex>& vertices,
-                             const std::vector<uint32_t>& indices) {
-  std::vector<glm::vec3> tangents(vertices.size(), glm::vec3(0.0f));
-  std::vector<glm::vec3> bitangents(vertices.size(), glm::vec3(0.0f));
+bool hasTrustworthyTangent(const Vertex& vertex) {
+  if (!isFiniteVec4(vertex.tangent) || std::abs(vertex.tangent.w) < 1e-8f) {
+    return false;
+  }
+
+  const glm::vec3 normal = sanitizeNormal(vertex.normal);
+  glm::vec3 tangent(vertex.tangent);
+  tangent -= normal * glm::dot(normal, tangent);
+  const float projectedLengthSq = glm::dot(tangent, tangent);
+  return isFiniteVec3(tangent) && std::isfinite(projectedLengthSq) &&
+         projectedLengthSq >= 1e-8f;
+}
+
+struct TangentBasis {
+  glm::vec3 tangent{0.0f};
+  glm::vec3 bitangent{0.0f};
+};
+
+struct MikkTangentContext {
+  std::vector<Vertex>* vertices{nullptr};
+  const std::vector<uint32_t>* indices{nullptr};
+  std::vector<uint8_t>* tangentWritten{nullptr};
+};
+
+uint32_t mikkVertexIndex(const SMikkTSpaceContext* context, int faceIndex,
+                         int vertexIndex) {
+  const auto* data =
+      reinterpret_cast<const MikkTangentContext*>(context->m_pUserData);
+  const size_t indexOffset =
+      static_cast<size_t>(std::max(faceIndex, 0)) * 3u +
+      static_cast<size_t>(std::clamp(vertexIndex, 0, 2));
+  if (data == nullptr || data->indices == nullptr ||
+      indexOffset >= data->indices->size()) {
+    return 0;
+  }
+  return (*data->indices)[indexOffset];
+}
+
+const Vertex& mikkVertex(const SMikkTSpaceContext* context, int faceIndex,
+                         int vertexIndex) {
+  const auto* data =
+      reinterpret_cast<const MikkTangentContext*>(context->m_pUserData);
+  if (data == nullptr || data->vertices == nullptr || data->vertices->empty()) {
+    static const Vertex kFallbackVertex{};
+    return kFallbackVertex;
+  }
+  const uint32_t index = mikkVertexIndex(context, faceIndex, vertexIndex);
+  return (*data->vertices)[std::min<size_t>(index, data->vertices->size() - 1u)];
+}
+
+int mikkGetNumFaces(const SMikkTSpaceContext* context) {
+  const auto* data =
+      reinterpret_cast<const MikkTangentContext*>(context->m_pUserData);
+  if (data == nullptr || data->indices == nullptr) {
+    return 0;
+  }
+  return static_cast<int>(data->indices->size() / 3u);
+}
+
+int mikkGetNumVerticesOfFace(const SMikkTSpaceContext*, int) {
+  return 3;
+}
+
+void mikkGetPosition(const SMikkTSpaceContext* context, float position[3],
+                     int faceIndex, int vertexIndex) {
+  const glm::vec3& value = mikkVertex(context, faceIndex, vertexIndex).position;
+  position[0] = value.x;
+  position[1] = value.y;
+  position[2] = value.z;
+}
+
+void mikkGetNormal(const SMikkTSpaceContext* context, float normal[3],
+                   int faceIndex, int vertexIndex) {
+  const glm::vec3 value =
+      sanitizeNormal(mikkVertex(context, faceIndex, vertexIndex).normal);
+  normal[0] = value.x;
+  normal[1] = value.y;
+  normal[2] = value.z;
+}
+
+void mikkGetTexCoord(const SMikkTSpaceContext* context, float texCoord[2],
+                     int faceIndex, int vertexIndex) {
+  const glm::vec2& value = mikkVertex(context, faceIndex, vertexIndex).texCoord;
+  texCoord[0] = std::isfinite(value.x) ? value.x : 0.0f;
+  texCoord[1] = std::isfinite(value.y) ? value.y : 0.0f;
+}
+
+void mikkSetTangent(const SMikkTSpaceContext* context, const float tangent[3],
+                    float sign, int faceIndex, int vertexIndex) {
+  auto* data = reinterpret_cast<MikkTangentContext*>(context->m_pUserData);
+  if (data == nullptr || data->vertices == nullptr ||
+      data->tangentWritten == nullptr) {
+    return;
+  }
+
+  const uint32_t index = mikkVertexIndex(context, faceIndex, vertexIndex);
+  if (index >= data->vertices->size()) {
+    return;
+  }
+
+  Vertex& vertex = (*data->vertices)[index];
+  vertex.tangent = orthonormalizeTangent(
+      vertex.normal, glm::vec4(tangent[0], tangent[1], tangent[2], sign));
+  (*data->tangentWritten)[index] = 1u;
+}
+
+std::vector<TangentBasis> accumulateGeometryTangents(
+    const std::vector<Vertex>& vertices,
+    const std::vector<uint32_t>& indices) {
+  std::vector<TangentBasis> bases(vertices.size());
 
   for (size_t i = 0; i + 2 < indices.size(); i += 3) {
     const uint32_t i0 = indices[i];
@@ -278,10 +639,14 @@ void generateMissingTangents(std::vector<Vertex>& vertices,
     const glm::vec3 edge02 = p2 - p0;
     const glm::vec2 deltaUv01 = uv1 - uv0;
     const glm::vec2 deltaUv02 = uv2 - uv0;
+    if (!isFiniteVec3(edge01) || !isFiniteVec3(edge02) ||
+        !isFiniteVec2(deltaUv01) || !isFiniteVec2(deltaUv02)) {
+      continue;
+    }
 
     const float determinant =
         deltaUv01.x * deltaUv02.y - deltaUv01.y * deltaUv02.x;
-    if (std::abs(determinant) < 1e-8f) {
+    if (!std::isfinite(determinant) || std::abs(determinant) < 1e-8f) {
       continue;
     }
 
@@ -291,34 +656,99 @@ void generateMissingTangents(std::vector<Vertex>& vertices,
     const glm::vec3 triangleBitangent =
         (edge02 * deltaUv01.x - edge01 * deltaUv02.x) * invDeterminant;
 
-    tangents[i0] += triangleTangent;
-    tangents[i1] += triangleTangent;
-    tangents[i2] += triangleTangent;
-    bitangents[i0] += triangleBitangent;
-    bitangents[i1] += triangleBitangent;
-    bitangents[i2] += triangleBitangent;
+    if (!isFiniteVec3(triangleTangent) || !isFiniteVec3(triangleBitangent)) {
+      continue;
+    }
+
+    bases[i0].tangent += triangleTangent;
+    bases[i1].tangent += triangleTangent;
+    bases[i2].tangent += triangleTangent;
+    bases[i0].bitangent += triangleBitangent;
+    bases[i1].bitangent += triangleBitangent;
+    bases[i2].bitangent += triangleBitangent;
   }
+
+  return bases;
+}
+
+glm::vec4 makeGeneratedTangent(const Vertex& vertex,
+                               const TangentBasis& basis) {
+  const glm::vec3 normal = sanitizeNormal(vertex.normal);
+
+  glm::vec3 tangent = basis.tangent - normal * glm::dot(normal, basis.tangent);
+  const float tangentLengthSq = glm::dot(tangent, tangent);
+  if (!isFiniteVec3(tangent) || !std::isfinite(tangentLengthSq) ||
+      tangentLengthSq < 1e-8f) {
+    tangent = fallbackTangentForNormal(normal);
+  } else {
+    tangent = glm::normalize(tangent);
+  }
+
+  float handedness = 1.0f;
+  const float bitangentLengthSq = glm::dot(basis.bitangent, basis.bitangent);
+  if (isFiniteVec3(basis.bitangent) && std::isfinite(bitangentLengthSq) &&
+      bitangentLengthSq >= 1e-8f) {
+    handedness =
+        glm::dot(glm::cross(normal, tangent), basis.bitangent) < 0.0f ? -1.0f
+                                                                      : 1.0f;
+  }
+
+  return orthonormalizeTangent(normal, glm::vec4(tangent, handedness));
+}
+
+void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
+                                  const std::vector<uint32_t>& indices) {
+  std::vector<uint8_t> tangentWritten(vertices.size(), 0u);
+  MikkTangentContext tangentContext{
+      &vertices,
+      &indices,
+      &tangentWritten,
+  };
+  SMikkTSpaceInterface mikkInterface{};
+  mikkInterface.m_getNumFaces = mikkGetNumFaces;
+  mikkInterface.m_getNumVerticesOfFace = mikkGetNumVerticesOfFace;
+  mikkInterface.m_getPosition = mikkGetPosition;
+  mikkInterface.m_getNormal = mikkGetNormal;
+  mikkInterface.m_getTexCoord = mikkGetTexCoord;
+  mikkInterface.m_setTSpaceBasic = mikkSetTangent;
+  SMikkTSpaceContext mikkContext{};
+  mikkContext.m_pInterface = &mikkInterface;
+  mikkContext.m_pUserData = &tangentContext;
+
+  const bool generatedByMikk =
+      !vertices.empty() && indices.size() >= 3u &&
+      genTangSpaceDefault(&mikkContext) != 0;
+
+  const auto bases = accumulateGeometryTangents(vertices, indices);
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    vertices[i].normal = sanitizeNormal(vertices[i].normal);
+    if (!generatedByMikk || tangentWritten[i] == 0u ||
+        !hasTrustworthyTangent(vertices[i])) {
+      vertices[i].tangent = makeGeneratedTangent(vertices[i], bases[i]);
+    } else {
+      vertices[i].tangent =
+          orthonormalizeTangent(vertices[i].normal, vertices[i].tangent);
+    }
+  }
+}
+
+void repairInvalidTangents(std::vector<Vertex>& vertices,
+                           const std::vector<uint32_t>& indices) {
+  bool hasInvalidTangent = false;
 
   for (size_t i = 0; i < vertices.size(); ++i) {
-    glm::vec3 normal = sanitizeNormal(vertices[i].normal);
-
-    glm::vec3 tangent = tangents[i] - normal * glm::dot(normal, tangents[i]);
-    if (glm::dot(tangent, tangent) < 1e-8f) {
-      tangent = fallbackTangentForNormal(normal);
-    } else {
-      tangent = glm::normalize(tangent);
+    vertices[i].normal = sanitizeNormal(vertices[i].normal);
+    if (!hasTrustworthyTangent(vertices[i])) {
+      hasInvalidTangent = true;
     }
-
-    float handedness = 1.0f;
-    if (glm::dot(bitangents[i], bitangents[i]) >= 1e-8f) {
-      handedness =
-          glm::dot(glm::cross(normal, tangent), bitangents[i]) < 0.0f ? -1.0f
-                                                                       : 1.0f;
-    }
-
-    vertices[i].normal = normal;
-    vertices[i].tangent = orthonormalizeTangent(normal, glm::vec4(tangent, handedness));
   }
+
+  if (!hasInvalidTangent) {
+    sanitizeTangents(vertices);
+    return;
+  }
+
+  generateTangentsFromGeometry(vertices, indices);
 }
 
 struct PrimitiveVertexData {
@@ -345,37 +775,31 @@ std::vector<uint32_t> readIndices(const tinygltf::Model& model,
     return sequential;
   }
 
-  const auto& accessor = model.accessors[primitive.indices];
+  const auto indicesData =
+      checkedAccessorReadView(model, primitive.indices, "indices");
+  const auto& accessor = indicesData.accessor;
   if (accessor.type != TINYGLTF_TYPE_SCALAR) {
     throw std::runtime_error("glTF indices accessor must be scalar");
   }
-  if (accessor.bufferView < 0 || accessor.bufferView >= model.bufferViews.size()) {
-    throw std::runtime_error("glTF indices accessor missing buffer view");
-  }
-
-  const auto& view = model.bufferViews[accessor.bufferView];
-  if (view.buffer < 0 || view.buffer >= model.buffers.size()) {
-    throw std::runtime_error("glTF indices buffer view missing buffer");
-  }
-  const auto& buffer = model.buffers[view.buffer];
+  const auto& view = indicesData.view;
+  const auto& buffer = indicesData.buffer;
   const auto* dataStart = buffer.data.data() + view.byteOffset + accessor.byteOffset;
-  size_t stride = accessor.ByteStride(view);
-  if (stride == 0) {
-    stride = tinygltf::GetComponentSizeInBytes(accessor.componentType);
-  }
+  const size_t stride = accessorStrideBytes(accessor, view, "indices");
 
   std::vector<uint32_t> indices(accessor.count);
   for (size_t i = 0; i < accessor.count; ++i) {
     const auto* element = dataStart + i * stride;
     switch (accessor.componentType) {
       case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT:
-        indices[i] = static_cast<uint32_t>(*reinterpret_cast<const uint16_t*>(element));
+        indices[i] =
+            static_cast<uint32_t>(readUnalignedScalar<uint16_t>(element));
         break;
       case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT:
-        indices[i] = static_cast<uint32_t>(*reinterpret_cast<const uint32_t*>(element));
+        indices[i] = readUnalignedScalar<uint32_t>(element);
         break;
       case TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE:
-        indices[i] = static_cast<uint32_t>(*reinterpret_cast<const uint8_t*>(element));
+        indices[i] =
+            static_cast<uint32_t>(readUnalignedScalar<uint8_t>(element));
         break;
       default:
         throw std::runtime_error("Unsupported glTF index component type");
@@ -391,21 +815,16 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
     throw std::runtime_error("glTF primitive is missing POSITION attribute");
   }
 
-  const auto& positionAccessor = model.accessors[positionIt->second];
-  if (positionAccessor.bufferView < 0 ||
-      positionAccessor.bufferView >= model.bufferViews.size()) {
-    throw std::runtime_error("POSITION accessor missing buffer view");
-  }
+  const auto positionData =
+      checkedAccessorReadView(model, positionIt->second, "POSITION");
+  const auto& positionAccessor = positionData.accessor;
   if (positionAccessor.type != TINYGLTF_TYPE_VEC3 ||
       positionAccessor.componentType != TINYGLTF_COMPONENT_TYPE_FLOAT) {
     throw std::runtime_error("POSITION must be a VEC3 float attribute");
   }
 
-  const auto& positionView = model.bufferViews[positionAccessor.bufferView];
-  if (positionView.buffer < 0 || positionView.buffer >= model.buffers.size()) {
-    throw std::runtime_error("POSITION buffer view missing buffer");
-  }
-  const auto& positionBuffer = model.buffers[positionView.buffer];
+  const auto& positionView = positionData.view;
+  const auto& positionBuffer = positionData.buffer;
 
   PrimitiveVertexData primitiveData{};
   primitiveData.vertices.resize(positionAccessor.count);
@@ -416,22 +835,17 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
 
   auto colorIt = primitive.attributes.find("COLOR_0");
   if (colorIt != primitive.attributes.end()) {
-    const auto& colorAccessor = model.accessors[colorIt->second];
+    const auto colorData =
+        checkedAccessorReadView(model, colorIt->second, "COLOR_0");
+    const auto& colorAccessor = colorData.accessor;
     if ((colorAccessor.type != TINYGLTF_TYPE_VEC3 &&
          colorAccessor.type != TINYGLTF_TYPE_VEC4) ||
         !isColorComponentTypeSupported(colorAccessor)) {
       throw std::runtime_error(
           "COLOR_0 must be VEC3/VEC4 float or normalized unsigned integer");
     }
-    if (colorAccessor.bufferView < 0 ||
-        colorAccessor.bufferView >= model.bufferViews.size()) {
-      throw std::runtime_error("COLOR_0 accessor missing buffer view");
-    }
-    const auto& colorView = model.bufferViews[colorAccessor.bufferView];
-    if (colorView.buffer < 0 || colorView.buffer >= model.buffers.size()) {
-      throw std::runtime_error("COLOR_0 buffer view missing buffer");
-    }
-    const auto& colorBuffer = model.buffers[colorView.buffer];
+    const auto& colorView = colorData.view;
+    const auto& colorBuffer = colorData.buffer;
     if (colorAccessor.count < primitiveData.vertices.size()) {
       throw std::runtime_error("COLOR_0 attribute count is smaller than POSITION count");
     }
@@ -449,22 +863,17 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
 
   auto texCoordIt = primitive.attributes.find("TEXCOORD_0");
   if (texCoordIt != primitive.attributes.end()) {
-    const auto& texCoordAccessor = model.accessors[texCoordIt->second];
+    const auto texCoordData =
+        checkedAccessorReadView(model, texCoordIt->second, "TEXCOORD_0");
+    const auto& texCoordAccessor = texCoordData.accessor;
     if (texCoordAccessor.type != TINYGLTF_TYPE_VEC2 ||
         !isTexCoordComponentTypeSupported(texCoordAccessor)) {
       throw std::runtime_error(
           "TEXCOORD_0 must be a VEC2 float or normalized unsigned integer");
     }
 
-    if (texCoordAccessor.bufferView < 0 ||
-        texCoordAccessor.bufferView >= model.bufferViews.size()) {
-      throw std::runtime_error("TEXCOORD_0 accessor missing buffer view");
-    }
-    const auto& texCoordView = model.bufferViews[texCoordAccessor.bufferView];
-    if (texCoordView.buffer < 0 || texCoordView.buffer >= model.buffers.size()) {
-      throw std::runtime_error("TEXCOORD_0 buffer view missing buffer");
-    }
-    const auto& texCoordBuffer = model.buffers[texCoordView.buffer];
+    const auto& texCoordView = texCoordData.view;
+    const auto& texCoordBuffer = texCoordData.buffer;
     if (texCoordAccessor.count < primitiveData.vertices.size()) {
       throw std::runtime_error("TEXCOORD_0 attribute count is smaller than POSITION count");
     }
@@ -472,26 +881,45 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
     for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
       primitiveData.vertices[i].texCoord =
           readVec2f(texCoordAccessor, texCoordView, texCoordBuffer, i);
+      primitiveData.vertices[i].texCoord1 = primitiveData.vertices[i].texCoord;
+    }
+  }
+
+  auto texCoord1It = primitive.attributes.find("TEXCOORD_1");
+  if (texCoord1It != primitive.attributes.end()) {
+    const auto texCoordData =
+        checkedAccessorReadView(model, texCoord1It->second, "TEXCOORD_1");
+    const auto& texCoordAccessor = texCoordData.accessor;
+    if (texCoordAccessor.type != TINYGLTF_TYPE_VEC2 ||
+        !isTexCoordComponentTypeSupported(texCoordAccessor)) {
+      throw std::runtime_error(
+          "TEXCOORD_1 must be a VEC2 float or normalized unsigned integer");
+    }
+
+    const auto& texCoordView = texCoordData.view;
+    const auto& texCoordBuffer = texCoordData.buffer;
+    if (texCoordAccessor.count < primitiveData.vertices.size()) {
+      throw std::runtime_error("TEXCOORD_1 attribute count is smaller than POSITION count");
+    }
+
+    for (size_t i = 0; i < primitiveData.vertices.size(); ++i) {
+      primitiveData.vertices[i].texCoord1 =
+          readVec2f(texCoordAccessor, texCoordView, texCoordBuffer, i);
     }
   }
 
   auto normalIt = primitive.attributes.find("NORMAL");
   if (normalIt != primitive.attributes.end()) {
-    const auto& normalAccessor = model.accessors[normalIt->second];
+    const auto normalData =
+        checkedAccessorReadView(model, normalIt->second, "NORMAL");
+    const auto& normalAccessor = normalData.accessor;
     if (normalAccessor.type != TINYGLTF_TYPE_VEC3 ||
         !isNormalComponentTypeSupported(normalAccessor)) {
       throw std::runtime_error(
           "NORMAL must be a VEC3 float or normalized signed integer attribute");
     }
-    if (normalAccessor.bufferView < 0 ||
-        normalAccessor.bufferView >= model.bufferViews.size()) {
-      throw std::runtime_error("NORMAL accessor missing buffer view");
-    }
-    const auto& normalView = model.bufferViews[normalAccessor.bufferView];
-    if (normalView.buffer < 0 || normalView.buffer >= model.buffers.size()) {
-      throw std::runtime_error("NORMAL buffer view missing buffer");
-    }
-    const auto& normalBuffer = model.buffers[normalView.buffer];
+    const auto& normalView = normalData.view;
+    const auto& normalBuffer = normalData.buffer;
     if (normalAccessor.count < primitiveData.vertices.size()) {
       throw std::runtime_error("NORMAL attribute count is smaller than POSITION count");
     }
@@ -505,21 +933,16 @@ PrimitiveVertexData mergeAttributes(const tinygltf::Model& model,
 
   auto tangentIt = primitive.attributes.find("TANGENT");
   if (tangentIt != primitive.attributes.end()) {
-    const auto& tangentAccessor = model.accessors[tangentIt->second];
+    const auto tangentData =
+        checkedAccessorReadView(model, tangentIt->second, "TANGENT");
+    const auto& tangentAccessor = tangentData.accessor;
     if (tangentAccessor.type != TINYGLTF_TYPE_VEC4 ||
         !isTangentComponentTypeSupported(tangentAccessor)) {
       throw std::runtime_error(
           "TANGENT must be a VEC4 float or normalized signed integer attribute");
     }
-    if (tangentAccessor.bufferView < 0 ||
-        tangentAccessor.bufferView >= model.bufferViews.size()) {
-      throw std::runtime_error("TANGENT accessor missing buffer view");
-    }
-    const auto& tangentView = model.bufferViews[tangentAccessor.bufferView];
-    if (tangentView.buffer < 0 || tangentView.buffer >= model.buffers.size()) {
-      throw std::runtime_error("TANGENT buffer view missing buffer");
-    }
-    const auto& tangentBuffer = model.buffers[tangentView.buffer];
+    const auto& tangentView = tangentData.view;
+    const auto& tangentBuffer = tangentData.buffer;
     if (tangentAccessor.count < primitiveData.vertices.size()) {
       throw std::runtime_error("TANGENT attribute count is smaller than POSITION count");
     }
@@ -540,17 +963,25 @@ std::vector<Mesh> parseMeshes(const tinygltf::Model& model) {
     for (const auto& primitive : mesh.primitives) {
       auto primitiveData = mergeAttributes(model, primitive);
       auto indices = readIndices(model, primitive, primitiveData.vertices.size());
+      WindingRepairResult windingRepair{};
       if (!primitiveData.hasNormals) {
         generateMissingNormals(primitiveData.vertices, indices);
       } else {
         normalizeLoadedNormals(primitiveData.vertices);
+        windingRepair =
+            repairTriangleWindingFromNormals(primitiveData.vertices, indices);
       }
-      if (!primitiveData.hasTangents) {
-        generateMissingTangents(primitiveData.vertices, indices);
+      const bool disableBackfaceCulling =
+          windingRepair.disableBackfaceCulling ||
+          isDenseOpenReliefTopology(indices);
+      if (!primitiveData.hasTangents ||
+          windingRepair.repairedTriangleCount > 0) {
+        generateTangentsFromGeometry(primitiveData.vertices, indices);
+      } else {
+        repairInvalidTangents(primitiveData.vertices, indices);
       }
-      sanitizeTangents(primitiveData.vertices);
       meshes.emplace_back(std::move(primitiveData.vertices), std::move(indices),
-                          primitive.material);
+                          primitive.material, disableBackfaceCulling);
     }
   }
   return meshes;

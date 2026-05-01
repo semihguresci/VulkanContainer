@@ -92,7 +92,10 @@ void ShadowManager::createResources(VkFormat depthFormat,
     si.addressModeU = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     si.addressModeV = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     si.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
-    si.borderColor  = VK_BORDER_COLOR_FLOAT_OPAQUE_WHITE;
+    // Reverse-Z shadow maps clear to far depth (0.0) and use GREATER compare.
+    // PCF taps that fall just outside a cascade should therefore read far/lit,
+    // not near/shadowed.
+    si.borderColor  = VK_BORDER_COLOR_FLOAT_OPAQUE_BLACK;
     si.compareEnable = VK_TRUE;
     si.compareOp     = VK_COMPARE_OP_GREATER;
     si.minLod       = 0.0f;
@@ -324,33 +327,39 @@ ShadowManager::CascadeViewProjData ShadowManager::computeCascadeViewProj(
       ? glm::vec3(0, 0, 1)
       : glm::vec3(0, 1, 0);
   const float     lightDistance = cascadeRadius * 2.0f;
-  const glm::mat4 lightView = container::math::lookAt(
-      center - lightDir * lightDistance, center, up);
+  const glm::mat4 unsnappedLightView = container::math::lookAt(
+      -lightDir * lightDistance, glm::vec3(0.0f), up);
+  const glm::vec3 lightSpaceCenter =
+      glm::vec3(unsnappedLightView * glm::vec4(center, 1.0f));
 
-  glm::vec3 minBounds( std::numeric_limits<float>::max());
-  glm::vec3 maxBounds(-std::numeric_limits<float>::max());
-  for (const auto& corner : sliceCorners) {
-    const glm::vec3 lightSpaceCorner = glm::vec3(lightView * glm::vec4(corner, 1.0f));
-    minBounds = glm::min(minBounds, lightSpaceCorner);
-    maxBounds = glm::max(maxBounds, lightSpaceCorner);
+  const float cascadeExtent = cascadeRadius * 2.0f;
+  const float texelSize =
+      cascadeExtent / static_cast<float>(kShadowMapResolution);
+  glm::vec2 snappedLightSpaceCenter{lightSpaceCenter.x, lightSpaceCenter.y};
+  if (texelSize > 1e-6f) {
+    snappedLightSpaceCenter.x =
+        std::floor(snappedLightSpaceCenter.x / texelSize) * texelSize;
+    snappedLightSpaceCenter.y =
+        std::floor(snappedLightSpaceCenter.y / texelSize) * texelSize;
   }
 
-  const float orthoWidth = std::max(maxBounds.x - minBounds.x, 1e-3f);
-  const float orthoHeight = std::max(maxBounds.y - minBounds.y, 1e-3f);
-  const float texelSizeX =
-      orthoWidth / static_cast<float>(kShadowMapResolution);
-  const float texelSizeY =
-      orthoHeight / static_cast<float>(kShadowMapResolution);
-  glm::vec2 orthoCenter{
-      (minBounds.x + maxBounds.x) * 0.5f,
-      (minBounds.y + maxBounds.y) * 0.5f,
-  };
-  orthoCenter.x = std::floor(orthoCenter.x / texelSizeX) * texelSizeX;
-  orthoCenter.y = std::floor(orthoCenter.y / texelSizeY) * texelSizeY;
-  minBounds.x = orthoCenter.x - orthoWidth * 0.5f;
-  maxBounds.x = orthoCenter.x + orthoWidth * 0.5f;
-  minBounds.y = orthoCenter.y - orthoHeight * 0.5f;
-  maxBounds.y = orthoCenter.y + orthoHeight * 0.5f;
+  const glm::mat4 invUnsnappedLightView = glm::inverse(unsnappedLightView);
+  const glm::vec3 snappedCenter = glm::vec3(
+      invUnsnappedLightView *
+      glm::vec4(snappedLightSpaceCenter, lightSpaceCenter.z, 1.0f));
+  const glm::mat4 lightView = container::math::lookAt(
+      snappedCenter - lightDir * lightDistance, snappedCenter, up);
+
+  glm::vec3 minBounds{
+      -cascadeRadius, -cascadeRadius, std::numeric_limits<float>::max()};
+  glm::vec3 maxBounds{
+       cascadeRadius,  cascadeRadius, -std::numeric_limits<float>::max()};
+  for (const auto& corner : sliceCorners) {
+    const glm::vec3 lightSpaceCorner =
+        glm::vec3(lightView * glm::vec4(corner, 1.0f));
+    minBounds.z = std::min(minBounds.z, lightSpaceCorner.z);
+    maxBounds.z = std::max(maxBounds.z, lightSpaceCorner.z);
+  }
 
   const glm::vec3 receiverMinBounds = minBounds;
   const glm::vec3 receiverMaxBounds = maxBounds;
@@ -379,6 +388,9 @@ ShadowManager::CascadeViewProjData ShadowManager::computeCascadeViewProj(
   result.cullBounds.receiverMaxBounds = receiverMaxBounds;
   result.cullBounds.casterMinBounds = casterMinBounds;
   result.cullBounds.casterMaxBounds = casterMaxBounds;
+  result.texelSize = texelSize;
+  result.worldRadius = cascadeRadius;
+  result.depthRange = farPlane - nearPlane;
   return result;
 }
 
@@ -386,19 +398,45 @@ ShadowManager::CascadeViewProjData ShadowManager::computeCascadeViewProj(
 void ShadowManager::update(const container::scene::BaseCamera* camera,
                            float aspectRatio,
                            const glm::vec3& lightDirection,
+                           const container::gpu::ShadowSettings& shadowSettings,
                            uint32_t imageIndex) {
   if (!camera) return;
 
-  // Get near/far from camera (cast to PerspectiveCamera for near/far access).
-  const auto* perspCam =
-      dynamic_cast<const container::scene::PerspectiveCamera*>(camera);
-  const float nearPlane = perspCam ? perspCam->nearPlane() : 0.1f;
-  const float farPlane  = perspCam ? perspCam->farPlane()  : 100.0f;
+  float nearPlane = 0.1f;
+  float farPlane = 100.0f;
+  if (const auto* perspCam =
+          dynamic_cast<const container::scene::PerspectiveCamera*>(camera)) {
+    nearPlane = perspCam->nearPlane();
+    farPlane = perspCam->farPlane();
+  } else if (const auto* orthoCam =
+                 dynamic_cast<const container::scene::OrthographicCamera*>(
+                     camera)) {
+    nearPlane = orthoCam->nearPlane();
+    farPlane = orthoCam->farPlane();
+  }
+  nearPlane = std::max(nearPlane, 1.0e-4f);
+  farPlane = std::max(farPlane, nearPlane + 1.0e-3f);
 
   computeCascadeSplits(nearPlane, farPlane);
 
   const glm::mat4 cameraView = camera->viewMatrix();
   glm::mat4 cameraProj = camera->projectionMatrix(aspectRatio);
+
+  const float normalBiasMinTexels =
+      std::max(shadowSettings.normalBiasMinTexels, 0.0f);
+  const float normalBiasMaxTexels =
+      std::max(shadowSettings.normalBiasMaxTexels, normalBiasMinTexels);
+  const float maxDepthBias = std::max(shadowSettings.maxDepthBias, 0.0f);
+  shadowData_.biasSettings = glm::vec4(
+      normalBiasMinTexels,
+      normalBiasMaxTexels,
+      std::max(shadowSettings.slopeBiasScale, 0.0f),
+      std::max(shadowSettings.receiverPlaneBiasScale, 0.0f));
+  shadowData_.filterSettings = glm::vec4(
+      std::max(shadowSettings.filterRadiusTexels, 0.25f),
+      std::clamp(shadowSettings.cascadeBlendFraction, 0.0f, 0.45f),
+      std::max(shadowSettings.constantDepthBias, 0.0f),
+      maxDepthBias);
 
   for (uint32_t i = 0; i < kShadowCascadeCount; ++i) {
     const CascadeViewProjData cascadeData =
@@ -406,6 +444,9 @@ void ShadowManager::update(const container::scene::BaseCamera* camera,
                                nearPlane, farPlane);
     shadowData_.cascades[i].viewProj = cascadeData.viewProj;
     shadowData_.cascades[i].splitDepth = cascadeSplits_[i];
+    shadowData_.cascades[i].texelSize = cascadeData.texelSize;
+    shadowData_.cascades[i].worldRadius = cascadeData.worldRadius;
+    shadowData_.cascades[i].depthRange = cascadeData.depthRange;
 
     shadowCullData_.cascades[i].viewProj = cascadeData.viewProj;
     shadowCullData_.cascades[i].lightView = cascadeData.cullBounds.lightView;

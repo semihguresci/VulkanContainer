@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <stdexcept>
 #include <vector>
 
@@ -12,7 +13,8 @@ namespace container::gpu {
  * @brief Create a Vulkan shader module from SPIR-V bytecode.
  *
  * @param device  Logical Vulkan device
- * @param code    SPIR-V bytecode (must be uint32_t aligned)
+ * @param code    SPIR-V bytecode. The byte vector is copied into aligned
+ *                32-bit storage before Vulkan reads it.
  * @return VkShaderModule
  *
  * @throws std::runtime_error on failure
@@ -27,10 +29,13 @@ namespace container::gpu {
     throw std::runtime_error("Shader code size is not a multiple of 4");
   }
 
+  std::vector<uint32_t> alignedCode(code.size() / sizeof(uint32_t));
+  std::memcpy(alignedCode.data(), code.data(), code.size());
+
   VkShaderModuleCreateInfo createInfo{};
   createInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
   createInfo.codeSize = code.size();
-  createInfo.pCode = reinterpret_cast<const uint32_t*>(code.data());
+  createInfo.pCode = alignedCode.data();
 
   VkShaderModule shaderModule = VK_NULL_HANDLE;
 

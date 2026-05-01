@@ -1,9 +1,11 @@
 #pragma once
 
 #include <expected>
+#include <cstddef>
 #include <filesystem>
 #include <fstream>
 #include <ios>
+#include <stdexcept>
 #include <string>
 #include <vector>
 

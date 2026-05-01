@@ -1,20 +1,10 @@
-struct CameraBuffer
-{
-    column_major float4x4 viewProj;
-    column_major float4x4 inverseViewProj;
-    float4 cameraWorldPosition;
-};
+#include "lighting_structs.slang"
+#include "push_constants_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 
-struct PushConstants
-{
-    float4 positionRadius;
-    float4 colorIntensity;
-};
-
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<LightPushConstants> pc;
 
 struct VSOutput
 {
@@ -35,8 +25,10 @@ VSOutput vertMain(uint vertexIndex : SV_VertexID)
     };
 
     VSOutput output;
+    float gizmoRadius =
+        PointLightHasFiniteRange(pc.positionRadius.w) ? pc.positionRadius.w : 1.0;
     float3 worldPosition =
-        pc.positionRadius.xyz + kAxisVertices[vertexIndex] * pc.positionRadius.w;
+        pc.positionRadius.xyz + kAxisVertices[vertexIndex] * gizmoRadius;
     output.pos = mul(uCamera.viewProj, float4(worldPosition, 1.0));
     output.color = pc.colorIntensity.rgb;
     return output;

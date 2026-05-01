@@ -16,6 +16,7 @@
 #include "Container/geometry/Model.h"
 #include "Container/utility/MaterialManager.h"
 #include "Container/utility/MaterialXIntegration.h"
+#include "Container/utility/SceneData.h"
 #include "Container/utility/TextureManager.h"
 
 namespace container::gpu {
@@ -40,6 +41,11 @@ struct ModelBounds {
   bool valid{false};
 };
 
+struct AuthoredDirectionalLight {
+  glm::vec4 direction{0.0f, 0.0f, -1.0f, 0.0f};
+  glm::vec4 colorIntensity{1.0f, 1.0f, 1.0f, 1.0f};
+};
+
 class SceneManager {
  public:
   SceneManager(container::gpu::AllocationManager& allocationManager,
@@ -52,9 +58,11 @@ class SceneManager {
   SceneManager& operator=(const SceneManager&) = delete;
 
   void initialize(const std::string& initialModelPath,
+                  float importScale,
                   uint32_t descriptorSetCount);
 
   bool reloadModel(const std::string& path,
+                   float importScale,
                    std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
                    const container::gpu::AllocatedBuffer& objectBuffer);
 
@@ -78,7 +86,18 @@ class SceneManager {
   const container::geometry::Model& model() const { return model_; }
   VkIndexType indexType() const { return indexType_; }
   uint32_t defaultMaterialIndex() const { return defaultMaterialIndex_; }
+  uint32_t diagnosticMaterialIndex() const;
+  uint32_t resolveGpuMaterialIndex(uint32_t materialIndex) const;
   const ModelBounds& modelBounds() const { return modelBounds_; }
+  const std::vector<container::gpu::PointLightData>& authoredPointLights() const {
+    return authoredPointLights_;
+  }
+  const std::vector<AuthoredDirectionalLight>& authoredDirectionalLights() const {
+    return authoredDirectionalLights_;
+  }
+  const std::vector<container::gpu::AreaLightData>& authoredAreaLights() const {
+    return authoredAreaLights_;
+  }
   bool isDefaultTestSceneActive() const;
   void populateSceneGraph(SceneGraph& sceneGraph) const;
 
@@ -94,10 +113,48 @@ class SceneManager {
   uint32_t resolveMaterialEmissiveTexture(uint32_t materialIndex) const;
   uint32_t resolveMaterialMetallicRoughnessTexture(
       uint32_t materialIndex) const;
+  uint32_t resolveMaterialRoughnessTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialMetalnessTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialSpecularTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialSpecularColorTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialHeightTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialOpacityTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialTransmissionTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialClearcoatTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialClearcoatRoughnessTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialClearcoatNormalTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialThicknessTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialSheenColorTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialSheenRoughnessTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialIridescenceTexture(uint32_t materialIndex) const;
+  uint32_t resolveMaterialIridescenceThicknessTexture(uint32_t materialIndex) const;
+  float resolveMaterialOpacityFactor(uint32_t materialIndex) const;
+  float resolveMaterialSpecularFactor(uint32_t materialIndex) const;
+  glm::vec4 resolveMaterialSpecularColorFactor(uint32_t materialIndex) const;
+  float resolveMaterialHeightScale(uint32_t materialIndex) const;
+  float resolveMaterialHeightOffset(uint32_t materialIndex) const;
+  float resolveMaterialTransmissionFactor(uint32_t materialIndex) const;
+  float resolveMaterialEmissiveStrength(uint32_t materialIndex) const;
+  float resolveMaterialIor(uint32_t materialIndex) const;
+  float resolveMaterialDispersion(uint32_t materialIndex) const;
+  float resolveMaterialClearcoatFactor(uint32_t materialIndex) const;
+  float resolveMaterialClearcoatRoughnessFactor(uint32_t materialIndex) const;
+  float resolveMaterialClearcoatNormalTextureScale(uint32_t materialIndex) const;
+  float resolveMaterialThicknessFactor(uint32_t materialIndex) const;
+  glm::vec4 resolveMaterialAttenuationColor(uint32_t materialIndex) const;
+  float resolveMaterialAttenuationDistance(uint32_t materialIndex) const;
+  glm::vec4 resolveMaterialSheenColorFactor(uint32_t materialIndex) const;
+  float resolveMaterialSheenRoughnessFactor(uint32_t materialIndex) const;
+  float resolveMaterialIridescenceFactor(uint32_t materialIndex) const;
+  float resolveMaterialIridescenceIor(uint32_t materialIndex) const;
+  float resolveMaterialIridescenceThicknessMinimum(uint32_t materialIndex) const;
+  float resolveMaterialIridescenceThicknessMaximum(uint32_t materialIndex) const;
   float resolveMaterialAlphaCutoff(uint32_t materialIndex) const;
   bool isMaterialTransparent(uint32_t materialIndex) const;
   bool isMaterialAlphaMasked(uint32_t materialIndex) const;
   bool isMaterialDoubleSided(uint32_t materialIndex) const;
+  bool usesMaterialSpecularGlossiness(uint32_t materialIndex) const;
+  bool isMaterialUnlit(uint32_t materialIndex) const;
 
  private:
   uint32_t queryTextureDescriptorCapacity() const;
@@ -107,6 +164,9 @@ class SceneManager {
   void loadMaterialXMaterial();
   void loadGltfAssets();
   void loadDefaultTestSceneAssets();
+  void uploadMaterialBuffer();
+  void uploadTextureMetadataBuffer();
+  void collectAuthoredPunctualLights();
   void updateModelBounds();
   void allocateDescriptorSets(uint32_t descriptorSetCount);
   void writeDescriptorSetContents(
@@ -134,14 +194,26 @@ class SceneManager {
   std::vector<container::geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
   ModelBounds modelBounds_{};
+  std::vector<container::gpu::PointLightData> authoredPointLights_{};
+  std::vector<AuthoredDirectionalLight> authoredDirectionalLights_{};
+  std::vector<container::gpu::AreaLightData> authoredAreaLights_{};
 
   VkIndexType indexType_{VK_INDEX_TYPE_UINT32};
 
   glm::vec4 materialBaseColor_{1.0f};
   uint32_t defaultMaterialIndex_{std::numeric_limits<uint32_t>::max()};
+  uint32_t diagnosticMaterialIndex_{std::numeric_limits<uint32_t>::max()};
   uint32_t gltfMaterialBaseIndex_{0};
 
+  std::vector<container::gpu::GpuMaterial> gpuMaterials_{};
+  container::gpu::AllocatedBuffer materialBuffer_{};
+  size_t materialBufferCapacity_{0};
+  std::vector<container::gpu::GpuTextureMetadata> textureMetadata_{};
+  container::gpu::AllocatedBuffer textureMetadataBuffer_{};
+  size_t textureMetadataBufferCapacity_{0};
+
   VkSampler baseColorSampler_{VK_NULL_HANDLE};
+  std::vector<VkSampler> materialSamplers_{};
   VkDescriptorSetLayout descriptorSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};
   std::vector<VkDescriptorSet> descriptorSets_{};

@@ -115,6 +115,8 @@ class OrthographicCamera : public BaseCamera {
     nearPlane_ = nearPlane;
     farPlane_ = farPlane;
   }
+  [[nodiscard]] float nearPlane() const noexcept { return nearPlane_; }
+  [[nodiscard]] float farPlane() const noexcept { return farPlane_; }
 
  private:
   float viewHeight_{10.0f};

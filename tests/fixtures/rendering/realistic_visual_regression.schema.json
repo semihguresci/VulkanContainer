@@ -1,0 +1,286 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://container.local/schemas/realistic_visual_regression.schema.json",
+  "title": "Realistic Rendering Visual Regression Fixture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "screenshotRoot",
+    "capture",
+    "comparison",
+    "cpuChecks",
+    "scenes"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "integer",
+      "const": 1
+    },
+    "screenshotRoot": {
+      "type": "string",
+      "pattern": "^tests/visual-regression$"
+    },
+    "capture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "resolution",
+        "format",
+        "colorSpace",
+        "warmupFrames",
+        "captureFrame",
+        "fixedTimestepSeconds"
+      ],
+      "properties": {
+        "resolution": {
+          "type": "array",
+          "prefixItems": [
+            {
+              "type": "integer",
+              "minimum": 1
+            },
+            {
+              "type": "integer",
+              "minimum": 1
+            }
+          ],
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "format": {
+          "type": "string",
+          "const": "png"
+        },
+        "colorSpace": {
+          "type": "string",
+          "enum": [
+            "srgb-after-tonemap",
+            "scene-linear-exr"
+          ]
+        },
+        "warmupFrames": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "captureFrame": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "fixedTimestepSeconds": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "maxMeanAbsoluteError",
+        "maxP95AbsoluteError",
+        "maxDifferentPixelFraction",
+        "platformBuckets"
+      ],
+      "properties": {
+        "algorithm": {
+          "type": "string"
+        },
+        "maxMeanAbsoluteError": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maxP95AbsoluteError": {
+          "type": "number",
+          "minimum": 0
+        },
+        "maxDifferentPixelFraction": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "platformBuckets": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      }
+    },
+    "cpuChecks": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "scenes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "category",
+          "status",
+          "asset",
+          "renderMode",
+          "camera",
+          "lighting",
+          "probes",
+          "screenshots"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]+$"
+          },
+          "category": {
+            "type": "string",
+            "enum": [
+              "material",
+              "exposure",
+              "lighting",
+              "shadow"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "planned",
+              "active"
+            ]
+          },
+          "asset": {
+            "type": "string"
+          },
+          "renderMode": {
+            "type": "string"
+          },
+          "camera": {
+            "$ref": "#/$defs/camera"
+          },
+          "lighting": {
+            "$ref": "#/$defs/lighting"
+          },
+          "materials": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "uniqueItems": true
+          },
+          "motionPath": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/camera"
+            }
+          },
+          "probes": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": true,
+              "required": [
+                "id",
+                "kind"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "screenshots": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "golden",
+              "candidate",
+              "diff"
+            ],
+            "properties": {
+              "golden": {
+                "type": "string"
+              },
+              "candidate": {
+                "type": "string"
+              },
+              "diff": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "vec3": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "minItems": 3,
+      "maxItems": 3
+    },
+    "camera": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "position",
+        "target",
+        "verticalFovDegrees"
+      ],
+      "properties": {
+        "position": {
+          "$ref": "#/$defs/vec3"
+        },
+        "target": {
+          "$ref": "#/$defs/vec3"
+        },
+        "verticalFovDegrees": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 179
+        }
+      }
+    },
+    "lighting": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "environment",
+        "environmentIntensity",
+        "exposure"
+      ],
+      "properties": {
+        "environment": {
+          "type": "string"
+        },
+        "environmentIntensity": {
+          "type": "number",
+          "minimum": 0
+        },
+        "exposure": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    }
+  }
+}

@@ -1,11 +1,41 @@
-# VulkanContainer
+# VulkanSceneRenderer
 
-The VulkanContainer project covers Vulkan features on both Windows and Linux platforms.
+VulkanSceneRenderer is a C++23 Vulkan renderer for real-time scene rendering,
+glTF content, physically based materials, shadows, GPU culling, and debug
+visualization.
 
-## Dependency management with vcpkg
-- Dependencies are declared in `vcpkg.json` and resolved in manifest mode.
-- Run `setup_vcpkg.py` once to clone and bootstrap vcpkg; reruns now skip work when the repository and binary already exist.
-- Use `download_packages.py` to install dependencies. It respects `VCPKG_DEFAULT_TRIPLET` so you can align installs with your build triplet (defaults to `x64-linux` on Linux and `x64-windows` on Windows).
-- CMake presets set `VCPKG_DEFAULT_BINARY_CACHE` to `.vcpkg-cache` and enable `binarycaching`, so repeated builds reuse compiled ports. Override the cache location with the environment variable if desired.
+The CMake project and build targets use `VulkanSceneRenderer`. The public
+include root remains `include/Container`, and the source namespace remains
+`container::`, to avoid a broad source-level API rename.
 
-CMakeLists are also maintained to build the project.
+## Quick Start
+
+Windows release:
+
+```powershell
+cmake --preset windows-release
+cmake --build out/build/windows-release --target VulkanSceneRenderer --config Release
+```
+
+Run tests:
+
+```powershell
+ctest --test-dir out/build/windows-release --output-on-failure
+```
+
+## Documentation
+
+- [Project overview](docs/project-overview.md) - features, repository layout,
+  and asset organization.
+- [Architecture](docs/architecture.md) - runtime ownership, frame flow, and
+  subsystem boundaries.
+- [Build and test](docs/build-and-test.md) - requirements, presets, build
+  commands, helper scripts, and known test status.
+- [Development guide](docs/development-guide.md) - renderer conventions,
+  shader/C++ layout contracts, and commenting guidance.
+- [Coordinate conventions](docs/coordinate-conventions.md) - source of truth
+  for coordinate systems, reverse-Z depth, viewports, culling, and matrix rules.
+- [Lighting system plan](docs/lighting-system-improvement-plan.md) - lighting,
+  shadows, tiled culling, GTAO, GPU-driven rendering, and bloom rationale.
+- [Refactoring plan](docs/refactoring-plan.md) - ownership boundaries,
+  dependency cleanup, and render graph direction.

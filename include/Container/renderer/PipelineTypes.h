@@ -19,11 +19,17 @@ struct PipelineLayouts {
 
 // All Vulkan pipelines created by GraphicsPipelineBuilder.
 struct GraphicsPipelines {
+  // Depth/G-buffer/shadow pipelines are split by culling mode so double-sided
+  // materials can disable culling, while mirrored transforms can invert the
+  // cull side after glTF triangle winding has been repaired at load time.
   VkPipeline depthPrepass{VK_NULL_HANDLE};
+  VkPipeline depthPrepassFrontCull{VK_NULL_HANDLE};
   VkPipeline depthPrepassNoCull{VK_NULL_HANDLE};
   VkPipeline gBuffer{VK_NULL_HANDLE};
+  VkPipeline gBufferFrontCull{VK_NULL_HANDLE};
   VkPipeline gBufferNoCull{VK_NULL_HANDLE};
   VkPipeline shadowDepth{VK_NULL_HANDLE};
+  VkPipeline shadowDepthFrontCull{VK_NULL_HANDLE};
   VkPipeline shadowDepthNoCull{VK_NULL_HANDLE};
   VkPipeline directionalLight{VK_NULL_HANDLE};
   VkPipeline stencilVolume{VK_NULL_HANDLE};
@@ -31,14 +37,20 @@ struct GraphicsPipelines {
   VkPipeline pointLightStencilDebug{VK_NULL_HANDLE};
   VkPipeline tiledPointLight{VK_NULL_HANDLE};
   VkPipeline transparent{VK_NULL_HANDLE};
+  VkPipeline transparentFrontCull{VK_NULL_HANDLE};
   VkPipeline transparentNoCull{VK_NULL_HANDLE};
   VkPipeline postProcess{VK_NULL_HANDLE};
   VkPipeline geometryDebug{VK_NULL_HANDLE};
   VkPipeline normalValidation{VK_NULL_HANDLE};
+  VkPipeline normalValidationFrontCull{VK_NULL_HANDLE};
+  VkPipeline normalValidationNoCull{VK_NULL_HANDLE};
   VkPipeline wireframeDepth{VK_NULL_HANDLE};
+  VkPipeline wireframeDepthFrontCull{VK_NULL_HANDLE};
   VkPipeline wireframeNoDepth{VK_NULL_HANDLE};
+  VkPipeline wireframeNoDepthFrontCull{VK_NULL_HANDLE};
   VkPipeline surfaceNormalLine{VK_NULL_HANDLE};
   VkPipeline objectNormalDebug{VK_NULL_HANDLE};
+  VkPipeline objectNormalDebugFrontCull{VK_NULL_HANDLE};
   VkPipeline objectNormalDebugNoCull{VK_NULL_HANDLE};
   VkPipeline lightGizmo{VK_NULL_HANDLE};
 };

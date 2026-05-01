@@ -1,53 +1,6 @@
-static const uint INVALID_NODE_INDEX = 0xffffffffu;
-static const uint MAX_OIT_NODES_PER_PIXEL = 64u;
-
-struct PushConstants
-{
-    uint outputMode;
-    uint bloomEnabled;
-    float bloomIntensity;
-    float cameraNear;
-    float cameraFar;
-    float cascadeSplits[4];
-    uint tileCountX;
-    uint totalLights;
-    uint depthSliceCount;
-};
-
-struct TransparentNode
-{
-    float4 color;
-    float depth;
-    uint next;
-    float2 padding;
-};
-
-struct OitMetadataBuffer
-{
-    uint nodeCapacity;
-    uint viewportWidth;
-    uint viewportHeight;
-    uint reserved;
-};
-
-struct CameraBuffer
-{
-    column_major float4x4 viewProj;
-    column_major float4x4 inverseViewProj;
-    float4 cameraWorldPosition;
-};
-
-struct ShadowCascadeData
-{
-    column_major float4x4 viewProj;
-    float splitDepth;
-    float3 padding;
-};
-
-struct ShadowBuffer
-{
-    ShadowCascadeData cascades[4];
-};
+#include "lighting_structs.slang"
+#include "oit_common.slang"
+#include "push_constants_common.slang"
 
 [[vk::binding(0, 0)]] SamplerState gBufferSampler;
 [[vk::binding(1, 0)]] Texture2D<float4> sceneColorTexture;
@@ -61,30 +14,7 @@ struct ShadowBuffer
 [[vk::binding(10, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(11, 0)]] ConstantBuffer<ShadowBuffer> uShadow;
 [[vk::binding(12, 0)]] Texture2DArray<float> gShadowAtlas;
-
-struct TileLightGrid
-{
-    uint offset;
-    uint count;
-};
-
-float LinearizeReverseZDepth(float depth, float nearPlane, float farPlane)
-{
-    float n = max(nearPlane, 1e-4);
-    float f = max(farPlane, n + 1e-3);
-    return (n * f) / (saturate(depth) * (f - n) + n);
-}
-
-uint DepthToClusterSlice(float depth, float nearPlane, float farPlane, uint depthSliceCount)
-{
-    uint safeSliceCount = max(depthSliceCount, 1u);
-    float n = max(nearPlane, 1e-4);
-    float f = max(farPlane, n + 1e-3);
-    float viewDepth = clamp(LinearizeReverseZDepth(depth, n, f), n, f);
-    float normalized = log2(viewDepth / n) / max(log2(f / n), 1e-6);
-    uint slice = uint(saturate(normalized) * float(safeSliceCount));
-    return min(slice, safeSliceCount - 1u);
-}
+[[vk::binding(13, 0)]] StructuredBuffer<ExposureStateData> uExposureState;
 
 [[vk::binding(9, 0)]] StructuredBuffer<TileLightGrid> uTileGrid;
 [[vk::binding(0, 1)]] RWTexture2D<uint> headPointerImage;
@@ -93,7 +23,9 @@ uint DepthToClusterSlice(float depth, float nearPlane, float farPlane, uint dept
 [[vk::binding(3, 1)]] ConstantBuffer<OitMetadataBuffer> uOit;
 
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<PostProcessPushConstants> pc;
+
+static const uint EXPOSURE_MODE_MANUAL = 0u;
 
 struct VSOutput
 {
@@ -124,9 +56,34 @@ float3 ToSwapchainLinear(float3 color)
     return saturate(color);
 }
 
+float ResolveExposureForToneMapping()
+{
+    if (pc.exposureMode == EXPOSURE_MODE_MANUAL)
+    {
+        return max(pc.exposure, 0.0);
+    }
+
+    ExposureStateData exposureState = uExposureState[0];
+    float exposure =
+        exposureState.initialized > 0.5 && isfinite(exposureState.exposure)
+            ? exposureState.exposure
+            : pc.exposure;
+    if (!isfinite(exposure))
+    {
+        exposure = pc.exposure;
+    }
+
+    float minExposure = max(pc.minExposure, 0.0);
+    float maxExposure = max(pc.maxExposure, minExposure);
+    return clamp(max(exposure, 0.0), minExposure, maxExposure);
+}
+
 float4 CompositeFrontToBack(float3 sceneColor, uint sortedIndices[MAX_OIT_NODES_PER_PIXEL], uint nodeCount,
                             out float3 transparentColor, out float revealage)
 {
+    // Transparent nodes are already sorted nearest-to-farthest by the caller.
+    // Front-to-back compositing lets revealage track how much opaque scene
+    // color remains visible through the accumulated alpha.
     float3 accumColor = 0.0.xxx;
     float accumAlpha = 0.0;
 
@@ -142,6 +99,69 @@ float4 CompositeFrontToBack(float3 sceneColor, uint sortedIndices[MAX_OIT_NODES_
     transparentColor = accumColor;
     revealage = 1.0 - accumAlpha;
     return float4(accumColor + sceneColor * revealage, 1.0);
+}
+
+struct OitResolveResult
+{
+    float3 compositedColor;
+    float3 transparentColor;
+    float revealage;
+};
+
+OitResolveResult ResolveOitPixel(uint2 pixelCoord, float3 sceneColor)
+{
+    OitResolveResult result;
+    result.compositedColor = sceneColor;
+    result.transparentColor = 0.0.xxx;
+    result.revealage = 1.0;
+
+    if (pc.oitEnabled == 0u ||
+        pixelCoord.x >= uOit.viewportWidth ||
+        pixelCoord.y >= uOit.viewportHeight)
+    {
+        return result;
+    }
+
+    uint current = headPointerImage.Load(int2(pixelCoord));
+    if (current == INVALID_NODE_INDEX)
+    {
+        return result;
+    }
+
+    uint sortedIndices[MAX_OIT_NODES_PER_PIXEL];
+    uint nodeCount = 0u;
+    while (current != INVALID_NODE_INDEX && nodeCount < MAX_OIT_NODES_PER_PIXEL)
+    {
+        if (current >= uOit.nodeCapacity)
+        {
+            break;
+        }
+
+        TransparentNode node = transparentNodes[current];
+        uint insertAt = nodeCount;
+        while (insertAt > 0u)
+        {
+            TransparentNode prevNode = transparentNodes[sortedIndices[insertAt - 1u]];
+            if (prevNode.depth >= node.depth)
+            {
+                break;
+            }
+            sortedIndices[insertAt] = sortedIndices[insertAt - 1u];
+            --insertAt;
+        }
+        sortedIndices[insertAt] = current;
+        ++nodeCount;
+        current = node.next;
+    }
+
+    if (nodeCount > 0u)
+    {
+        float4 composited = CompositeFrontToBack(
+            sceneColor, sortedIndices, nodeCount,
+            result.transparentColor, result.revealage);
+        result.compositedColor = composited.rgb;
+    }
+    return result;
 }
 
 bool InRect(float2 uv, Rect rect)
@@ -265,89 +285,60 @@ float4 fragMain(VSOutput input) : SV_Target0
     pixelCoord = min(pixelCoord, uint2(max(width, 1u) - 1u, max(height, 1u) - 1u));
     float2 screenUV = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
 
-    float4 sceneColor = sceneColorTexture.Load(int3(pixelCoord, 0));
-    float4 albedo = gAlbedoTexture.Load(int3(pixelCoord, 0));
-    float4 normal = gNormalTexture.Load(int3(pixelCoord, 0));
-    float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
-    float4 emissive = gEmissiveTexture.Load(int3(pixelCoord, 0));
-    float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
-
-    float3 transparentColor = 0.0.xxx;
-    float3 compositedColor = sceneColor.rgb;
-    float revealage = 1.0;
-
-    if (pixelCoord.x < uOit.viewportWidth && pixelCoord.y < uOit.viewportHeight)
+    uint outputMode = pc.outputMode;
+    if (outputMode == 1u)
     {
-        uint sortedIndices[MAX_OIT_NODES_PER_PIXEL];
-        uint nodeCount = 0u;
-
-        uint current = headPointerImage.Load(int2(pixelCoord));
-        while (current != INVALID_NODE_INDEX && nodeCount < MAX_OIT_NODES_PER_PIXEL)
-        {
-            if (current >= uOit.nodeCapacity)
-            {
-                break;
-            }
-
-            TransparentNode node = transparentNodes[current];
-            uint insertAt = nodeCount;
-            while (insertAt > 0u)
-            {
-                TransparentNode prevNode = transparentNodes[sortedIndices[insertAt - 1u]];
-                if (prevNode.depth >= node.depth)
-                {
-                    break;
-                }
-                sortedIndices[insertAt] = sortedIndices[insertAt - 1u];
-                --insertAt;
-            }
-            sortedIndices[insertAt] = current;
-            ++nodeCount;
-            current = node.next;
-        }
-
-        float4 composited = CompositeFrontToBack(sceneColor.rgb, sortedIndices, nodeCount,
-                                                 transparentColor, revealage);
-        compositedColor = composited.rgb;
+        return float4(gAlbedoTexture.Load(int3(pixelCoord, 0)).rgb, 1.0);
     }
 
-    if (pc.outputMode == 1)
+    if (outputMode == 2u)
     {
-        return float4(albedo.rgb, 1.0);
+        return float4(NormalVisual(gNormalTexture.Load(int3(pixelCoord, 0))), 1.0);
     }
 
-    if (pc.outputMode == 2)
+    if (outputMode == 3u)
     {
-        return float4(NormalVisual(normal), 1.0);
+        return float4(MaterialVisual(gMaterialTexture.Load(int3(pixelCoord, 0))), 1.0);
     }
 
-    if (pc.outputMode == 3)
+    if (outputMode == 4u)
     {
-        return float4(MaterialVisual(material), 1.0);
-    }
-
-    if (pc.outputMode == 4)
-    {
+        float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
         return float4(DepthVisual(depthSample), 1.0);
     }
 
-    if (pc.outputMode == 5)
+    if (outputMode == 5u)
     {
-        float3 mappedEmissive = ToneMapACES(emissive.rgb * 2.0);
-        return float4(ToSwapchainLinear(mappedEmissive), 1.0);
+        float3 emissive = gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb;
+        return float4(ToSwapchainLinear(ToneMapACES(emissive * 2.0)), 1.0);
     }
 
-    if (pc.outputMode == 6)
+    if (outputMode == 6u || outputMode == 7u)
     {
-        return float4(transparentColor, 1.0);
+        OitResolveResult oit = ResolveOitPixel(pixelCoord, 0.0.xxx);
+        if (outputMode == 6u)
+        {
+            return float4(oit.transparentColor, 1.0);
+        }
+        return float4(oit.revealage.xxx, 1.0);
     }
 
-    if (pc.outputMode == 7)
+    float4 sceneColor = sceneColorTexture.Load(int3(pixelCoord, 0));
+
+    float3 compositedColor = sceneColor.rgb;
+    float resolvedExposure = ResolveExposureForToneMapping();
+
+    bool oitAvailable = pc.oitEnabled != 0u;
+    bool resolveCurrentPixelOit =
+        oitAvailable && outputMode == 0u;
+
+    if (resolveCurrentPixelOit)
     {
-        return float4(revealage.xxx, 1.0);
+        OitResolveResult oit = ResolveOitPixel(pixelCoord, sceneColor.rgb);
+        compositedColor = oit.compositedColor;
     }
 
-    if (pc.outputMode == 8)
+    if (outputMode == 8u)
     {
         Rect centerRect = { float2(0.20, 0.18), float2(0.80, 0.82) };
         Rect albedoRect = { float2(0.02, 0.68), float2(0.18, 0.92) };
@@ -359,9 +350,6 @@ float4 fragMain(VSOutput input) : SV_Target0
         const float panelPadding = 0.006;
         const float3 panelBorderColor = float3(0.60, 0.62, 0.66);
         const float3 panelTileBackgroundColor = float3(0.12, 0.12, 0.13);
-        float3 overviewBackground = ToneMapACES(compositedColor * 0.25);
-        overviewBackground = ToSwapchainLinear(overviewBackground);
-        overviewBackground = lerp(overviewBackground, panelTileBackgroundColor, 0.35);
 
         if (IsPanelBorder(screenUV, centerRect, panelPadding) ||
             IsPanelBorder(screenUV, albedoRect, panelPadding) ||
@@ -389,47 +377,15 @@ float4 fragMain(VSOutput input) : SV_Target0
 
             float2 panelUV = RectUV(screenUV, centerInner);
             float3 litColor = sceneColorTexture.SampleLevel(gBufferSampler, panelUV, 0.0).rgb;
-            const float exposure = 0.25;
-            litColor *= exposure;
+            litColor *= resolvedExposure;
 
-            uint2 panelPixel = uint2(panelUV * float2(uOit.viewportWidth, uOit.viewportHeight));
-            float3 panelTransparentColor = 0.0.xxx;
-            float panelRevealage = 1.0;
             float3 panelCompositedColor = litColor;
 
-            if (panelPixel.x < uOit.viewportWidth && panelPixel.y < uOit.viewportHeight)
+            if (oitAvailable)
             {
-                uint sortedIndices[MAX_OIT_NODES_PER_PIXEL];
-                uint nodeCount = 0u;
-
-                uint current = headPointerImage.Load(int2(panelPixel));
-                while (current != INVALID_NODE_INDEX && nodeCount < MAX_OIT_NODES_PER_PIXEL)
-                {
-                    if (current >= uOit.nodeCapacity)
-                    {
-                        break;
-                    }
-
-                    TransparentNode node = transparentNodes[current];
-                    uint insertAt = nodeCount;
-                    while (insertAt > 0u)
-                    {
-                        TransparentNode prevNode = transparentNodes[sortedIndices[insertAt - 1u]];
-                        if (prevNode.depth >= node.depth)
-                        {
-                            break;
-                        }
-                        sortedIndices[insertAt] = sortedIndices[insertAt - 1u];
-                        --insertAt;
-                    }
-                    sortedIndices[insertAt] = current;
-                    ++nodeCount;
-                    current = node.next;
-                }
-
-                float4 panelComposited = CompositeFrontToBack(litColor, sortedIndices, nodeCount,
-                                                              panelTransparentColor, panelRevealage);
-                panelCompositedColor = panelComposited.rgb;
+                uint2 panelPixel = uint2(panelUV * float2(uOit.viewportWidth, uOit.viewportHeight));
+                OitResolveResult panelOit = ResolveOitPixel(panelPixel, litColor);
+                panelCompositedColor = panelOit.compositedColor;
             }
 
             float3 mappedCenter = ToneMapACES(panelCompositedColor);
@@ -464,7 +420,10 @@ float4 fragMain(VSOutput input) : SV_Target0
                 return float4(panelTileBackgroundColor, 1.0);
             }
             float2 panelUV = RectUV(screenUV, materialInner);
-            float4 panelMaterial = gMaterialTexture.SampleLevel(gBufferSampler, panelUV, 0.0);
+            uint2 panelPixel = uint2(panelUV * float2(width, height));
+            panelPixel =
+                min(panelPixel, uint2(max(width, 1u) - 1u, max(height, 1u) - 1u));
+            float4 panelMaterial = gMaterialTexture.Load(int3(panelPixel, 0));
             return float4(MaterialVisual(panelMaterial), 1.0);
         }
 
@@ -491,17 +450,28 @@ float4 fragMain(VSOutput input) : SV_Target0
             return float4(DepthVisual(panelDepth), 1.0);
         }
 
+        float3 overviewCompositedColor = sceneColor.rgb;
+        if (oitAvailable)
+        {
+            OitResolveResult overviewOit =
+                ResolveOitPixel(pixelCoord, sceneColor.rgb);
+            overviewCompositedColor = overviewOit.compositedColor;
+        }
+        float3 overviewBackground = ToneMapACES(overviewCompositedColor * resolvedExposure);
+        overviewBackground = ToSwapchainLinear(overviewBackground);
+        overviewBackground = lerp(overviewBackground, panelTileBackgroundColor, 0.35);
         return float4(overviewBackground, 1.0);
     }
 
-    if (pc.outputMode == 10)
+    if (outputMode == 10u)
     {
         return float4(sceneColor.rgb, 1.0);
     }
 
     // Shadow cascade debug view: color-code pixels by cascade index.
-    if (pc.outputMode == 11)
+    if (outputMode == 11u)
     {
+        float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
         if (depthSample == 0.0)
         {
             return float4(0.0, 0.0, 0.0, 1.0);
@@ -538,7 +508,8 @@ float4 fragMain(VSOutput input) : SV_Target0
             float splitDepth = pc.cascadeSplits[cascadeIndex];
             float prevSplit = (cascadeIndex == 0) ? 0.0 : pc.cascadeSplits[cascadeIndex - 1];
             float cascadeRange = splitDepth - prevSplit;
-            float blendZone = cascadeRange * 0.1;
+            float blendFraction = clamp(uShadow.filterSettings.y, 0.0, 0.45);
+            float blendZone = cascadeRange * blendFraction;
             float blendStart = splitDepth - blendZone;
             if (viewZ > blendStart)
             {
@@ -560,10 +531,48 @@ float4 fragMain(VSOutput input) : SV_Target0
         return float4(result, 1.0);
     }
 
-    // Tile light heat map: color-code pixels by per-tile light count.
-    if (pc.outputMode == 12)
+    // Shadow texel density debug view: brighter means finer world-space shadow
+    // resolution in the selected cascade.
+    if (outputMode == 13u)
     {
+        float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
+        if (depthSample == 0.0)
+        {
+            return float4(0.0, 0.0, 0.0, 1.0);
+        }
+
+        float n = pc.cameraNear;
+        float f = pc.cameraFar;
+        float viewZ = (n * f) / (depthSample * (f - n) + n);
+
+        uint cascadeIndex = 3;
+        for (uint i = 0; i < 3; ++i)
+        {
+            if (viewZ < pc.cascadeSplits[i])
+            {
+                cascadeIndex = i;
+                break;
+            }
+        }
+
+        float texelSize = max(uShadow.cascades[cascadeIndex].texelSize, 1e-6);
+        float texelsPerMeter = 1.0 / texelSize;
+        float density = saturate(log2(max(texelsPerMeter, 1e-4)) / 8.0);
+        float3 color = lerp(float3(0.05, 0.08, 0.14),
+                            float3(0.15, 0.8, 1.0), density);
+        return float4(color, 1.0);
+    }
+
+    // Tile light heat map: color-code pixels by per-tile light count.
+    if (outputMode == 12u)
+    {
+        if (pc.totalLights == 0u)
+        {
+            return float4(0.0, 0.0, 0.0, 1.0);
+        }
+
         static const uint TILE_SIZE = 16u;
+        float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
 
         uint2 tileCoord = pixelCoord / TILE_SIZE;
         uint safeDepthSliceCount = max(pc.depthSliceCount, 1u);
@@ -629,7 +638,6 @@ float4 fragMain(VSOutput input) : SV_Target0
         finalHdr += bloom * pc.bloomIntensity;
     }
 
-    const float exposure = 0.25;
-    float3 mapped = ToneMapACES(finalHdr * exposure);
+    float3 mapped = ToneMapACES(finalHdr * resolvedExposure);
     return float4(ToSwapchainLinear(mapped), 1.0);
 }

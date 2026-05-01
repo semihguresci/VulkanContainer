@@ -59,6 +59,7 @@ class ShadowManager {
   void update(const container::scene::BaseCamera* camera,
               float aspectRatio,
               const glm::vec3& lightDirection,
+              const container::gpu::ShadowSettings& shadowSettings,
               uint32_t imageIndex);
 
   // ---- Accessors -----------------------------------------------------------
@@ -117,6 +118,9 @@ class ShadowManager {
   struct CascadeViewProjData {
     glm::mat4               viewProj{1.0f};
     ShadowCascadeCullBounds cullBounds{};
+    float                   texelSize{0.0f};
+    float                   worldRadius{0.0f};
+    float                   depthRange{0.0f};
   };
 
   void computeCascadeSplits(float nearPlane, float farPlane);

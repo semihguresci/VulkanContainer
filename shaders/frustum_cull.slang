@@ -4,43 +4,10 @@
 // VkDrawIndexedIndirectCommand to the output buffer.
 
 #include "lighting_structs.slang"
+#include "push_constants_common.slang"
+#include "draw_indirect_common.slang"
 
-struct ObjectBuffer
-{
-    column_major float4x4 model;
-    column_major float4x4 normalMatrix;
-    float4 color;
-    float3 emissiveColor;
-    float emissiveStrength;
-    float2 metallicRoughness;
-    float alphaCutoff;
-    float normalTextureScale;
-    float occlusionStrength;
-    uint baseColorTextureIndex;
-    uint normalTextureIndex;
-    uint occlusionTextureIndex;
-    uint emissiveTextureIndex;
-    uint metallicRoughnessTextureIndex;
-    uint flags;
-    float4 boundingSphere;
-};
-
-struct DrawIndexedIndirectCommand
-{
-    uint indexCount;
-    uint instanceCount;
-    uint firstIndex;
-    int  vertexOffset;
-    uint firstInstance;  // Encodes objectIndex.
-};
-
-struct CullPushConstants
-{
-    uint objectCount;
-    uint pad0;
-    uint pad1;
-    uint pad2;
-};
+#include "object_data_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<CullPushConstants> pc;

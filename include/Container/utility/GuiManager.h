@@ -37,6 +37,7 @@ enum class GBufferViewMode : uint32_t {
   ObjectSpaceNormals = 10,
   ShadowCascades = 11,
   TileLightHeatMap = 12,
+  ShadowTexelDensity = 13,
 };
 
 enum class WireframeMode : uint32_t {
@@ -76,7 +77,8 @@ class GuiManager {
                   VkPhysicalDevice physicalDevice, VkQueue graphicsQueue,
                   uint32_t graphicsQueueFamily, VkRenderPass renderPass,
                   uint32_t imageCount, GLFWwindow* window,
-                  const std::string& defaultModelPath);
+                  const std::string& defaultModelPath,
+                  float defaultImportScale);
 
   void shutdown(VkDevice device);
   void updateSwapchainImageCount(uint32_t imageCount);
@@ -86,14 +88,15 @@ class GuiManager {
 
   void drawSceneControls(
       const container::scene::SceneGraph& sceneGraph,
-      const std::function<bool(const std::string&)>& reloadModel,
-      const std::function<bool()>& reloadDefault,
+      const std::function<bool(const std::string&, float)>& reloadModel,
+      const std::function<bool(float)>& reloadDefault,
       const TransformControls& cameraTransform,
       const std::function<void(const TransformControls&)>& applyCameraTransform,
       const TransformControls& sceneTransform,
       const std::function<void(const TransformControls&)>& applySceneTransform,
       const glm::vec3& directionalLightPosition,
       const container::gpu::LightingData& lightingData,
+      const std::vector<container::gpu::PointLightData>& pointLights,
       uint32_t selectedMeshNode,
       const std::function<void(uint32_t)>& selectMeshNode,
       const TransformControls& meshTransform,
@@ -133,6 +136,9 @@ class GuiManager {
   [[nodiscard]] const container::gpu::LightingSettings& lightingSettings() const {
     return lightingSettings_;
   }
+  [[nodiscard]] const container::gpu::ShadowSettings& shadowSettings() const {
+    return shadowSettings_;
+  }
   void setFreezeCulling(bool frozen);
   [[nodiscard]] bool freezeCullingRequested() const { return freezeCulling_; }
 
@@ -143,6 +149,13 @@ class GuiManager {
   [[nodiscard]] float bloomKnee()       const { return bloomKnee_; }
   [[nodiscard]] float bloomIntensity()  const { return bloomIntensity_; }
   [[nodiscard]] float bloomRadius()     const { return bloomRadius_; }
+  [[nodiscard]] const container::gpu::ExposureSettings& exposureSettings()
+      const {
+    return exposureSettings_;
+  }
+  [[nodiscard]] float postProcessExposure() const {
+    return exposureSettings_.manualExposure;
+  }
 
   // Render pass toggles (bidirectional sync with RenderGraph).
   void setRenderPassList(const std::vector<RenderPassToggle>& passes);
@@ -151,6 +164,13 @@ class GuiManager {
 
  private:
   void ensureInitialized() const;
+  void discoverSampleModels();
+  [[nodiscard]] int sampleModelIndexForPath(const std::string& path) const;
+
+  struct SampleModelOption {
+    std::string label;
+    std::string path;
+  };
 
   VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};
   bool initialized_{false};
@@ -166,6 +186,10 @@ class GuiManager {
   std::string gltfPathInput_{};
   std::string defaultModelPath_{
       };
+  std::vector<SampleModelOption> sampleModelOptions_;
+  int selectedSampleModelIndex_{-1};
+  int importScaleIndex_{0};
+  float importScale_{1.0f};
   std::string statusMessage_{};
   std::string environmentStatus_{};
   uint32_t cullStatsTotal_{0};
@@ -173,12 +197,14 @@ class GuiManager {
   uint32_t cullStatsOcclusion_{0};
   container::gpu::LightCullingStats lightCullingStats_{};
   container::gpu::LightingSettings lightingSettings_{};
+  container::gpu::ShadowSettings shadowSettings_{};
   bool freezeCulling_{false};
   bool  bloomEnabled_{true};
   float bloomThreshold_{1.0f};
   float bloomKnee_{0.1f};
   float bloomIntensity_{0.3f};
   float bloomRadius_{1.0f};
+  container::gpu::ExposureSettings exposureSettings_{};
   std::vector<RenderPassToggle> renderPassToggles_;
 };
 

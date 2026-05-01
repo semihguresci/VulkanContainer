@@ -1,11 +1,50 @@
-# VulkanContainer — Architecture Refactoring Plan
+# VulkanSceneRenderer — Architecture Refactoring Plan
 
-> **Project:** VulkanContainer  
+> **Project:** VulkanSceneRenderer
 > **Branch:** `refactor`  
 > **Date:** 2025  
 > **Status:** Living document — update as phases complete
 
 ---
+
+## Reader Notes
+
+This document is both a historical refactoring log and a current architecture
+map. Treat completed phase sections as design context, not as a guarantee that
+every old target name or file grouping still exists exactly as written. For the
+current executable and library names, prefer the root `CMakeLists.txt` and the
+`src/*/CMakeLists.txt` files.
+
+The highest-level runtime ownership path is:
+
+```text
+Application
+  -> VulkanContextInitializer / window setup
+  -> RendererFrontend
+  -> subsystem managers
+  -> FrameRecorder render graph
+```
+
+`RendererFrontend` owns object lifetime and per-frame submission; `FrameRecorder`
+owns command-buffer recording order; subsystem managers own specialized Vulkan
+resources. Keep new responsibilities in the narrowest manager that owns the data
+being mutated.
+
+### Current Phase Status
+
+| Phase | Status | Notes |
+|---|---|---|
+| 0 | Complete | Baseline refactoring completed on the refactor branch. |
+| 1 | Complete | Monolithic dependency aggregation replaced by focused `Dep_*` groups. |
+| 2 | Complete | Utility code split into focused subsystem targets; obsolete aggregate removed later. |
+| 3 | Complete | Project types live under the `container::` namespace root. |
+| 4 | Complete with measurement caveat | Header structure is decoupled; rebuild-time reduction was not re-measured. |
+| 5 | Complete | `RendererFrontend` reduced to grouped ownership/orchestration state. |
+| 6 | Complete | Render graph scheduling and tests are in place. |
+| 7 | Complete | Shared ECS world covers renderables, point lights, and active camera data. |
+| 8 | Complete | Unused dependencies and dead dependency groups removed. |
+| 9 | Partial | Lightweight test infrastructure is improved; GPU CI and coverage targets remain deferred. |
+| 10 | Complete | Dead targets and redundant structural dependencies removed. |
 
 ## Table of Contents
 
@@ -51,11 +90,11 @@ Depth Prepass → G-Buffer Fill → Lighting (Directional + Point/Stencil)
 ### Library Link Graph (Current)
 
 ```
-VulkanContainer (executable)
-  └─ VulkanContainer_Core
-       ├─ VulkanContainer_renderer  ──→ VulkanDependencies, utility
-       ├─ VulkanContainer_geometry  ──→ VulkanDependencies, utility
-       └─ VulkanContainer_utility   ──→ VulkanDependencies, spdlog::spdlog
+VulkanSceneRenderer (executable)
+  └─ VulkanSceneRenderer_Core
+       ├─ VulkanSceneRenderer_renderer  ──→ VulkanDependencies, utility
+       ├─ VulkanSceneRenderer_geometry  ──→ VulkanDependencies, utility
+       └─ VulkanSceneRenderer_utility   ──→ VulkanDependencies, spdlog::spdlog
 ```
 
 `VulkanDependencies` is a single INTERFACE target that links **all** third-party libraries to **every** consumer regardless of actual need.
@@ -94,9 +133,9 @@ These changes were implemented on the `refactor` branch:
 
    | Internal Library | Actually Uses |
    |---|---|
-   | `VulkanContainer_renderer` | Vulkan, VMA, GLM, spdlog, fmt, ImGui, slang |
-   | `VulkanContainer_geometry` | Vulkan, VMA, GLM, tinygltf, stb |
-   | `VulkanContainer_utility` | Vulkan, VMA, GLM, GLFW, spdlog, fmt, ImGui, nlohmann_json, yaml-cpp, MaterialX |
+   | `VulkanSceneRenderer_renderer` | Vulkan, VMA, GLM, spdlog, fmt, ImGui, slang |
+   | `VulkanSceneRenderer_geometry` | Vulkan, VMA, GLM, tinygltf, stb |
+   | `VulkanSceneRenderer_utility` | Vulkan, VMA, GLM, GLFW, spdlog, fmt, ImGui, nlohmann_json, yaml-cpp, MaterialX |
    | Tests (CPU-only) | GTest, GLM |
 
 2. **Define focused CMake targets** in `cmake/Dependencies.cmake`:
@@ -150,15 +189,19 @@ These changes were implemented on the `refactor` branch:
 
 ### Validation Criteria
 
-- [ ] No internal target links more than 5 dependency groups
-- [ ] CPU-only tests do not link Vulkan SDK
-- [ ] Build passes, all tests pass
+- [x] No internal target links more than 5 dependency groups
+- [x] CPU-only tests do not link Vulkan SDK
+- [x] Build passes, all tests pass
+
+**Phase 1 completed.** The monolithic `VulkanDependencies` target has been removed and
+replaced by focused `Dep_*` interface groups. CPU-only tests now link only the narrow
+dependencies they need.
 
 ---
 
 ## 4. Phase 2 — Decompose Kitchen-Sink `utility` Library
 
-**Goal:** Split the 16-file `VulkanContainer_utility` into focused libraries with clear responsibilities.  
+**Goal:** Split the 16-file `VulkanSceneRenderer_utility` into focused libraries with clear responsibilities.
 **Risk:** Medium — requires updating `target_link_libraries` across all consumers.  
 **Estimated effort:** Medium
 
@@ -170,12 +213,12 @@ These changes were implemented on the `refactor` branch:
 
 | New Library | Source Files | Responsibility |
 |---|---|---|
-| `VulkanContainer_vulkan_device` | `VulkanDevice.cpp`, `VulkanInstance.cpp`, `SwapChainManager.cpp`, `FrameSyncManager.cpp` | Vulkan device lifecycle, swap chain, frame synchronization |
-| `VulkanContainer_window` | `WindowManager.cpp`, `InputManager.cpp` | GLFW window + input |
-| `VulkanContainer_gpu_resource` | `AllocationManager.cpp`, `VulkanMemoryManager.cpp`, `TextureManager.cpp`, `PipelineManager.cpp` | GPU memory, buffers, textures, pipeline/descriptor management |
-| `VulkanContainer_scene` | `SceneManager.cpp`, `SceneGraph.cpp`, `MaterialManager.cpp`, `MaterialXIntegration.cpp` | Scene graph, materials, model descriptor sets |
-| `VulkanContainer_ui` | `GuiManager.cpp` | ImGui integration |
-| `VulkanContainer_log` | `Logger.cpp` | Logging (spdlog wrapper) |
+| `VulkanSceneRenderer_vulkan_device` | `VulkanDevice.cpp`, `VulkanInstance.cpp`, `SwapChainManager.cpp`, `FrameSyncManager.cpp` | Vulkan device lifecycle, swap chain, frame synchronization |
+| `VulkanSceneRenderer_window` | `WindowManager.cpp`, `InputManager.cpp` | GLFW window + input |
+| `VulkanSceneRenderer_gpu_resource` | `AllocationManager.cpp`, `VulkanMemoryManager.cpp`, `TextureManager.cpp`, `PipelineManager.cpp` | GPU memory, buffers, textures, pipeline/descriptor management |
+| `VulkanSceneRenderer_scene` | `SceneManager.cpp`, `SceneGraph.cpp`, `MaterialManager.cpp`, `MaterialXIntegration.cpp` | Scene graph, materials, model descriptor sets |
+| `VulkanSceneRenderer_ui` | `GuiManager.cpp` | ImGui integration |
+| `VulkanSceneRenderer_log` | `Logger.cpp` | Logging (spdlog wrapper) |
 
 ### Steps
 
@@ -204,15 +247,19 @@ These changes were implemented on the `refactor` branch:
    | `ui` | `Dep_UI`, `Dep_VulkanCore`, `scene` |
    | `log` | `Dep_Logging` |
 
-4. **Update consumers** — `VulkanContainer_renderer`, `VulkanContainer_geometry`, and `VulkanContainer_Core` link the specific sub-libraries they need instead of the monolithic `VulkanContainer_utility`.
+4. **Update consumers** — `VulkanSceneRenderer_renderer`, `VulkanSceneRenderer_geometry`, and `VulkanSceneRenderer_Core` link the specific sub-libraries they need instead of the monolithic `VulkanSceneRenderer_utility`.
 
 5. **Verify:** Build passes, all tests pass.
 
 ### Validation Criteria
 
-- [ ] Each sub-library compiles independently
-- [ ] No circular dependencies between sub-libraries
-- [ ] Build passes, all tests pass
+- [x] Each sub-library compiles independently
+- [x] No circular dependencies between sub-libraries
+- [x] Build passes, all tests pass
+
+**Phase 2 completed.** The former kitchen-sink utility aggregation has been split into
+focused subsystem targets. Later Phase 8/10 cleanup removed the remaining unused aggregate
+target and verified the dependency graph.
 
 ---
 
@@ -346,9 +393,10 @@ Several headers pull in enormous transitive include trees:
 
 - [x] No header includes more than 7 project headers (exception: `RendererFrontend.h` at 11 — requires Phase 5 God Object decomposition to reduce further; all by-value members need complete types)
 - [x] Build passes, all tests pass (38/38)
-- [ ] Incremental rebuild time measurably reduced
+- [ ] Incremental rebuild time measurably reduced (not re-measured after later structural cleanup)
 
-**Phase 4 completed.** Headers decoupled via forward declarations:
+**Phase 4 completed for source structure.** Headers were decoupled via forward declarations;
+the only remaining unchecked item is a performance measurement, not an implementation task:
 
 | Header | Before | After |
 |---|---|---|
@@ -523,11 +571,20 @@ public:
 
 ### Steps
 
-1. **Define `RenderGraph` and `RenderPassNode`** with resource dependency tracking.
-2. **Wrap each existing pass** as a `RenderPassNode` — no logic change, just a new registration API.
-3. **Implement `compile()`** — topological sort on resource dependencies, automatic `VkImageMemoryBarrier` insertion.
-4. **Replace `FrameRecorder::recordCommandBuffer()`** with `graph.execute()`.
-5. **Enable dynamic pass toggling** — debug passes registered conditionally based on `DebugRenderState`.
+1. [x] **Define `RenderGraph` and `RenderPassNode`** with stable pass IDs, schedule dependencies,
+   logical resource reads/writes, execution callbacks, and validation helpers.
+2. [x] **Wrap each existing frame pass** as a `RenderPassNode` in `FrameRecorder::buildGraph()`
+   without changing the concrete Vulkan recording logic.
+3. [x] **Implement `compile()`** with dependency validation, resource-derived edges, cycle
+   detection, and topological execution ordering. Vulkan image layout transitions and barriers stay
+   in the concrete pass recorders because they still depend on physical render pass boundaries.
+4. [x] **Replace command recording order** with `graph.execute()` so `FrameRecorder::record()` only
+   begins the command buffer, executes the active graph plan, and ends the command buffer.
+5. [x] **Enable dynamic pass toggling** through graph pass state, active-plan pruning, and
+   execution-status diagnostics for disabled passes, missing required dependencies/resources, and
+   missing record callbacks.
+6. [x] **Harden graph mutation APIs** so pass IDs, schedule dependencies, resource access lists,
+   duplicate metadata, and failed mutations are validated before the graph state changes.
 
 ### Validation Criteria
 
@@ -538,28 +595,64 @@ public:
 
 ### Implementation Summary (Completed)
 
-**Approach:** Pragmatic ordered render graph — no topological sort or automatic barrier insertion.
-Passes are registered in dependency order by `FrameRecorder::buildGraph()` and rely on Vulkan
-render-pass subpass dependencies for synchronisation. A full DAG-based graph was evaluated and
-deemed unnecessary because the pass order is fixed by physical Vulkan render pass boundaries.
+**Approach:** Dependency-aware render graph scheduling without automatic barrier insertion.
+Passes expose stable IDs plus scheduling dependencies; `RenderGraph::compile()` validates missing
+dependencies, rejects cycles, records logical producer-to-consumer resource edges, and folds those
+resource edges into the final topological execution order. At execution time, the graph derives an
+active pass plan from current pass toggles and required resource availability, so disabling a writer
+automatically removes consumers that require its output while preserving consumers that only have
+optional reads. Vulkan layout transitions and resource barriers still live in the concrete pass
+recorders because attachment lifetimes remain tied to physical Vulkan render pass boundaries.
 
 **New files:**
-- `include/Container/renderer/RenderGraph.h` — `RenderPassNode` struct (name, enabled flag,
-  `RecordFn` callback) and `RenderGraph` class (addPass, execute, findPass, clear, passCount,
-  enabledPassCount). Forward-declares `VkCommandBuffer_T*` to avoid Vulkan header dependency.
-- `src/renderer/RenderGraph.cpp` — Implementation using `std::ranges::find` and
-  `std::ranges::count_if` (C++23).
+- `include/Container/renderer/RenderGraph.h` — `RenderPassId`, pass name/dependency helpers,
+  `RenderResourceId`, resource name/access helpers, `RenderPassSkipReason`,
+  `RenderPassExecutionStatus`, `RenderPassNode` (stable ID, name, schedule dependencies,
+  required/optional reads, writes, enabled flag, `RecordFn` callback), and `RenderGraph`
+  (ID-only addPass, compile, execute, setPassEnabled, setPassRecord,
+  setPassScheduleDependencies, setPassResourceAccess, findPass, clear, passCount,
+  enabledPassCount, executionPassIds, activeExecutionPassIds, executionStatus, isPassActive,
+  passes, resourceEdges). `passes()` and
+  `findPass()` expose read-only inspection; mutation goes
+  through invalidating setters. Forward-declares `VkCommandBuffer_T*` to avoid Vulkan header
+  dependency.
+- `src/renderer/RenderGraph.cpp` — Stable pass metadata, required-enable dependencies for
+  optional features, schedule dependencies for topological ordering, logical resource read/write
+  metadata, cycle/missing-dependency validation, resource producer tracking, resource-derived
+  scheduling dependencies, invalidating mutation APIs for pass toggles/recorders/dependencies/
+  resource access, active pass derivation from current toggles/resource availability, cached
+  active-plan invalidation, per-pass execution status/skip reason reporting, and execution through
+  the active compiled order. Public execution-order inspection uses stable pass IDs; raw internal
+  pass indices stay private to the graph implementation. Pass registration rejects
+  `RenderPassId::Invalid`, schedule dependency declarations reject invalid pass IDs, resource
+  access mutation rejects invalid resource IDs before changing pass metadata, duplicate dependency
+  and resource declarations are rejected, and pass names are display metadata rather than graph
+  identity.
 
 **Modified files:**
 - `include/Container/renderer/FrameRecorder.h` — Added `RenderGraph graph_` member, `buildGraph()`
   method, and `graph()` accessors.
-- `src/renderer/FrameRecorder.cpp` — Constructor calls `buildGraph()` which registers 6 named
-  passes: DepthPrepass, GBuffer, OitClear, Lighting, OitResolve, PostProcess. `record()` is now
-  a thin wrapper: begin command buffer → `graph_.execute()` → end command buffer. All private
-  helper methods preserved unchanged.
-- `src/CMakeLists.txt` — Added `renderer/RenderGraph.cpp` to VulkanContainer_renderer.
+- `src/renderer/FrameRecorder.cpp` — Constructor calls `buildGraph()` which registers the full
+  frame schedule by `RenderPassId` and compiles the graph. `record()` is now a thin wrapper:
+  begin command buffer → `graph_.execute()` → end command buffer. All private helper methods
+  preserved unchanged. Feature-dependent subpaths now query graph active state rather than raw
+  toggle state, so they do not consume outputs from passes pruned by the active plan.
+- `src/renderer/RendererFrontend.cpp` — Render pass UI now consumes graph execution statuses to
+  show inactive-pass notes for missing required passes/resources or missing record callbacks while
+  preserving the existing protected-pass and optional dependency toggle policy. Frame descriptor
+  feature flags also use graph active state.
+- `tests/render_graph_tests.cpp` — Scheduler/resource coverage for dependency ordering, disabled
+  optional dependencies, protected schedule-only dependencies, missing dependencies, cycles, resource
+  producer edges, missing required resource writers, optional resource reads, resource-only
+  scheduling, resource dependency cycles, active-plan pruning for disabled writers, optional-read
+  active-plan preservation, execution status reporting, active-pass predicates, cached active-plan
+  invalidation, dependency/resource mutation invalidation, pass-ID execution views, ID-only
+  registration validation, invalid schedule dependency rejection, invalid resource access
+  rejection, duplicate metadata rejection, and the default frame-flow ordering.
+- `src/CMakeLists.txt` — Added `renderer/RenderGraph.cpp` to VulkanSceneRenderer_renderer.
 
-**Validation:** Build and verification passed at the time of this phase.
+**Validation:** `render_graph_tests`, full configured CTest set, and `VulkanSceneRenderer` build
+passed after the render graph status update.
 
 ---
 
@@ -579,11 +672,11 @@ EnTT is already a vcpkg dependency but is completely unused. The project uses a 
 Define components:
 
 ```cpp
-struct TransformComponent   { glm::mat4 localToWorld; };
-struct MeshComponent        { uint32_t meshIndex; uint32_t submeshIndex; };
+struct TransformComponent   { glm::mat4 localTransform; glm::mat4 worldTransform; };
+struct MeshComponent        { uint32_t primitiveIndex; };
 struct MaterialComponent    { uint32_t materialIndex; };
 struct LightComponent       { PointLightData data; };
-struct CameraComponent      { PerspectiveCamera camera; };
+struct CameraComponent      { CameraData data; float nearPlane; float farPlane; };
 struct RenderableTag         {};  // marks entities for draw-call extraction
 ```
 
@@ -614,29 +707,43 @@ struct RenderableTag         {};  // marks entities for draw-call extraction
 - `MaterialComponent` (materialIndex)
 - `RenderableTag` (tag for draw-call extraction)
 - `SceneNodeRef` (back-reference to SceneGraph node index)
+- `LightComponent` + `LightTag` with `PointLightData` for scene light publication/query
+- `CameraComponent` + `CameraTag` with `CameraData` and clip planes for active-camera publication
 
 **ECS World** (`include/Container/ecs/World.h`, `src/ecs/World.cpp`):
 - Wraps `entt::registry` with typed helpers
-- `syncFromSceneGraph()` — clears registry, creates one entity per renderable node
-- `forEachRenderable()` — cache-friendly iteration via EnTT view
-- `renderableCount()`, `entityCount()`, `clear()`, `registry()` accessors
+- Owns the ECS representation for renderables, point lights, and the active camera
+- `syncFromSceneGraph()` refreshes renderable entities from SceneGraph while preserving light and camera entities
+- `setActiveCamera()` stores the current active camera as ECS `CameraData` plus near/far planes
+- `replacePointLights()` stores scene point lights as ECS `PointLightData`
+- `forEachRenderable()` and `forEachPointLight()` provide cache-friendly EnTT view iteration
+- `renderableCount()`, `pointLightCount()`, `entityCount()`, `activeCamera()`, `clear()`, `registry()` accessors
 
 **SceneController integration** (`src/renderer/SceneController.cpp`):
-- Owns `std::unique_ptr<World> world_` constructed in constructor
+- Owns the shared `std::unique_ptr<World> world_` constructed in constructor
 - `syncObjectDataFromSceneGraph()` rewritten: calls `world_->syncFromSceneGraph()` then
   uses `world_->forEachRenderable()` for ObjectData + DrawCommand generation
 - Diagnostic cube logic preserved outside ECS loop
 - SceneGraph retained as the authoritative data source; ECS mirrors it for rendering
 
+**Camera and lighting integration**:
+- `CameraController` publishes the active `CameraData` and clip planes into the shared ECS World.
+- `LightingManager` publishes and queries `PointLightData` through the shared ECS World.
+- `LightingManager` reads the active `CameraComponent` for camera-relative lights and light-gizmo sizing,
+  while preserving the existing camera-data path as a fallback.
+- `RendererFrontend::buildFrameRecordParams()` prefers ECS camera clip planes for per-frame camera near/far values.
+
 **Build system** (`src/ecs/CMakeLists.txt`):
-- `VulkanContainer_ecs` library linking `Dep_ECS`, `Dep_Math`, `VulkanContainer_scene`
-- Linked to `VulkanContainer_renderer`
+- `VulkanSceneRenderer_ecs` library linking `Dep_ECS`, `Dep_Math`, `VulkanSceneRenderer_scene`
+- Linked to `VulkanSceneRenderer_renderer`
 
-**EnTT include footprint:** 1 file (`World.h`) — well under the ≤3 target.
+**EnTT include footprint:** direct EnTT inclusion remains isolated to `World.h`, keeping the
+rest of renderer/scene code on the project ECS facade.
 
-**Tests:** 14 new ECS tests (`tests/ecs_tests.cpp`) covering component defaults, World
-creation, syncFromSceneGraph (empty graph, renderable filtering, transform preservation,
-mesh/material index preservation, re-sync clears previous entities), forEachRenderable
+**Tests:** ECS tests (`tests/ecs_tests.cpp`) cover component defaults, World creation,
+syncFromSceneGraph (empty graph, renderable filtering, transform preservation, mesh/material
+index preservation, re-sync clears previous renderables), point-light replacement, active-camera
+updates, preservation of light/camera entities across renderable sync, forEachRenderable
 (empty, visit count), and clear.
 
 ---
@@ -773,20 +880,20 @@ lightweight headers to reduce transitive include weight.
 
 ### Changes
 
-**1. Removed `VulkanContainer_utility` aggregate** (`src/utility/CMakeLists.txt`):
+**1. Removed `VulkanSceneRenderer_utility` aggregate** (`src/utility/CMakeLists.txt`):
 - INTERFACE library that grouped all 6 utility sub-libraries.
 - Zero consumers found via grep — all targets link specific sub-libraries directly.
-- Deleted the `add_library(VulkanContainer_utility INTERFACE)` block.
+- Deleted the `add_library(VulkanSceneRenderer_utility INTERFACE)` block.
 
-**2. Trimmed `VulkanContainer_Core` link list** (`src/CMakeLists.txt`):
-- Was: `VulkanContainer_renderer`, `VulkanContainer_geometry`, `VulkanContainer_log`,
-  `VulkanContainer_vulkan_device`, `VulkanContainer_gpu_resource`,
-  `VulkanContainer_window`, `VulkanContainer_scene`, `VulkanContainer_ui` (8 deps)
-- Now: `VulkanContainer_renderer`, `VulkanContainer_geometry` (2 deps)
+**2. Trimmed `VulkanSceneRenderer_Core` link list** (`src/CMakeLists.txt`):
+- Was: `VulkanSceneRenderer_renderer`, `VulkanSceneRenderer_geometry`, `VulkanSceneRenderer_log`,
+  `VulkanSceneRenderer_vulkan_device`, `VulkanSceneRenderer_gpu_resource`,
+  `VulkanSceneRenderer_window`, `VulkanSceneRenderer_scene`, `VulkanSceneRenderer_ui` (8 deps)
+- Now: `VulkanSceneRenderer_renderer`, `VulkanSceneRenderer_geometry` (2 deps)
 - Renderer transitively provides all utility sub-libraries.
 
 **3. Removed `Dep_Shader`** (`cmake/Dependencies.cmake`, `src/CMakeLists.txt`):
-- `slang::slang` was linked to `VulkanContainer_renderer` but no source file
+- `slang::slang` was linked to `VulkanSceneRenderer_renderer` but no source file
   includes any slang header. The `slangc` compiler is used only as an external
   CLI tool via `find_program` in `Shaders.cmake`.
 - Removed `find_package(Slang REQUIRED)` and the `Dep_Shader` INTERFACE target.
@@ -823,11 +930,11 @@ lightweight headers to reduce transitive include weight.
 
 ```
 ┌──────────────────────────┐
-│   VulkanContainer (exe)  │
+│   VulkanSceneRenderer (exe)  │
 └───────────┬──────────────┘
             │
 ┌───────────▼──────────────┐
-│  VulkanContainer_Core    │
+│  VulkanSceneRenderer_Core    │
 │  (ContainerCore.cpp,     │
 │   app/Application.cpp)   │
 └─┬──────────┬─────────────┘
@@ -835,16 +942,16 @@ lightweight headers to reduce transitive include weight.
   ▼          ▼
 renderer   geometry ─── Dep_VulkanCore, Dep_Math, Dep_SceneIO
   │
-  ├── VulkanContainer_ecs ──── Dep_ECS (EnTT)
-  │     └── VulkanContainer_scene
+  ├── VulkanSceneRenderer_ecs ──── Dep_ECS (EnTT)
+  │     └── VulkanSceneRenderer_scene
   │
-  ├── VulkanContainer_scene ── Dep_SceneIO, Dep_Material (MaterialX)
-  │     └── VulkanContainer_gpu_resource
-  │           └── VulkanContainer_vulkan_device
+  ├── VulkanSceneRenderer_scene ── Dep_SceneIO, Dep_Material (MaterialX)
+  │     └── VulkanSceneRenderer_gpu_resource
+  │           └── VulkanSceneRenderer_vulkan_device
   │
-  ├── VulkanContainer_ui ───── Dep_UI (ImGui)
-  ├── VulkanContainer_window ─ Dep_Windowing (GLFW)
-  └── VulkanContainer_log ──── Dep_Logging (spdlog, fmt)
+  ├── VulkanSceneRenderer_ui ───── Dep_UI (ImGui)
+  ├── VulkanSceneRenderer_window ─ Dep_Windowing (GLFW)
+  └── VulkanSceneRenderer_log ──── Dep_Logging (spdlog, fmt)
 
 Dep_* groups (8 INTERFACE targets)
 ──────────────────────────────────
@@ -858,7 +965,7 @@ Dep_* groups (8 INTERFACE targets)
   Dep_ECS        : EnTT::EnTT
 
 Removed targets: VulkanDependencies, Dep_Serialization, Dep_Shader,
-                 VulkanContainer_utility (aggregate)
+                 VulkanSceneRenderer_utility (aggregate)
 ```
 
 ---
@@ -922,9 +1029,9 @@ Phase 8 (Dep Audit)  ← can run anytime after Phase 1
 Phase 9 (Tests)       ← can run anytime after Phase 1
 Phase 10 (Cleanup)    ← can run anytime after Phase 8
 
-All phases ✅ complete (Phase 9 partial — GPU integration tests deferred).
+Implementation phases complete. Phase 9 remains partial: GPU CI and coverage targets are deferred.
 ```
 
 ---
 
-*Last updated: All phases complete (0–9).*
+*Last updated: Implementation phases 0-8 and 10 complete; Phase 9 partial.*

@@ -3,12 +3,9 @@
 // Output: 32×32 per face irradiance cubemap.
 
 static const float PI = 3.14159265359;
+static const uint SAMPLE_COUNT = 1024u;
 
-struct IrradiancePushConstants
-{
-    uint faceIndex;
-    uint faceSize;
-};
+#include "push_constants_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<IrradiancePushConstants> pc;
@@ -34,6 +31,21 @@ float3 CubeTexelToDir(uint face, float2 uv)
     return normalize(dir);
 }
 
+float RadicalInverse_VdC(uint bits)
+{
+    bits = (bits << 16u) | (bits >> 16u);
+    bits = ((bits & 0x55555555u) << 1u) | ((bits & 0xAAAAAAAAu) >> 1u);
+    bits = ((bits & 0x33333333u) << 2u) | ((bits & 0xCCCCCCCCu) >> 2u);
+    bits = ((bits & 0x0F0F0F0Fu) << 4u) | ((bits & 0xF0F0F0F0u) >> 4u);
+    bits = ((bits & 0x00FF00FFu) << 8u) | ((bits & 0xFF00FF00u) >> 8u);
+    return float(bits) * 2.3283064365386963e-10;
+}
+
+float2 Hammersley(uint i, uint N)
+{
+    return float2(float(i) / float(N), RadicalInverse_VdC(i));
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void computeMain(uint3 dtid : SV_DispatchThreadID)
@@ -48,30 +60,26 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
     float3 right = normalize(cross(up, N));
     up = cross(N, right);
 
-    float3 irradiance = float3(0.0, 0.0, 0.0);
-    float sampleCount = 0.0;
-
-    static const float sampleDelta = 0.025;
-
-    for (float phi = 0.0; phi < 2.0 * PI; phi += sampleDelta)
+    // Cosine-weighted hemisphere integration estimates:
+    // integral(Li * NdotL dw) = PI * average(Li), because pdf = NdotL / PI.
+    // This preserves irradiance energy while avoiding the old dense angular
+    // grid's tens of thousands of samples per cubemap texel.
+    float3 irradiance = 0.0.xxx;
+    for (uint i = 0u; i < SAMPLE_COUNT; ++i)
     {
-        for (float theta = 0.0; theta < 0.5 * PI; theta += sampleDelta)
-        {
-            float sinTheta = sin(theta);
-            float cosTheta = cos(theta);
-            float3 tangentSample = float3(sinTheta * cos(phi),
-                                          sinTheta * sin(phi),
-                                          cosTheta);
-            float3 sampleDir = tangentSample.x * right +
-                               tangentSample.y * up +
-                               tangentSample.z * N;
-
-            irradiance += envCubemap.SampleLevel(envSampler, sampleDir, 0.0).rgb *
-                          cosTheta * sinTheta;
-            sampleCount += 1.0;
-        }
+        float2 Xi = Hammersley(i, SAMPLE_COUNT);
+        float phi = 2.0 * PI * Xi.x;
+        float cosTheta = sqrt(1.0 - Xi.y);
+        float sinTheta = sqrt(Xi.y);
+        float3 tangentSample = float3(cos(phi) * sinTheta,
+                                      sin(phi) * sinTheta,
+                                      cosTheta);
+        float3 sampleDir = tangentSample.x * right +
+                           tangentSample.y * up +
+                           tangentSample.z * N;
+        irradiance += envCubemap.SampleLevel(envSampler, sampleDir, 0.0).rgb;
     }
 
-    irradiance = PI * irradiance / max(sampleCount, 1.0);
+    irradiance = PI * irradiance / float(SAMPLE_COUNT);
     outIrradiance[uint3(dtid.xy, pc.faceIndex)] = float4(irradiance, 1.0);
 }

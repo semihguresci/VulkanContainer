@@ -1,4 +1,5 @@
 #include "Container/renderer/CameraController.h"
+#include "Container/ecs/World.h"
 #include "Container/renderer/SceneController.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/InputManager.h"
@@ -17,15 +18,15 @@ using container::gpu::CameraData;
 
 namespace {
 
-container::ui::TransformControls decomposeTransform(const glm::mat4& matrix) {
+container::ui::TransformControls decomposeTransform(const glm::mat4 &matrix) {
   container::ui::TransformControls controls{};
   controls.position = glm::vec3(matrix[3]);
 
   glm::vec3 basisX = glm::vec3(matrix[0]);
   glm::vec3 basisY = glm::vec3(matrix[1]);
   glm::vec3 basisZ = glm::vec3(matrix[2]);
-  controls.scale = glm::vec3(glm::length(basisX), glm::length(basisY),
-                             glm::length(basisZ));
+  controls.scale =
+      glm::vec3(glm::length(basisX), glm::length(basisY), glm::length(basisZ));
   controls.scale = glm::max(controls.scale, glm::vec3(0.001f));
 
   glm::mat3 rotationMatrix{};
@@ -33,8 +34,8 @@ container::ui::TransformControls decomposeTransform(const glm::mat4& matrix) {
   rotationMatrix[1] = basisY / controls.scale.y;
   rotationMatrix[2] = basisZ / controls.scale.z;
   if (glm::determinant(rotationMatrix) < 0.0f) {
-    controls.scale.x    *= -1.0f;
-    rotationMatrix[0]   *= -1.0f;
+    controls.scale.x *= -1.0f;
+    rotationMatrix[0] *= -1.0f;
   }
 
   controls.rotationDegrees = glm::degrees(
@@ -42,32 +43,27 @@ container::ui::TransformControls decomposeTransform(const glm::mat4& matrix) {
   return controls;
 }
 
-glm::mat4 composeTransform(const container::ui::TransformControls& controls) {
+glm::mat4 composeTransform(const container::ui::TransformControls &controls) {
   const glm::vec3 safeScale = glm::max(controls.scale, glm::vec3(0.001f));
-  glm::mat4 transform =
-      glm::translate(glm::mat4(1.0f), controls.position);
+  glm::mat4 transform = glm::translate(glm::mat4(1.0f), controls.position);
   transform *=
       glm::mat4_cast(glm::quat(glm::radians(controls.rotationDegrees)));
   transform = glm::scale(transform, safeScale);
   return transform;
 }
 
-}  // namespace
+} // namespace
 
 CameraController::CameraController(
     std::shared_ptr<container::gpu::VulkanDevice> device,
-    container::gpu::AllocationManager&            allocationManager,
-    container::gpu::SwapChainManager&                     swapChainManager,
-    container::scene::SceneGraph&                    sceneGraph,
-    container::scene::SceneManager*                  sceneManager,
-    container::window::InputManager&                  inputManager)
-    : device_(std::move(device))
-    , allocationManager_(allocationManager)
-    , swapChainManager_(swapChainManager)
-    , sceneGraph_(sceneGraph)
-    , sceneManager_(sceneManager)
-    , inputManager_(inputManager) {
-}
+    container::gpu::AllocationManager &allocationManager,
+    container::gpu::SwapChainManager &swapChainManager,
+    container::scene::SceneGraph &sceneGraph,
+    container::scene::SceneManager *sceneManager, container::ecs::World &world,
+    container::window::InputManager &inputManager)
+    : device_(std::move(device)), allocationManager_(allocationManager),
+      swapChainManager_(swapChainManager), sceneGraph_(sceneGraph),
+      sceneManager_(sceneManager), world_(world), inputManager_(inputManager) {}
 
 void CameraController::createCamera() {
   auto perspective = std::make_unique<container::scene::PerspectiveCamera>();
@@ -78,26 +74,27 @@ void CameraController::createCamera() {
 }
 
 void CameraController::resetCameraForScene() {
-  if (!camera_) return;
+  if (!camera_)
+    return;
   camera_->setScale(glm::vec3(1.0f));
   inputManager_.setMoveSpeed(kDefaultMoveSpeed);
 
-  auto* perspective =
-      dynamic_cast<container::scene::PerspectiveCamera*>(camera_.get());
+  auto *perspective =
+      dynamic_cast<container::scene::PerspectiveCamera *>(camera_.get());
   if (perspective) {
-    float     farPlane    = kDefaultFarPlane;
-    bool      hasBounds   = false;
+    float farPlane = kDefaultFarPlane;
+    bool hasBounds = false;
     glm::vec3 boundsCenter{0.0f};
-    float     boundsRadius = 1.0f;
+    float boundsRadius = 1.0f;
 
     if (sceneManager_) {
-      const auto& bounds = sceneManager_->modelBounds();
+      const auto &bounds = sceneManager_->modelBounds();
       if (bounds.valid) {
-        hasBounds     = true;
-        boundsCenter  = bounds.center;
-        boundsRadius  = bounds.radius;
-        farPlane      = std::max(farPlane,
-                                 glm::length(boundsCenter) + boundsRadius * 4.0f);
+        hasBounds = true;
+        boundsCenter = bounds.center;
+        boundsRadius = bounds.radius;
+        farPlane =
+            std::max(farPlane, glm::length(boundsCenter) + boundsRadius * 4.0f);
       }
     }
     perspective->setNearFar(kDefaultNearPlane, farPlane);
@@ -106,13 +103,13 @@ void CameraController::resetCameraForScene() {
       // For hall-like scenes (e.g. Sponza), start inside the volume looking
       // down the longest horizontal axis. For roughly cubic scenes, fall back
       // to the default three-quarter overview.
-      const auto& bounds = sceneManager_->modelBounds();
+      const auto &bounds = sceneManager_->modelBounds();
       const glm::vec3 sz = bounds.size;
       const bool xIsLong = sz.x >= sz.z;
       const float longExtent = xIsLong ? sz.x : sz.z;
       const float crossExtent = xIsLong ? sz.z : sz.x;
-      const bool hallLike = longExtent > 1.25f * crossExtent &&
-                            longExtent > 1.5f * sz.y;
+      const bool hallLike =
+          longExtent > 1.25f * crossExtent && longExtent > 1.5f * sz.y;
 
       if (hallLike) {
         // RH: front.x = cos(yaw)cos(pitch), front.z = -sin(yaw)cos(pitch).
@@ -131,8 +128,8 @@ void CameraController::resetCameraForScene() {
         camera_->setPosition(eye);
       } else {
         camera_->setYawPitch(kDefaultYaw, kDefaultPitch);
-        const float    distance = boundsRadius * 2.5f + kDefaultNearPlane;
-        const glm::vec3 front   = camera_->frontVector();
+        const float distance = boundsRadius * 2.5f + kDefaultNearPlane;
+        const glm::vec3 front = camera_->frontVector();
         camera_->setPosition(boundsCenter - front * distance);
       }
       inputManager_.setMoveSpeed(
@@ -149,46 +146,67 @@ void CameraController::resetCameraForScene() {
 }
 
 void CameraController::updateCameraBuffer(
-    container::gpu::CameraData&                              outCameraData,
-    const container::gpu::AllocatedBuffer&  cameraBuffer) const {
-  if (!camera_) return;
-  const auto  extent = swapChainManager_.extent();
+    container::gpu::CameraData &outCameraData,
+    const container::gpu::AllocatedBuffer &cameraBuffer) const {
+  if (!camera_)
+    return;
+  const auto extent = swapChainManager_.extent();
   const float aspect =
       static_cast<float>(extent.width) / static_cast<float>(extent.height);
 
-  outCameraData.viewProj          = camera_->viewProjection(aspect);
-  outCameraData.inverseViewProj   = glm::inverse(outCameraData.viewProj);
-  outCameraData.cameraWorldPosition =
-      glm::vec4(camera_->position(), 1.0f);
+  outCameraData.viewProj = camera_->viewProjection(aspect);
+  outCameraData.inverseViewProj = glm::inverse(outCameraData.viewProj);
+  outCameraData.cameraWorldPosition = glm::vec4(camera_->position(), 1.0f);
+  outCameraData.cameraForward = glm::vec4(camera_->frontVector(), 0.0f);
+
+  float nearPlane = kDefaultNearPlane;
+  float farPlane = kDefaultFarPlane;
+  if (const auto *perspective =
+          dynamic_cast<const container::scene::PerspectiveCamera *>(
+              camera_.get())) {
+    nearPlane = perspective->nearPlane();
+    farPlane = perspective->farPlane();
+  } else if (const auto *orthographic =
+                 dynamic_cast<const container::scene::OrthographicCamera *>(
+                     camera_.get())) {
+    nearPlane = orthographic->nearPlane();
+    farPlane = orthographic->farPlane();
+  }
+  (void)world_.setActiveCamera(outCameraData, nearPlane, farPlane);
 
   if (cameraBuffer.buffer != VK_NULL_HANDLE) {
     SceneController::writeToBuffer(allocationManager_, cameraBuffer,
-                                   &outCameraData, sizeof(container::gpu::CameraData));
+                                   &outCameraData,
+                                   sizeof(container::gpu::CameraData));
   }
 }
 
-container::ui::TransformControls CameraController::cameraTransformControls() const {
+container::ui::TransformControls
+CameraController::cameraTransformControls() const {
   container::ui::TransformControls controls{};
-  if (!camera_) return controls;
-  controls.position       = camera_->position();
-  controls.rotationDegrees = {camera_->pitchDegrees(), camera_->yawDegrees(), 0.0f};
-  controls.scale           = camera_->scale();
+  if (!camera_)
+    return controls;
+  controls.position = camera_->position();
+  controls.rotationDegrees = {camera_->pitchDegrees(), camera_->yawDegrees(),
+                              0.0f};
+  controls.scale = camera_->scale();
   return controls;
 }
 
 container::ui::TransformControls
 CameraController::nodeTransformControls(uint32_t nodeIndex) const {
-  if (const auto* node = sceneGraph_.getNode(nodeIndex)) {
+  if (const auto *node = sceneGraph_.getNode(nodeIndex)) {
     return decomposeTransform(node->localTransform);
   }
   return {};
 }
 
 void CameraController::applyCameraTransform(
-    const container::ui::TransformControls&    controls,
-    container::gpu::CameraData&                              outCameraData,
-    const container::gpu::AllocatedBuffer&  cameraBuffer) {
-  if (!camera_) return;
+    const container::ui::TransformControls &controls,
+    container::gpu::CameraData &outCameraData,
+    const container::gpu::AllocatedBuffer &cameraBuffer) {
+  if (!camera_)
+    return;
   camera_->setPosition(controls.position);
   camera_->setYawPitch(controls.rotationDegrees.y, controls.rotationDegrees.x);
   camera_->setScale(controls.scale);
@@ -196,21 +214,22 @@ void CameraController::applyCameraTransform(
 }
 
 void CameraController::applyNodeTransform(
-    uint32_t                               nodeIndex,
-    uint32_t                               rootNode,
-    const container::ui::TransformControls&  controls) {
-  if (sceneGraph_.getNode(nodeIndex) == nullptr) return;
+    uint32_t nodeIndex, uint32_t rootNode,
+    const container::ui::TransformControls &controls) {
+  if (sceneGraph_.getNode(nodeIndex) == nullptr)
+    return;
   sceneGraph_.setLocalTransform(nodeIndex, composeTransform(controls));
   sceneGraph_.updateWorldTransforms();
-  // Caller is responsible for triggering updateLightingData when rootNode changes.
+  // Caller is responsible for triggering updateLightingData when rootNode
+  // changes.
   (void)rootNode;
 }
 
 void CameraController::selectMeshNode(uint32_t nodeIndex,
-                                      uint32_t& selectedMeshNode) const {
+                                      uint32_t &selectedMeshNode) const {
   selectedMeshNode = sceneGraph_.getNode(nodeIndex) != nullptr
                          ? nodeIndex
                          : container::scene::SceneGraph::kInvalidNode;
 }
 
-}  // namespace container::renderer
+} // namespace container::renderer

@@ -1,0 +1,459 @@
+{
+  "schemaVersion": 1,
+  "screenshotRoot": "tests/visual-regression",
+  "capture": {
+    "resolution": [1280, 720],
+    "format": "png",
+    "colorSpace": "srgb-after-tonemap",
+    "warmupFrames": 8,
+    "captureFrame": 9,
+    "fixedTimestepSeconds": 0.016666667
+  },
+  "comparison": {
+    "algorithm": "per-channel-linearized-rgb-mae-and-p95-with-heatmap-diff",
+    "maxMeanAbsoluteError": 0.012,
+    "maxP95AbsoluteError": 0.05,
+    "maxDifferentPixelFraction": 0.01,
+    "platformBuckets": [
+      "windows-nvidia",
+      "windows-amd",
+      "linux-mesa"
+    ]
+  },
+  "cpuChecks": {
+    "manualExposure": [
+      {
+        "inputLuminance": 2.5,
+        "exposure": 0.25,
+        "expectedLuminance": 0.625
+      },
+      {
+        "inputLuminance": 2.5,
+        "exposure": 1.0,
+        "expectedLuminance": 2.5
+      }
+    ],
+    "pointLightAttenuation": {
+      "rangeMeters": 1000.0,
+      "nearDistanceMeters": 2.0,
+      "farDistanceMeters": 4.0,
+      "expectedNearToFarRatio": 4.0
+    },
+    "shadowTexelSnap": {
+      "cascadeWorldRadius": 24.0,
+      "shadowMapSize": 2048,
+      "unsnappedLightSpaceCenter": [3.14159, -2.71828],
+      "expectedTexelSize": 0.0234375,
+      "maxSnapErrorTexels": 0.5
+    },
+    "materialExpectations": [
+      {
+        "name": "matte_gray_18pct",
+        "baseColor": [0.18, 0.18, 0.18],
+        "metallic": 0.0,
+        "roughness": 1.0,
+        "expectedClass": "diffuse"
+      },
+      {
+        "name": "chrome_smooth",
+        "baseColor": [1.0, 1.0, 1.0],
+        "metallic": 1.0,
+        "roughness": 0.02,
+        "expectedClass": "mirror_metal"
+      },
+      {
+        "name": "clearcoat_plastic",
+        "baseColor": [0.8, 0.02, 0.02],
+        "metallic": 0.0,
+        "roughness": 0.45,
+        "clearcoat": 1.0,
+        "clearcoatRoughness": 0.05,
+        "expectedClass": "coated_dielectric"
+      },
+      {
+        "name": "thin_glass",
+        "baseColor": [1.0, 1.0, 1.0],
+        "metallic": 0.0,
+        "roughness": 0.0,
+        "transmission": 1.0,
+        "ior": 1.5,
+        "expectedClass": "thin_transmission"
+      }
+    ]
+  },
+  "scenes": [
+    {
+      "id": "box_direct_lighting_front_face",
+      "category": "lighting",
+      "status": "active",
+      "asset": "models/glTF-Sample-Models/2.0/Box/glTF/Box.gltf",
+      "renderMode": "final-lit",
+      "camera": {
+        "position": [0.0, 0.0, 4.0],
+        "target": [0.0, 0.0, 0.0],
+        "verticalFovDegrees": 50.0
+      },
+      "lighting": {
+        "environment": "hdr/citrus_orchard_road_puresky_4k.exr",
+        "environmentIntensity": 0.0,
+        "exposure": 1.0,
+        "directionalLight": {
+          "illuminanceLux": 40000.0,
+          "direction": [-0.35, -0.75, -0.55],
+          "color": [1.0, 0.96, 0.9]
+        },
+        "pointLights": []
+      },
+      "probes": [
+        {
+          "id": "front_face_receives_direct_light",
+          "kind": "dominant_color_fraction",
+          "regionUv": [0.470, 0.390, 0.060, 0.120],
+          "targetColor": [0.70, 0.04, 0.02],
+          "maxDistance": 0.30,
+          "minimumFraction": 0.35
+        }
+      ],
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/box_direct_lighting_front_face.png",
+        "candidate": "test_results/visual-regression/candidate/{platform}/box_direct_lighting_front_face.png",
+        "diff": "test_results/visual-regression/diff/{platform}/box_direct_lighting_front_face.png"
+      }
+    },
+    {
+      "id": "diagnostic_default_scene",
+      "category": "material",
+      "status": "active",
+      "asset": "__default_test_scene__",
+      "renderMode": "final-lit",
+      "camera": {
+        "position": [0.0, 1.0, 4.0],
+        "target": [0.0, 0.75, 0.0],
+        "verticalFovDegrees": 50.0
+      },
+      "lighting": {
+        "environment": "hdr/citrus_orchard_road_puresky_4k.exr",
+        "environmentIntensity": 1.0,
+        "exposure": 0.25,
+        "directionalLight": {
+          "illuminanceLux": 10000.0,
+          "direction": [-0.35, -0.75, -0.55],
+          "color": [1.0, 0.96, 0.9]
+        },
+        "pointLights": []
+      },
+      "probes": [
+        {
+          "id": "center_smoke_probe",
+          "kind": "candidate_exists",
+          "pixel": [640, 360]
+        }
+      ],
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/diagnostic_default_scene.png",
+        "candidate": "test_results/visual-regression/candidate/{platform}/diagnostic_default_scene.png",
+        "diff": "test_results/visual-regression/diff/{platform}/diagnostic_default_scene.png"
+      }
+    },
+    {
+      "id": "texture_settings_single_sided_culling",
+      "category": "material",
+      "status": "active",
+      "asset": "models/glTF-Sample-Models/2.0/TextureSettingsTest/glTF/TextureSettingsTest.gltf",
+      "renderMode": "final-lit",
+      "camera": {
+        "position": [0.0, 0.0, 12.0],
+        "target": [0.0, 0.0, 0.0],
+        "verticalFovDegrees": 45.0
+      },
+      "lighting": {
+        "environment": "hdr/citrus_orchard_road_puresky_4k.exr",
+        "environmentIntensity": 1.0,
+        "exposure": 0.25,
+        "directionalLight": {
+          "illuminanceLux": 10000.0,
+          "direction": [-0.35, -0.75, -0.55],
+          "color": [1.0, 0.96, 0.9]
+        },
+        "pointLights": []
+      },
+      "probes": [
+        {
+          "id": "single_sided_test_column_stays_green",
+          "kind": "dominant_color_fraction",
+          "regionUv": [0.500, 0.305, 0.045, 0.070],
+          "targetColor": [0.00, 0.65, 0.08],
+          "maxDistance": 0.28,
+          "minimumFraction": 0.05
+        },
+        {
+          "id": "double_sided_test_column_stays_green",
+          "kind": "dominant_color_fraction",
+          "regionUv": [0.500, 0.370, 0.045, 0.075],
+          "targetColor": [0.00, 0.65, 0.08],
+          "maxDistance": 0.28,
+          "minimumFraction": 0.05
+        },
+        {
+          "id": "sample_pass_column_stays_green",
+          "kind": "dominant_color_fraction",
+          "regionUv": [0.568, 0.370, 0.050, 0.075],
+          "targetColor": [0.00, 0.65, 0.08],
+          "maxDistance": 0.28,
+          "minimumFraction": 0.05
+        }
+      ],
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/texture_settings_single_sided_culling.png",
+        "candidate": "test_results/visual-regression/candidate/{platform}/texture_settings_single_sided_culling.png",
+        "diff": "test_results/visual-regression/diff/{platform}/texture_settings_single_sided_culling.png"
+      }
+    },
+    {
+      "id": "sponza_lion_relief_culling",
+      "category": "material",
+      "status": "active",
+      "asset": "models/glTF-Sample-Models/2.0/Sponza/glTF/Sponza.gltf",
+      "renderMode": "final-lit",
+      "camera": {
+        "position": [8.2, 1.4, -0.3],
+        "target": [10.25, 1.4, -0.3],
+        "verticalFovDegrees": 45.0
+      },
+      "lighting": {
+        "environment": "hdr/citrus_orchard_road_puresky_4k.exr",
+        "environmentIntensity": 1.0,
+        "exposure": 0.25,
+        "directionalLight": {
+          "illuminanceLux": 10000.0,
+          "direction": [-0.35, -0.75, -0.55],
+          "color": [1.0, 0.96, 0.9]
+        },
+        "pointLights": []
+      },
+      "probes": [
+        {
+          "id": "lion_face_region_has_embossed_detail",
+          "kind": "region_luminance_stddev",
+          "regionUv": [0.405, 0.330, 0.190, 0.360],
+          "minimumStdDev": 0.035
+        }
+      ],
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/sponza_lion_relief_culling.png",
+        "candidate": "test_results/visual-regression/candidate/{platform}/sponza_lion_relief_culling.png",
+        "diff": "test_results/visual-regression/diff/{platform}/sponza_lion_relief_culling.png"
+      }
+    },
+    {
+      "id": "calibration_material_grid",
+      "category": "material",
+      "status": "planned",
+      "asset": "models/validation/material_calibration_grid.gltf",
+      "renderMode": "final-lit",
+      "camera": {
+        "position": [0.0, 1.35, 5.25],
+        "target": [0.0, 1.1, 0.0],
+        "verticalFovDegrees": 45.0
+      },
+      "lighting": {
+        "environment": "hdr/studio_small_09_1k.hdr",
+        "environmentIntensity": 1.0,
+        "exposure": 0.25,
+        "directionalLight": {
+          "illuminanceLux": 6500.0,
+          "direction": [-0.35, -0.75, -0.55],
+          "color": [1.0, 0.96, 0.9]
+        },
+        "pointLights": []
+      },
+      "materials": [
+        "matte_gray_18pct",
+        "chrome_smooth",
+        "rough_gold",
+        "clearcoat_plastic",
+        "thin_glass"
+      ],
+      "probes": [
+        {
+          "id": "gray_card_center",
+          "kind": "luminance",
+          "pixel": [640, 360],
+          "expectedLinearLuminance": 0.18,
+          "tolerance": 0.05
+        },
+        {
+          "id": "chrome_highlight",
+          "kind": "relative_luminance",
+          "pixel": [810, 330],
+          "minimumRatioToGrayCard": 8.0
+        }
+      ],
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/calibration_material_grid.png",
+        "candidate": "test_results/visual-regression/candidate/{platform}/calibration_material_grid.png",
+        "diff": "test_results/visual-regression/diff/{platform}/calibration_material_grid.png"
+      }
+    },
+    {
+      "id": "calibration_exposure_steps",
+      "category": "exposure",
+      "status": "planned",
+      "asset": "models/validation/exposure_steps.gltf",
+      "renderMode": "scene-linear-luminance",
+      "camera": {
+        "position": [0.0, 1.25, 4.5],
+        "target": [0.0, 1.0, 0.0],
+        "verticalFovDegrees": 40.0
+      },
+      "lighting": {
+        "environment": "hdr/studio_small_09_1k.hdr",
+        "environmentIntensity": 1.0,
+        "exposure": 0.25,
+        "directionalLight": {
+          "illuminanceLux": 0.0,
+          "direction": [0.0, -1.0, 0.0],
+          "color": [1.0, 1.0, 1.0]
+        },
+        "pointLights": []
+      },
+      "probes": [
+        {
+          "id": "ev_minus_2_patch",
+          "kind": "relative_luminance",
+          "pixel": [410, 360],
+          "expectedRatioToMiddlePatch": 0.25,
+          "tolerance": 0.03
+        },
+        {
+          "id": "ev_plus_2_patch",
+          "kind": "relative_luminance",
+          "pixel": [870, 360],
+          "expectedRatioToMiddlePatch": 4.0,
+          "tolerance": 0.08
+        }
+      ],
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/calibration_exposure_steps.png",
+        "candidate": "test_results/visual-regression/candidate/{platform}/calibration_exposure_steps.png",
+        "diff": "test_results/visual-regression/diff/{platform}/calibration_exposure_steps.png"
+      }
+    },
+    {
+      "id": "calibration_area_lights",
+      "category": "lighting",
+      "status": "planned",
+      "asset": "models/validation/area_lights_rect_disk.gltf",
+      "renderMode": "final-lit",
+      "camera": {
+        "position": [0.0, 1.7, 5.0],
+        "target": [0.0, 1.0, 0.0],
+        "verticalFovDegrees": 45.0
+      },
+      "lighting": {
+        "environment": "hdr/studio_small_09_1k.hdr",
+        "environmentIntensity": 0.15,
+        "exposure": 0.25,
+        "directionalLight": {
+          "illuminanceLux": 0.0,
+          "direction": [0.0, -1.0, 0.0],
+          "color": [1.0, 1.0, 1.0]
+        },
+        "areaLights": [
+          {
+            "shape": "rect",
+            "color": [1.0, 0.86, 0.68],
+            "intensity": 600.0
+          },
+          {
+            "shape": "disk",
+            "color": [0.68, 0.82, 1.0],
+            "intensity": 450.0
+          }
+        ],
+        "pointLights": []
+      },
+      "probes": [
+        {
+          "id": "rect_light_floor_gradient",
+          "kind": "relative_luminance",
+          "pixel": [430, 430],
+          "minimumRatioToBackground": 2.0
+        },
+        {
+          "id": "disk_light_wall_gradient",
+          "kind": "relative_luminance",
+          "pixel": [850, 350],
+          "minimumRatioToBackground": 1.5
+        }
+      ],
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/calibration_area_lights.png",
+        "candidate": "test_results/visual-regression/candidate/{platform}/calibration_area_lights.png",
+        "diff": "test_results/visual-regression/diff/{platform}/calibration_area_lights.png"
+      }
+    },
+    {
+      "id": "shadow_cascade_stability",
+      "category": "shadow",
+      "status": "planned",
+      "asset": "models/validation/shadow_floor_blocker.gltf",
+      "renderMode": "shadow-factor",
+      "camera": {
+        "position": [-3.0, 2.2, 5.5],
+        "target": [0.0, 0.75, 0.0],
+        "verticalFovDegrees": 50.0
+      },
+      "motionPath": [
+        {
+          "position": [-3.0, 2.2, 5.5],
+          "target": [0.0, 0.75, 0.0],
+          "verticalFovDegrees": 50.0
+        },
+        {
+          "position": [-2.85, 2.2, 5.6],
+          "target": [0.0, 0.75, 0.0],
+          "verticalFovDegrees": 50.0
+        }
+      ],
+      "lighting": {
+        "environment": "hdr/studio_small_09_1k.hdr",
+        "environmentIntensity": 0.25,
+        "exposure": 0.25,
+        "directionalLight": {
+          "illuminanceLux": 20000.0,
+          "direction": [-0.5, -0.8, -0.25],
+          "color": [1.0, 0.98, 0.93]
+        },
+        "shadow": {
+          "cascadeCount": 4,
+          "mapSize": 2048,
+          "normalBiasMinTexels": 0.75,
+          "normalBiasMaxTexels": 3.0,
+          "filterRadiusTexels": 1.5,
+          "cascadeBlendFraction": 0.1
+        },
+        "pointLights": []
+      },
+      "probes": [
+        {
+          "id": "contact_shadow_edge",
+          "kind": "edge_position",
+          "pixel": [620, 450],
+          "maxFrameToFramePixelDrift": 1.5
+        },
+        {
+          "id": "cascade_texel_density",
+          "kind": "debug_texel_density",
+          "pixel": [640, 360],
+          "maxFrameToFrameDelta": 0.03
+        }
+      ],
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/shadow_cascade_stability.png",
+        "candidate": "test_results/visual-regression/candidate/{platform}/shadow_cascade_stability.png",
+        "diff": "test_results/visual-regression/diff/{platform}/shadow_cascade_stability.png"
+      }
+    }
+  ]
+}

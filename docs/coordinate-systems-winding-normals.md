@@ -41,14 +41,14 @@ A negative-height viewport flips the mapping between NDC Y and framebuffer Y.
 
 ## 2. Engine Choice
 
-Container chooses the following:
+VulkanSceneRenderer chooses the following:
 
 - Right-handed world and view space
 - Camera forward is -Z
 - Projection matrices do not flip Y
 - Scene passes use a negative-height viewport
 - Shadow passes use a positive-height viewport
-- Scene front faces are clockwise
+- Scene front faces are counter-clockwise
 - Shadow front faces are counter-clockwise
 - Depth is reverse-Z
 - G-buffer normals are stored in world space
@@ -154,9 +154,10 @@ This section records the current status after the coordinate audit.
 
 | File | Status | Notes |
 | --- | --- | --- |
-| `src/renderer/GraphicsPipelineBuilder.cpp` front face | Fixed | Scene passes now use `VK_FRONT_FACE_CLOCKWISE` for the negative-height viewport, while shadow passes keep `VK_FRONT_FACE_COUNTER_CLOCKWISE` for the positive-height viewport |
-| `src/renderer/GraphicsPipelineBuilder.cpp` scene cull | Fixed | Single-sided and double-sided materials now have separate back-cull and no-cull pipeline variants |
-| `src/renderer/GraphicsPipelineBuilder.cpp` shadow cull | OK | Front-face cull plus reverse-Z bias is consistent |
+| `src/renderer/GraphicsPipelineBuilder.cpp` front face | Fixed | Scene and shadow passes both keep glTF-native `VK_FRONT_FACE_COUNTER_CLOCKWISE`; the negative-height scene viewport is handled by UV/NDC conversion, not by inverting front-face state |
+| `src/geometry/GltfModelLoader.cpp` triangle winding | Fixed | Imported normals repair triangles whose geometric face normal is opposite to the authored vertex normals before renderer buffers are built |
+| `src/renderer/GraphicsPipelineBuilder.cpp` scene cull | Fixed | Repaired single-sided meshes use back-face culling; mirrored transforms route through front-cull variants |
+| `src/renderer/GraphicsPipelineBuilder.cpp` shadow cull | Fixed | Shadow casters use the same repaired-winding cull policy as scene passes, with reverse-Z bias retained |
 
 ### 5.4 Deferred path shader wiring
 
@@ -164,7 +165,7 @@ This section records the current status after the coordinate audit.
 | --- | --- | --- |
 | `src/renderer/GraphicsPipelineBuilder.cpp` G-buffer vertex layout | Fixed | G-buffer now uses the full vertex layout so normal and tangent attributes reach the shader |
 | `shaders/gbuffer.slang` normal/tangent usage | Fixed | Deferred shading now receives valid normal/tangent data |
-| `shaders/gbuffer.slang` double-sided normal flip | Fixed | Back-face normals are reversed before storing the lighting normal, and `SV_IsFrontFace` now matches the negative-height scene viewport |
+| `shaders/gbuffer.slang` double-sided normal flip | Fixed | Back-face normals are reversed before storing the lighting normal, and `SV_IsFrontFace` now matches the CCW scene front-face convention |
 | `src/renderer/FrameRecorder.cpp` material routing | Fixed | Single-sided opaque draws stay on the indirect GPU-cull path; double-sided draws use explicit no-cull passes |
 | `shaders/brdf_common.slang` | OK | Scene UV to NDC reconstruction uses the required Y flip |
 | `shaders/deferred_directional.slang` | OK | Uses scene UV from `SV_Position`, reconstructs world position consistently |

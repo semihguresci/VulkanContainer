@@ -1,7 +1,7 @@
 # Vulkan Coordinate Setup
 
 This document defines the coordinate, depth, viewport, winding, and normal
-conventions for the Container renderer.
+conventions for VulkanSceneRenderer.
 
 Primary references:
 - [Vulkan Guide: Depth](https://docs.vulkan.org/guide/latest/depth.html)
@@ -16,6 +16,21 @@ The most important rule is to keep these spaces separate:
 4. Sampled image UV coordinates
 
 Most past bugs came from mixing the last three.
+
+## Implementation Anchors
+
+Use these files as the concrete implementation points for the conventions below:
+
+- `include/Container/common/CommonMath.h` defines projection helpers.
+- `src/renderer/FrameRecorder.cpp` sets scene and shadow viewports.
+- `src/renderer/GraphicsPipelineBuilder.cpp` defines front-face and cull state.
+- `shaders/brdf_common.slang` reconstructs world positions from scene depth.
+- `shaders/shadow_common.slang` converts shadow NDC to atlas UV.
+- `shaders/lighting_structs.slang` holds shared reverse-Z depth helpers.
+
+When adding a pass, add a short local comment at the conversion point if it
+depends on viewport orientation, reverse-Z depth, or glTF double-sided normal
+rules.
 
 ## 1. World and View Space
 
@@ -44,7 +59,7 @@ perspective divide:
 - `x_ndc` and `y_ndc` are in `[-1, 1]`
 - `z_ndc` is in `[0, 1]`
 
-Container uses reverse-Z:
+VulkanSceneRenderer uses reverse-Z:
 
 | Quantity | Value |
 | --- | --- |
@@ -89,8 +104,10 @@ viewport.maxDepth = 1.0f;
 Effect:
 - `y_ndc = +1` maps to the top of the framebuffer.
 - The projection matrix stays clean.
-- A glTF-native CCW triangle appears clockwise in framebuffer space, so scene
-  pipelines must use `VK_FRONT_FACE_CLOCKWISE`.
+- Scene raster state still keeps glTF-native CCW triangles as front faces.
+  Do not compensate with `VK_FRONT_FACE_CLOCKWISE`; that routes visible
+  single-sided surfaces through their back faces and stores inward-facing
+  G-buffer normals.
 
 ### Shadow passes
 
@@ -161,24 +178,25 @@ Global rasterization defaults:
 
 | Setting | Value |
 | --- | --- |
-| Scene front face | `VK_FRONT_FACE_CLOCKWISE` |
+| Scene front face | `VK_FRONT_FACE_COUNTER_CLOCKWISE` |
 | Shadow front face | `VK_FRONT_FACE_COUNTER_CLOCKWISE` |
 | Opaque scene cull | `VK_CULL_MODE_BACK_BIT` |
-| Shadow cull | `VK_CULL_MODE_FRONT_BIT` |
+| Shadow cull | `VK_CULL_MODE_BACK_BIT` |
 
 Rules:
-- Winding is evaluated after viewport transform, in framebuffer coordinates.
-- Negative-height scene viewports are part of the culling convention, so scene
-  front-face classification differs from shadow passes.
+- Negative-height scene viewports are part of the scene UV/NDC convention, but
+  scene and shadow raster front-face state both preserve glTF's CCW winding.
 - Reverse-Z is unrelated to front-face classification.
 
 glTF-specific rule:
-- When `doubleSided == false`, back-face culling stays enabled.
-- When `doubleSided == true`, back-face culling must be disabled and back-face
-  normals must be reversed before lighting.
-- The current renderer implements that by routing double-sided draws through
-  explicit no-cull pipeline variants instead of changing the global front-face
-  convention.
+- Imported vertex normals are used to repair bad triangle winding before the
+  mesh is flattened into renderer buffers.
+- When `doubleSided == false`, back-face culling stays enabled after import
+  repair.
+- When `doubleSided == true`, back-face culling is disabled and back-face
+  normals are reversed before lighting.
+- Mirrored node transforms route through front-cull pipeline variants because
+  the transform, not the mesh data, flips framebuffer winding.
 
 ## 6. Normals and Tangent Space
 
@@ -233,8 +251,8 @@ These are the conventions the code should implement everywhere:
 - Reverse-Z depth with clean projection matrices
 - Negative-height viewport for scene-facing passes only
 - Positive-height viewport for shadow cascades
-- Clockwise front faces for scene passes with negative-height viewports
-- Counter-clockwise front faces for shadow passes with positive-height viewports
+- Counter-clockwise front faces for scene passes
+- Counter-clockwise front faces for shadow passes
 - World-space normals in the G-buffer
 - glTF tangent handedness and double-sided lighting rules
 

@@ -4,11 +4,16 @@
 #include "Container/utility/TextureResource.h"
 #include "Container/utility/TextureManager.h"
 #include "Container/utility/MaterialManager.h"
+#include "Container/utility/Platform.h"
+#include "Container/utility/SceneData.h"
 #include <MaterialXCore/Material.h>
 #include <MaterialXCore/Util.h>
 #include <MaterialXCore/Value.h>
 #include <tiny_gltf.h>
 
+#include <algorithm>
+#include <array>
+#include <cmath>
 #include <cctype>
 #include <filesystem>
 #include <functional>
@@ -68,6 +73,391 @@ std::string resolveImageFileInput(const MaterialX::InputPtr& input) {
   }
 
   return {};
+}
+
+constexpr const char* kSpecularGlossinessExtension =
+    "KHR_materials_pbrSpecularGlossiness";
+constexpr const char* kTextureTransformExtension = "KHR_texture_transform";
+
+const tinygltf::Value* findMaterialExtension(
+    const tinygltf::Material& material, const char* extensionName) {
+  const auto it = material.extensions.find(extensionName);
+  if (it == material.extensions.end() || !it->second.IsObject()) {
+    return nullptr;
+  }
+  return &it->second;
+}
+
+float readExtensionNumber(const tinygltf::Value* extension,
+                          const char* valueName, float fallback) {
+  if (extension == nullptr || !extension->Has(valueName)) {
+    return fallback;
+  }
+
+  const auto& value = extension->Get(valueName);
+  if (!value.IsNumber()) {
+    return fallback;
+  }
+
+  return static_cast<float>(value.GetNumberAsDouble());
+}
+
+glm::vec3 readExtensionVec3(const tinygltf::Value* extension,
+                            const char* valueName,
+                            const glm::vec3& fallback) {
+  if (extension == nullptr || !extension->Has(valueName)) {
+    return fallback;
+  }
+
+  const auto& value = extension->Get(valueName);
+  if (!value.IsArray() || value.ArrayLen() < 3) {
+    return fallback;
+  }
+
+  glm::vec3 result{0.0f};
+  for (size_t i = 0; i < 3; ++i) {
+    const auto& component = value.Get(i);
+    if (!component.IsNumber()) {
+      return fallback;
+    }
+    result[static_cast<int>(i)] =
+        static_cast<float>(component.GetNumberAsDouble());
+  }
+  return result;
+}
+
+glm::vec4 readExtensionVec4(const tinygltf::Value* extension,
+                            const char* valueName,
+                            const glm::vec4& fallback) {
+  if (extension == nullptr || !extension->Has(valueName)) {
+    return fallback;
+  }
+
+  const auto& value = extension->Get(valueName);
+  if (!value.IsArray() || value.ArrayLen() < 4) {
+    return fallback;
+  }
+
+  glm::vec4 result{0.0f};
+  for (size_t i = 0; i < 4; ++i) {
+    const auto& component = value.Get(i);
+    if (!component.IsNumber()) {
+      return fallback;
+    }
+    result[static_cast<int>(i)] =
+        static_cast<float>(component.GetNumberAsDouble());
+  }
+  return result;
+}
+
+int readTextureIndexObject(const tinygltf::Value& textureObject) {
+  if (!textureObject.IsObject() || !textureObject.Has("index")) {
+    return -1;
+  }
+
+  const auto& indexValue = textureObject.Get("index");
+  if (!indexValue.IsNumber()) {
+    return -1;
+  }
+
+  return indexValue.GetNumberAsInt();
+}
+
+float readTextureScaleObject(const tinygltf::Value& textureObject,
+                             float fallback) {
+  if (!textureObject.IsObject() || !textureObject.Has("scale")) {
+    return fallback;
+  }
+
+  const auto& scaleValue = textureObject.Get("scale");
+  if (!scaleValue.IsNumber()) {
+    return fallback;
+  }
+
+  return static_cast<float>(scaleValue.GetNumberAsDouble());
+}
+
+glm::vec2 readTextureTransformVec2(const tinygltf::Value* extension,
+                                   const char* valueName,
+                                   const glm::vec2& fallback) {
+  if (extension == nullptr || !extension->Has(valueName)) {
+    return fallback;
+  }
+
+  const auto& value = extension->Get(valueName);
+  if (!value.IsArray() || value.ArrayLen() < 2) {
+    return fallback;
+  }
+
+  const auto& x = value.Get(0);
+  const auto& y = value.Get(1);
+  if (!x.IsNumber() || !y.IsNumber()) {
+    return fallback;
+  }
+
+  return {static_cast<float>(x.GetNumberAsDouble()),
+          static_cast<float>(y.GetNumberAsDouble())};
+}
+
+uint32_t readTextureTransformTexCoord(const tinygltf::Value* extension,
+                                      uint32_t fallback) {
+  if (extension == nullptr || !extension->Has("texCoord")) {
+    return fallback;
+  }
+
+  const auto& value = extension->Get("texCoord");
+  if (!value.IsNumber()) {
+    return fallback;
+  }
+
+  const int texCoord = value.GetNumberAsInt();
+  return texCoord >= 0 ? static_cast<uint32_t>(texCoord) : fallback;
+}
+
+float readTextureTransformRotation(const tinygltf::Value* extension,
+                                   float fallback) {
+  if (extension == nullptr || !extension->Has("rotation")) {
+    return fallback;
+  }
+
+  const auto& value = extension->Get("rotation");
+  if (!value.IsNumber()) {
+    return fallback;
+  }
+
+  return static_cast<float>(value.GetNumberAsDouble());
+}
+
+template <typename TextureInfo>
+container::material::TextureTransform readTextureTransform(
+    const TextureInfo& textureInfo) {
+  container::material::TextureTransform transform{};
+  transform.texCoord =
+      textureInfo.texCoord >= 0 ? static_cast<uint32_t>(textureInfo.texCoord)
+                                : 0u;
+
+  const auto extensionIt =
+      textureInfo.extensions.find(kTextureTransformExtension);
+  const tinygltf::Value* extension =
+      extensionIt != textureInfo.extensions.end() && extensionIt->second.IsObject()
+          ? &extensionIt->second
+          : nullptr;
+
+  transform.offset = readTextureTransformVec2(
+      extension, "offset", transform.offset);
+  transform.rotation =
+      readTextureTransformRotation(extension, transform.rotation);
+  transform.scale = readTextureTransformVec2(
+      extension, "scale", transform.scale);
+  transform.texCoord =
+      readTextureTransformTexCoord(extension, transform.texCoord);
+  return transform;
+}
+
+container::material::TextureTransform readTextureTransformObject(
+    const tinygltf::Value& textureObject) {
+  container::material::TextureTransform transform{};
+  if (!textureObject.IsObject()) {
+    return transform;
+  }
+
+  if (textureObject.Has("texCoord")) {
+    const auto& texCoordValue = textureObject.Get("texCoord");
+    if (texCoordValue.IsNumber()) {
+      const int texCoord = texCoordValue.GetNumberAsInt();
+      transform.texCoord = texCoord >= 0 ? static_cast<uint32_t>(texCoord) : 0u;
+    }
+  }
+
+  const tinygltf::Value* extension = nullptr;
+  if (textureObject.Has("extensions")) {
+    const auto& extensions = textureObject.Get("extensions");
+    if (extensions.IsObject() && extensions.Has(kTextureTransformExtension)) {
+      const auto& textureTransform = extensions.Get(kTextureTransformExtension);
+      if (textureTransform.IsObject()) {
+        extension = &textureTransform;
+      }
+    }
+  }
+
+  transform.offset = readTextureTransformVec2(
+      extension, "offset", transform.offset);
+  transform.rotation =
+      readTextureTransformRotation(extension, transform.rotation);
+  transform.scale = readTextureTransformVec2(
+      extension, "scale", transform.scale);
+  transform.texCoord =
+      readTextureTransformTexCoord(extension, transform.texCoord);
+  return transform;
+}
+
+const tinygltf::Value* findExtensionTextureObject(
+    const tinygltf::Material& material, const char* extensionName,
+    const char* textureName) {
+  const auto* extension = findMaterialExtension(material, extensionName);
+  if (extension == nullptr || !extension->Has(textureName)) {
+    return nullptr;
+  }
+
+  const auto& textureObject = extension->Get(textureName);
+  return textureObject.IsObject() ? &textureObject : nullptr;
+}
+
+int readExtensionTextureIndex(const tinygltf::Material& material,
+                              const char* extensionName,
+                              const char* textureName) {
+  const tinygltf::Value* textureObject =
+      findExtensionTextureObject(material, extensionName, textureName);
+  if (textureObject == nullptr) {
+    return -1;
+  }
+
+  return readTextureIndexObject(*textureObject);
+}
+
+int readLegacyTextureIndex(const tinygltf::ParameterMap& values,
+                           const char* textureName) {
+  const auto it = values.find(textureName);
+  if (it == values.end()) {
+    return -1;
+  }
+  return it->second.TextureIndex();
+}
+
+float readLegacyFactor(const tinygltf::ParameterMap& values,
+                       const char* factorName, float fallback) {
+  const auto it = values.find(factorName);
+  if (it == values.end() || !it->second.has_number_value) {
+    return fallback;
+  }
+  return static_cast<float>(it->second.Factor());
+}
+
+bool hasLegacyNumber(const tinygltf::ParameterMap& values,
+                     const char* factorName) {
+  const auto it = values.find(factorName);
+  return it != values.end() && it->second.has_number_value;
+}
+
+bool hasAuthoredMaterialNumber(const tinygltf::Material& material,
+                               const char* factorName) {
+  return hasLegacyNumber(material.values, factorName) ||
+         hasLegacyNumber(material.additionalValues, factorName);
+}
+
+bool hasAuthoredPbrFactor(const tinygltf::Material& material,
+                          const char* factorName, double parsedValue,
+                          double defaultValue) {
+  return hasAuthoredMaterialNumber(material, factorName) ||
+         std::abs(parsedValue - defaultValue) > 1e-6;
+}
+
+uint32_t resolveTextureIndex(const tinygltf::Model& model,
+                             const std::vector<uint32_t>& textureToResource,
+                             int textureIndex) {
+  if (textureIndex < 0 ||
+      static_cast<size_t>(textureIndex) >= model.textures.size()) {
+    return std::numeric_limits<uint32_t>::max();
+  }
+
+  if (static_cast<size_t>(textureIndex) >= textureToResource.size()) {
+    return std::numeric_limits<uint32_t>::max();
+  }
+
+  return textureToResource[static_cast<size_t>(textureIndex)];
+}
+
+uint32_t gltfWrapModeToMaterialSamplerAxis(int wrapMode) {
+  switch (wrapMode) {
+    case TINYGLTF_TEXTURE_WRAP_CLAMP_TO_EDGE:
+      return container::gpu::kMaterialSamplerWrapClampToEdge;
+    case TINYGLTF_TEXTURE_WRAP_MIRRORED_REPEAT:
+      return container::gpu::kMaterialSamplerWrapMirroredRepeat;
+    case TINYGLTF_TEXTURE_WRAP_REPEAT:
+    default:
+      return container::gpu::kMaterialSamplerWrapRepeat;
+  }
+}
+
+uint32_t gltfTextureSamplerIndex(const tinygltf::Model& model,
+                                 const tinygltf::Texture& texture) {
+  uint32_t wrapS = container::gpu::kMaterialSamplerWrapRepeat;
+  uint32_t wrapT = container::gpu::kMaterialSamplerWrapRepeat;
+  if (texture.sampler >= 0 &&
+      texture.sampler < static_cast<int>(model.samplers.size())) {
+    const tinygltf::Sampler& sampler =
+        model.samplers[static_cast<size_t>(texture.sampler)];
+    wrapS = gltfWrapModeToMaterialSamplerAxis(sampler.wrapS);
+    wrapT = gltfWrapModeToMaterialSamplerAxis(sampler.wrapT);
+  }
+
+  return wrapS + wrapT * container::gpu::kMaterialSamplerWrapModeCount;
+}
+
+float maxComponent(const glm::vec3& color) {
+  return std::max({color.r, color.g, color.b});
+}
+
+float perceivedBrightness(const glm::vec3& color) {
+  return std::sqrt(0.299f * color.r * color.r +
+                   0.587f * color.g * color.g +
+                   0.114f * color.b * color.b);
+}
+
+float solveMetallic(const glm::vec3& diffuse, const glm::vec3& specular,
+                    float oneMinusSpecularStrength) {
+  constexpr float kDielectricSpecular = 0.04f;
+  constexpr float kEpsilon = 1e-6f;
+
+  const float specularBrightness = perceivedBrightness(specular);
+  if (specularBrightness < kDielectricSpecular) {
+    return 0.0f;
+  }
+
+  const float diffuseBrightness = perceivedBrightness(diffuse);
+  const float a = kDielectricSpecular;
+  const float b = diffuseBrightness * oneMinusSpecularStrength /
+                      (1.0f - kDielectricSpecular) +
+                  specularBrightness - 2.0f * kDielectricSpecular;
+  const float c = kDielectricSpecular - specularBrightness;
+  const float discriminant = std::max(b * b - 4.0f * a * c, 0.0f);
+  const float metallic = (-b + std::sqrt(discriminant)) /
+                         std::max(2.0f * a, kEpsilon);
+  return std::clamp(metallic, 0.0f, 1.0f);
+}
+
+struct MetallicRoughnessApproximation {
+  glm::vec4 baseColor{1.0f};
+  float metallic{0.0f};
+  float roughness{1.0f};
+};
+
+MetallicRoughnessApproximation convertSpecularGlossinessToMetallicRoughness(
+    const glm::vec4& diffuseFactor, const glm::vec3& specularFactor,
+    float glossinessFactor) {
+  constexpr float kDielectricSpecular = 0.04f;
+  constexpr float kEpsilon = 1e-6f;
+
+  const glm::vec3 diffuse = glm::clamp(glm::vec3(diffuseFactor), 0.0f, 1.0f);
+  const glm::vec3 specular = glm::clamp(specularFactor, 0.0f, 1.0f);
+  const float oneMinusSpecularStrength =
+      1.0f - std::clamp(maxComponent(specular), 0.0f, 1.0f);
+  const float metallic =
+      solveMetallic(diffuse, specular, oneMinusSpecularStrength);
+
+  const glm::vec3 baseColorFromDiffuse =
+      diffuse * oneMinusSpecularStrength /
+      std::max((1.0f - kDielectricSpecular) * (1.0f - metallic), kEpsilon);
+  const glm::vec3 baseColorFromSpecular =
+      (specular - glm::vec3(kDielectricSpecular * (1.0f - metallic))) /
+      std::max(metallic, kEpsilon);
+  const glm::vec3 baseColor = glm::clamp(
+      glm::mix(baseColorFromDiffuse, baseColorFromSpecular,
+               metallic * metallic),
+      0.0f, 1.0f);
+
+  return {glm::vec4(baseColor, std::clamp(diffuseFactor.a, 0.0f, 1.0f)),
+          metallic, 1.0f - std::clamp(glossinessFactor, 0.0f, 1.0f)};
 }
 }  // namespace
 
@@ -236,6 +626,19 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
     const std::string& materialName) const {
   auto document = MaterialX::createDocument();
   const auto& pbr = gltfMaterial.pbrMetallicRoughness;
+  const auto* specGlossExtension =
+      findMaterialExtension(gltfMaterial, kSpecularGlossinessExtension);
+  const bool useSpecularGlossiness = specGlossExtension != nullptr;
+  const glm::vec4 specGlossDiffuseFactor = readExtensionVec4(
+      specGlossExtension, "diffuseFactor", glm::vec4(1.0f));
+  const glm::vec3 specGlossSpecularFactor = readExtensionVec3(
+      specGlossExtension, "specularFactor", glm::vec3(1.0f));
+  const float specGlossGlossinessFactor = readExtensionNumber(
+      specGlossExtension, "glossinessFactor", 1.0f);
+  const auto specGlossApproximation =
+      convertSpecularGlossinessToMetallicRoughness(
+          specGlossDiffuseFactor, specGlossSpecularFactor,
+          specGlossGlossinessFactor);
   const MaterialX::Color3 defaultColor(1.0f, 1.0f, 1.0f);
   const MaterialX::Color3 blackColor(0.0f, 0.0f, 0.0f);
 
@@ -248,9 +651,27 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
   baseInput->setValue(1.0f);
 
   auto baseColorInput = shader->addInput("base_color", "color3");
-  baseColorInput->setValue(toColor(pbr.baseColorFactor, defaultColor));
+  if (useSpecularGlossiness) {
+    baseColorInput->setValue(MaterialX::Color3(
+        specGlossApproximation.baseColor.r, specGlossApproximation.baseColor.g,
+        specGlossApproximation.baseColor.b));
+  } else {
+    baseColorInput->setValue(toColor(pbr.baseColorFactor, defaultColor));
+  }
 
-  const auto baseColorTextureIndex = pbr.baseColorTexture.index;
+  auto opacityInput = shader->addInput("opacity", "float");
+  const float opacityFactor =
+      useSpecularGlossiness
+          ? specGlossDiffuseFactor.a
+          : (pbr.baseColorFactor.size() >= 4
+                 ? static_cast<float>(pbr.baseColorFactor[3])
+                 : 1.0f);
+  opacityInput->setValue(opacityFactor);
+
+  const auto baseColorTextureIndex =
+      useSpecularGlossiness
+          ? readTextureIndexObject(specGlossExtension->Get("diffuseTexture"))
+          : pbr.baseColorTexture.index;
   if (baseColorTextureIndex >= 0) {
     auto imageNode = document->addNode(
         "image",
@@ -266,12 +687,30 @@ MaterialX::DocumentPtr SlangMaterialXBridge::createDocumentFromGltfMaterial(
   }
 
   auto metallicInput = shader->addInput("metalness", "float");
-  metallicInput->setValue(static_cast<float>(pbr.metallicFactor));
+  metallicInput->setValue(useSpecularGlossiness
+                              ? specGlossApproximation.metallic
+                              : static_cast<float>(pbr.metallicFactor));
 
   auto roughnessInput = shader->addInput("specular_roughness", "float");
-  roughnessInput->setValue(static_cast<float>(pbr.roughnessFactor));
+  roughnessInput->setValue(useSpecularGlossiness
+                               ? specGlossApproximation.roughness
+                               : static_cast<float>(pbr.roughnessFactor));
 
-  const auto metallicRoughnessTextureIndex = pbr.metallicRoughnessTexture.index;
+  auto specularInput = shader->addInput("specular", "float");
+  specularInput->setValue(
+      useSpecularGlossiness
+          ? perceivedBrightness(specGlossSpecularFactor)
+          : readExtensionNumber(
+                findMaterialExtension(gltfMaterial, "KHR_materials_specular"),
+                "specularFactor", 1.0f));
+
+  auto transmissionInput = shader->addInput("transmission", "float");
+  transmissionInput->setValue(readExtensionNumber(
+      findMaterialExtension(gltfMaterial, "KHR_materials_transmission"),
+      "transmissionFactor", 0.0f));
+
+  const auto metallicRoughnessTextureIndex =
+      useSpecularGlossiness ? -1 : pbr.metallicRoughnessTexture.index;
   if (metallicRoughnessTextureIndex >= 0) {
     auto imageNode = document->addNode(
         "image",
@@ -450,8 +889,8 @@ std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
     container::material::TextureManager& textureManager,
     const std::function<container::material::TextureResource(
         const std::string&, bool)>& textureLoader) const {
-  std::vector<uint32_t> imageToTexture(model.images.size(),
-                                       std::numeric_limits<uint32_t>::max());
+  std::vector<uint32_t> textureToResource(
+      model.textures.size(), std::numeric_limits<uint32_t>::max());
 
   // Classify each glTF image by how materials reference it. Color data
   // (base color, emissive) must be sRGB so sampling yields linear light;
@@ -486,32 +925,98 @@ std::vector<uint32_t> SlangMaterialXBridge::loadTexturesForGltf(
     markImage(mat.normalTexture.index, false);
     markImage(mat.occlusionTexture.index, false);
     markImage(mat.pbrMetallicRoughness.metallicRoughnessTexture.index, false);
+    markImage(readExtensionTextureIndex(
+                  mat, kSpecularGlossinessExtension, "diffuseTexture"),
+              true);
+    markImage(readExtensionTextureIndex(
+                  mat, kSpecularGlossinessExtension,
+                  "specularGlossinessTexture"),
+              true);
+
+    markImage(readExtensionTextureIndex(
+                  mat, "KHR_materials_specular", "specularTexture"),
+              false);
+    markImage(readExtensionTextureIndex(
+                  mat, "KHR_materials_specular", "specularColorTexture"),
+              true);
+    markImage(readExtensionTextureIndex(
+                  mat, "KHR_materials_transmission", "transmissionTexture"),
+              false);
+    markImage(readExtensionTextureIndex(
+                  mat, "KHR_materials_volume", "thicknessTexture"),
+              false);
+    markImage(readExtensionTextureIndex(
+                  mat, "KHR_materials_clearcoat", "clearcoatTexture"),
+              false);
+    markImage(readExtensionTextureIndex(
+                  mat, "KHR_materials_clearcoat",
+                  "clearcoatRoughnessTexture"),
+              false);
+    markImage(readExtensionTextureIndex(
+                  mat, "KHR_materials_clearcoat", "clearcoatNormalTexture"),
+              false);
+    markImage(readExtensionTextureIndex(
+                  mat, "KHR_materials_sheen", "sheenColorTexture"),
+              true);
+    markImage(readExtensionTextureIndex(
+                  mat, "KHR_materials_sheen", "sheenRoughnessTexture"),
+              false);
+    markImage(readExtensionTextureIndex(
+                  mat, "KHR_materials_iridescence", "iridescenceTexture"),
+              false);
+    markImage(readExtensionTextureIndex(
+                  mat, "KHR_materials_iridescence",
+                  "iridescenceThicknessTexture"),
+              false);
+
+    static constexpr std::array kLegacyPbrTextureNames = {
+        "roughnessTexture", "metalnessTexture", "specularTexture",
+        "heightTexture", "displacementTexture", "opacityTexture",
+        "refractionTexture", "transmissionTexture"};
+    for (const auto* textureName : kLegacyPbrTextureNames) {
+      markImage(readLegacyTextureIndex(mat.values, textureName), false);
+      markImage(readLegacyTextureIndex(mat.additionalValues, textureName),
+                false);
+    }
   }
 
-  for (size_t i = 0; i < model.images.size(); ++i) {
-    const auto& image = model.images[i];
+  for (size_t i = 0; i < model.textures.size(); ++i) {
+    const auto& texture = model.textures[i];
+    if (texture.source < 0 ||
+        texture.source >= static_cast<int>(model.images.size())) {
+      continue;
+    }
+
+    const size_t imageIndex = static_cast<size_t>(texture.source);
+    const auto& image = model.images[imageIndex];
     if (image.uri.empty()) continue;
 
-    const auto fullPath = (baseDir / image.uri).lexically_normal().string();
+    const auto fullPath = container::util::pathToUtf8(
+        (baseDir / container::util::pathFromUtf8(image.uri)).lexically_normal());
+    const uint32_t samplerIndex = gltfTextureSamplerIndex(model, texture);
+    const std::string textureCacheKey =
+        fullPath + "|sampler=" + std::to_string(samplerIndex);
 
-    if (const auto cachedIndex = textureManager.findTextureIndex(fullPath)) {
-      imageToTexture[i] = *cachedIndex;
+    if (const auto cachedIndex = textureManager.findTextureIndex(textureCacheKey)) {
+      textureToResource[i] = *cachedIndex;
       continue;
     }
 
     try {
-      auto resource = textureLoader(fullPath, imageIsSrgb[i]);
-      imageToTexture[i] = textureManager.registerTexture(resource);
+      auto resource = textureLoader(fullPath, imageIsSrgb[imageIndex]);
+      resource.name = textureCacheKey;
+      resource.samplerIndex = samplerIndex;
+      textureToResource[i] = textureManager.registerTexture(resource);
     } catch (const std::exception& exc) {
       std::println(stderr, "Texture load failed for {}: {}", fullPath, exc.what());
     }
   }
 
-  return imageToTexture;
+  return textureToResource;
 }
 
 void SlangMaterialXBridge::loadMaterialsForGltf(
-    const tinygltf::Model& model, const std::vector<uint32_t>& imageToTexture,
+    const tinygltf::Model& model, const std::vector<uint32_t>& textureToResource,
     container::material::MaterialManager& materialManager,
     uint32_t& defaultMaterialIndex) const {
   auto materialDocs = loadGltfMaterials(model);
@@ -522,12 +1027,18 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
       return std::numeric_limits<uint32_t>::max();
     }
 
-    for (size_t i = 0; i < model.images.size(); ++i) {
-      const auto& image = model.images[i];
+    for (size_t i = 0; i < model.textures.size(); ++i) {
+      const auto& texture = model.textures[i];
+      if (texture.source < 0 ||
+          texture.source >= static_cast<int>(model.images.size())) {
+        continue;
+      }
+
+      const auto& image = model.images[static_cast<size_t>(texture.source)];
       const auto fallbackName = "texture_" + std::to_string(i);
       if (uri == image.uri || uri == image.name || uri == fallbackName) {
-        if (i < imageToTexture.size()) {
-          return imageToTexture[i];
+        if (i < textureToResource.size()) {
+          return textureToResource[i];
         }
       }
     }
@@ -538,6 +1049,10 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
   const auto existingMaterials = materialManager.materialCount();
   for (size_t i = 0; i < model.materials.size(); ++i) {
     const auto& mat = model.materials[i];
+    const auto* specGlossExtension =
+        findMaterialExtension(mat, kSpecularGlossinessExtension);
+    const bool hasAuthoredMetallicFactor = hasAuthoredPbrFactor(
+        mat, "metallicFactor", mat.pbrMetallicRoughness.metallicFactor, 1.0);
     container::material::Material material{};
     if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
       material.baseColor = glm::vec4(
@@ -556,6 +1071,96 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
         static_cast<float>(mat.normalTexture.scale);
     material.occlusionStrength =
         static_cast<float>(mat.occlusionTexture.strength);
+    material.baseColorTextureTransform =
+        readTextureTransform(mat.pbrMetallicRoughness.baseColorTexture);
+    material.normalTextureTransform = readTextureTransform(mat.normalTexture);
+    material.occlusionTextureTransform =
+        readTextureTransform(mat.occlusionTexture);
+    material.emissiveTextureTransform =
+        readTextureTransform(mat.emissiveTexture);
+    material.metallicRoughnessTextureTransform =
+        readTextureTransform(
+            mat.pbrMetallicRoughness.metallicRoughnessTexture);
+    material.roughnessTextureTransform =
+        material.metallicRoughnessTextureTransform;
+    material.metalnessTextureTransform =
+        material.metallicRoughnessTextureTransform;
+    material.specularFactor = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_specular"),
+        "specularFactor", material.specularFactor);
+    material.specularColorFactor = readExtensionVec3(
+        findMaterialExtension(mat, "KHR_materials_specular"),
+        "specularColorFactor", material.specularColorFactor);
+    material.ior = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_ior"),
+        "ior", material.ior);
+    material.dispersion = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_dispersion"),
+        "dispersion", material.dispersion);
+    material.emissiveStrength = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_emissive_strength"),
+        "emissiveStrength", material.emissiveStrength);
+    material.transmissionFactor = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_transmission"),
+        "transmissionFactor", material.transmissionFactor);
+    material.clearcoatFactor = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_clearcoat"),
+        "clearcoatFactor", material.clearcoatFactor);
+    material.clearcoatRoughnessFactor = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_clearcoat"),
+        "clearcoatRoughnessFactor", material.clearcoatRoughnessFactor);
+    if (const auto* clearcoatExtension =
+            findMaterialExtension(mat, "KHR_materials_clearcoat");
+        clearcoatExtension != nullptr &&
+        clearcoatExtension->Has("clearcoatNormalTexture")) {
+      material.clearcoatNormalTextureScale = readTextureScaleObject(
+          clearcoatExtension->Get("clearcoatNormalTexture"),
+          material.clearcoatNormalTextureScale);
+    }
+    material.thicknessFactor = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_volume"),
+        "thicknessFactor", material.thicknessFactor);
+    material.attenuationColor = readExtensionVec3(
+        findMaterialExtension(mat, "KHR_materials_volume"),
+        "attenuationColor", material.attenuationColor);
+    material.attenuationDistance = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_volume"),
+        "attenuationDistance", material.attenuationDistance);
+    material.sheenColorFactor = readExtensionVec3(
+        findMaterialExtension(mat, "KHR_materials_sheen"),
+        "sheenColorFactor", material.sheenColorFactor);
+    material.sheenRoughnessFactor = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_sheen"),
+        "sheenRoughnessFactor", material.sheenRoughnessFactor);
+    material.iridescenceFactor = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_iridescence"),
+        "iridescenceFactor", material.iridescenceFactor);
+    material.iridescenceIor = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_iridescence"),
+        "iridescenceIor", material.iridescenceIor);
+    material.iridescenceThicknessMinimum = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_iridescence"),
+        "iridescenceThicknessMinimum", material.iridescenceThicknessMinimum);
+    material.iridescenceThicknessMaximum = readExtensionNumber(
+        findMaterialExtension(mat, "KHR_materials_iridescence"),
+        "iridescenceThicknessMaximum", material.iridescenceThicknessMaximum);
+    material.unlit = findMaterialExtension(mat, "KHR_materials_unlit") != nullptr;
+    material.opacityFactor =
+        readLegacyFactor(mat.values, "opacity", material.opacityFactor);
+    material.opacityFactor = readLegacyFactor(
+        mat.additionalValues, "opacity", material.opacityFactor);
+    material.specularFactor =
+        readLegacyFactor(mat.values, "specular", material.specularFactor);
+    material.specularFactor = readLegacyFactor(
+        mat.additionalValues, "specular", material.specularFactor);
+    material.heightScale =
+        readLegacyFactor(mat.values, "heightScale", material.heightScale);
+    material.heightScale = readLegacyFactor(
+        mat.additionalValues, "heightScale", material.heightScale);
+    material.transmissionFactor =
+        readLegacyFactor(mat.values, "refraction", material.transmissionFactor);
+    material.transmissionFactor = readLegacyFactor(
+        mat.additionalValues, "refraction", material.transmissionFactor);
     material.doubleSided = mat.doubleSided;
     if (mat.alphaMode == "MASK") {
       material.alphaMode = AlphaMode::Mask;
@@ -590,6 +1195,14 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
           extractFloatInput(materialDoc, "metalness", material.metallicFactor);
       material.roughnessFactor = extractFloatInput(
           materialDoc, "specular_roughness", material.roughnessFactor);
+      material.specularFactor =
+          extractFloatInput(materialDoc, "specular", material.specularFactor);
+      material.heightScale =
+          extractFloatInput(materialDoc, "height", material.heightScale);
+      material.transmissionFactor = extractFloatInput(
+          materialDoc, "transmission", material.transmissionFactor);
+      material.transmissionFactor = extractFloatInput(
+          materialDoc, "refraction", material.transmissionFactor);
 
       auto applyTextureFromDoc = [&](const std::string& inputName,
                                      uint32_t& destination) {
@@ -604,76 +1217,236 @@ void SlangMaterialXBridge::loadMaterialsForGltf(
       applyTextureFromDoc("normal", material.normalTextureIndex);
       applyTextureFromDoc("occlusion", material.occlusionTextureIndex);
       applyTextureFromDoc("emission_color", material.emissiveTextureIndex);
+      applyTextureFromDoc("opacity", material.opacityTextureIndex);
+      applyTextureFromDoc("specular", material.specularTextureIndex);
+      applyTextureFromDoc("height", material.heightTextureIndex);
+      applyTextureFromDoc("displacement", material.heightTextureIndex);
+      applyTextureFromDoc("transmission", material.transmissionTextureIndex);
+      applyTextureFromDoc("refraction", material.transmissionTextureIndex);
 
       auto metallicUri = extractTextureFileForInput(materialDoc, "metalness");
       auto roughnessUri =
           extractTextureFileForInput(materialDoc, "specular_roughness");
       auto metallicResolved = resolveTextureIndexFromUri(metallicUri);
       auto roughnessResolved = resolveTextureIndexFromUri(roughnessUri);
-      if (metallicResolved != std::numeric_limits<uint32_t>::max()) {
+      const uint32_t invalidTexture = std::numeric_limits<uint32_t>::max();
+      if (metallicResolved != invalidTexture &&
+          roughnessResolved != invalidTexture &&
+          metallicResolved == roughnessResolved) {
         material.metallicRoughnessTextureIndex = metallicResolved;
-      } else if (roughnessResolved != std::numeric_limits<uint32_t>::max()) {
-        material.metallicRoughnessTextureIndex = roughnessResolved;
+      } else {
+        if (metallicResolved != invalidTexture) {
+          material.metalnessTextureIndex = metallicResolved;
+        }
+        if (roughnessResolved != invalidTexture) {
+          material.roughnessTextureIndex = roughnessResolved;
+        }
       }
     }
 
-    const auto baseIndex = mat.pbrMetallicRoughness.baseColorTexture.index;
-    if (material.baseColorTextureIndex ==
+    auto assignGltfTexture = [&](uint32_t& destination, int textureIndex) {
+      const uint32_t resolved =
+          resolveTextureIndex(model, textureToResource, textureIndex);
+      if (resolved != std::numeric_limits<uint32_t>::max()) {
+        destination = resolved;
+      }
+    };
+
+    assignGltfTexture(material.baseColorTextureIndex,
+                      mat.pbrMetallicRoughness.baseColorTexture.index);
+    assignGltfTexture(
+        material.metallicRoughnessTextureIndex,
+        mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
+    assignGltfTexture(material.normalTextureIndex, mat.normalTexture.index);
+    assignGltfTexture(material.occlusionTextureIndex,
+                      mat.occlusionTexture.index);
+    assignGltfTexture(material.emissiveTextureIndex, mat.emissiveTexture.index);
+
+    if (specGlossExtension != nullptr) {
+      const glm::vec4 diffuseFactor = readExtensionVec4(
+          specGlossExtension, "diffuseFactor", glm::vec4(1.0f));
+      const glm::vec3 specularFactor = readExtensionVec3(
+          specGlossExtension, "specularFactor", glm::vec3(1.0f));
+      const float glossinessFactor = readExtensionNumber(
+          specGlossExtension, "glossinessFactor", 1.0f);
+      const auto approximation =
+          convertSpecularGlossinessToMetallicRoughness(
+              diffuseFactor, specularFactor, glossinessFactor);
+
+      material.specularGlossinessWorkflow = true;
+      material.baseColor = approximation.baseColor;
+      material.metallicFactor = approximation.metallic;
+      material.roughnessFactor =
+          std::clamp(glossinessFactor, 0.0f, 1.0f);
+      const float maxSpecular = maxComponent(specularFactor);
+      material.specularFactor =
+          std::clamp(maxSpecular / 0.04f, 0.0f, 1.0f);
+      material.specularColorFactor =
+          maxSpecular > 1e-6f ? specularFactor / maxSpecular : glm::vec3(1.0f);
+      material.metallicRoughnessTextureIndex =
+          std::numeric_limits<uint32_t>::max();
+      material.metalnessTextureIndex = std::numeric_limits<uint32_t>::max();
+      material.roughnessTextureIndex = std::numeric_limits<uint32_t>::max();
+      material.specularTextureIndex = std::numeric_limits<uint32_t>::max();
+
+      material.baseColorTextureIndex = resolveTextureIndex(
+          model, textureToResource,
+          readTextureIndexObject(specGlossExtension->Get("diffuseTexture")));
+      if (specGlossExtension->Has("diffuseTexture")) {
+        material.baseColorTextureTransform =
+            readTextureTransformObject(specGlossExtension->Get("diffuseTexture"));
+      }
+      const uint32_t specularGlossinessTexture = resolveTextureIndex(
+          model, textureToResource,
+          readTextureIndexObject(
+              specGlossExtension->Get("specularGlossinessTexture")));
+      if (specularGlossinessTexture != std::numeric_limits<uint32_t>::max()) {
+        material.roughnessTextureIndex = specularGlossinessTexture;
+        material.specularColorTextureIndex = specularGlossinessTexture;
+        if (specGlossExtension->Has("specularGlossinessTexture")) {
+          const auto transform = readTextureTransformObject(
+              specGlossExtension->Get("specularGlossinessTexture"));
+          material.roughnessTextureTransform = transform;
+          material.specularColorTextureTransform = transform;
+        }
+      }
+    }
+
+    auto assignOptionalTexture = [&](uint32_t& destination, int textureIndex) {
+      if (destination != std::numeric_limits<uint32_t>::max()) {
+        return;
+      }
+      const uint32_t resolved =
+          resolveTextureIndex(model, textureToResource, textureIndex);
+      if (resolved != std::numeric_limits<uint32_t>::max()) {
+        destination = resolved;
+      }
+    };
+
+    auto assignOptionalExtensionTexture =
+        [&](uint32_t& destination,
+            container::material::TextureTransform& destinationTransform,
+            const char* extensionName, const char* textureName) {
+          if (destination != std::numeric_limits<uint32_t>::max()) {
+            return;
+          }
+
+          const tinygltf::Value* textureObject =
+              findExtensionTextureObject(mat, extensionName, textureName);
+          if (textureObject == nullptr) {
+            return;
+          }
+
+          const uint32_t resolved =
+              resolveTextureIndex(model, textureToResource,
+                                  readTextureIndexObject(*textureObject));
+          if (resolved != std::numeric_limits<uint32_t>::max()) {
+            destination = resolved;
+            destinationTransform = readTextureTransformObject(*textureObject);
+          }
+        };
+
+    assignOptionalExtensionTexture(
+        material.specularTextureIndex, material.specularTextureTransform,
+        "KHR_materials_specular", "specularTexture");
+    assignOptionalExtensionTexture(
+        material.specularColorTextureIndex,
+        material.specularColorTextureTransform, "KHR_materials_specular",
+        "specularColorTexture");
+    assignOptionalExtensionTexture(
+        material.transmissionTextureIndex, material.transmissionTextureTransform,
+        "KHR_materials_transmission", "transmissionTexture");
+    assignOptionalExtensionTexture(
+        material.clearcoatTextureIndex, material.clearcoatTextureTransform,
+        "KHR_materials_clearcoat", "clearcoatTexture");
+    assignOptionalExtensionTexture(
+        material.clearcoatRoughnessTextureIndex,
+        material.clearcoatRoughnessTextureTransform, "KHR_materials_clearcoat",
+        "clearcoatRoughnessTexture");
+    assignOptionalExtensionTexture(
+        material.clearcoatNormalTextureIndex,
+        material.clearcoatNormalTextureTransform, "KHR_materials_clearcoat",
+        "clearcoatNormalTexture");
+    assignOptionalExtensionTexture(
+        material.thicknessTextureIndex, material.thicknessTextureTransform,
+        "KHR_materials_volume", "thicknessTexture");
+    assignOptionalExtensionTexture(
+        material.sheenColorTextureIndex, material.sheenColorTextureTransform,
+        "KHR_materials_sheen", "sheenColorTexture");
+    assignOptionalExtensionTexture(
+        material.sheenRoughnessTextureIndex,
+        material.sheenRoughnessTextureTransform, "KHR_materials_sheen",
+        "sheenRoughnessTexture");
+    assignOptionalExtensionTexture(
+        material.iridescenceTextureIndex, material.iridescenceTextureTransform,
+        "KHR_materials_iridescence", "iridescenceTexture");
+    assignOptionalExtensionTexture(
+        material.iridescenceThicknessTextureIndex,
+        material.iridescenceThicknessTextureTransform,
+        "KHR_materials_iridescence", "iridescenceThicknessTexture");
+
+    assignOptionalTexture(
+        material.roughnessTextureIndex,
+        readLegacyTextureIndex(mat.values, "roughnessTexture"));
+    assignOptionalTexture(
+        material.roughnessTextureIndex,
+        readLegacyTextureIndex(mat.additionalValues, "roughnessTexture"));
+    assignOptionalTexture(
+        material.metalnessTextureIndex,
+        readLegacyTextureIndex(mat.values, "metalnessTexture"));
+    assignOptionalTexture(
+        material.metalnessTextureIndex,
+        readLegacyTextureIndex(mat.additionalValues, "metalnessTexture"));
+    assignOptionalTexture(
+        material.specularTextureIndex,
+        readLegacyTextureIndex(mat.values, "specularTexture"));
+    assignOptionalTexture(
+        material.specularTextureIndex,
+        readLegacyTextureIndex(mat.additionalValues, "specularTexture"));
+    assignOptionalTexture(
+        material.heightTextureIndex,
+        readLegacyTextureIndex(mat.values, "heightTexture"));
+    assignOptionalTexture(
+        material.heightTextureIndex,
+        readLegacyTextureIndex(mat.additionalValues, "heightTexture"));
+    assignOptionalTexture(
+        material.heightTextureIndex,
+        readLegacyTextureIndex(mat.values, "displacementTexture"));
+    assignOptionalTexture(
+        material.heightTextureIndex,
+        readLegacyTextureIndex(mat.additionalValues, "displacementTexture"));
+    assignOptionalTexture(
+        material.opacityTextureIndex,
+        readLegacyTextureIndex(mat.values, "opacityTexture"));
+    assignOptionalTexture(
+        material.opacityTextureIndex,
+        readLegacyTextureIndex(mat.additionalValues, "opacityTexture"));
+    assignOptionalTexture(
+        material.transmissionTextureIndex,
+        readLegacyTextureIndex(mat.values, "refractionTexture"));
+    assignOptionalTexture(
+        material.transmissionTextureIndex,
+        readLegacyTextureIndex(mat.additionalValues, "refractionTexture"));
+    assignOptionalTexture(
+        material.transmissionTextureIndex,
+        readLegacyTextureIndex(mat.values, "transmissionTexture"));
+    assignOptionalTexture(
+        material.transmissionTextureIndex,
+        readLegacyTextureIndex(mat.additionalValues, "transmissionTexture"));
+
+    if (specGlossExtension == nullptr && !hasAuthoredMetallicFactor &&
+        material.metallicRoughnessTextureIndex ==
             std::numeric_limits<uint32_t>::max() &&
-        baseIndex >= 0 &&
-        static_cast<size_t>(baseIndex) < model.textures.size()) {
-      const auto& tex = model.textures[baseIndex];
-      if (tex.source >= 0 &&
-          static_cast<size_t>(tex.source) < imageToTexture.size()) {
-        material.baseColorTextureIndex = imageToTexture[tex.source];
-      }
+        material.metalnessTextureIndex == std::numeric_limits<uint32_t>::max()) {
+      material.metallicFactor = 0.0f;
     }
 
-    const auto metallicIndex =
-        mat.pbrMetallicRoughness.metallicRoughnessTexture.index;
-    if (material.metallicRoughnessTextureIndex ==
-            std::numeric_limits<uint32_t>::max() &&
-        metallicIndex >= 0 &&
-        static_cast<size_t>(metallicIndex) < model.textures.size()) {
-      const auto& tex = model.textures[metallicIndex];
-      if (tex.source >= 0 &&
-          static_cast<size_t>(tex.source) < imageToTexture.size()) {
-        material.metallicRoughnessTextureIndex = imageToTexture[tex.source];
-      }
-    }
-
-    const auto normalIndex = mat.normalTexture.index;
-    if (material.normalTextureIndex == std::numeric_limits<uint32_t>::max() &&
-        normalIndex >= 0 &&
-        static_cast<size_t>(normalIndex) < model.textures.size()) {
-      const auto& tex = model.textures[normalIndex];
-      if (tex.source >= 0 &&
-          static_cast<size_t>(tex.source) < imageToTexture.size()) {
-        material.normalTextureIndex = imageToTexture[tex.source];
-      }
-    }
-
-    const auto occlusionIndex = mat.occlusionTexture.index;
-    if (material.occlusionTextureIndex ==
-            std::numeric_limits<uint32_t>::max() &&
-        occlusionIndex >= 0 &&
-        static_cast<size_t>(occlusionIndex) < model.textures.size()) {
-      const auto& tex = model.textures[occlusionIndex];
-      if (tex.source >= 0 &&
-          static_cast<size_t>(tex.source) < imageToTexture.size()) {
-        material.occlusionTextureIndex = imageToTexture[tex.source];
-      }
-    }
-
-    const auto emissiveIndex = mat.emissiveTexture.index;
-    if (material.emissiveTextureIndex == std::numeric_limits<uint32_t>::max() &&
-        emissiveIndex >= 0 &&
-        static_cast<size_t>(emissiveIndex) < model.textures.size()) {
-      const auto& tex = model.textures[emissiveIndex];
-      if (tex.source >= 0 &&
-          static_cast<size_t>(tex.source) < imageToTexture.size()) {
-        material.emissiveTextureIndex = imageToTexture[tex.source];
-      }
+    if (material.alphaMode == AlphaMode::Opaque &&
+        (material.opacityFactor < 0.999f ||
+         material.opacityTextureIndex != std::numeric_limits<uint32_t>::max() ||
+         material.transmissionFactor > 0.001f ||
+         material.transmissionTextureIndex != std::numeric_limits<uint32_t>::max())) {
+      material.alphaMode = AlphaMode::Blend;
     }
 
     materialManager.createMaterial(material);

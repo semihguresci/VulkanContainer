@@ -122,7 +122,7 @@ void Model::flattenMeshes() {
     appendFlattenedMesh(mesh, vertices_, indices_);
     primitiveRanges_.push_back(
         {firstIndex, static_cast<uint32_t>(mesh.indices().size()),
-         mesh.materialIndex()});
+         mesh.materialIndex(), mesh.disableBackfaceCulling()});
   }
 }
 

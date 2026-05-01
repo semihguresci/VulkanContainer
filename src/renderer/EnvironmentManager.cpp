@@ -2,6 +2,7 @@
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/FileLoader.h"
 #include "Container/utility/PipelineManager.h"
+#include "Container/utility/SceneData.h"
 #include "Container/utility/ShaderModule.h"
 #include "Container/utility/VulkanDevice.h"
 
@@ -18,6 +19,12 @@
 #include <vector>
 
 namespace container::renderer {
+
+using container::gpu::BlurPushConstants;
+using container::gpu::EquirectPushConstants;
+using container::gpu::GtaoPushConstants;
+using container::gpu::IrradiancePushConstants;
+using container::gpu::PrefilterPushConstants;
 
 EnvironmentManager::EnvironmentManager(
     std::shared_ptr<container::gpu::VulkanDevice> device,
@@ -40,6 +47,7 @@ EnvironmentManager::~EnvironmentManager() {
 void EnvironmentManager::createResources(const std::filesystem::path& shaderDir) {
   createSamplers();
   createBrdfLut(shaderDir);
+  createIblPipelines(shaderDir);
   createPlaceholderCubemaps();
   usingPlaceholderEnvironment_ = true;
   environmentStatus_ = "Environment: placeholder cubemaps active";
@@ -82,6 +90,9 @@ void EnvironmentManager::destroy() {
 
   destroyView(brdfLutView_);
   destroyImage(brdfLutImage_, brdfLutAlloc_);
+  pipelineManager_.destroyPipeline(brdfLutPipeline_);
+  pipelineManager_.destroyPipelineLayout(brdfLutPipelineLayout_);
+  pipelineManager_.destroyDescriptorSetLayout(brdfLutSetLayout_);
   destroySampler(brdfLutSampler_);
 
   destroyView(irradianceCubeView_);
@@ -89,6 +100,14 @@ void EnvironmentManager::destroy() {
 
   destroyView(prefilteredCubeView_);
   destroyImage(prefilteredCubeImage_, prefilteredCubeAlloc_);
+
+  pipelineManager_.destroyPipeline(prefilterPipeline_);
+  pipelineManager_.destroyPipeline(irradiancePipeline_);
+  pipelineManager_.destroyPipeline(equirectToCubemapPipeline_);
+  pipelineManager_.destroyPipelineLayout(prefilterPipelineLayout_);
+  pipelineManager_.destroyPipelineLayout(irradiancePipelineLayout_);
+  pipelineManager_.destroyPipelineLayout(equirectToCubemapPipelineLayout_);
+  pipelineManager_.destroyDescriptorSetLayout(iblSetLayout_);
 
   destroySampler(envSampler_);
   destroySampler(gtaoSampler_);
@@ -158,7 +177,7 @@ void EnvironmentManager::createBrdfLut(const std::filesystem::path& shaderDir) {
       throw std::runtime_error("failed to allocate BRDF LUT descriptor set");
   }
 
-  VkPipelineLayout lutPipelineLayout = pipelineManager_.createPipelineLayout(
+  brdfLutPipelineLayout_ = pipelineManager_.createPipelineLayout(
       {lutSetLayout}, {});
 
   std::filesystem::path spvPath = shaderDir / "spv_shaders" / "brdf_lut.comp.spv";
@@ -174,9 +193,9 @@ void EnvironmentManager::createBrdfLut(const std::filesystem::path& shaderDir) {
   VkComputePipelineCreateInfo ci{};
   ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
   ci.stage  = stage;
-  ci.layout = lutPipelineLayout;
+  ci.layout = brdfLutPipelineLayout_;
 
-  VkPipeline lutPipeline = pipelineManager_.createComputePipeline(ci, "brdf_lut");
+  brdfLutPipeline_ = pipelineManager_.createComputePipeline(ci, "brdf_lut");
 
   vkDestroyShaderModule(dev, module, nullptr);
 
@@ -227,8 +246,8 @@ void EnvironmentManager::createBrdfLut(const std::filesystem::path& shaderDir) {
   }
 
   // Dispatch.
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, lutPipeline);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, lutPipelineLayout,
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, brdfLutPipeline_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, brdfLutPipelineLayout_,
                           0, 1, &lutSet, 0, nullptr);
   vkCmdDispatch(cmd, (kLutSize + 15) / 16, (kLutSize + 15) / 16, 1);
 
@@ -257,6 +276,7 @@ void EnvironmentManager::createBrdfLut(const std::filesystem::path& shaderDir) {
   vkQueueWaitIdle(device_->graphicsQueue());
 
   vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
+  pipelineManager_.destroyDescriptorPool(lutPool);
 }
 
 // ---------------------------------------------------------------------------
@@ -287,9 +307,6 @@ void EnvironmentManager::destroyEnvironmentCubemaps() {
 
 namespace {
 
-struct Face2Push { uint32_t faceIndex; uint32_t faceSize; };
-struct PrefilterPush { uint32_t faceIndex; uint32_t faceSize; float roughness; uint32_t sourceMipCount; };
-
 std::string EnvironmentStatusWithPath(std::string_view state,
                                       const std::filesystem::path& path) {
   return std::string(state) + ": " + path.string();
@@ -302,6 +319,64 @@ VkShaderModule loadComputeModule(VkDevice dev,
 }
 
 }  // namespace
+
+void EnvironmentManager::createIblPipelines(
+    const std::filesystem::path& shaderDir) {
+  if (iblSetLayout_ != VK_NULL_HANDLE &&
+      equirectToCubemapPipeline_ != VK_NULL_HANDLE &&
+      irradiancePipeline_ != VK_NULL_HANDLE &&
+      prefilterPipeline_ != VK_NULL_HANDLE) {
+    return;
+  }
+
+  VkDevice dev = device_->device();
+
+  const std::array<VkDescriptorSetLayoutBinding, 3> bindings = {{
+      {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+  }};
+  const std::vector<VkDescriptorBindingFlags> flags(bindings.size(), 0);
+  iblSetLayout_ = pipelineManager_.createDescriptorSetLayout(
+      {bindings.begin(), bindings.end()}, flags);
+
+  auto buildPipeline = [&](const std::filesystem::path& spv,
+                           size_t pushConstantSize,
+                           VkPipelineLayout& outLayout) {
+    VkPushConstantRange pushConstants{};
+    pushConstants.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+    pushConstants.size = static_cast<uint32_t>(pushConstantSize);
+    outLayout = pipelineManager_.createPipelineLayout(
+        {iblSetLayout_}, {pushConstants});
+
+    VkShaderModule module = loadComputeModule(dev, spv);
+    VkPipelineShaderStageCreateInfo stage{};
+    stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+    stage.module = module;
+    stage.pName = "computeMain";
+
+    VkComputePipelineCreateInfo ci{};
+    ci.sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
+    ci.stage = stage;
+    ci.layout = outLayout;
+
+    VkPipeline pipeline =
+        pipelineManager_.createComputePipeline(ci, spv.filename().string());
+    vkDestroyShaderModule(dev, module, nullptr);
+    return pipeline;
+  };
+
+  equirectToCubemapPipeline_ = buildPipeline(
+      shaderDir / "spv_shaders" / "equirect_to_cubemap.comp.spv",
+      sizeof(EquirectPushConstants), equirectToCubemapPipelineLayout_);
+  irradiancePipeline_ = buildPipeline(
+      shaderDir / "spv_shaders" / "irradiance_convolution.comp.spv",
+      sizeof(IrradiancePushConstants), irradiancePipelineLayout_);
+  prefilterPipeline_ = buildPipeline(
+      shaderDir / "spv_shaders" / "prefilter_specular.comp.spv",
+      sizeof(PrefilterPushConstants), prefilterPipelineLayout_);
+}
 
 bool EnvironmentManager::loadHdrEnvironment(
     const std::filesystem::path& shaderDir,
@@ -357,50 +432,6 @@ bool EnvironmentManager::loadHdrEnvironment(
   const VkDeviceSize equirectBytes =
       static_cast<VkDeviceSize>(exrW) * static_cast<VkDeviceSize>(exrH) *
       4ull * sizeof(float);
-
-  // Normalize HDR intensity so the IBL energy sits in a range comparable to
-  // the 1.0 placeholder cubemap. Outdoor EXRs frequently have sun pixels at
-  // 50-500 nits while the average sky is 1-5; feeding those raw numbers into
-  // the split-sum integral produces washed-out diffuse and mirror-bright
-  // specular IBL on any low-roughness material.
-  //
-  // Pass 1: clamp per-component firefly pixels (sun disc) to avoid blowing
-  //         up the specular prefilter.
-  // Pass 2: scale so the MEAN luminance matches kTargetMeanLuminance, which
-  //         matches the unit-white placeholder's contribution.
-  {
-    constexpr float kFireflyClamp       = 50.0f;   // cap each channel
-    constexpr float kTargetMeanLuminance = 0.5f;   // roughly matches old placeholder
-
-    const size_t pixelCount =
-        static_cast<size_t>(exrW) * static_cast<size_t>(exrH);
-    double luminanceSum = 0.0;
-    for (size_t i = 0; i < pixelCount; ++i) {
-      float* p = rgba + i * 4;
-      p[0] = std::min(std::max(p[0], 0.0f), kFireflyClamp);
-      p[1] = std::min(std::max(p[1], 0.0f), kFireflyClamp);
-      p[2] = std::min(std::max(p[2], 0.0f), kFireflyClamp);
-      const float lum = 0.2126f * p[0] + 0.7152f * p[1] + 0.0722f * p[2];
-      luminanceSum += static_cast<double>(lum);
-    }
-
-    const double meanLuminance =
-        pixelCount > 0 ? luminanceSum / static_cast<double>(pixelCount) : 0.0;
-    float scale = 1.0f;
-    if (meanLuminance > 1e-4) {
-      scale = static_cast<float>(kTargetMeanLuminance / meanLuminance);
-    }
-    for (size_t i = 0; i < pixelCount; ++i) {
-      float* p = rgba + i * 4;
-      p[0] *= scale;
-      p[1] *= scale;
-      p[2] *= scale;
-    }
-
-    std::println(
-        "[HDR] Normalized: meanLum={:.3f} -> scale={:.4f} (target={:.2f})",
-        meanLuminance, scale, kTargetMeanLuminance);
-  }
 
   std::println("[HDR] Loaded {} ({}x{})", hdrPath.string(), exrW, exrH);
 
@@ -556,54 +587,8 @@ bool EnvironmentManager::loadHdrEnvironment(
   for (uint32_t m = 0; m < kPrefilterMips; ++m)
     prefilterStorageViews[m] = makeArrayView(newPrefilteredImage, m);
 
-  // ---- 4. Build the three compute pipelines ---------------------------
-  // Descriptor layout shared between the three passes:
-  //   binding 0: sampled input image (Texture2D or TextureCube)
-  //   binding 1: sampler
-  //   binding 2: RWTexture2DArray output (storage image)
-  const std::array<VkDescriptorSetLayoutBinding, 3> bindingsTmpl = {{
-      {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-      {1, VK_DESCRIPTOR_TYPE_SAMPLER,        1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-      {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,  1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-  }};
-  const std::vector<VkDescriptorBindingFlags> flags(bindingsTmpl.size(), 0);
-  VkDescriptorSetLayout setLayout = pipelineManager_.createDescriptorSetLayout(
-      {bindingsTmpl.begin(), bindingsTmpl.end()}, flags);
-
-  auto buildPipeline = [&](const std::filesystem::path& spv,
-                            size_t pcSize,
-                            VkPipelineLayout& outLayout) {
-    VkPushConstantRange pc{};
-    pc.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
-    pc.size       = static_cast<uint32_t>(pcSize);
-    outLayout = pipelineManager_.createPipelineLayout({setLayout}, {pc});
-    VkShaderModule module = loadComputeModule(dev, spv);
-    VkPipelineShaderStageCreateInfo stage{};
-    stage.sType  = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-    stage.stage  = VK_SHADER_STAGE_COMPUTE_BIT;
-    stage.module = module;
-    stage.pName  = "computeMain";
-    VkComputePipelineCreateInfo ci{};
-    ci.sType  = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO;
-    ci.stage  = stage;
-    ci.layout = outLayout;
-    VkPipeline p = pipelineManager_.createComputePipeline(ci, spv.filename().string());
-    vkDestroyShaderModule(dev, module, nullptr);
-    return p;
-  };
-
-  VkPipelineLayout equirectLayout  = VK_NULL_HANDLE;
-  VkPipelineLayout irradianceLayout = VK_NULL_HANDLE;
-  VkPipelineLayout prefilterLayout = VK_NULL_HANDLE;
-  VkPipeline equirectPipe  = buildPipeline(
-      shaderDir / "spv_shaders" / "equirect_to_cubemap.comp.spv",
-      sizeof(Face2Push), equirectLayout);
-  VkPipeline irradiancePipe = buildPipeline(
-      shaderDir / "spv_shaders" / "irradiance_convolution.comp.spv",
-      sizeof(Face2Push), irradianceLayout);
-  VkPipeline prefilterPipe = buildPipeline(
-      shaderDir / "spv_shaders" / "prefilter_specular.comp.spv",
-      sizeof(PrefilterPush), prefilterLayout);
+  // ---- 4. Allocate transient descriptors for the persistent IBL pipelines ---
+  createIblPipelines(shaderDir);
 
   // Descriptor pool: 7 sets total (1 equirect + 1 irradiance + 5 prefilter mips).
   constexpr uint32_t kTotalSets = 1 + 1 + kPrefilterMips;
@@ -617,7 +602,7 @@ bool EnvironmentManager::loadHdrEnvironment(
     VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     ai.descriptorPool     = pool;
     ai.descriptorSetCount = 1;
-    ai.pSetLayouts        = &setLayout;
+    ai.pSetLayouts        = &iblSetLayout_;
     VkDescriptorSet s = VK_NULL_HANDLE;
     vkAllocateDescriptorSets(dev, &ai, &s);
     return s;
@@ -723,12 +708,12 @@ bool EnvironmentManager::loadHdrEnvironment(
           0, kPrefilterMips, 0, 6);
 
   // -- Equirect -> Env cubemap (dispatch per face) --
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, equirectPipe);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, equirectLayout,
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, equirectToCubemapPipeline_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, equirectToCubemapPipelineLayout_,
                           0, 1, &equirectSet, 0, nullptr);
   for (uint32_t face = 0; face < 6; ++face) {
-    Face2Push push{face, kEnvSize};
-    vkCmdPushConstants(cmd, equirectLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+    EquirectPushConstants push{face, kEnvSize};
+    vkCmdPushConstants(cmd, equirectToCubemapPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(push), &push);
     const uint32_t g = (kEnvSize + 15) / 16;
     vkCmdDispatch(cmd, g, g, 1);
@@ -777,28 +762,28 @@ bool EnvironmentManager::loadHdrEnvironment(
           0, kEnvMips, 0, 6);
 
   // -- Env -> Irradiance --
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, irradiancePipe);
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, irradianceLayout,
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, irradiancePipeline_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, irradiancePipelineLayout_,
                           0, 1, &irradianceSet, 0, nullptr);
   for (uint32_t face = 0; face < 6; ++face) {
-    Face2Push push{face, kIrradianceSize};
-    vkCmdPushConstants(cmd, irradianceLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+    IrradiancePushConstants push{face, kIrradianceSize};
+    vkCmdPushConstants(cmd, irradiancePipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                        0, sizeof(push), &push);
     const uint32_t g = (kIrradianceSize + 7) / 8;
     vkCmdDispatch(cmd, g, g, 1);
   }
 
   // -- Env -> Prefiltered specular (per mip, per face) --
-  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prefilterPipe);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prefilterPipeline_);
   for (uint32_t mip = 0; mip < kPrefilterMips; ++mip) {
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prefilterLayout,
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, prefilterPipelineLayout_,
                             0, 1, &prefilterSets[mip], 0, nullptr);
     const uint32_t mipSize = std::max(1u, kPrefilterSize >> mip);
     const float roughness  = (kPrefilterMips <= 1) ? 0.0f :
         static_cast<float>(mip) / static_cast<float>(kPrefilterMips - 1);
     for (uint32_t face = 0; face < 6; ++face) {
-      PrefilterPush push{face, mipSize, roughness, kEnvMips};
-      vkCmdPushConstants(cmd, prefilterLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+      PrefilterPushConstants push{face, mipSize, roughness, kEnvMips};
+      vkCmdPushConstants(cmd, prefilterPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                          0, sizeof(push), &push);
       const uint32_t g = (mipSize + 15) / 16;
       vkCmdDispatch(cmd, g, g, 1);
@@ -824,6 +809,7 @@ bool EnvironmentManager::loadHdrEnvironment(
   vkQueueSubmit(device_->graphicsQueue(), 1, &si, VK_NULL_HANDLE);
   vkQueueWaitIdle(device_->graphicsQueue());
   vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
+  pipelineManager_.destroyDescriptorPool(pool);
 
   // ---- 6. Cleanup transient resources ---------------------------------
   for (auto v : prefilterStorageViews)
@@ -1069,17 +1055,6 @@ void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shader
     gtaoSetLayout_ = pipelineManager_.createDescriptorSetLayout(
         {bindings.begin(), bindings.end()}, flags);
 
-    struct GtaoPushConstants {
-      float    aoRadius;
-      float    aoIntensity;
-      uint32_t sampleCount;
-      uint32_t pad0;
-      uint32_t fullWidth;
-      uint32_t fullHeight;
-      uint32_t pad1;
-      uint32_t pad2;
-    };
-
     VkPushConstantRange pcRange{};
     pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
     pcRange.size       = sizeof(GtaoPushConstants);
@@ -1118,13 +1093,6 @@ void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shader
     const std::vector<VkDescriptorBindingFlags> flags(bindings.size(), 0);
     gtaoBlurSetLayout_ = pipelineManager_.createDescriptorSetLayout(
         {bindings.begin(), bindings.end()}, flags);
-
-    struct BlurPushConstants {
-      uint32_t width;
-      uint32_t height;
-      float    depthThreshold;
-      uint32_t pad0;
-    };
 
     VkPushConstantRange pcRange{};
     pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
@@ -1404,17 +1372,6 @@ void EnvironmentManager::dispatchGtao(
     vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
   }
 
-  struct GtaoPushConstants {
-    float    aoRadius;
-    float    aoIntensity;
-    uint32_t sampleCount;
-    uint32_t pad0;
-    uint32_t fullWidth;
-    uint32_t fullHeight;
-    uint32_t pad1;
-    uint32_t pad2;
-  };
-
   GtaoPushConstants pc{};
   pc.aoRadius    = aoRadius_;
   pc.aoIntensity = aoIntensity_;
@@ -1451,7 +1408,9 @@ void EnvironmentManager::dispatchGtao(
 
 void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd,
                                           VkImageView depthView,
-                                          VkSampler depthSampler) const {
+                                          VkSampler depthSampler,
+                                          float cameraNear,
+                                          float cameraFar) const {
   if (gtaoBlurPipeline_ == VK_NULL_HANDLE || !aoEnabled_) return;
   if (gtaoBlurredView_ == VK_NULL_HANDLE) return;
   if (depthView == VK_NULL_HANDLE || depthSampler == VK_NULL_HANDLE) return;
@@ -1481,17 +1440,12 @@ void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd,
                            w.data(), 0, nullptr);
   }
 
-  struct BlurPushConstants {
-    uint32_t width;
-    uint32_t height;
-    float    depthThreshold;
-    uint32_t pad0;
-  };
-
   BlurPushConstants pc{};
   pc.width          = gtaoWidth_;
   pc.height         = gtaoHeight_;
-  pc.depthThreshold = 0.001f;
+  pc.depthThreshold = 0.08f;
+  pc.cameraNear     = cameraNear;
+  pc.cameraFar      = cameraFar;
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gtaoBlurPipeline_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gtaoBlurPipelineLayout_,

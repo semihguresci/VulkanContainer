@@ -94,6 +94,7 @@ class SceneController {
 
   bool reloadSceneModel(
       const std::string&                      path,
+      float                                   importScale,
       container::gpu::AllocatedBuffer&       objectBuffer,
       size_t&                                 objectBufferCapacity,
       const container::gpu::AllocatedBuffer& cameraBuffer,
@@ -126,11 +127,17 @@ class SceneController {
   const std::vector<DrawCommand>& opaqueSingleSidedDrawCommands() const {
     return opaqueSingleSidedDrawCommands_;
   }
+  const std::vector<DrawCommand>& opaqueWindingFlippedDrawCommands() const {
+    return opaqueWindingFlippedDrawCommands_;
+  }
   const std::vector<DrawCommand>& opaqueDoubleSidedDrawCommands() const {
     return opaqueDoubleSidedDrawCommands_;
   }
   const std::vector<DrawCommand>& transparentSingleSidedDrawCommands() const {
     return transparentSingleSidedDrawCommands_;
+  }
+  const std::vector<DrawCommand>& transparentWindingFlippedDrawCommands() const {
+    return transparentWindingFlippedDrawCommands_;
   }
   const std::vector<DrawCommand>& transparentDoubleSidedDrawCommands() const {
     return transparentDoubleSidedDrawCommands_;
@@ -163,8 +170,10 @@ class SceneController {
   std::vector<DrawCommand>  opaqueDrawCommands_;
   std::vector<DrawCommand>  transparentDrawCommands_;
   std::vector<DrawCommand>  opaqueSingleSidedDrawCommands_;
+  std::vector<DrawCommand>  opaqueWindingFlippedDrawCommands_;
   std::vector<DrawCommand>  opaqueDoubleSidedDrawCommands_;
   std::vector<DrawCommand>  transparentSingleSidedDrawCommands_;
+  std::vector<DrawCommand>  transparentWindingFlippedDrawCommands_;
   std::vector<DrawCommand>  transparentDoubleSidedDrawCommands_;
 
   container::gpu::BufferSlice vertexSlice_{};

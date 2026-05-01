@@ -10,6 +10,7 @@
 #include "Container/utility/VulkanDevice.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <span>
@@ -18,10 +19,22 @@
 namespace container::renderer {
 
 using container::gpu::BindlessPushConstants;
-using container::gpu::kObjectFlagAlphaBlend;
-using container::gpu::kObjectFlagAlphaMask;
-using container::gpu::kObjectFlagDoubleSided;
 using container::gpu::ObjectData;
+
+namespace {
+
+bool transformFlipsWinding(const glm::mat4& transform) {
+  const glm::vec3 x(transform[0]);
+  const glm::vec3 y(transform[1]);
+  const glm::vec3 z(transform[2]);
+  const float determinant =
+      x.x * (y.y * z.z - y.z * z.y) -
+      y.x * (x.y * z.z - x.z * z.y) +
+      z.x * (x.y * y.z - x.z * y.y);
+  return determinant < 0.0f;
+}
+
+}  // namespace
 
 SceneController::SceneController(
     std::shared_ptr<container::gpu::VulkanDevice>  device,
@@ -173,16 +186,20 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
   opaqueDrawCommands_.clear();
   transparentDrawCommands_.clear();
   opaqueSingleSidedDrawCommands_.clear();
+  opaqueWindingFlippedDrawCommands_.clear();
   opaqueDoubleSidedDrawCommands_.clear();
   transparentSingleSidedDrawCommands_.clear();
+  transparentWindingFlippedDrawCommands_.clear();
   transparentDoubleSidedDrawCommands_.clear();
   const uint32_t renderableCount = world_->renderableCount();
   objectData_.reserve(renderableCount);
   opaqueDrawCommands_.reserve(renderableCount);
   transparentDrawCommands_.reserve(renderableCount);
   opaqueSingleSidedDrawCommands_.reserve(renderableCount);
+  opaqueWindingFlippedDrawCommands_.reserve(renderableCount);
   opaqueDoubleSidedDrawCommands_.reserve(renderableCount);
   transparentSingleSidedDrawCommands_.reserve(renderableCount);
+  transparentWindingFlippedDrawCommands_.reserve(renderableCount);
   transparentDoubleSidedDrawCommands_.reserve(renderableCount);
 
   world_->forEachRenderable(
@@ -196,47 +213,29 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
 
         const auto& primitive =
             sceneManager_.primitiveRanges()[mesh.primitiveIndex];
-        const uint32_t materialIndex = material.materialIndex;
+        const uint32_t materialIndex =
+            sceneManager_.resolveGpuMaterialIndex(material.materialIndex);
 
         ObjectData object{};
         object.model = transform.worldTransform;
+        object.objectInfo.x = materialIndex;
         {
           const glm::mat3 model3  = glm::mat3(transform.worldTransform);
           const glm::mat3 normal3 = glm::transpose(glm::inverse(model3));
-          object.normalMatrix = glm::mat4(1.0f);
-          object.normalMatrix[0] = glm::vec4(normal3[0], 0.0f);
-          object.normalMatrix[1] = glm::vec4(normal3[1], 0.0f);
-          object.normalMatrix[2] = glm::vec4(normal3[2], 0.0f);
+          object.normalMatrix0 = glm::vec4(normal3[0], 0.0f);
+          object.normalMatrix1 = glm::vec4(normal3[1], 0.0f);
+          object.normalMatrix2 = glm::vec4(normal3[2], 0.0f);
         }
-        object.color        = sceneManager_.resolveMaterialColor(materialIndex);
-        object.emissiveColor =
-            sceneManager_.resolveMaterialEmissive(materialIndex);
-        object.metallicRoughness =
-            sceneManager_.resolveMaterialMetallicRoughnessFactors(materialIndex);
-        object.baseColorTextureIndex =
-            sceneManager_.resolveMaterialTextureIndex(materialIndex);
-        object.normalTextureIndex =
-            sceneManager_.resolveMaterialNormalTexture(materialIndex);
-        object.normalTextureScale =
-            sceneManager_.resolveMaterialNormalTextureScale(materialIndex);
-        object.occlusionTextureIndex =
-            sceneManager_.resolveMaterialOcclusionTexture(materialIndex);
-        object.occlusionStrength =
-            sceneManager_.resolveMaterialOcclusionStrength(materialIndex);
-        object.emissiveTextureIndex =
-            sceneManager_.resolveMaterialEmissiveTexture(materialIndex);
-        object.metallicRoughnessTextureIndex =
-            sceneManager_.resolveMaterialMetallicRoughnessTexture(
-                materialIndex);
-        object.alphaCutoff =
-            sceneManager_.resolveMaterialAlphaCutoff(materialIndex);
-        object.flags = 0;
-        if (sceneManager_.isMaterialAlphaMasked(materialIndex))
-          object.flags |= kObjectFlagAlphaMask;
-        if (sceneManager_.isMaterialTransparent(materialIndex))
-          object.flags |= kObjectFlagAlphaBlend;
-        if (sceneManager_.isMaterialDoubleSided(materialIndex))
-          object.flags |= kObjectFlagDoubleSided;
+        const bool materialDoubleSided =
+            sceneManager_.isMaterialDoubleSided(materialIndex);
+        const bool materialTransparent =
+            sceneManager_.isMaterialTransparent(materialIndex);
+        const bool rasterDoubleSided =
+            materialDoubleSided || primitive.disableBackfaceCulling;
+        const bool windingFlipped =
+            transformFlipsWinding(transform.worldTransform);
+        object.objectInfo.y =
+            rasterDoubleSided ? container::gpu::kObjectFlagDoubleSided : 0u;
 
         // Compute world-space bounding sphere from primitive vertices.
         {
@@ -263,7 +262,12 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
                 glm::length(glm::vec3(transform.worldTransform[0])),
                 glm::length(glm::vec3(transform.worldTransform[1])),
                 glm::length(glm::vec3(transform.worldTransform[2]))});
-            object.boundingSphere = glm::vec4(worldCenter, localRadius * scaleMax);
+            const float heightInflation =
+                std::abs(sceneManager_.resolveMaterialHeightScale(
+                    materialIndex)) *
+                scaleMax;
+            object.boundingSphere =
+                glm::vec4(worldCenter, localRadius * scaleMax + heightInflation);
           }
         }
 
@@ -276,17 +280,21 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         drawCommand.firstIndex  = primitive.firstIndex;
         drawCommand.indexCount  = primitive.indexCount;
 
-        if ((object.flags & kObjectFlagAlphaBlend) != 0u) {
+        if (materialTransparent) {
           transparentDrawCommands_.push_back(drawCommand);
-          if ((object.flags & kObjectFlagDoubleSided) != 0u) {
+          if (rasterDoubleSided) {
             transparentDoubleSidedDrawCommands_.push_back(drawCommand);
+          } else if (windingFlipped) {
+            transparentWindingFlippedDrawCommands_.push_back(drawCommand);
           } else {
             transparentSingleSidedDrawCommands_.push_back(drawCommand);
           }
         } else {
           opaqueDrawCommands_.push_back(drawCommand);
-          if ((object.flags & kObjectFlagDoubleSided) != 0u) {
+          if (rasterDoubleSided) {
             opaqueDoubleSidedDrawCommands_.push_back(drawCommand);
+          } else if (windingFlipped) {
+            opaqueWindingFlippedDrawCommands_.push_back(drawCommand);
           } else {
             opaqueSingleSidedDrawCommands_.push_back(drawCommand);
           }
@@ -309,10 +317,12 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         glm::translate(glm::mat4(1.0f), diagCenter) *
         glm::scale(glm::mat4(1.0f), glm::vec3(diagScale));
     cubeObject.model = cubeModel;
-    cubeObject.normalMatrix = glm::mat4(
-        glm::transpose(glm::inverse(glm::mat3(cubeModel))));
-    cubeObject.color             = glm::vec4(1.0f);
-    cubeObject.metallicRoughness = glm::vec2(0.0f, 0.5f);
+    const glm::mat3 cubeNormal =
+        glm::transpose(glm::inverse(glm::mat3(cubeModel)));
+    cubeObject.normalMatrix0 = glm::vec4(cubeNormal[0], 0.0f);
+    cubeObject.normalMatrix1 = glm::vec4(cubeNormal[1], 0.0f);
+    cubeObject.normalMatrix2 = glm::vec4(cubeNormal[2], 0.0f);
+    cubeObject.objectInfo.x = sceneManager_.diagnosticMaterialIndex();
     diagCubeObjectIndex_ = static_cast<uint32_t>(objectData_.size());
     objectData_.push_back(cubeObject);
   }
@@ -401,6 +411,7 @@ void SceneController::addSceneObject(
 
 bool SceneController::reloadSceneModel(
     const std::string&                      path,
+    float                                   importScale,
     container::gpu::AllocatedBuffer&       objectBuffer,
     size_t&                                 objectBufferCapacity,
     const container::gpu::AllocatedBuffer& cameraBuffer,
@@ -412,7 +423,7 @@ bool SceneController::reloadSceneModel(
   const std::array<container::gpu::AllocatedBuffer, 1> cameraBuffers = {
       cameraBuffer};
   const bool result =
-      sceneManager_.reloadModel(path, cameraBuffers, objectBuffer);
+      sceneManager_.reloadModel(path, importScale, cameraBuffers, objectBuffer);
   outIndexType = sceneManager_.indexType();
   buildSceneGraph(outRootNode, outSelectedMeshNode, outCubeNode);
   ensureObjectBufferCapacity(allocationManager_, objectBuffer,

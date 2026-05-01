@@ -20,6 +20,7 @@ struct FrameResources {
   AttachmentImage normal{};
   AttachmentImage material{};
   AttachmentImage emissive{};
+  AttachmentImage specular{};
   AttachmentImage depthStencil{};
   VkImageView     depthSamplingView{VK_NULL_HANDLE};
   AttachmentImage sceneColor{};

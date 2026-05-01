@@ -63,12 +63,15 @@ class EnvironmentManager {
 
   void dispatchGtaoBlur(VkCommandBuffer cmd,
                         VkImageView depthView,
-                        VkSampler depthSampler) const;
+                        VkSampler depthSampler,
+                        float cameraNear,
+                        float cameraFar) const;
 
   // ---- Accessors ----
 
   [[nodiscard]] bool isReady()             const { return brdfLutView_ != VK_NULL_HANDLE; }
   [[nodiscard]] bool isGtaoReady()         const { return gtaoBlurredView_ != VK_NULL_HANDLE; }
+  [[nodiscard]] bool isAoEnabled()         const { return aoEnabled_; }
   [[nodiscard]] bool usingPlaceholderEnvironment() const {
     return usingPlaceholderEnvironment_;
   }
@@ -96,6 +99,7 @@ class EnvironmentManager {
 
  private:
   void createBrdfLut(const std::filesystem::path& shaderDir);
+  void createIblPipelines(const std::filesystem::path& shaderDir);
   void createPlaceholderCubemaps();
   void createSamplers();
   void createGtaoPipelines(const std::filesystem::path& shaderDir);
@@ -130,6 +134,15 @@ class EnvironmentManager {
   VkPipeline              brdfLutPipeline_{VK_NULL_HANDLE};
   VkPipelineLayout        brdfLutPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout   brdfLutSetLayout_{VK_NULL_HANDLE};
+
+  // ---- HDR -> IBL compute pipelines ----
+  VkDescriptorSetLayout   iblSetLayout_{VK_NULL_HANDLE};
+  VkPipeline              equirectToCubemapPipeline_{VK_NULL_HANDLE};
+  VkPipelineLayout        equirectToCubemapPipelineLayout_{VK_NULL_HANDLE};
+  VkPipeline              irradiancePipeline_{VK_NULL_HANDLE};
+  VkPipelineLayout        irradiancePipelineLayout_{VK_NULL_HANDLE};
+  VkPipeline              prefilterPipeline_{VK_NULL_HANDLE};
+  VkPipelineLayout        prefilterPipelineLayout_{VK_NULL_HANDLE};
 
   // ---- GTAO ----
   VkImage       gtaoImage_{VK_NULL_HANDLE};

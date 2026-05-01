@@ -4,18 +4,7 @@
 
 #include "lighting_structs.slang"
 #include "brdf_common.slang"
-
-struct GtaoPushConstants
-{
-    float aoRadius;
-    float aoIntensity;
-    uint  sampleCount;
-    uint  pad0;
-    uint  fullWidth;
-    uint  fullHeight;
-    uint  pad1;
-    uint  pad2;
-};
+#include "push_constants_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<GtaoPushConstants> pc;

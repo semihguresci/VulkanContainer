@@ -3,59 +3,31 @@
 // the depth prepass alpha-mask discard path so cutout materials cast cutout
 // shadows instead of solid silhouettes.
 
-struct ObjectBuffer
-{
-    column_major float4x4 model;
-    column_major float4x4 normalMatrix;
-    float4 color;
-    float3 emissiveColor;
-    float emissiveStrength;
-    float2 metallicRoughness;
-    float alphaCutoff;
-    float normalTextureScale;
-    float occlusionStrength;
-    uint baseColorTextureIndex;
-    uint normalTextureIndex;
-    uint occlusionTextureIndex;
-    uint emissiveTextureIndex;
-    uint metallicRoughnessTextureIndex;
-    uint flags;
-    float4 boundingSphere;
-};
-
-struct ShadowCascadeData
-{
-    column_major float4x4 viewProj;
-    float splitDepth;
-    float3 padding;
-};
-
-static const uint SHADOW_CASCADE_COUNT = 4u;
-
-struct ShadowBuffer
-{
-    ShadowCascadeData cascades[SHADOW_CASCADE_COUNT];
-};
+#include "object_data_common.slang"
+#include "material_data_common.slang"
+#include "lighting_structs.slang"
+#include "push_constants_common.slang"
 
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
-[[vk::binding(2, 0)]] SamplerState baseSampler;
-[[vk::binding(3, 0)]] Texture2D materialTextures[];
+[[vk::binding(2, 0)]] SamplerState materialSamplers[MATERIAL_SAMPLER_DESCRIPTOR_COUNT];
+[[vk::binding(3, 0)]] StructuredBuffer<GpuMaterial> uMaterials;
+[[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
+[[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
 [[vk::binding(0, 1)]] ConstantBuffer<ShadowBuffer> uShadow;
 
-struct PushConstants
-{
-    uint objectIndex;
-    uint cascadeIndex;
-};
+#include "alpha_mask_common.slang"
+#include "object_index_common.slang"
+#include "pbr_material_common.slang"
 
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<ShadowPushConstants> pc;
 
 struct VSInput
 {
     [[vk::location(0)]] float3 inPosition;
-    [[vk::location(1)]] float3 inColor;
     [[vk::location(2)]] float2 inTexCoord;
+    [[vk::location(3)]] float3 inNormal;
+    [[vk::location(5)]] float2 inTexCoord1;
 };
 
 struct VSOutput
@@ -66,58 +38,37 @@ struct VSOutput
     [[vk::location(2)]] uint flags;
     [[vk::location(3)]] float alphaCutoff;
     [[vk::location(4)]] float baseColorAlpha;
+    [[vk::location(5)]] uint opacityTextureIndex;
+    [[vk::location(6)]] float opacityFactor;
+    [[vk::location(7)]] float2 texCoord1;
+    [[vk::location(8)]] uint objectIndex;
 };
 
 static const uint kObjectFlagAlphaMask = 0x1u;
 static const uint kObjectFlagTransparentOnly = 0x2u;
 
-float Bayer4x4Threshold(uint2 pixelCoord)
-{
-    uint index = (pixelCoord.x & 3u) | ((pixelCoord.y & 3u) << 2u);
-    uint bayer = 0u;
-    switch (index)
-    {
-    case 0u:  bayer = 0u;  break;
-    case 1u:  bayer = 8u;  break;
-    case 2u:  bayer = 2u;  break;
-    case 3u:  bayer = 10u; break;
-    case 4u:  bayer = 12u; break;
-    case 5u:  bayer = 4u;  break;
-    case 6u:  bayer = 14u; break;
-    case 7u:  bayer = 6u;  break;
-    case 8u:  bayer = 3u;  break;
-    case 9u:  bayer = 11u; break;
-    case 10u: bayer = 1u;  break;
-    case 11u: bayer = 9u;  break;
-    case 12u: bayer = 15u; break;
-    case 13u: bayer = 7u;  break;
-    case 14u: bayer = 13u; break;
-    default:  bayer = 5u;  break;
-    }
-    return (float(bayer) + 0.5) / 16.0;
-}
-
-bool AlphaMaskPass(float alpha, float cutoff, float4 pixelPosition)
-{
-    float alphaWidth = max(abs(ddx(alpha)) + abs(ddy(alpha)), 1e-4);
-    float coverage = saturate((alpha - cutoff) / alphaWidth + 0.5);
-    if (coverage <= 0.0) return false;
-    if (coverage >= 1.0) return true;
-    return coverage >= Bayer4x4Threshold(uint2(pixelPosition.xy));
-}
-
 [shader("vertex")]
-VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
+VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
+                  uint startInstance : SV_StartInstanceLocation)
 {
     VSOutput output;
-    ObjectBuffer obj = uObjects[instanceID];
-    float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
+    uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID, startInstance);
+    ObjectBuffer obj = uObjects[objectIndex];
+    GpuMaterial material = uMaterials[obj.objectInfo.x];
+    float3 objectPosition = ApplyHeightDisplacement(
+        input.inPosition, input.inNormal, input.inTexCoord,
+        material.heightTextureIndex, material.heightScale, material.heightOffset);
+    float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     output.pos = mul(uShadow.cascades[pc.cascadeIndex].viewProj, worldPos);
     output.texCoord = input.inTexCoord;
-    output.baseColorTextureIndex = obj.baseColorTextureIndex;
-    output.flags = obj.flags;
-    output.alphaCutoff = obj.alphaCutoff;
-    output.baseColorAlpha = obj.color.a;
+    output.texCoord1 = input.inTexCoord1;
+    output.baseColorTextureIndex = material.baseColorTextureIndex;
+    output.flags = material.flags | obj.objectInfo.y;
+    output.alphaCutoff = material.alphaCutoff;
+    output.baseColorAlpha = material.color.a;
+    output.opacityTextureIndex = material.opacityTextureIndex;
+    output.opacityFactor = material.opacityFactor;
+    output.objectIndex = objectIndex;
     return output;
 }
 
@@ -132,9 +83,15 @@ void fragMain(VSOutput input)
     float alpha = input.baseColorAlpha;
     if (input.baseColorTextureIndex != 0xffffffff)
     {
-        uint texIndex = NonUniformResourceIndex(input.baseColorTextureIndex);
-        alpha *= materialTextures[texIndex].Sample(baseSampler, input.texCoord).a;
+        GpuMaterial material = uMaterials[uObjects[input.objectIndex].objectInfo.x];
+        float2 baseColorTexCoord = ApplyGpuTextureTransform(
+            input.texCoord, input.texCoord1,
+            material.baseColorTextureTransform);
+        alpha *= SamplePbrTexture(
+            input.baseColorTextureIndex, baseColorTexCoord, 1.0.xxxx).a;
     }
+    alpha = EvaluateOpacity(
+        alpha, input.opacityTextureIndex, input.opacityFactor, input.texCoord);
 
     if ((input.flags & kObjectFlagAlphaMask) != 0u &&
         !AlphaMaskPass(alpha, input.alphaCutoff, input.pos))

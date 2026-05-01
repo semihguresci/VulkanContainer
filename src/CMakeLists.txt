@@ -1,10 +1,10 @@
-add_library(VulkanContainer_Core 
+add_library(VulkanSceneRenderer_Core
     ContainerCore.cpp
     app/Application.cpp
 )
 
 # Renderer subsystem
-add_library(VulkanContainer_renderer
+add_library(VulkanSceneRenderer_renderer
     renderer/RenderPassManager.cpp
     renderer/OitManager.cpp
     renderer/DebugOverlayRenderer.cpp
@@ -25,25 +25,26 @@ add_library(VulkanContainer_renderer
     renderer/ShadowCullManager.cpp
     renderer/GpuCullManager.cpp
     renderer/BloomManager.cpp
+    renderer/ExposureManager.cpp
     renderer/VulkanContext.cpp
 )
 
-target_compile_features(VulkanContainer_renderer PUBLIC cxx_std_23)
-target_include_directories(VulkanContainer_renderer PUBLIC
+target_compile_features(VulkanSceneRenderer_renderer PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_renderer PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )
 
-target_link_libraries(VulkanContainer_renderer PUBLIC
+target_link_libraries(VulkanSceneRenderer_renderer PUBLIC
     Dep_VulkanCore
     Dep_Math
     Dep_SceneIO
-    VulkanContainer_log
-    VulkanContainer_vulkan_device
-    VulkanContainer_gpu_resource
-    VulkanContainer_window
-    VulkanContainer_scene
-    VulkanContainer_ui
-    VulkanContainer_ecs
+    VulkanSceneRenderer_log
+    VulkanSceneRenderer_vulkan_device
+    VulkanSceneRenderer_gpu_resource
+    VulkanSceneRenderer_window
+    VulkanSceneRenderer_scene
+    VulkanSceneRenderer_ui
+    VulkanSceneRenderer_ecs
 )
 
 # Add subdirectories
@@ -51,12 +52,12 @@ add_subdirectory(geometry)
 add_subdirectory(utility)
 add_subdirectory(ecs)
 
-target_link_libraries(VulkanContainer_Core PUBLIC
-    VulkanContainer_renderer
-    VulkanContainer_geometry
+target_link_libraries(VulkanSceneRenderer_Core PUBLIC
+    VulkanSceneRenderer_renderer
+    VulkanSceneRenderer_geometry
 )
 
-target_compile_features(VulkanContainer_Core PUBLIC cxx_std_23)
-target_include_directories(VulkanContainer_Core PUBLIC
+target_compile_features(VulkanSceneRenderer_Core PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_Core PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../include
 )

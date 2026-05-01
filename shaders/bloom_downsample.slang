@@ -1,18 +1,10 @@
 // bloom_downsample.slang — Bloom brightness extraction + progressive downsample.
 // Uses a 13-tap filter for high-quality downsampling (Jimenez 2014, "Next Generation Post Processing in Call of Duty: Advanced Warfare").
 
-struct PushConstants
-{
-    uint2 srcResolution;
-    uint2 dstResolution;
-    float threshold;
-    float knee;
-    uint  mipLevel;  // 0 = extract bright pixels from scene color; >0 = downsample prev mip
-    uint  pad0;
-};
+#include "push_constants_common.slang"
 
 [[vk::push_constant]]
-ConstantBuffer<PushConstants> pc;
+ConstantBuffer<BloomDownsamplePushConstants> pc;
 
 [[vk::binding(0, 0)]] Texture2D<float4> srcTexture;
 [[vk::binding(1, 0)]] SamplerState linearSampler;
@@ -69,11 +61,14 @@ float3 DownsampleBox13(Texture2D<float4> tex, SamplerState samp, float2 uv, floa
 [shader("compute")]
 void computeMain(uint3 dtid : SV_DispatchThreadID)
 {
-    if (dtid.x >= pc.dstResolution.x || dtid.y >= pc.dstResolution.y)
+    uint2 srcResolution = uint2(pc.srcWidth, pc.srcHeight);
+    uint2 dstResolution = uint2(pc.dstWidth, pc.dstHeight);
+
+    if (dtid.x >= dstResolution.x || dtid.y >= dstResolution.y)
         return;
 
-    float2 texelSize = 1.0 / float2(pc.srcResolution);
-    float2 uv = (float2(dtid.xy) + 0.5) / float2(pc.dstResolution);
+    float2 texelSize = 1.0 / float2(srcResolution);
+    float2 uv = (float2(dtid.xy) + 0.5) / float2(dstResolution);
 
     float3 color = DownsampleBox13(srcTexture, linearSampler, uv, texelSize);
 

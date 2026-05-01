@@ -15,6 +15,7 @@ struct Vertex {
   glm::vec3 position{};
   glm::vec3 color{1.0f, 1.0f, 1.0f};
   glm::vec2 texCoord{0.0f, 0.0f};
+  glm::vec2 texCoord1{0.0f, 0.0f};
   glm::vec3 normal{0.0f, 1.0f, 0.0f};
   glm::vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f};
 
@@ -26,9 +27,9 @@ struct Vertex {
     return bindingDescription;
   }
 
-  static std::array<VkVertexInputAttributeDescription, 5>
+  static std::array<VkVertexInputAttributeDescription, 6>
   attributeDescriptions() {
-    std::array<VkVertexInputAttributeDescription, 5> attributeDescriptions{};
+    std::array<VkVertexInputAttributeDescription, 6> attributeDescriptions{};
 
     attributeDescriptions[0].binding = 0;
     attributeDescriptions[0].location = 0;
@@ -54,6 +55,11 @@ struct Vertex {
     attributeDescriptions[4].location = 4;
     attributeDescriptions[4].format = VK_FORMAT_R32G32B32A32_SFLOAT;
     attributeDescriptions[4].offset = offsetof(Vertex, tangent);
+
+    attributeDescriptions[5].binding = 0;
+    attributeDescriptions[5].location = 5;
+    attributeDescriptions[5].format = VK_FORMAT_R32G32_SFLOAT;
+    attributeDescriptions[5].offset = offsetof(Vertex, texCoord1);
 
     return attributeDescriptions;
   }

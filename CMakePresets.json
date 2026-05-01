@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 4,
   "cmakeMinimumRequired": {
     "major": 3,
     "minor": 23,
@@ -11,9 +11,6 @@
       "hidden": true,
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/out/build/${presetName}",
-      "environment": {
-       "VCPKG_ROOT": "F:/Projects/vcpkg"
-      },
       "cacheVariables": {
         "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
       }

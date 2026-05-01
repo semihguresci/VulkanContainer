@@ -1,13 +1,7 @@
 // gtao_blur.slang — Bilateral blur for GTAO denoising.
 // Depth-aware 5×5 blur to smooth AO while preserving edges.
 
-struct BlurPushConstants
-{
-    uint  width;
-    uint  height;
-    float depthThreshold;
-    uint  pad0;
-};
+#include "push_constants_common.slang"
 
 [[vk::push_constant]]
 ConstantBuffer<BlurPushConstants> pc;
@@ -28,6 +22,19 @@ float GaussianWeight(int x, int y)
     return exp(-d2 / (2.0 * sigma * sigma));
 }
 
+float LinearizeReverseZDepth(float depth)
+{
+    float n = max(pc.cameraNear, 1e-4);
+    float f = max(pc.cameraFar, n + 1e-3);
+    return (n * f) / (saturate(depth) * (f - n) + n);
+}
+
+float SanitizedFarPlane()
+{
+    float n = max(pc.cameraNear, 1e-4);
+    return max(pc.cameraFar, n + 1e-3);
+}
+
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void computeMain(uint3 dtid : SV_DispatchThreadID)
@@ -46,6 +53,8 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
         return;
     }
 
+    float centerLinearDepth = LinearizeReverseZDepth(centerDepth);
+
     float totalWeight = 0.0;
     float totalAO = 0.0;
 
@@ -59,8 +68,11 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
             float sampleDepth = gDepthTexture.SampleLevel(depthSampler, sampleUV, 0.0);
             float sampleAO = inAO.SampleLevel(aoSampler, sampleUV, 0.0);
 
-            float depthDiff = abs(centerDepth - sampleDepth);
-            float depthWeight = depthDiff < pc.depthThreshold ? 1.0 : 0.0;
+            float sampleLinearDepth =
+                sampleDepth > 0.0 ? LinearizeReverseZDepth(sampleDepth) : SanitizedFarPlane();
+            float depthDiff = abs(centerLinearDepth - sampleLinearDepth);
+            float depthLimit = max(pc.depthThreshold, centerLinearDepth * 0.015);
+            float depthWeight = depthDiff < depthLimit ? 1.0 : 0.0;
 
             float spatialWeight = GaussianWeight(x, y);
             float w = spatialWeight * depthWeight;

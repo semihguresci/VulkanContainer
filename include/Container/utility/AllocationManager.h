@@ -19,6 +19,7 @@ namespace container::gpu {
 
 struct TextureAllocation {
   VkImage image{VK_NULL_HANDLE};
+  VkImageView imageView{VK_NULL_HANDLE};
   VmaAllocation allocation{nullptr};
 };
 
@@ -78,8 +79,6 @@ class AllocationManager {
   std::unique_ptr<BufferArena> indexArena_;
 
   std::vector<TextureAllocation> textureAllocations_{};
-  std::vector<VkImage> textureImages_{};
-  std::vector<VkImageView> textureImageViews_{};
 };
 
 }  // namespace container::gpu

@@ -1,11 +1,8 @@
 #pragma once
 
-#include "Container/renderer/FrameResources.h"
 #include "Container/renderer/FrameResourceManager.h"
 #include "Container/renderer/PipelineTypes.h"
 #include "Container/renderer/RenderPassManager.h"
-
-#include <vector>
 
 namespace container::renderer {
 
@@ -16,7 +13,6 @@ struct RenderResources {
   RenderPasses                    renderPasses{};
   PipelineBuildResult             builtPipelines{};
   GBufferFormats                  gBufferFormats{};
-  std::vector<FrameResources>     frameResources{};
 };
 
 }  // namespace container::renderer

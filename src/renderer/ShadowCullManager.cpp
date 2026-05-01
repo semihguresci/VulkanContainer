@@ -11,6 +11,7 @@
 #include <array>
 #include <filesystem>
 #include <stdexcept>
+#include <vector>
 
 namespace container::renderer {
 
@@ -66,8 +67,9 @@ void ShadowCullManager::createResources(const std::filesystem::path& shaderDir,
 		{3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 		{4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
 	}};
+	const std::vector<VkDescriptorBindingFlags> bindingFlags(bindings.size(), 0);
 	shadowCullSetLayout_ = pipelineManager_.createDescriptorSetLayout(
-		{bindings.begin(), bindings.end()}, {0});
+		{bindings.begin(), bindings.end()}, bindingFlags);
   }
 
 	if (ownedShadowCullUbo_.buffer == VK_NULL_HANDLE) {
@@ -161,7 +163,8 @@ void ShadowCullManager::uploadDrawCommands(const std::vector<DrawCommand>& comma
 
   const uint32_t count =
 	  std::min(static_cast<uint32_t>(commands.size()), maxDrawCount_);
-  std::vector<GpuDrawIndexedIndirectCommand> gpuCmds(count);
+  uploadScratch_.resize(count);
+  auto& gpuCmds = uploadScratch_;
   for (uint32_t i = 0; i < count; ++i) {
 	gpuCmds[i].indexCount    = commands[i].indexCount;
 	gpuCmds[i].instanceCount = 1;
@@ -178,6 +181,10 @@ void ShadowCullManager::uploadDrawCommands(const std::vector<DrawCommand>& comma
 void ShadowCullManager::updateObjectSsboDescriptor(
 	VkBuffer objectBuffer,
 	VkDeviceSize objectBufferSize) {
+  if (objectBuffer == objectSsboBuffer_ &&
+      objectBufferSize == objectSsboSize_) {
+    return;
+  }
 	objectSsboBuffer_  = objectBuffer;
 	objectSsboSize_    = objectBufferSize;
 	objectCount_       = static_cast<uint32_t>(objectBufferSize / sizeof(container::gpu::ObjectData));
@@ -191,6 +198,10 @@ void ShadowCullManager::updateShadowCullDescriptor(
 	VkBuffer shadowCullBuffer,
 	VkDeviceSize shadowCullBufferSize) {
 	if (imageIndex >= shadowCullBuffers_.size()) return;
+  if (shadowCullBuffers_[imageIndex] == shadowCullBuffer &&
+      shadowCullUboSize_ == shadowCullBufferSize) {
+    return;
+  }
 	shadowCullBuffers_[imageIndex] = shadowCullBuffer;
 	shadowCullUboSize_    = shadowCullBufferSize;
   writeDescriptorSets(imageIndex);

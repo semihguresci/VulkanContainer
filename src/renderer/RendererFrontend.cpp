@@ -1,12 +1,14 @@
 #include "Container/renderer/RendererFrontend.h"
 #include "Container/app/AppConfig.h"
+#include "Container/ecs/World.h"
 #include "Container/renderer/BloomManager.h"
 #include "Container/renderer/CameraController.h"
-#include "Container/renderer/FrameRecorder.h"
 #include "Container/renderer/CommandBufferManager.h"
 #include "Container/renderer/EnvironmentManager.h"
-#include "Container/renderer/GraphicsPipelineBuilder.h"
+#include "Container/renderer/ExposureManager.h"
+#include "Container/renderer/FrameRecorder.h"
 #include "Container/renderer/GpuCullManager.h"
+#include "Container/renderer/GraphicsPipelineBuilder.h"
 #include "Container/renderer/LightingManager.h"
 #include "Container/renderer/OitManager.h"
 #include "Container/renderer/SceneController.h"
@@ -14,6 +16,7 @@
 #include "Container/renderer/ShadowManager.h"
 #include "Container/renderer/VulkanContextInitializer.h"
 #include "Container/utility/AllocationManager.h"
+#include "Container/utility/Camera.h"
 #include "Container/utility/DebugMessengerExt.h"
 #include "Container/utility/FrameSyncManager.h"
 #include "Container/utility/GuiManager.h"
@@ -25,9 +28,16 @@
 #include "Container/utility/SceneManager.h"
 #include "Container/utility/SwapChainManager.h"
 
+#include "stb_image_write.h"
+
+#include <algorithm>
+#include <cmath>
+#include <cstring>
+#include <filesystem>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace container::renderer {
 
@@ -36,102 +46,152 @@ using container::gpu::LightingData;
 
 namespace {
 
-bool isProtectedRenderPass(std::string_view name) {
-  return name == "DepthPrepass" || name == "GBuffer" ||
-         name == "DepthToReadOnly" || name == "Lighting" ||
-         name == "OitClear" || name == "OitResolve" ||
-         name == "PostProcess";
+glm::vec3 arrayToVec3(const std::array<float, 3> &value) {
+  return {value[0], value[1], value[2]};
 }
 
-bool isRenderPassEnabled(const FrameRecorder* frameRecorder, std::string_view name) {
-  if (frameRecorder == nullptr) return false;
-  const auto* pass = frameRecorder->graph().findPass(std::string{name});
-  return pass != nullptr && pass->enabled;
+container::gpu::ExposureSettings exposureSettingsFromConfig(
+    const container::app::AppConfig &config) {
+  container::gpu::ExposureSettings settings{};
+  if (config.hasManualExposureOverride) {
+    settings.mode = container::gpu::kExposureModeManual;
+    settings.manualExposure = std::max(config.manualExposure, 0.0f);
+  }
+  return settings;
 }
 
-container::ui::RenderPassToggle* findRenderPassToggle(
-    std::vector<container::ui::RenderPassToggle>& toggles,
-    std::string_view name) {
-  for (auto& toggle : toggles) {
-    if (toggle.name == name) return &toggle;
+void applyCameraOverride(container::scene::BaseCamera *camera,
+                         const container::app::AppConfig &config) {
+  if (!camera || !config.hasCameraOverride) {
+    return;
+  }
+
+  const glm::vec3 position = arrayToVec3(config.cameraPosition);
+  const glm::vec3 target = arrayToVec3(config.cameraTarget);
+  glm::vec3 forward = target - position;
+  const float length = glm::length(forward);
+  if (length <= 0.0001f) {
+    return;
+  }
+  forward /= length;
+
+  const float pitchDegrees =
+      glm::degrees(std::asin(std::clamp(forward.y, -1.0f, 1.0f)));
+  const float yawDegrees = glm::degrees(std::atan2(-forward.z, forward.x));
+  camera->setPosition(position);
+  camera->setYawPitch(yawDegrees, pitchDegrees);
+  if (auto *perspective =
+          dynamic_cast<container::scene::PerspectiveCamera *>(camera)) {
+    perspective->setFieldOfView(std::clamp(config.cameraVerticalFovDegrees,
+                                           1.0f, 179.0f));
+  }
+}
+
+bool isSupportedScreenshotFormat(VkFormat format) {
+  switch (format) {
+  case VK_FORMAT_B8G8R8A8_SRGB:
+  case VK_FORMAT_B8G8R8A8_UNORM:
+  case VK_FORMAT_R8G8B8A8_SRGB:
+  case VK_FORMAT_R8G8B8A8_UNORM:
+    return true;
+  default:
+    return false;
+  }
+}
+
+std::vector<unsigned char> convertSwapchainBytesToRgba(
+    const unsigned char *src, size_t pixelCount, VkFormat format) {
+  std::vector<unsigned char> rgba(pixelCount * 4u);
+  const bool bgra = format == VK_FORMAT_B8G8R8A8_SRGB ||
+                    format == VK_FORMAT_B8G8R8A8_UNORM;
+  for (size_t i = 0; i < pixelCount; ++i) {
+    const unsigned char c0 = src[i * 4u + 0u];
+    const unsigned char c1 = src[i * 4u + 1u];
+    const unsigned char c2 = src[i * 4u + 2u];
+    const unsigned char c3 = src[i * 4u + 3u];
+    rgba[i * 4u + 0u] = bgra ? c2 : c0;
+    rgba[i * 4u + 1u] = c1;
+    rgba[i * 4u + 2u] = bgra ? c0 : c2;
+    rgba[i * 4u + 3u] = c3;
+  }
+  return rgba;
+}
+
+bool isRenderPassActive(const FrameRecorder *frameRecorder, RenderPassId id) {
+  if (frameRecorder == nullptr)
+    return false;
+  return frameRecorder->graph().isPassActive(id);
+}
+
+container::ui::RenderPassToggle *
+findRenderPassToggle(std::vector<container::ui::RenderPassToggle> &toggles,
+                     RenderPassId id) {
+  const std::string_view name = renderPassName(id);
+  for (auto &toggle : toggles) {
+    if (toggle.name == name)
+      return &toggle;
   }
   return nullptr;
 }
 
-const container::ui::RenderPassToggle* findRenderPassToggle(
-    const std::vector<container::ui::RenderPassToggle>& toggles,
-    std::string_view name) {
-  for (const auto& toggle : toggles) {
-    if (toggle.name == name) return &toggle;
+const container::ui::RenderPassToggle *findRenderPassToggle(
+    const std::vector<container::ui::RenderPassToggle> &toggles,
+    RenderPassId id) {
+  const std::string_view name = renderPassName(id);
+  for (const auto &toggle : toggles) {
+    if (toggle.name == name)
+      return &toggle;
   }
   return nullptr;
-}
-
-bool isDisabledByDependency(const std::vector<container::ui::RenderPassToggle>& toggles,
-                           std::string_view passName,
-                           std::initializer_list<std::string_view> dependencyNames) {
-  const auto* pass = findRenderPassToggle(toggles, passName);
-  if (pass == nullptr || pass->enabled) return false;
-
-  for (std::string_view dependencyName : dependencyNames) {
-    const auto* dependency = findRenderPassToggle(toggles, dependencyName);
-    if (dependency != nullptr && !dependency->enabled) {
-      return true;
-    }
-  }
-  return false;
 }
 
 std::string dependencyNoteForPass(
-    const std::vector<container::ui::RenderPassToggle>& toggles,
-    std::string_view passName) {
-  auto makeNote = [](std::string_view dependencyName) {
-    return "requires " + std::string(dependencyName);
-  };
-
-  auto firstDisabledDependency = [&](std::initializer_list<std::string_view> dependencyNames)
-      -> std::string {
-    for (std::string_view dependencyName : dependencyNames) {
-      const auto* dependency = findRenderPassToggle(toggles, dependencyName);
-      if (dependency != nullptr && !dependency->enabled) {
-        return makeNote(dependencyName);
-      }
+    const std::vector<container::ui::RenderPassToggle> &toggles,
+    RenderPassId id) {
+  for (RenderPassId dependencyId : renderPassDependencies(id)) {
+    const auto *dependency = findRenderPassToggle(toggles, dependencyId);
+    if (dependency != nullptr && !dependency->enabled) {
+      return "requires " + std::string(renderPassName(dependencyId));
     }
-    return {};
-  };
+  }
+  return {};
+}
 
-  if (passName == "HiZGenerate") {
-    return firstDisabledDependency({"DepthPrepass"});
-  }
-  if (passName == "OcclusionCull") {
-    return firstDisabledDependency({"FrustumCull", "HiZGenerate"});
-  }
-  if (passName == "CullStatsReadback") {
-    return firstDisabledDependency({"FrustumCull", "OcclusionCull"});
-  }
-  if (passName == "ShadowCascade0" || passName == "ShadowCascade1" ||
-      passName == "ShadowCascade2" || passName == "ShadowCascade3") {
-    return firstDisabledDependency({"FrustumCull"});
-  }
-  if (passName == "TileCull") {
-    return firstDisabledDependency({"DepthToReadOnly"});
-  }
-  if (passName == "GTAO") {
-    return firstDisabledDependency({"DepthToReadOnly", "GBuffer"});
-  }
-  if (passName == "Bloom") {
-    return firstDisabledDependency({"Lighting"});
+std::string executionNoteForPass(const RenderGraph &graph, RenderPassId id) {
+  if (id == RenderPassId::Invalid)
+    return {};
+
+  const auto *status = graph.executionStatus(id);
+  if (status == nullptr || status->active)
+    return {};
+
+  switch (status->skipReason) {
+  case RenderPassSkipReason::Disabled:
+  case RenderPassSkipReason::None:
+    return {};
+  case RenderPassSkipReason::MissingPassDependency:
+    return "inactive: requires " +
+           std::string(renderPassName(status->blockingPass));
+  case RenderPassSkipReason::MissingResource:
+    return "inactive: missing " +
+           std::string(renderResourceName(status->blockingResource));
+  case RenderPassSkipReason::MissingRecordCallback:
+    return "inactive: no recorder";
   }
 
   return {};
 }
 
 bool enforceRenderPassDependencies(
-    std::vector<container::ui::RenderPassToggle>& toggles) {
+    std::vector<container::ui::RenderPassToggle> &toggles) {
   bool changed = false;
 
-  for (auto& toggle : toggles) {
-    if (isProtectedRenderPass(toggle.name) && !toggle.enabled) {
+  // Keep structural passes enabled. Disabling them would leave later graph
+  // nodes with missing attachments/layout transitions rather than a useful
+  // view.
+  for (auto &toggle : toggles) {
+    const RenderPassId id = renderPassIdFromName(toggle.name);
+    if (isProtectedRenderPass(id) && !toggle.enabled) {
       toggle.enabled = true;
       changed = true;
     }
@@ -141,42 +201,26 @@ bool enforceRenderPassDependencies(
   while (madeProgress) {
     madeProgress = false;
 
-    auto disableDependentIfRequiredOff = [&](std::string_view passName,
-                                             std::string_view dependencyName) {
-      auto* dependency = findRenderPassToggle(toggles, dependencyName);
-      if (dependency == nullptr || dependency->enabled) return;
-
-      auto* pass = findRenderPassToggle(toggles, passName);
-      if (pass != nullptr && pass->enabled) {
-        pass->enabled = false;
-        changed = true;
-        madeProgress = true;
+    for (auto &toggle : toggles) {
+      if (!toggle.enabled)
+        continue;
+      const RenderPassId id = renderPassIdFromName(toggle.name);
+      for (RenderPassId dependencyId : renderPassDependencies(id)) {
+        const auto *dependency = findRenderPassToggle(toggles, dependencyId);
+        if (dependency != nullptr && !dependency->enabled) {
+          toggle.enabled = false;
+          changed = true;
+          madeProgress = true;
+          break;
+        }
       }
-    };
-
-    auto disableDependents = [&](std::string_view passName,
-                                 std::initializer_list<std::string_view> dependencyNames) {
-      for (std::string_view dependencyName : dependencyNames) {
-        disableDependentIfRequiredOff(passName, dependencyName);
-      }
-    };
-
-    disableDependents("HiZGenerate", {"DepthPrepass"});
-    disableDependents("OcclusionCull", {"FrustumCull", "HiZGenerate"});
-    disableDependents("CullStatsReadback", {"FrustumCull", "OcclusionCull"});
-    disableDependents("ShadowCascade0", {"FrustumCull"});
-    disableDependents("ShadowCascade1", {"FrustumCull"});
-    disableDependents("ShadowCascade2", {"FrustumCull"});
-    disableDependents("ShadowCascade3", {"FrustumCull"});
-    disableDependents("TileCull", {"DepthToReadOnly"});
-    disableDependents("GTAO", {"DepthToReadOnly", "GBuffer"});
-    disableDependents("Bloom", {"Lighting"});
+    }
   }
 
   return changed;
 }
 
-}  // namespace
+} // namespace
 
 RendererFrontend::RendererFrontend(RendererFrontendCreateInfo info)
     : svc_{*info.ctx,
@@ -186,26 +230,29 @@ RendererFrontend::RendererFrontend(RendererFrontendCreateInfo info)
            *info.commandBufferManager,
            *info.config,
            info.nativeWindow,
-           *info.inputManager} {
-}
+           *info.inputManager} {}
 
-RendererFrontend::~RendererFrontend() {
-  shutdown();
-}
+RendererFrontend::~RendererFrontend() { shutdown(); }
 
 // ---------------------------------------------------------------------------
 // Public interface
 // ---------------------------------------------------------------------------
 
 void RendererFrontend::initialize() {
-  subs_.renderPassManager = std::make_unique<RenderPassManager>(svc_.ctx.deviceWrapper);
-  subs_.oitManager        = std::make_unique<OitManager>(svc_.ctx.deviceWrapper);
+  // Initialization order mirrors runtime dependencies: render passes define
+  // attachment compatibility, scene/lighting managers create descriptor
+  // layouts, and only then can graphics pipelines be built.
+  subs_.renderPassManager =
+      std::make_unique<RenderPassManager>(svc_.ctx.deviceWrapper);
+  subs_.oitManager = std::make_unique<OitManager>(svc_.ctx.deviceWrapper);
   createRenderPasses();
 
   subs_.sceneManager = std::make_unique<container::scene::SceneManager>(
-      svc_.allocationManager, svc_.pipelineManager, svc_.ctx.deviceWrapper, svc_.config);
+      svc_.allocationManager, svc_.pipelineManager, svc_.ctx.deviceWrapper,
+      svc_.config);
   subs_.sceneManager->initialize(
       svc_.config.modelPath,
+      svc_.config.importScale,
       static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
   sceneState_.indexType = subs_.sceneManager->indexType();
 
@@ -214,7 +261,17 @@ void RendererFrontend::initialize() {
       sceneGraph_, *subs_.sceneManager, nullptr, svc_.config);
   subs_.lightingManager = std::make_unique<LightingManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
-      subs_.sceneManager.get(), sceneGraph_);
+      subs_.sceneManager.get(), sceneGraph_, subs_.sceneController->world());
+  {
+    auto lightingSettings = subs_.lightingManager->lightingSettings();
+    if (svc_.config.hasEnvironmentIntensityOverride) {
+      lightingSettings.environmentIntensity = svc_.config.environmentIntensity;
+    }
+    if (svc_.config.hasDirectionalIntensityOverride) {
+      lightingSettings.directionalIntensity = svc_.config.directionalIntensity;
+    }
+    subs_.lightingManager->setLightingSettings(lightingSettings);
+  }
   subs_.shadowManager = std::make_unique<ShadowManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
   subs_.shadowManager->createResources(
@@ -229,7 +286,8 @@ void RendererFrontend::initialize() {
   subs_.environmentManager = std::make_unique<EnvironmentManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       svc_.commandBufferManager.pool());
-  subs_.environmentManager->createResources(container::util::executableDirectory());
+  subs_.environmentManager->createResources(
+      container::util::executableDirectory());
   {
     const auto exeDir = container::util::executableDirectory();
     const std::filesystem::path hdrPath =
@@ -245,6 +303,10 @@ void RendererFrontend::initialize() {
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       svc_.commandBufferManager.pool());
   subs_.bloomManager->createResources(container::util::executableDirectory());
+  subs_.exposureManager = std::make_unique<ExposureManager>(
+      svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
+  subs_.exposureManager->createResources(
+      container::util::executableDirectory());
   subs_.frameResourceManager = std::make_unique<FrameResourceManager>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
       svc_.swapChainManager, svc_.commandBufferManager.pool());
@@ -259,43 +321,50 @@ void RendererFrontend::initialize() {
 
   createCamera();
 
-  subs_.guiManager = std::make_unique<container::ui::GuiManager>();
-  subs_.guiManager->initialize(
-      svc_.ctx.instance, svc_.ctx.deviceWrapper->device(),
-      svc_.ctx.deviceWrapper->physicalDevice(),
-      svc_.ctx.deviceWrapper->graphicsQueue(),
-      svc_.ctx.deviceWrapper->queueFamilyIndices().graphicsFamily.value(),
-      resources_.renderPasses.postProcess,
-      static_cast<uint32_t>(svc_.swapChainManager.imageCount()),
-      svc_.nativeWindow, svc_.config.modelPath);
-  subs_.guiManager->setWireframeCapabilities(svc_.ctx.wireframeSupported,
-                                             svc_.ctx.wireframeRasterModeSupported,
-                                             svc_.ctx.wireframeWideLinesSupported);
-  if (subs_.environmentManager) {
-    subs_.guiManager->setEnvironmentStatus(
-        subs_.environmentManager->environmentStatus());
+  if (svc_.config.enableGui) {
+    subs_.guiManager = std::make_unique<container::ui::GuiManager>();
+    subs_.guiManager->initialize(
+        svc_.ctx.instance, svc_.ctx.deviceWrapper->device(),
+        svc_.ctx.deviceWrapper->physicalDevice(),
+        svc_.ctx.deviceWrapper->graphicsQueue(),
+        svc_.ctx.deviceWrapper->queueFamilyIndices().graphicsFamily.value(),
+        resources_.renderPasses.postProcess,
+        static_cast<uint32_t>(svc_.swapChainManager.imageCount()),
+        svc_.nativeWindow, svc_.config.modelPath, svc_.config.importScale);
+    subs_.guiManager->setWireframeCapabilities(
+        svc_.ctx.wireframeSupported, svc_.ctx.wireframeRasterModeSupported,
+        svc_.ctx.wireframeWideLinesSupported);
+    if (subs_.environmentManager) {
+      subs_.guiManager->setEnvironmentStatus(
+          subs_.environmentManager->environmentStatus());
+    }
+    if (subs_.sceneController)
+      subs_.sceneController->setGuiManager(subs_.guiManager.get());
   }
-  if (subs_.sceneController) subs_.sceneController->setGuiManager(subs_.guiManager.get());
 
   subs_.frameRecorder = std::make_unique<FrameRecorder>(
       svc_.ctx.deviceWrapper, svc_.swapChainManager, *subs_.oitManager,
       subs_.lightingManager.get(), subs_.environmentManager.get(),
       subs_.sceneController.get(), subs_.gpuCullManager.get(),
       subs_.bloomManager.get(),
+      subs_.exposureManager.get(),
       subs_.cameraController ? subs_.cameraController->camera() : nullptr,
       subs_.guiManager.get());
 
   svc_.commandBufferManager.allocate(svc_.swapChainManager.imageCount());
+  svc_.commandBufferManager.configureSecondaryBuffers(
+      static_cast<uint32_t>(shadowCascadePassIds().size()), 1);
   subs_.frameSyncManager = std::make_unique<container::gpu::FrameSyncManager>(
       svc_.ctx.deviceWrapper->device(), svc_.config.maxFramesInFlight);
   subs_.frameSyncManager->initialize(
       static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
-  frame_.imagesInFlight.assign(svc_.swapChainManager.imageCount(), VK_NULL_HANDLE);
+  frame_.imagesInFlight.assign(svc_.swapChainManager.imageCount(),
+                               VK_NULL_HANDLE);
 
   initializeScene();
 }
 
-bool RendererFrontend::drawFrame(bool& framebufferResized) {
+bool RendererFrontend::drawFrame(bool &framebufferResized) {
   // Several render subsystems still rewrite shared descriptor sets or GPU
   // buffers during command recording (GTAO, tile cull, frame descriptors,
   // cull stats/readback). Keep only one submitted frame live until every such
@@ -307,12 +376,17 @@ bool RendererFrontend::drawFrame(bool& framebufferResized) {
     subs_.gpuCullManager->collectStats();
   if (subs_.lightingManager)
     subs_.lightingManager->collectStats();
+  if (subs_.exposureManager) {
+    subs_.exposureManager->collectReadback(
+        subs_.guiManager ? subs_.guiManager->exposureSettings()
+                         : container::gpu::ExposureSettings{});
+  }
 
   uint32_t imageIndex = 0;
   VkResult result = vkAcquireNextImageKHR(
-      svc_.ctx.deviceWrapper->device(), svc_.swapChainManager.swapChain(), UINT64_MAX,
-      subs_.frameSyncManager->imageAvailable(frame_.currentFrame), VK_NULL_HANDLE,
-      &imageIndex);
+      svc_.ctx.deviceWrapper->device(), svc_.swapChainManager.swapChain(),
+      UINT64_MAX, subs_.frameSyncManager->imageAvailable(frame_.currentFrame),
+      VK_NULL_HANDLE, &imageIndex);
 
   if (result == VK_ERROR_OUT_OF_DATE_KHR) {
     handleResize();
@@ -329,26 +403,36 @@ bool RendererFrontend::drawFrame(bool& framebufferResized) {
   growExactOitNodePoolIfNeeded(imageIndex);
 
   subs_.frameSyncManager->resetFence(frame_.currentFrame);
-  frame_.imagesInFlight[imageIndex] = subs_.frameSyncManager->fence(frame_.currentFrame);
+  frame_.imagesInFlight[imageIndex] =
+      subs_.frameSyncManager->fence(frame_.currentFrame);
 
   presentSceneControls();
   updateObjectBuffer();
   updateCameraBuffer(imageIndex);
 
   if (subs_.lightingManager && subs_.cameraController) {
-    subs_.lightingManager->updateLightingData(subs_.cameraController->camera());
+    subs_.lightingManager->updateLightingDataForActiveCamera();
   }
 
   if (subs_.shadowManager && subs_.lightingManager && subs_.cameraController) {
-    const auto& ld = subs_.lightingManager->lightingData();
+    const auto &ld = subs_.lightingManager->lightingData();
     const float aspect =
         static_cast<float>(svc_.swapChainManager.extent().width) /
         static_cast<float>(svc_.swapChainManager.extent().height);
-    subs_.shadowManager->update(
-        subs_.cameraController->camera(), aspect,
-        glm::vec3(ld.directionalDirection), imageIndex);
+    const container::gpu::ShadowSettings shadowSettings =
+        subs_.guiManager ? subs_.guiManager->shadowSettings()
+                         : container::gpu::ShadowSettings{};
+    subs_.shadowManager->update(subs_.cameraController->camera(), aspect,
+                                glm::vec3(ld.directionalDirection),
+                                shadowSettings, imageIndex);
   }
-  updateFrameDescriptorSets();
+  updateFrameDescriptorSets(imageIndex);
+
+  const bool screenshotThisFrame = screenshot_.pending;
+  if (screenshotThisFrame) {
+    ensureScreenshotReadbackBuffer(svc_.swapChainManager.extent(),
+                                   svc_.swapChainManager.imageFormat());
+  }
 
   vkResetCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), 0);
   recordCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), imageIndex);
@@ -356,23 +440,36 @@ bool RendererFrontend::drawFrame(bool& framebufferResized) {
   VkSubmitInfo submitInfo{};
   submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
 
-  VkSemaphore waitSemaphores[]     = {subs_.frameSyncManager->imageAvailable(frame_.currentFrame)};
-  VkPipelineStageFlags waitStages[] = {VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-  submitInfo.waitSemaphoreCount    = 1;
-  submitInfo.pWaitSemaphores       = waitSemaphores;
-  submitInfo.pWaitDstStageMask     = waitStages;
+  VkSemaphore waitSemaphores[] = {
+      subs_.frameSyncManager->imageAvailable(frame_.currentFrame)};
+  VkPipelineStageFlags waitStages[] = {
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+  submitInfo.waitSemaphoreCount = 1;
+  submitInfo.pWaitSemaphores = waitSemaphores;
+  submitInfo.pWaitDstStageMask = waitStages;
 
   VkCommandBuffer cmdHandle = svc_.commandBufferManager.buffer(imageIndex);
   submitInfo.commandBufferCount = 1;
-  submitInfo.pCommandBuffers    = &cmdHandle;
+  submitInfo.pCommandBuffers = &cmdHandle;
 
-  VkSemaphore signalSemaphores[] = {subs_.frameSyncManager->renderFinishedForImage(imageIndex)};
+  VkSemaphore signalSemaphores[] = {
+      subs_.frameSyncManager->renderFinishedForImage(imageIndex)};
   submitInfo.signalSemaphoreCount = 1;
-  submitInfo.pSignalSemaphores    = signalSemaphores;
+  submitInfo.pSignalSemaphores = signalSemaphores;
 
   if (vkQueueSubmit(svc_.ctx.deviceWrapper->graphicsQueue(), 1, &submitInfo,
-                    subs_.frameSyncManager->fence(frame_.currentFrame)) != VK_SUCCESS) {
+                    subs_.frameSyncManager->fence(frame_.currentFrame)) !=
+      VK_SUCCESS) {
     throw std::runtime_error("failed to submit draw command buffer!");
+  }
+
+  if (screenshotThisFrame) {
+    const VkFence fence = subs_.frameSyncManager->fence(frame_.currentFrame);
+    if (vkWaitForFences(svc_.ctx.deviceWrapper->device(), 1, &fence, VK_TRUE,
+                        UINT64_MAX) != VK_SUCCESS) {
+      throw std::runtime_error("failed to wait for screenshot frame");
+    }
+    writePendingScreenshotPng();
   }
 
   result = svc_.swapChainManager.present(
@@ -387,7 +484,8 @@ bool RendererFrontend::drawFrame(bool& framebufferResized) {
     throw std::runtime_error("failed to present swap chain image!");
   }
 
-  frame_.currentFrame = (frame_.currentFrame + 1) % svc_.config.maxFramesInFlight;
+  frame_.currentFrame =
+      (frame_.currentFrame + 1) % svc_.config.maxFramesInFlight;
   return true;
 }
 
@@ -418,17 +516,21 @@ void RendererFrontend::handleResize() {
     const VkExtent2D ext = svc_.swapChainManager.extent();
     subs_.bloomManager->createTextures(ext.width, ext.height);
   }
-  resources_.frameResources = subs_.frameResourceManager->frames();
   svc_.commandBufferManager.reallocate(svc_.swapChainManager.imageCount());
 
-  const uint32_t imageCount = static_cast<uint32_t>(svc_.swapChainManager.imageCount());
-  if (subs_.guiManager) subs_.guiManager->updateSwapchainImageCount(imageCount);
+  const uint32_t imageCount =
+      static_cast<uint32_t>(svc_.swapChainManager.imageCount());
+  if (subs_.guiManager)
+    subs_.guiManager->updateSwapchainImageCount(imageCount);
 
-  subs_.frameSyncManager->recreateRenderFinishedSemaphores(svc_.swapChainManager.imageCount());
-  frame_.imagesInFlight.assign(svc_.swapChainManager.imageCount(), VK_NULL_HANDLE);
+  subs_.frameSyncManager->recreateRenderFinishedSemaphores(
+      svc_.swapChainManager.imageCount());
+  frame_.imagesInFlight.assign(svc_.swapChainManager.imageCount(),
+                               VK_NULL_HANDLE);
 
   for (uint32_t imageIndex = 0;
-       imageIndex < static_cast<uint32_t>(buffers_.cameras.size()); ++imageIndex) {
+       imageIndex < static_cast<uint32_t>(buffers_.cameras.size());
+       ++imageIndex) {
     updateCameraBuffer(imageIndex);
   }
   updateObjectBuffer();
@@ -436,41 +538,48 @@ void RendererFrontend::handleResize() {
 }
 
 void RendererFrontend::processInput(float deltaTime) {
-  if (!subs_.cameraController) return;
+  if (!subs_.cameraController)
+    return;
 
-  auto toggleFromKey = [this](int key, bool& previousState, auto&& onToggle) {
-    if (!svc_.nativeWindow) return;
+  auto toggleFromKey = [this](int key, bool &previousState, auto &&onToggle) {
+    if (!svc_.nativeWindow)
+      return;
     const bool keyDown = glfwGetKey(svc_.nativeWindow, key) == GLFW_PRESS;
-    if (keyDown && !previousState) onToggle();
+    if (keyDown && !previousState)
+      onToggle();
     previousState = keyDown;
   };
 
   toggleFromKey(GLFW_KEY_F6, debugState_.directionalOnlyKeyDown, [this]() {
     debugState_.directionalOnly = !debugState_.directionalOnly;
     if (subs_.guiManager) {
-      subs_.guiManager->setStatusMessage(debugState_.directionalOnly
-          ? "Debug: directional-only enabled"
-          : "Debug: directional-only disabled");
+      subs_.guiManager->setStatusMessage(
+          debugState_.directionalOnly ? "Debug: directional-only enabled"
+                                      : "Debug: directional-only disabled");
     }
   });
 
-  toggleFromKey(GLFW_KEY_F7, debugState_.visualizePointLightStencilKeyDown, [this]() {
-    debugState_.visualizePointLightStencil = !debugState_.visualizePointLightStencil;
-    if (subs_.guiManager) {
-      subs_.guiManager->setStatusMessage(debugState_.visualizePointLightStencil
-          ? "Debug: point-light stencil visualization enabled"
-          : "Debug: point-light stencil visualization disabled");
-    }
-  });
+  toggleFromKey(
+      GLFW_KEY_F7, debugState_.visualizePointLightStencilKeyDown, [this]() {
+        debugState_.visualizePointLightStencil =
+            !debugState_.visualizePointLightStencil;
+        if (subs_.guiManager) {
+          subs_.guiManager->setStatusMessage(
+              debugState_.visualizePointLightStencil
+                  ? "Debug: point-light stencil visualization enabled"
+                  : "Debug: point-light stencil visualization disabled");
+        }
+      });
 
   toggleFromKey(GLFW_KEY_F8, debugState_.freezeCullingKeyDown, [this]() {
     debugState_.freezeCulling = !debugState_.freezeCulling;
     if (!debugState_.freezeCulling && subs_.gpuCullManager)
       subs_.gpuCullManager->unfreezeCulling();
     if (subs_.guiManager) {
-      subs_.guiManager->setStatusMessage(debugState_.freezeCulling
-          ? "Debug: culling camera frozen (F8 to unfreeze)"
-          : "Debug: culling camera unfrozen");
+      subs_.guiManager->setStatusMessage(
+          debugState_.freezeCulling
+              ? "Debug: culling camera frozen (F8 to unfreeze)"
+              : "Debug: culling camera unfrozen");
     }
   });
 
@@ -485,14 +594,32 @@ void RendererFrontend::processInput(float deltaTime) {
   (void)svc_.inputManager.update(deltaTime);
 }
 
-bool RendererFrontend::reloadSceneModel(const std::string& path) {
-  if (!subs_.sceneController) return false;
+void RendererFrontend::requestScreenshot(std::filesystem::path outputPath) {
+  if (outputPath.empty()) {
+    throw std::runtime_error("screenshot output path is empty");
+  }
+  if (!svc_.swapChainManager.supportsTransferSrc()) {
+    throw std::runtime_error(
+        "swapchain does not support VK_IMAGE_USAGE_TRANSFER_SRC_BIT");
+  }
+  if (!isSupportedScreenshotFormat(svc_.swapChainManager.imageFormat())) {
+    throw std::runtime_error("unsupported swapchain screenshot format");
+  }
+
+  screenshot_.outputPath = std::move(outputPath);
+  screenshot_.pending = true;
+}
+
+bool RendererFrontend::reloadSceneModel(const std::string &path,
+                                        float importScale) {
+  if (!subs_.sceneController)
+    return false;
   const bool result = subs_.sceneController->reloadSceneModel(
-      path, buffers_.object, buffers_.objectCapacity,
+      path, importScale, buffers_.object, buffers_.objectCapacity,
       buffers_.cameras.empty() ? container::gpu::AllocatedBuffer{}
                                : buffers_.cameras.front(),
-      sceneState_.indexType, sceneState_.rootNode,
-      sceneState_.selectedMeshNode, sceneState_.cubeNode);
+      sceneState_.indexType, sceneState_.rootNode, sceneState_.selectedMeshNode,
+      sceneState_.cubeNode);
   syncSceneStateFromController();
   if (subs_.lightingManager) {
     subs_.lightingManager->setRootNode(sceneState_.rootNode);
@@ -500,9 +627,11 @@ bool RendererFrontend::reloadSceneModel(const std::string& path) {
     subs_.lightingManager->createLightVolumeGeometry();
   }
   if (result) {
-    if (subs_.cameraController) subs_.cameraController->resetCameraForScene();
+    if (subs_.cameraController)
+      subs_.cameraController->resetCameraForScene();
     for (uint32_t imageIndex = 0;
-         imageIndex < static_cast<uint32_t>(buffers_.cameras.size()); ++imageIndex) {
+         imageIndex < static_cast<uint32_t>(buffers_.cameras.size());
+         ++imageIndex) {
       updateCameraBuffer(imageIndex);
     }
   }
@@ -514,7 +643,8 @@ bool RendererFrontend::reloadSceneModel(const std::string& path) {
 }
 
 void RendererFrontend::shutdown() {
-  if (!svc_.ctx.deviceWrapper) return;
+  if (!svc_.ctx.deviceWrapper)
+    return;
 
   vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
 
@@ -539,11 +669,12 @@ void RendererFrontend::shutdown() {
   subs_.shadowManager.reset();
   subs_.environmentManager.reset();
   subs_.bloomManager.reset();
+  subs_.exposureManager.reset();
   subs_.oitManager.reset();
   subs_.cameraController.reset();
   subs_.pipelineBuilder.reset();
 
-  for (auto& cameraBuffer : buffers_.cameras) {
+  for (auto &cameraBuffer : buffers_.cameras) {
     if (cameraBuffer.buffer != VK_NULL_HANDLE) {
       svc_.allocationManager.destroyBuffer(cameraBuffer);
     }
@@ -551,6 +682,10 @@ void RendererFrontend::shutdown() {
   buffers_.cameras.clear();
   if (buffers_.object.buffer != VK_NULL_HANDLE)
     svc_.allocationManager.destroyBuffer(buffers_.object);
+  if (screenshot_.readbackBuffer.buffer != VK_NULL_HANDLE) {
+    svc_.allocationManager.destroyBuffer(screenshot_.readbackBuffer);
+  }
+  screenshot_.readbackSize = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -558,15 +693,14 @@ void RendererFrontend::shutdown() {
 // ---------------------------------------------------------------------------
 
 void RendererFrontend::createRenderPasses() {
-  resources_.gBufferFormats.depthStencil = subs_.renderPassManager->findDepthStencilFormat();
+  resources_.gBufferFormats.depthStencil =
+      subs_.renderPassManager->findDepthStencilFormat();
   subs_.renderPassManager->create(
       svc_.swapChainManager.imageFormat(),
       resources_.gBufferFormats.depthStencil,
-      resources_.gBufferFormats.sceneColor,
-      resources_.gBufferFormats.albedo,
-      resources_.gBufferFormats.normal,
-      resources_.gBufferFormats.material,
-      resources_.gBufferFormats.emissive);
+      resources_.gBufferFormats.sceneColor, resources_.gBufferFormats.albedo,
+      resources_.gBufferFormats.normal, resources_.gBufferFormats.material,
+      resources_.gBufferFormats.emissive, resources_.gBufferFormats.specular);
   resources_.renderPasses = subs_.renderPassManager->passes();
 }
 
@@ -579,6 +713,9 @@ void RendererFrontend::createGraphicsPipelines() {
       subs_.sceneManager->descriptorSetLayout(),
       subs_.frameResourceManager->lightingLayout(),
       subs_.lightingManager->lightDescriptorSetLayout(),
+      // Some tests or fallback configurations may not create tiled lighting
+      // resources. Reuse the regular light layout so pipeline layout creation
+      // stays well-formed even when the tiled path is unavailable.
       subs_.lightingManager->isTiledLightingReady()
           ? subs_.lightingManager->tiledDescriptorSetLayout()
           : subs_.lightingManager->lightDescriptorSetLayout(),
@@ -586,10 +723,8 @@ void RendererFrontend::createGraphicsPipelines() {
       subs_.frameResourceManager->postProcessLayout(),
       subs_.frameResourceManager->oitLayout()};
   const PipelineRenderPasses rp{
-      resources_.renderPasses.depthPrepass,
-      resources_.renderPasses.gBuffer,
-      resources_.renderPasses.shadow,
-      resources_.renderPasses.lighting,
+      resources_.renderPasses.depthPrepass, resources_.renderPasses.gBuffer,
+      resources_.renderPasses.shadow, resources_.renderPasses.lighting,
       resources_.renderPasses.postProcess};
   resources_.builtPipelines = subs_.pipelineBuilder->build(
       container::util::executableDirectory(), descLayouts, rp);
@@ -598,8 +733,10 @@ void RendererFrontend::createGraphicsPipelines() {
 void RendererFrontend::createCamera() {
   subs_.cameraController = std::make_unique<CameraController>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.swapChainManager,
-      sceneGraph_, subs_.sceneManager.get(), svc_.inputManager);
+      sceneGraph_, subs_.sceneManager.get(), subs_.sceneController->world(),
+      svc_.inputManager);
   subs_.cameraController->createCamera();
+  applyCameraOverride(subs_.cameraController->camera(), svc_.config);
 }
 
 void RendererFrontend::initializeScene() {
@@ -628,24 +765,27 @@ void RendererFrontend::initializeScene() {
 }
 
 void RendererFrontend::buildSceneGraph() {
-  if (!subs_.sceneController) return;
+  if (!subs_.sceneController)
+    return;
   subs_.sceneController->buildSceneGraph(
       sceneState_.rootNode, sceneState_.selectedMeshNode, sceneState_.cubeNode);
-  if (subs_.lightingManager) subs_.lightingManager->setRootNode(sceneState_.rootNode);
+  if (subs_.lightingManager)
+    subs_.lightingManager->setRootNode(sceneState_.rootNode);
 }
 
 void RendererFrontend::ensureCameraBuffers() {
   const size_t imageCount = svc_.swapChainManager.imageCount();
-  if (buffers_.cameras.size() == imageCount) return;
+  if (buffers_.cameras.size() == imageCount)
+    return;
 
-  for (auto& cameraBuffer : buffers_.cameras) {
+  for (auto &cameraBuffer : buffers_.cameras) {
     if (cameraBuffer.buffer != VK_NULL_HANDLE) {
       svc_.allocationManager.destroyBuffer(cameraBuffer);
     }
   }
 
   buffers_.cameras.assign(imageCount, {});
-  for (auto& cameraBuffer : buffers_.cameras) {
+  for (auto &cameraBuffer : buffers_.cameras) {
     cameraBuffer = svc_.allocationManager.createBuffer(
         sizeof(container::gpu::CameraData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
         VMA_MEMORY_USAGE_AUTO,
@@ -657,11 +797,12 @@ void RendererFrontend::ensureCameraBuffers() {
 void RendererFrontend::createSceneBuffers() {
   ensureCameraBuffers();
   if (subs_.sceneController) {
-    subs_.sceneController->createSceneBuffers(buffers_.cameras.front(), buffers_.object,
-                                         buffers_.objectCapacity);
+    subs_.sceneController->createSceneBuffers(
+        buffers_.cameras.front(), buffers_.object, buffers_.objectCapacity);
   }
   for (uint32_t imageIndex = 0;
-       imageIndex < static_cast<uint32_t>(buffers_.cameras.size()); ++imageIndex) {
+       imageIndex < static_cast<uint32_t>(buffers_.cameras.size());
+       ++imageIndex) {
     updateCameraBuffer(imageIndex);
   }
   updateObjectBuffer();
@@ -669,7 +810,8 @@ void RendererFrontend::createSceneBuffers() {
 }
 
 void RendererFrontend::createGeometryBuffers() {
-  if (!subs_.sceneController) return;
+  if (!subs_.sceneController)
+    return;
   subs_.sceneController->createGeometryBuffers();
   syncSceneStateFromController();
 }
@@ -679,11 +821,9 @@ void RendererFrontend::createFrameResources() {
     subs_.lightingManager->resizeTiledResources(svc_.swapChainManager.extent());
   }
   subs_.frameResourceManager->create(
-      resources_.gBufferFormats,
-      resources_.renderPasses.depthPrepass, resources_.renderPasses.gBuffer,
-      resources_.renderPasses.lighting,
+      resources_.gBufferFormats, resources_.renderPasses.depthPrepass,
+      resources_.renderPasses.gBuffer, resources_.renderPasses.lighting,
       buffers_.cameras, buffers_.object);
-  resources_.frameResources = subs_.frameResourceManager->frames();
 }
 
 // ---------------------------------------------------------------------------
@@ -691,13 +831,15 @@ void RendererFrontend::createFrameResources() {
 // ---------------------------------------------------------------------------
 
 void RendererFrontend::updateCameraBuffer(uint32_t imageIndex) {
-  if (!subs_.cameraController || imageIndex >= buffers_.cameras.size()) return;
-  subs_.cameraController->updateCameraBuffer(
-      buffers_.cameraData, buffers_.cameras[imageIndex]);
+  if (!subs_.cameraController || imageIndex >= buffers_.cameras.size())
+    return;
+  subs_.cameraController->updateCameraBuffer(buffers_.cameraData,
+                                             buffers_.cameras[imageIndex]);
 }
 
 void RendererFrontend::updateObjectBuffer() {
-  if (!subs_.sceneController) return;
+  if (!subs_.sceneController)
+    return;
   const bool recreated = subs_.sceneController->updateObjectBuffer(
       buffers_.object, buffers_.objectCapacity,
       buffers_.cameras.empty() ? container::gpu::AllocatedBuffer{}
@@ -709,94 +851,105 @@ void RendererFrontend::updateObjectBuffer() {
         buffers_.object.buffer,
         sizeof(container::gpu::ObjectData) * buffers_.objectCapacity);
   }
-  sceneState_.diagCubeObjectIndex = subs_.sceneController->diagCubeObjectIndex();
+  sceneState_.diagCubeObjectIndex =
+      subs_.sceneController->diagCubeObjectIndex();
 }
 
-void RendererFrontend::updateFrameDescriptorSets() {
+void RendererFrontend::updateFrameDescriptorSets(uint32_t imageIndex) {
   if (subs_.frameResourceManager) {
     if (subs_.lightingManager) {
-      auto& lightingData = subs_.lightingManager->lightingData();
-      const bool shadowEnabled = isRenderPassEnabled(subs_.frameRecorder.get(), "ShadowCascade0") ||
-                                 isRenderPassEnabled(subs_.frameRecorder.get(), "ShadowCascade1") ||
-                                 isRenderPassEnabled(subs_.frameRecorder.get(), "ShadowCascade2") ||
-                                 isRenderPassEnabled(subs_.frameRecorder.get(), "ShadowCascade3");
-      const bool gtaoEnabled = isRenderPassEnabled(subs_.frameRecorder.get(), "GTAO");
-      const bool tileCullEnabled = isRenderPassEnabled(subs_.frameRecorder.get(), "TileCull");
-      lightingData.featureFlags[0] = shadowEnabled ? 1u : 0u;
-      lightingData.featureFlags[1] = gtaoEnabled ? 1u : 0u;
-      lightingData.featureFlags[2] = tileCullEnabled ? 1u : 0u;
+      auto &lightingData = subs_.lightingManager->lightingData();
+      const bool shadowEnabled =
+          std::ranges::any_of(shadowCascadePassIds(), [this](RenderPassId id) {
+            return isRenderPassActive(subs_.frameRecorder.get(), id);
+          });
+      const bool gtaoEnabled =
+          isRenderPassActive(subs_.frameRecorder.get(), RenderPassId::GTAO) &&
+          subs_.environmentManager &&
+          subs_.environmentManager->isGtaoReady() &&
+          subs_.environmentManager->isAoEnabled();
+      const bool tileCullEnabled =
+          isRenderPassActive(subs_.frameRecorder.get(), RenderPassId::TileCull);
+      lightingData.shadowEnabled = shadowEnabled ? 1u : 0u;
+      lightingData.gtaoEnabled = gtaoEnabled ? 1u : 0u;
+      lightingData.tileCullEnabled = tileCullEnabled ? 1u : 0u;
       lightingData.prefilteredMipCount =
-          subs_.environmentManager ? subs_.environmentManager->prefilteredMipCount() : 1u;
-      for (const auto& lightingBuffer :
-           subs_.lightingManager->lightingBuffers()) {
-        if (lightingBuffer.buffer != VK_NULL_HANDLE) {
-          SceneController::writeToBuffer(
-              svc_.allocationManager, lightingBuffer,
-              &lightingData, sizeof(container::gpu::LightingData));
-        }
+          subs_.environmentManager
+              ? subs_.environmentManager->prefilteredMipCount()
+              : 1u;
+      if (imageIndex == UINT32_MAX) {
+        subs_.lightingManager->uploadLightingData();
+      } else {
+        subs_.lightingManager->uploadLightingData(imageIndex);
       }
     }
 
-    VkImageView  shadowView    = VK_NULL_HANDLE;
-    VkSampler    shadowSampler = VK_NULL_HANDLE;
+    VkImageView shadowView = VK_NULL_HANDLE;
+    VkSampler shadowSampler = VK_NULL_HANDLE;
     std::span<const container::gpu::AllocatedBuffer> shadowUbos{};
     if (subs_.shadowManager) {
-      shadowView    = subs_.shadowManager->shadowAtlasArrayView();
+      shadowView = subs_.shadowManager->shadowAtlasArrayView();
       shadowSampler = subs_.shadowManager->shadowSampler();
-      shadowUbos    = subs_.shadowManager->shadowUbos();
+      shadowUbos = subs_.shadowManager->shadowUbos();
     }
-    VkImageView irradianceView  = VK_NULL_HANDLE;
+    VkImageView irradianceView = VK_NULL_HANDLE;
     VkImageView prefilteredView = VK_NULL_HANDLE;
-    VkImageView brdfLutView     = VK_NULL_HANDLE;
-    VkSampler   envSampler      = VK_NULL_HANDLE;
-    VkSampler   brdfLutSampler  = VK_NULL_HANDLE;
-    VkImageView aoTextureView   = VK_NULL_HANDLE;
-    VkSampler   aoSampler       = VK_NULL_HANDLE;
+    VkImageView brdfLutView = VK_NULL_HANDLE;
+    VkSampler envSampler = VK_NULL_HANDLE;
+    VkSampler brdfLutSampler = VK_NULL_HANDLE;
+    VkImageView aoTextureView = VK_NULL_HANDLE;
+    VkSampler aoSampler = VK_NULL_HANDLE;
     if (subs_.environmentManager && subs_.environmentManager->isReady()) {
-      irradianceView  = subs_.environmentManager->irradianceView();
+      irradianceView = subs_.environmentManager->irradianceView();
       prefilteredView = subs_.environmentManager->prefilteredView();
-      brdfLutView     = subs_.environmentManager->brdfLutView();
-      envSampler      = subs_.environmentManager->envSampler();
-      brdfLutSampler  = subs_.environmentManager->brdfLutSampler();
+      brdfLutView = subs_.environmentManager->brdfLutView();
+      envSampler = subs_.environmentManager->envSampler();
+      brdfLutSampler = subs_.environmentManager->brdfLutSampler();
     }
     if (subs_.environmentManager && subs_.environmentManager->isGtaoReady() &&
-        isRenderPassEnabled(subs_.frameRecorder.get(), "GTAO")) {
+        isRenderPassActive(subs_.frameRecorder.get(), RenderPassId::GTAO)) {
       aoTextureView = subs_.environmentManager->aoTextureView();
-      aoSampler     = subs_.environmentManager->aoSampler();
+      aoSampler = subs_.environmentManager->aoSampler();
     }
     VkImageView bloomTextureView = VK_NULL_HANDLE;
-    VkSampler   bloomSampler     = VK_NULL_HANDLE;
+    VkSampler bloomSampler = VK_NULL_HANDLE;
     if (subs_.bloomManager && subs_.bloomManager->isReady()) {
       bloomTextureView = subs_.bloomManager->bloomResultView();
-      bloomSampler     = subs_.bloomManager->bloomSampler();
+      bloomSampler = subs_.bloomManager->bloomSampler();
     }
-    VkBuffer     tileGridBuffer     = VK_NULL_HANDLE;
+    VkBuffer tileGridBuffer = VK_NULL_HANDLE;
     VkDeviceSize tileGridBufferSize = 0;
-    if (subs_.lightingManager && subs_.lightingManager->isTiledLightingReady() &&
-        isRenderPassEnabled(subs_.frameRecorder.get(), "TileCull")) {
-      tileGridBuffer     = subs_.lightingManager->tileGridBuffer();
+    if (subs_.lightingManager &&
+        subs_.lightingManager->isTiledLightingReady() &&
+        isRenderPassActive(subs_.frameRecorder.get(), RenderPassId::TileCull)) {
+      tileGridBuffer = subs_.lightingManager->tileGridBuffer();
       tileGridBufferSize = subs_.lightingManager->tileGridBufferSize();
     }
+    VkBuffer exposureStateBuffer = VK_NULL_HANDLE;
+    VkDeviceSize exposureStateBufferSize = 0;
+    if (subs_.exposureManager && subs_.exposureManager->isReady()) {
+      exposureStateBuffer = subs_.exposureManager->exposureStateBuffer();
+      exposureStateBufferSize =
+          subs_.exposureManager->exposureStateBufferSize();
+    }
     subs_.frameResourceManager->updateDescriptorSets(
-        buffers_.cameras, buffers_.object,
-        shadowView, shadowSampler, shadowUbos,
-        irradianceView, prefilteredView, brdfLutView,
-        envSampler, brdfLutSampler,
-        aoTextureView, aoSampler,
-        bloomTextureView, bloomSampler,
-        tileGridBuffer, tileGridBufferSize);
+        buffers_.cameras, buffers_.object, shadowView, shadowSampler,
+        shadowUbos, irradianceView, prefilteredView, brdfLutView, envSampler,
+        brdfLutSampler, aoTextureView, aoSampler, bloomTextureView,
+        bloomSampler, tileGridBuffer, tileGridBufferSize,
+        exposureStateBuffer, exposureStateBufferSize);
   }
 }
 
 void RendererFrontend::destroyGBufferResources() {
-  if (subs_.frameResourceManager) subs_.frameResourceManager->destroy();
-  resources_.frameResources.clear();
+  if (subs_.frameResourceManager)
+    subs_.frameResourceManager->destroy();
 }
 
 bool RendererFrontend::growExactOitNodePoolIfNeeded(uint32_t imageIndex) {
-  if (!subs_.frameResourceManager) return false;
-  const bool grew = subs_.frameResourceManager->growOitPoolIfNeeded(
-      imageIndex, frame_.exactOitNodeCapacityFloor);
+  if (!subs_.frameResourceManager)
+    return false;
+  const bool grew = subs_.frameResourceManager->growOitPoolIfNeeded(imageIndex);
   if (grew) {
     vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
     createFrameResources();
@@ -804,14 +957,106 @@ bool RendererFrontend::growExactOitNodePoolIfNeeded(uint32_t imageIndex) {
     if (subs_.guiManager) {
       subs_.guiManager->setStatusMessage(
           "Expanded exact OIT node pool to " +
-          std::to_string(frame_.exactOitNodeCapacityFloor));
+          std::to_string(subs_.frameResourceManager->oitNodeCapacityFloor()));
     }
   }
   return grew;
 }
 
+void RendererFrontend::ensureScreenshotReadbackBuffer(VkExtent2D extent,
+                                                      VkFormat format) {
+  if (extent.width == 0 || extent.height == 0) {
+    throw std::runtime_error("cannot capture a zero-sized swapchain image");
+  }
+  if (!isSupportedScreenshotFormat(format)) {
+    throw std::runtime_error("unsupported swapchain screenshot format");
+  }
+
+  const VkDeviceSize requiredSize =
+      static_cast<VkDeviceSize>(extent.width) *
+      static_cast<VkDeviceSize>(extent.height) * 4u;
+  if (screenshot_.readbackBuffer.buffer != VK_NULL_HANDLE &&
+      screenshot_.readbackSize == requiredSize &&
+      screenshot_.extent.width == extent.width &&
+      screenshot_.extent.height == extent.height &&
+      screenshot_.format == format) {
+    return;
+  }
+
+  if (screenshot_.readbackBuffer.buffer != VK_NULL_HANDLE) {
+    svc_.allocationManager.destroyBuffer(screenshot_.readbackBuffer);
+  }
+  screenshot_.readbackBuffer = svc_.allocationManager.createBuffer(
+      requiredSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VMA_MEMORY_USAGE_AUTO,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+          VMA_ALLOCATION_CREATE_MAPPED_BIT);
+  screenshot_.readbackSize = requiredSize;
+  screenshot_.extent = extent;
+  screenshot_.format = format;
+}
+
+void RendererFrontend::writePendingScreenshotPng() {
+  if (!screenshot_.pending) {
+    return;
+  }
+  if (screenshot_.readbackBuffer.buffer == VK_NULL_HANDLE ||
+      screenshot_.readbackBuffer.allocation == nullptr ||
+      screenshot_.readbackSize == 0) {
+    throw std::runtime_error("screenshot readback buffer is not initialized");
+  }
+
+  void *mapped = screenshot_.readbackBuffer.allocation_info.pMappedData;
+  bool mappedHere = false;
+  if (mapped == nullptr) {
+    if (vmaMapMemory(svc_.allocationManager.memoryManager()->allocator(),
+                     screenshot_.readbackBuffer.allocation, &mapped) !=
+        VK_SUCCESS) {
+      throw std::runtime_error("failed to map screenshot readback buffer");
+    }
+    mappedHere = true;
+  }
+
+  if (vmaInvalidateAllocation(svc_.allocationManager.memoryManager()->allocator(),
+                              screenshot_.readbackBuffer.allocation, 0,
+                              screenshot_.readbackSize) != VK_SUCCESS) {
+    if (mappedHere) {
+      vmaUnmapMemory(svc_.allocationManager.memoryManager()->allocator(),
+                     screenshot_.readbackBuffer.allocation);
+    }
+    throw std::runtime_error("failed to invalidate screenshot readback buffer");
+  }
+
+  const auto *src = static_cast<const unsigned char *>(mapped);
+  const size_t pixelCount =
+      static_cast<size_t>(screenshot_.extent.width) *
+      static_cast<size_t>(screenshot_.extent.height);
+  std::vector<unsigned char> rgba =
+      convertSwapchainBytesToRgba(src, pixelCount, screenshot_.format);
+
+  if (mappedHere) {
+    vmaUnmapMemory(svc_.allocationManager.memoryManager()->allocator(),
+                   screenshot_.readbackBuffer.allocation);
+  }
+
+  if (!screenshot_.outputPath.parent_path().empty()) {
+    std::filesystem::create_directories(screenshot_.outputPath.parent_path());
+  }
+  const std::string outputPath =
+      container::util::pathToUtf8(screenshot_.outputPath);
+  const int ok = stbi_write_png(outputPath.c_str(),
+                                static_cast<int>(screenshot_.extent.width),
+                                static_cast<int>(screenshot_.extent.height), 4,
+                                rgba.data(),
+                                static_cast<int>(screenshot_.extent.width * 4));
+  screenshot_.pending = false;
+  if (ok == 0) {
+    throw std::runtime_error("failed to write screenshot PNG: " + outputPath);
+  }
+}
+
 void RendererFrontend::presentSceneControls() {
-  if (!subs_.guiManager) return;
+  if (!subs_.guiManager)
+    return;
 
   if (subs_.gpuCullManager) {
     const auto stats = subs_.gpuCullManager->cullStats();
@@ -832,66 +1077,83 @@ void RendererFrontend::presentSceneControls() {
   // Sync bloom: push BloomManager settings into GUI before rendering.
   if (subs_.bloomManager) {
     subs_.guiManager->setBloomSettings(
-        subs_.bloomManager->enabled(),
-        subs_.bloomManager->threshold(),
-        subs_.bloomManager->knee(),
-        subs_.bloomManager->intensity(),
+        subs_.bloomManager->enabled(), subs_.bloomManager->threshold(),
+        subs_.bloomManager->knee(), subs_.bloomManager->intensity(),
         subs_.bloomManager->filterRadius());
   }
 
   // Sync render pass toggles: push graph pass list into GUI before rendering.
   if (subs_.frameRecorder) {
-    auto& graph = subs_.frameRecorder->graph();
+    auto &graph = subs_.frameRecorder->graph();
     std::vector<container::ui::RenderPassToggle> passList;
     passList.reserve(graph.passes().size());
-    for (const auto& node : graph.passes()) {
+    for (const auto &node : graph.passes()) {
+      const std::string executionNote = executionNoteForPass(graph, node.id);
       container::ui::RenderPassToggle toggle{};
       toggle.name = node.name;
       toggle.enabled = node.enabled;
-      toggle.locked = isProtectedRenderPass(node.name);
+      toggle.locked = isProtectedRenderPass(node.id);
+      toggle.autoDisabled = !executionNote.empty();
+      toggle.dependencyNote = executionNote;
       passList.push_back(std::move(toggle));
     }
     subs_.guiManager->setRenderPassList(passList);
   }
 
   subs_.guiManager->startFrame();
+  const std::vector<container::gpu::PointLightData> emptyPointLights;
+  const auto &pointLights = subs_.lightingManager
+                                ? subs_.lightingManager->pointLightsSsbo()
+                                : emptyPointLights;
   subs_.guiManager->drawSceneControls(
       sceneGraph_,
-      [this](const std::string& modelPath) { return reloadSceneModel(modelPath); },
-      [this]() { return reloadSceneModel(container::app::DefaultAppConfig().modelPath); },
+      [this](const std::string &modelPath, float importScale) {
+        return reloadSceneModel(modelPath, importScale);
+      },
+      [this](float importScale) {
+        return reloadSceneModel(container::app::DefaultAppConfig().modelPath,
+                                importScale);
+      },
       subs_.cameraController ? subs_.cameraController->cameraTransformControls()
-                        : container::ui::TransformControls{},
-      [this](const container::ui::TransformControls& controls) {
+                             : container::ui::TransformControls{},
+      [this](const container::ui::TransformControls &controls) {
         if (subs_.cameraController)
           subs_.cameraController->applyCameraTransform(
               controls, buffers_.cameraData,
               buffers_.cameras.empty() ? container::gpu::AllocatedBuffer{}
                                        : buffers_.cameras.front());
         for (uint32_t imageIndex = 1;
-             imageIndex < static_cast<uint32_t>(buffers_.cameras.size()); ++imageIndex) {
+             imageIndex < static_cast<uint32_t>(buffers_.cameras.size());
+             ++imageIndex) {
           updateCameraBuffer(imageIndex);
         }
       },
-      subs_.cameraController ? subs_.cameraController->nodeTransformControls(sceneState_.rootNode)
-                        : container::ui::TransformControls{},
-      [this](const container::ui::TransformControls& controls) {
+      subs_.cameraController
+          ? subs_.cameraController->nodeTransformControls(sceneState_.rootNode)
+          : container::ui::TransformControls{},
+      [this](const container::ui::TransformControls &controls) {
         if (subs_.cameraController)
           subs_.cameraController->applyNodeTransform(
               sceneState_.rootNode, sceneState_.rootNode, controls);
-        if (subs_.lightingManager) subs_.lightingManager->updateLightingData();
+        if (subs_.lightingManager)
+          subs_.lightingManager->updateLightingData();
         updateObjectBuffer();
       },
-      subs_.lightingManager ? subs_.lightingManager->directionalLightPosition() : glm::vec3{0.0f},
-      subs_.lightingManager ? subs_.lightingManager->lightingData()             : container::gpu::LightingData{},
-      sceneState_.selectedMeshNode,
+      subs_.lightingManager ? subs_.lightingManager->directionalLightPosition()
+                            : glm::vec3{0.0f},
+      subs_.lightingManager ? subs_.lightingManager->lightingData()
+                            : container::gpu::LightingData{},
+      pointLights, sceneState_.selectedMeshNode,
       [this](uint32_t nodeIndex) {
         if (subs_.cameraController)
-          subs_.cameraController->selectMeshNode(nodeIndex, sceneState_.selectedMeshNode);
+          subs_.cameraController->selectMeshNode(nodeIndex,
+                                                 sceneState_.selectedMeshNode);
       },
-      subs_.cameraController
-          ? subs_.cameraController->nodeTransformControls(sceneState_.selectedMeshNode)
-          : container::ui::TransformControls{},
-      [this](uint32_t nodeIndex, const container::ui::TransformControls& controls) {
+      subs_.cameraController ? subs_.cameraController->nodeTransformControls(
+                                   sceneState_.selectedMeshNode)
+                             : container::ui::TransformControls{},
+      [this](uint32_t nodeIndex,
+             const container::ui::TransformControls &controls) {
         if (subs_.cameraController)
           subs_.cameraController->applyNodeTransform(
               nodeIndex, sceneState_.rootNode, controls);
@@ -900,7 +1162,8 @@ void RendererFrontend::presentSceneControls() {
         updateObjectBuffer();
       });
 
-  // Sync freeze-culling: pull GUI state back into debug state (checkbox may have toggled it).
+  // Sync freeze-culling: pull GUI state back into debug state (checkbox may
+  // have toggled it).
   const bool guiFreeze = subs_.guiManager->freezeCullingRequested();
   if (guiFreeze != debugState_.freezeCulling) {
     debugState_.freezeCulling = guiFreeze;
@@ -910,24 +1173,28 @@ void RendererFrontend::presentSceneControls() {
 
   // Sync bloom: pull GUI state back into BloomManager.
   if (subs_.bloomManager) {
-    subs_.bloomManager->enabled()      = subs_.guiManager->bloomEnabled();
-    subs_.bloomManager->threshold()    = subs_.guiManager->bloomThreshold();
-    subs_.bloomManager->knee()         = subs_.guiManager->bloomKnee();
-    subs_.bloomManager->intensity()    = subs_.guiManager->bloomIntensity();
+    subs_.bloomManager->enabled() = subs_.guiManager->bloomEnabled();
+    subs_.bloomManager->threshold() = subs_.guiManager->bloomThreshold();
+    subs_.bloomManager->knee() = subs_.guiManager->bloomKnee();
+    subs_.bloomManager->intensity() = subs_.guiManager->bloomIntensity();
     subs_.bloomManager->filterRadius() = subs_.guiManager->bloomRadius();
   }
 
   if (subs_.lightingManager) {
-    const auto& guiLightingSettings = subs_.guiManager->lightingSettings();
-    const auto& currentLightingSettings =
+    const auto &guiLightingSettings = subs_.guiManager->lightingSettings();
+    const auto &currentLightingSettings =
         subs_.lightingManager->lightingSettings();
     const bool lightingSettingsChanged =
         guiLightingSettings.preset != currentLightingSettings.preset ||
         guiLightingSettings.density != currentLightingSettings.density ||
-        guiLightingSettings.radiusScale != currentLightingSettings.radiusScale ||
-        guiLightingSettings.intensityScale != currentLightingSettings.intensityScale ||
+        guiLightingSettings.radiusScale !=
+            currentLightingSettings.radiusScale ||
+        guiLightingSettings.intensityScale !=
+            currentLightingSettings.intensityScale ||
         guiLightingSettings.directionalIntensity !=
-            currentLightingSettings.directionalIntensity;
+            currentLightingSettings.directionalIntensity ||
+        guiLightingSettings.environmentIntensity !=
+            currentLightingSettings.environmentIntensity;
     if (lightingSettingsChanged) {
       subs_.lightingManager->setLightingSettings(guiLightingSettings);
       subs_.lightingManager->updateLightingData();
@@ -940,22 +1207,29 @@ void RendererFrontend::presentSceneControls() {
         subs_.environmentManager->environmentStatus());
   }
 
-  // Sync render pass toggles: pull GUI toggle states back into the render graph.
+  // Sync render pass toggles: pull GUI toggle states back into the render
+  // graph.
   if (subs_.frameRecorder) {
-    auto& graph = subs_.frameRecorder->graph();
-    auto& toggles = subs_.guiManager->renderPassToggles();
+    auto &graph = subs_.frameRecorder->graph();
+    auto &toggles = subs_.guiManager->renderPassToggles();
     if (enforceRenderPassDependencies(toggles)) {
       subs_.guiManager->setStatusMessage(
-          "Protected passes stay enabled; dependent optional passes are disabled automatically.");
+          "Protected passes stay enabled; dependent optional passes are "
+          "disabled automatically.");
     }
-    for (auto& toggle : toggles) {
-      toggle.locked = isProtectedRenderPass(toggle.name);
-      toggle.autoDisabled = !toggle.locked && !toggle.enabled && !dependencyNoteForPass(toggles, toggle.name).empty();
-      toggle.dependencyNote = toggle.autoDisabled ? dependencyNoteForPass(toggles, toggle.name) : std::string{};
+    for (const auto &toggle : toggles) {
+      graph.setPassEnabled(renderPassIdFromName(toggle.name), toggle.enabled);
     }
-    for (const auto& toggle : toggles) {
-      if (auto* node = graph.findPass(toggle.name)) {
-        node->enabled = toggle.enabled;
+    for (auto &toggle : toggles) {
+      const RenderPassId id = renderPassIdFromName(toggle.name);
+      toggle.locked = isProtectedRenderPass(id);
+      const std::string dependencyNote = dependencyNoteForPass(toggles, id);
+      const std::string executionNote = executionNoteForPass(graph, id);
+      toggle.autoDisabled = !dependencyNote.empty() || !executionNote.empty();
+      if (!dependencyNote.empty()) {
+        toggle.dependencyNote = dependencyNote;
+      } else {
+        toggle.dependencyNote = executionNote;
       }
     }
   }
@@ -963,7 +1237,11 @@ void RendererFrontend::presentSceneControls() {
 
 void RendererFrontend::recordCommandBuffer(VkCommandBuffer commandBuffer,
                                            uint32_t imageIndex) {
-  if (!subs_.frameRecorder || imageIndex >= resources_.frameResources.size()) {
+  if (!subs_.frameRecorder || !subs_.frameResourceManager) {
+    throw std::runtime_error(
+        "frameRecorder not initialized or image index out of range");
+  }
+  if (imageIndex >= subs_.frameResourceManager->frameCount()) {
     throw std::runtime_error(
         "frameRecorder not initialized or image index out of range");
   }
@@ -971,86 +1249,113 @@ void RendererFrontend::recordCommandBuffer(VkCommandBuffer commandBuffer,
   subs_.frameRecorder->record(commandBuffer, p);
 }
 
-FrameRecordParams RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
+FrameRecordParams
+RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   FrameRecordParams p{};
-  p.frame                           = &resources_.frameResources[imageIndex];
-  p.imageIndex                      = imageIndex;
-  p.vertexSlice                     = sceneState_.vertexSlice;
-  p.indexSlice                      = sceneState_.indexSlice;
-  p.indexType                       = sceneState_.indexType;
-  p.opaqueDrawCommands              = &subs_.sceneController->opaqueDrawCommands();
-  p.transparentDrawCommands         = &subs_.sceneController->transparentDrawCommands();
-  p.opaqueSingleSidedDrawCommands   = &subs_.sceneController->opaqueSingleSidedDrawCommands();
-  p.opaqueDoubleSidedDrawCommands   = &subs_.sceneController->opaqueDoubleSidedDrawCommands();
+  p.frame = subs_.frameResourceManager->frame(imageIndex);
+  p.imageIndex = imageIndex;
+  p.vertexSlice = sceneState_.vertexSlice;
+  p.indexSlice = sceneState_.indexSlice;
+  p.indexType = sceneState_.indexType;
+  p.opaqueDrawCommands = &subs_.sceneController->opaqueDrawCommands();
+  p.transparentDrawCommands = &subs_.sceneController->transparentDrawCommands();
+  p.opaqueSingleSidedDrawCommands =
+      &subs_.sceneController->opaqueSingleSidedDrawCommands();
+  p.opaqueWindingFlippedDrawCommands =
+      &subs_.sceneController->opaqueWindingFlippedDrawCommands();
+  p.opaqueDoubleSidedDrawCommands =
+      &subs_.sceneController->opaqueDoubleSidedDrawCommands();
   p.transparentSingleSidedDrawCommands =
       &subs_.sceneController->transparentSingleSidedDrawCommands();
+  p.transparentWindingFlippedDrawCommands =
+      &subs_.sceneController->transparentWindingFlippedDrawCommands();
   p.transparentDoubleSidedDrawCommands =
       &subs_.sceneController->transparentDoubleSidedDrawCommands();
-  p.objectData                       = &subs_.sceneController->objectData();
-  p.sceneDescriptorSet              = subs_.sceneManager->descriptorSet(imageIndex);
-  p.lightDescriptorSet              = subs_.lightingManager
-                                        ? subs_.lightingManager->lightDescriptorSet(imageIndex)
-                                        : VK_NULL_HANDLE;
-  p.tiledDescriptorSet              = (subs_.lightingManager &&
-                                       subs_.lightingManager->isTiledLightingReady())
-                                        ? subs_.lightingManager->tiledDescriptorSet()
-                                        : VK_NULL_HANDLE;
-  p.cameraBuffer                    = imageIndex < buffers_.cameras.size()
-                                          ? buffers_.cameras[imageIndex].buffer
-                                          : VK_NULL_HANDLE;
-  p.cameraBufferSize                = sizeof(container::gpu::CameraData);
-  p.gBufferSampler                  = subs_.frameResourceManager
-                                        ? subs_.frameResourceManager->gBufferSampler()
-                                        : VK_NULL_HANDLE;
+  p.objectData = &subs_.sceneController->objectData();
+  p.sceneDescriptorSet = subs_.sceneManager->descriptorSet(imageIndex);
+  p.lightDescriptorSet =
+      subs_.lightingManager
+          ? subs_.lightingManager->lightDescriptorSet(imageIndex)
+          : VK_NULL_HANDLE;
+  p.tiledDescriptorSet =
+      (subs_.lightingManager && subs_.lightingManager->isTiledLightingReady())
+          ? subs_.lightingManager->tiledDescriptorSet()
+          : VK_NULL_HANDLE;
+  p.cameraBuffer = imageIndex < buffers_.cameras.size()
+                       ? buffers_.cameras[imageIndex].buffer
+                       : VK_NULL_HANDLE;
+  p.cameraBufferSize = sizeof(container::gpu::CameraData);
+  p.gBufferSampler = subs_.frameResourceManager
+                         ? subs_.frameResourceManager->gBufferSampler()
+                         : VK_NULL_HANDLE;
   p.renderPasses = {
-      resources_.renderPasses.depthPrepass,
-      resources_.renderPasses.gBuffer,
-      resources_.renderPasses.shadow,
-      resources_.renderPasses.lighting,
+      resources_.renderPasses.depthPrepass, resources_.renderPasses.gBuffer,
+      resources_.renderPasses.shadow, resources_.renderPasses.lighting,
       resources_.renderPasses.postProcess};
-  p.layouts                         = resources_.builtPipelines.layouts;
-  p.pipelines                       = resources_.builtPipelines.pipelines;
-  p.debugDirectionalOnly            = debugState_.directionalOnly;
+  p.layouts = resources_.builtPipelines.layouts;
+  p.pipelines = resources_.builtPipelines.pipelines;
+  p.debugDirectionalOnly = debugState_.directionalOnly;
   p.debugVisualizePointLightStencil = debugState_.visualizePointLightStencil;
-  p.debugFreezeCulling              = debugState_.freezeCulling;
-  p.wireframeRasterModeSupported    = svc_.ctx.wireframeRasterModeSupported;
-  p.wireframeWideLinesSupported     = svc_.ctx.wireframeWideLinesSupported;
-  p.pushConstants                   = pushConstants_.state();
-  p.swapChainFramebuffers           = &svc_.swapChainManager.framebuffers();
-  p.diagCubeObjectIndex             = sceneState_.diagCubeObjectIndex;
-  if (subs_.cameraController) {
-    const auto* perspCam = dynamic_cast<const container::scene::PerspectiveCamera*>(
-        subs_.cameraController->camera());
+  p.debugFreezeCulling = debugState_.freezeCulling;
+  p.wireframeRasterModeSupported = svc_.ctx.wireframeRasterModeSupported;
+  p.wireframeWideLinesSupported = svc_.ctx.wireframeWideLinesSupported;
+  p.pushConstants = pushConstants_.state();
+  p.swapChainFramebuffers = &svc_.swapChainManager.framebuffers();
+  p.diagCubeObjectIndex = sceneState_.diagCubeObjectIndex;
+  const auto *activeCamera = subs_.sceneController
+                                 ? subs_.sceneController->world().activeCamera()
+                                 : nullptr;
+  if (activeCamera) {
+    p.cameraNear = activeCamera->nearPlane;
+    p.cameraFar = activeCamera->farPlane;
+  } else if (subs_.cameraController) {
+    const auto *perspCam =
+        dynamic_cast<const container::scene::PerspectiveCamera *>(
+            subs_.cameraController->camera());
     if (perspCam) {
       p.cameraNear = perspCam->nearPlane();
-      p.cameraFar  = perspCam->farPlane();
+      p.cameraFar = perspCam->farPlane();
     }
   }
   if (subs_.shadowManager) {
-    p.shadowDescriptorSet  = subs_.shadowManager->descriptorSet(imageIndex);
-    p.shadowFramebuffers   = subs_.shadowManager->framebuffers().data();
-    p.shadowData           = &subs_.shadowManager->shadowData();
-    p.shadowManager        = subs_.shadowManager.get();
+    p.shadowDescriptorSet = subs_.shadowManager->descriptorSet(imageIndex);
+    p.shadowFramebuffers = subs_.shadowManager->framebuffers().data();
+    p.shadowData = &subs_.shadowManager->shadowData();
+    p.shadowSettings = subs_.guiManager ? subs_.guiManager->shadowSettings()
+                                        : container::gpu::ShadowSettings{};
+    p.shadowManager = subs_.shadowManager.get();
   }
   if (subs_.shadowCullManager) {
     if (subs_.shadowManager) {
       subs_.shadowCullManager->updateShadowCullDescriptor(
-          imageIndex,
-          subs_.shadowManager->shadowCullUbo(imageIndex).buffer,
+          imageIndex, subs_.shadowManager->shadowCullUbo(imageIndex).buffer,
           sizeof(container::gpu::ShadowCullData));
     }
-    p.shadowCullManager   = subs_.shadowCullManager.get();
-    p.useGpuShadowCull    = subs_.shadowCullManager->isReady();
-    p.shadowCullMaxDrawCount = subs_.shadowCullManager->maxDrawCount();
-    for (uint32_t i = 0; i < container::gpu::kShadowCascadeCount; ++i) {
-      p.shadowCullIndirectBuffers[i] = subs_.shadowCullManager->indirectDrawBuffer(i);
-      p.shadowCullCountBuffers[i]    = subs_.shadowCullManager->drawCountBuffer(i);
-    }
+    p.shadowCullManager = subs_.shadowCullManager.get();
+    p.useGpuShadowCull = subs_.shadowCullManager->isReady();
+  }
+  p.useShadowSecondaryCommandBuffers =
+      svc_.commandBufferManager.secondaryWorkerCount() >=
+      container::gpu::kShadowCascadeCount;
+  for (uint32_t cascadeIndex = 0;
+       cascadeIndex < container::gpu::kShadowCascadeCount; ++cascadeIndex) {
+    p.shadowSecondaryCommandBuffers[cascadeIndex] =
+        svc_.commandBufferManager.secondaryBuffer(imageIndex, cascadeIndex, 0);
   }
   p.gpuCullManager = subs_.gpuCullManager.get();
-  p.bloomManager     = subs_.bloomManager.get();
-  p.objectBuffer     = buffers_.object.buffer;
-  p.objectBufferSize = sizeof(container::gpu::ObjectData) * buffers_.objectCapacity;
+  p.bloomManager = subs_.bloomManager.get();
+  p.exposureSettings =
+      subs_.guiManager ? subs_.guiManager->exposureSettings()
+                       : exposureSettingsFromConfig(svc_.config);
+  p.objectBuffer = buffers_.object.buffer;
+  p.objectBufferSize =
+      sizeof(container::gpu::ObjectData) * buffers_.objectCapacity;
+  if (screenshot_.pending) {
+    p.screenshot.enabled = true;
+    p.screenshot.swapChainImage = svc_.swapChainManager.image(imageIndex);
+    p.screenshot.readbackBuffer = screenshot_.readbackBuffer.buffer;
+    p.screenshot.extent = svc_.swapChainManager.extent();
+  }
   return p;
 }
 
@@ -1059,9 +1364,10 @@ FrameRecordParams RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) 
 // ---------------------------------------------------------------------------
 
 void RendererFrontend::syncSceneStateFromController() {
-  if (!subs_.sceneController) return;
+  if (!subs_.sceneController)
+    return;
   sceneState_.vertexSlice = subs_.sceneController->vertexSlice();
-  sceneState_.indexSlice  = subs_.sceneController->indexSlice();
+  sceneState_.indexSlice = subs_.sceneController->indexSlice();
 }
 
-}  // namespace container::renderer
+} // namespace container::renderer

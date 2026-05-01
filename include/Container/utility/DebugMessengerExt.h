@@ -27,10 +27,18 @@ static inline void DestroyDebugUtilsMessengerEXT(
 }
 
 static inline VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
-    [[maybe_unused]] VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
-    [[maybe_unused]] VkDebugUtilsMessageTypeFlagsEXT messageType,
+    VkDebugUtilsMessageSeverityFlagBitsEXT messageSeverity,
+    VkDebugUtilsMessageTypeFlagsEXT messageType,
     const VkDebugUtilsMessengerCallbackDataEXT* pCallbackData,
     [[maybe_unused]] void* pUserData) {
+  if (messageSeverity < VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT) {
+    return VK_FALSE;
+  }
+  if ((messageType & (VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT |
+                      VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT)) == 0) {
+    return VK_FALSE;
+  }
+
   std::println(stderr, "validation layer: {}", pCallbackData->pMessage);
 
   return VK_FALSE;

@@ -54,7 +54,7 @@ class SlangMaterialXBridge {
 
     void loadMaterialsForGltf(
         const tinygltf::Model& model,
-        const std::vector<uint32_t>& imageToTexture,
+        const std::vector<uint32_t>& textureToResource,
         container::material::MaterialManager& materialManager,
         uint32_t& defaultMaterialIndex) const;
 
