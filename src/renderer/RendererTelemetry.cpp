@@ -35,6 +35,7 @@ std::string blockerText(const RenderPassExecutionStatus& status) {
     case RenderPassSkipReason::None:
     case RenderPassSkipReason::Disabled:
     case RenderPassSkipReason::MissingRecordCallback:
+    case RenderPassSkipReason::NotNeeded:
       break;
   }
   return {};
@@ -220,7 +221,7 @@ void RendererTelemetry::setRenderGraph(const RenderGraph& graph) {
   active_.graph.totalPasses = graph.passCount();
   active_.graph.enabledPasses = graph.enabledPassCount();
 
-  const auto statuses = graph.executionStatuses();
+  const auto statuses = graph.lastFrameExecutionStatuses();
   for (const auto& node : graph.passes()) {
     RendererPassTelemetry pass{};
     pass.name = node.name;

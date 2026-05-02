@@ -53,6 +53,16 @@ public:
   // Positions the camera relative to the current scene bounds.
   void resetCameraForScene();
 
+  // Viewport navigation helpers used by render-space interactions.
+  void frameNodeOrScene(uint32_t nodeIndex);
+  void orbit(uint32_t nodeIndex, float deltaX, float deltaY,
+             float sensitivityScale = 1.0f);
+  void pan(uint32_t nodeIndex, float deltaX, float deltaY,
+           float speedScale = 1.0f);
+  void dolly(uint32_t nodeIndex, float wheelSteps, float speedScale = 1.0f);
+  void adjustMoveSpeed(float wheelSteps);
+  [[nodiscard]] float moveSpeed() const;
+
   // ---- Per-frame ----------------------------------------------------------
 
   // Updates cameraData and uploads to cameraBuffer.
@@ -86,6 +96,15 @@ private:
   static constexpr float kDefaultMoveSpeed = 1.0f;
   static constexpr float kDefaultNearPlane = 0.05f;
   static constexpr float kDefaultFarPlane = 500.0f;
+
+  struct ViewPivot {
+    glm::vec3 center{0.0f};
+    float radius{1.0f};
+    bool valid{false};
+  };
+
+  [[nodiscard]] ViewPivot resolveViewPivot(uint32_t nodeIndex) const;
+  void lookAt(const glm::vec3& target);
 
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager &allocationManager_;

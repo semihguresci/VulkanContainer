@@ -45,6 +45,9 @@ struct GraphicsPipelines {
   VkPipeline transparent{VK_NULL_HANDLE};
   VkPipeline transparentFrontCull{VK_NULL_HANDLE};
   VkPipeline transparentNoCull{VK_NULL_HANDLE};
+  VkPipeline transparentPick{VK_NULL_HANDLE};
+  VkPipeline transparentPickFrontCull{VK_NULL_HANDLE};
+  VkPipeline transparentPickNoCull{VK_NULL_HANDLE};
   VkPipeline postProcess{VK_NULL_HANDLE};
   VkPipeline geometryDebug{VK_NULL_HANDLE};
   VkPipeline normalValidation{VK_NULL_HANDLE};
@@ -78,6 +81,7 @@ struct PipelineRenderPasses {
   VkRenderPass bimDepthPrepass{VK_NULL_HANDLE};
   VkRenderPass gBuffer{VK_NULL_HANDLE};
   VkRenderPass bimGBuffer{VK_NULL_HANDLE};
+  VkRenderPass transparentPick{VK_NULL_HANDLE};
   VkRenderPass shadow{VK_NULL_HANDLE};
   VkRenderPass lighting{VK_NULL_HANDLE};
   VkRenderPass postProcess{VK_NULL_HANDLE};

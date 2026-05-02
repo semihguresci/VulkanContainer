@@ -64,6 +64,7 @@ struct GBufferFormats {
   VkFormat material{VK_FORMAT_R32G32B32A32_SFLOAT};
   VkFormat emissive{VK_FORMAT_R16G16B16A16_SFLOAT};
   VkFormat specular{VK_FORMAT_R16G16B16A16_SFLOAT};
+  VkFormat pickId{VK_FORMAT_R32_UINT};
   VkFormat oitHeadPointer{VK_FORMAT_R32_UINT};
 
   // Returns a GBufferFormats initialised with all defaults except
@@ -102,6 +103,7 @@ class FrameResourceManager {
               VkRenderPass                             bimDepthPrepassPass,
               VkRenderPass                             gBufferPass,
               VkRenderPass                             bimGBufferPass,
+              VkRenderPass                             transparentPickPass,
               VkRenderPass                             lightingPass,
               std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
               const container::gpu::AllocatedBuffer& objectBuffer);
@@ -128,6 +130,7 @@ class FrameResourceManager {
                             VkDeviceSize exposureStateBufferSize = 0);
 
   void validateOitFormatSupport() const;
+  void validatePickIdFormatSupport() const;
 
   // Returns true if the OIT node pool was grown (caller must recreate).
   bool growOitPoolIfNeeded(uint32_t imageIndex);
@@ -148,6 +151,8 @@ class FrameResourceManager {
                                    VkImageAspectFlags aspect) const;
   void            destroyAttachment(AttachmentImage& a) const;
   void            transitionToGeneral(VkImage image, VkImageAspectFlags mask) const;
+  void            transitionToDepthAttachment(VkImage image,
+                                              VkImageAspectFlags mask) const;
   void            writeOitMetadata(FrameResources& frame) const;
   void            ensureFallbackTileGridBuffer();
   void            ensureFallbackExposureStateBuffer();
@@ -198,6 +203,7 @@ class FrameResourceManager {
   VkRenderPass   bimDepthPrepassPass_{VK_NULL_HANDLE};
   VkRenderPass   gBufferPass_{VK_NULL_HANDLE};
   VkRenderPass   bimGBufferPass_{VK_NULL_HANDLE};
+  VkRenderPass   transparentPickPass_{VK_NULL_HANDLE};
   VkRenderPass   lightingPass_{VK_NULL_HANDLE};
 
   std::vector<FrameResources> frames_;

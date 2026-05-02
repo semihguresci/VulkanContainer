@@ -45,6 +45,40 @@ enum class WireframeMode : uint32_t {
   Full = 1,
 };
 
+enum class ViewportTool : uint32_t {
+  Select = 0,
+  Translate = 1,
+  Rotate = 2,
+  Scale = 3,
+};
+
+enum class TransformSpace : uint32_t {
+  Local = 0,
+  World = 1,
+};
+
+enum class TransformAxis : uint32_t {
+  Free = 0,
+  X = 1,
+  Y = 2,
+  Z = 3,
+};
+
+enum class ViewportGesture : uint32_t {
+  None = 0,
+  FlyLook = 1,
+  Orbit = 2,
+  Pan = 3,
+  TransformDrag = 4,
+};
+
+struct ViewportInteractionState {
+  ViewportTool tool{ViewportTool::Select};
+  TransformSpace transformSpace{TransformSpace::Local};
+  TransformAxis transformAxis{TransformAxis::Free};
+  ViewportGesture gesture{ViewportGesture::None};
+};
+
 struct WireframeSettings {
   bool enabled{false};
   WireframeMode mode{WireframeMode::Overlay};
@@ -86,6 +120,12 @@ class GuiManager {
   void startFrame();
   void render(VkCommandBuffer commandBuffer);
 
+  void drawViewportInteractionControls(
+      const ViewportInteractionState& state,
+      const std::function<void(ViewportTool)>& setTool,
+      const std::function<void(TransformSpace)>& setTransformSpace,
+      const std::function<void(TransformAxis)>& setTransformAxis);
+
   void drawSceneControls(
       const container::scene::SceneGraph& sceneGraph,
       const std::function<bool(const std::string&, float)>& reloadModel,
@@ -104,6 +144,8 @@ class GuiManager {
           applyMeshTransform);
 
   [[nodiscard]] bool isCapturingInput() const;
+  [[nodiscard]] bool isCapturingMouse() const;
+  [[nodiscard]] bool isCapturingKeyboard() const;
   [[nodiscard]] bool showGeometryOverlay() const {
     return showGeometryOverlay_;
   }

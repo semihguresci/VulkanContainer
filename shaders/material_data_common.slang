@@ -10,12 +10,14 @@ static const uint kInvalidGpuMaterialTexture = 0xffffffffu;
 // float32.
 static const uint MAX_EXACT_GBUFFER_MATERIAL_INDEX = 8388607u;
 static const uint kGpuMaterialFlagAlphaMask = 0x1u;
+static const uint kGpuMaterialFlagAlphaBlend = 0x2u;
 static const uint kGpuMaterialFlagDoubleSided = 0x4u;
 static const float kGBufferMaterialThinSurfaceBit = 0.5;
 
 struct GpuTextureTransform
 {
     // row0.w stores the source texture coordinate set as a small exact float.
+    // row1.w stores a scalar channel override: 0-3 = RGBA, >3 = slot default.
     float4 row0;
     float4 row1;
 };
@@ -185,15 +187,40 @@ float2 ApplyGpuTextureTransform(float2 texCoord0, float2 texCoord1,
                   dot(transform.row1.xy, texCoord) + transform.row1.z);
 }
 
+float SelectTextureChannel(float4 value, uint channel)
+{
+    if (channel == 1u)
+    {
+        return value.g;
+    }
+    if (channel == 2u)
+    {
+        return value.b;
+    }
+    if (channel == 3u)
+    {
+        return value.a;
+    }
+    return value.r;
+}
+
+float SelectGpuTextureChannel(float4 value, GpuTextureTransform transform,
+                              uint fallbackChannel)
+{
+    uint authoredChannel = uint(round(max(transform.row1.w, 0.0)));
+    return SelectTextureChannel(
+        value, authoredChannel <= 3u ? authoredChannel : fallbackChannel);
+}
+
 bool IsThinSurfaceGpuMaterial(uint flags)
 {
-    return (flags & (kGpuMaterialFlagAlphaMask | kGpuMaterialFlagDoubleSided)) ==
-        (kGpuMaterialFlagAlphaMask | kGpuMaterialFlagDoubleSided);
+    return (flags & kGpuMaterialFlagDoubleSided) != 0u &&
+        (flags & (kGpuMaterialFlagAlphaMask | kGpuMaterialFlagAlphaBlend)) != 0u;
 }
 
 float EncodeGBufferMaterialMetadata(uint materialIndex, bool thinSurface)
 {
-    return float(materialIndex) +
+    return float(min(materialIndex, MAX_EXACT_GBUFFER_MATERIAL_INDEX)) +
         (thinSurface ? kGBufferMaterialThinSurfaceBit : 0.0);
 }
 

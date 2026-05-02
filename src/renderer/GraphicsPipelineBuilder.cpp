@@ -96,6 +96,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkShaderModule pointDbgFrag     = loadModule("spv_shaders/point_light_stencil_debug.frag.spv");
   VkShaderModule transVert        = loadModule("spv_shaders/forward_transparent.vert.spv");
   VkShaderModule transFrag        = loadModule("spv_shaders/forward_transparent.frag.spv");
+  VkShaderModule transPickVert    = loadModule("spv_shaders/transparent_pick.vert.spv");
+  VkShaderModule transPickFrag    = loadModule("spv_shaders/transparent_pick.frag.spv");
   VkShaderModule postVert         = loadModule("spv_shaders/post_process.vert.spv");
   VkShaderModule postFrag         = loadModule("spv_shaders/post_process.frag.spv");
   VkShaderModule dbgVert          = loadModule("spv_shaders/geometry_debug.vert.spv");
@@ -142,6 +144,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   std::array<VkPipelineShaderStageCreateInfo, 2> transStages = {
       makeStage(transVert, VK_SHADER_STAGE_VERTEX_BIT),
       makeStage(transFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
+  std::array<VkPipelineShaderStageCreateInfo, 2> transPickStages = {
+      makeStage(transPickVert, VK_SHADER_STAGE_VERTEX_BIT),
+      makeStage(transPickFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
   std::array<VkPipelineShaderStageCreateInfo, 2> postStages = {
       makeStage(postVert, VK_SHADER_STAGE_VERTEX_BIT),
       makeStage(postFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
@@ -340,8 +345,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkPipelineColorBlendAttachmentState noColorAttach = opaqueAttach;
   noColorAttach.colorWriteMask = 0;
 
-  std::array<VkPipelineColorBlendAttachmentState, 5> gBufAttachs =
-      {opaqueAttach, opaqueAttach, opaqueAttach, opaqueAttach, opaqueAttach};
+  std::array<VkPipelineColorBlendAttachmentState, 6> gBufAttachs =
+      {opaqueAttach, opaqueAttach, opaqueAttach,
+       opaqueAttach, opaqueAttach, opaqueAttach};
   std::array<VkPipelineColorBlendAttachmentState, 1> opaqueArr    = {opaqueAttach};
   std::array<VkPipelineColorBlendAttachmentState, 1> additiveArr  = {additiveAttach};
   std::array<VkPipelineColorBlendAttachmentState, 1> overlayArr   = {overlayAttach};
@@ -436,6 +442,10 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
 
   VkPipelineDepthStencilStateCreateInfo transparentDS = depthPrepassDS;
   transparentDS.depthWriteEnable = VK_FALSE;
+
+  VkPipelineDepthStencilStateCreateInfo transparentPickDS = depthPrepassDS;
+  transparentPickDS.depthWriteEnable = VK_TRUE;
+  transparentPickDS.depthCompareOp = VK_COMPARE_OP_GREATER_OR_EQUAL;
 
   // ---- push constant ranges -------------------------------------------------
   VkPushConstantRange scenePCR{};
@@ -543,6 +553,15 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   meshPCI.renderPass          = renderPasses.lighting;
   meshPCI.stageCount          = static_cast<uint32_t>(transStages.size());
   meshPCI.pStages             = transStages.data();
+
+  VkGraphicsPipelineCreateInfo transparentPickPCI = meshPCI;
+  transparentPickPCI.stageCount =
+      static_cast<uint32_t>(transPickStages.size());
+  transparentPickPCI.pStages = transPickStages.data();
+  transparentPickPCI.pDepthStencilState = &transparentPickDS;
+  transparentPickPCI.pColorBlendState = &opaqueBlend;
+  transparentPickPCI.layout = layouts.scene;
+  transparentPickPCI.renderPass = renderPasses.transparentPick;
 
   // ---- create pipelines -----------------------------------------------------
   GraphicsPipelines pipelines;
@@ -704,6 +723,22 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   transparentNoCullPCI.pRasterizationState = &noCullRaster;
   pipelines.transparentNoCull = pipelineManager_.createGraphicsPipeline(
       transparentNoCullPCI, "transparent_no_cull_pipeline");
+
+  // Transparent picking
+  pipelines.transparentPick = pipelineManager_.createGraphicsPipeline(
+      transparentPickPCI, "transparent_pick_pipeline");
+
+  VkGraphicsPipelineCreateInfo transparentPickFrontCullPCI =
+      transparentPickPCI;
+  transparentPickFrontCullPCI.pRasterizationState = &frontCullRaster;
+  pipelines.transparentPickFrontCull =
+      pipelineManager_.createGraphicsPipeline(
+          transparentPickFrontCullPCI, "transparent_pick_front_cull_pipeline");
+
+  VkGraphicsPipelineCreateInfo transparentPickNoCullPCI = transparentPickPCI;
+  transparentPickNoCullPCI.pRasterizationState = &noCullRaster;
+  pipelines.transparentPickNoCull = pipelineManager_.createGraphicsPipeline(
+      transparentPickNoCullPCI, "transparent_pick_no_cull_pipeline");
 
   // Post process
   VkGraphicsPipelineCreateInfo postPCI = fsPCI;

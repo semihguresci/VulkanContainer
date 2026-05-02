@@ -25,7 +25,7 @@ struct ObjectData {
   alignas(16) glm::vec4 normalMatrix0{1.0f, 0.0f, 0.0f, 0.0f};
   alignas(16) glm::vec4 normalMatrix1{0.0f, 1.0f, 0.0f, 0.0f};
   alignas(16) glm::vec4 normalMatrix2{0.0f, 0.0f, 1.0f, 0.0f};
-  // x = material index; yzw are reserved for future per-object draw metadata.
+  // x = material index; y = object flags; z = pick ID source mask; w reserved.
   alignas(16) glm::uvec4 objectInfo{0, 0, 0, 0};
   // Bounding sphere in world space: xyz = center, w = radius.
   alignas(16) glm::vec4 boundingSphere{0.0f, 0.0f, 0.0f, 0.0f};
@@ -33,9 +33,14 @@ struct ObjectData {
 
 struct GpuTextureTransform {
   // row0.w stores the source texture coordinate set as a small exact float.
+  // row1.w stores a scalar channel override: 0-3 = RGBA, >3 = slot default.
   alignas(16) glm::vec4 row0{1.0f, 0.0f, 0.0f, 0.0f};
-  alignas(16) glm::vec4 row1{0.0f, 1.0f, 0.0f, 0.0f};
+  alignas(16) glm::vec4 row1{0.0f, 1.0f, 0.0f, 4.0f};
 };
+
+constexpr uint32_t kPickIdNone = 0u;
+constexpr uint32_t kPickIdBimMask = 0x80000000u;
+constexpr uint32_t kPickIdObjectMask = 0x7fffffffu;
 
 struct GpuMaterial {
   alignas(16) glm::vec4 color{1.0f};

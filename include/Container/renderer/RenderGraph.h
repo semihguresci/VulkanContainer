@@ -30,6 +30,7 @@ enum class RenderPassId : uint8_t {
   CullStatsReadback,
   GBuffer,
   BimGBuffer,
+  TransparentPick,
   OitClear,
   ShadowCullCascade0,
   ShadowCullCascade1,
@@ -73,6 +74,8 @@ enum class RenderResourceId : uint8_t {
   GBufferMaterial,
   GBufferEmissive,
   GBufferSpecular,
+  PickId,
+  PickDepth,
   OitStorage,
   ShadowCullCascade0,
   ShadowCullCascade1,
@@ -121,11 +124,19 @@ enum class RenderPassSkipReason : uint8_t {
   MissingPassDependency,
   MissingResource,
   MissingRecordCallback,
+  NotNeeded,
 };
 
 struct RenderPassExecutionStatus {
   RenderPassId           id{RenderPassId::Invalid};
   bool                   active{false};
+  RenderPassSkipReason   skipReason{RenderPassSkipReason::None};
+  RenderPassId           blockingPass{RenderPassId::Invalid};
+  RenderResourceId       blockingResource{RenderResourceId::Invalid};
+};
+
+struct RenderPassReadiness {
+  bool                   ready{true};
   RenderPassSkipReason   skipReason{RenderPassSkipReason::None};
   RenderPassId           blockingPass{RenderPassId::Invalid};
   RenderResourceId       blockingResource{RenderResourceId::Invalid};
@@ -164,6 +175,8 @@ struct RenderPassNode {
   // The recording callback. Receives the command buffer and the current
   // per-frame params built by RendererFrontend.
   using RecordFn = std::function<void(VkCommandBuffer, const FrameRecordParams&)>;
+  using ReadinessFn = std::function<RenderPassReadiness(const FrameRecordParams&)>;
+  ReadinessFn readiness;
   RecordFn record;
 };
 
@@ -200,16 +213,27 @@ class RenderGraph {
   // Validate dependencies and rebuild the execution schedule.
   void compile();
 
+  // Evaluate per-frame pass readiness without recording commands. This is for
+  // pre-record work that needs to know the same runtime pass plan execute()
+  // will use, such as cache population or secondary command-buffer setup.
+  void prepareFrame(const FrameRecordParams& params) const;
+
   // Execute all enabled passes in dependency order.
   void execute(VkCommandBuffer cmd, const FrameRecordParams& params) const;
   void execute(VkCommandBuffer cmd,
                const FrameRecordParams& params,
                const RenderPassExecutionHooks& hooks) const;
+  void executePreparedFrame(VkCommandBuffer cmd,
+                            const FrameRecordParams& params) const;
+  void executePreparedFrame(VkCommandBuffer cmd,
+                            const FrameRecordParams& params,
+                            const RenderPassExecutionHooks& hooks) const;
 
   // Update a pass toggle and invalidate the active execution plan when it
   // changes. Returns false when the pass is not registered.
   bool setPassEnabled(RenderPassId id, bool enabled);
   bool setPassRecord(RenderPassId id, RenderPassNode::RecordFn fn);
+  bool setPassReadiness(RenderPassId id, RenderPassNode::ReadinessFn fn);
   bool setPassScheduleDependencies(
       RenderPassId id,
       std::initializer_list<RenderPassId> scheduleDependencies);
@@ -250,6 +274,8 @@ class RenderGraph {
   [[nodiscard]] std::span<const RenderPassId> executionPassIds() const;
   [[nodiscard]] std::span<const RenderPassId> activeExecutionPassIds() const;
   [[nodiscard]] std::span<const RenderPassExecutionStatus> executionStatuses() const;
+  [[nodiscard]] std::span<const RenderPassId> lastFrameActiveExecutionPassIds() const;
+  [[nodiscard]] std::span<const RenderPassExecutionStatus> lastFrameExecutionStatuses() const;
   [[nodiscard]] const RenderPassExecutionStatus* executionStatus(RenderPassId id) const;
   [[nodiscard]] bool isPassActive(RenderPassId id) const;
   [[nodiscard]] std::span<const RenderResourceEdge> resourceEdges() const;
@@ -262,8 +288,10 @@ class RenderGraph {
   [[nodiscard]] RenderPassNode* mutablePass(RenderPassId id);
   [[nodiscard]] std::vector<std::vector<uint32_t>> buildResourceDependencies();
   [[nodiscard]] uint64_t computeActivePlanSignature() const;
+  void invalidatePreparedFrame();
   void ensureActivePlan() const;
   void rebuildActiveExecutionOrder() const;
+  void rebuildFrameExecutionOrder(const FrameRecordParams& params) const;
   void ensureCompiled() const;
 
   std::vector<RenderPassNode> passes_;
@@ -272,12 +300,17 @@ class RenderGraph {
   mutable std::vector<uint32_t> activeExecutionOrder_;
   mutable std::vector<RenderPassId> executionPassIds_;
   mutable std::vector<RenderPassId> activeExecutionPassIds_;
+  mutable std::vector<uint32_t> lastFrameExecutionOrder_;
+  mutable std::vector<RenderPassId> lastFrameActiveExecutionPassIds_;
   mutable std::vector<uint8_t> activePasses_;
   mutable std::vector<RenderPassExecutionStatus> executionStatuses_;
+  mutable std::vector<RenderPassExecutionStatus> lastFrameExecutionStatuses_;
   std::vector<RenderResourceEdge> resourceEdges_;
   mutable bool executionOrderDirty_{false};
   mutable bool activePlanDirty_{true};
+  mutable bool preparedFramePlanDirty_{true};
   mutable uint64_t activePlanSignature_{0};
+  mutable bool executing_{false};
 };
 
 }  // namespace container::renderer

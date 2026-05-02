@@ -239,6 +239,13 @@ def Mesh "Tri"
   EXPECT_FALSE(model.elements[0].doubleSided);
 }
 
+TEST(UsdLoader, DefaultsDoubleSidedToUsdSchemaFallback) {
+  const auto model = container::geometry::usd::LoadFromText(kTriangleUsd);
+
+  ASSERT_EQ(model.elements.size(), 1u);
+  EXPECT_FALSE(model.elements[0].doubleSided);
+}
+
 TEST(UsdLoader, LoadsStoredUsdzRootLayer) {
   const std::filesystem::path path =
       writeStoredUsdz("stored_triangle", kTriangleUsd);
@@ -317,6 +324,19 @@ TEST(UsdLoader, TinyUsdConvertsZUpStageToRendererAxesWhenAvailable) {
 #endif
 }
 
+TEST(UsdLoader, TinyUsdDefaultsDoubleSidedToUsdSchemaFallbackWhenAvailable) {
+#if defined(CONTAINER_HAS_TINYUSDZ)
+  const std::filesystem::path path =
+      writeUsdText("default_double_sided", kTinyUsdDisplayOpacityUsd);
+
+  const auto model = container::geometry::usd::LoadFromFile(path);
+  ASSERT_EQ(model.elements.size(), 1u);
+  EXPECT_FALSE(model.elements[0].doubleSided);
+#else
+  GTEST_SKIP() << "TinyUSDZ importer is disabled";
+#endif
+}
+
 TEST(UsdLoader, LoadsBoundPreviewSurfaceMaterialsWhenTinyUsdIsAvailable) {
 #if defined(CONTAINER_HAS_TINYUSDZ)
   const std::filesystem::path path =
@@ -340,6 +360,58 @@ TEST(UsdLoader, LoadsBoundPreviewSurfaceMaterialsWhenTinyUsdIsAvailable) {
   EXPECT_NEAR(material.roughnessFactor, 0.4f, 1.0e-6f);
   EXPECT_NEAR(material.opacityFactor, 1.0f, 1.0e-6f);
   EXPECT_EQ(material.alphaMode, container::material::AlphaMode::Opaque);
+#else
+  GTEST_SKIP() << "TinyUSDZ importer is disabled";
+#endif
+}
+
+TEST(UsdLoader, MapsPreviewSurfaceSpecularWorkflowWhenTinyUsdIsAvailable) {
+#if defined(CONTAINER_HAS_TINYUSDZ)
+  const std::filesystem::path samplePath =
+      std::filesystem::path(CONTAINER_BINARY_DIR) / "_deps" / "tinyusdz-src" /
+      "models" / "cube-previewsurface.usda";
+  if (!std::filesystem::exists(samplePath)) {
+    GTEST_SKIP() << "TinyUSDZ PreviewSurface sample is not available";
+  }
+
+  std::ifstream sample(samplePath, std::ios::binary);
+  ASSERT_TRUE(sample);
+  std::string usd((std::istreambuf_iterator<char>(sample)),
+                  std::istreambuf_iterator<char>());
+
+  const size_t metallicPos = usd.find("float inputs:metallic = 0");
+  ASSERT_NE(metallicPos, std::string::npos);
+  usd.replace(metallicPos, std::string("float inputs:metallic = 0").size(),
+              "float inputs:metallic = 1");
+
+  const size_t roughnessPos = usd.find("float inputs:roughness = 0.4");
+  ASSERT_NE(roughnessPos, std::string::npos);
+  usd.replace(roughnessPos, std::string("float inputs:roughness = 0.4").size(),
+              "float inputs:roughness = 0.25");
+
+  const size_t specularPos = usd.find("float inputs:specular = 0.5");
+  ASSERT_NE(specularPos, std::string::npos);
+  usd.replace(specularPos, std::string("float inputs:specular = 0.5").size(),
+              "int inputs:useSpecularWorkflow = 1\n"
+              "                color3f inputs:specularColor = (0.2, 0.4, 0.6)\n"
+              "                float inputs:specular = 0.5");
+
+  const std::filesystem::path path =
+      writeUsdText("preview_surface_specular_workflow", usd);
+
+  const auto model = container::geometry::usd::LoadFromFile(path);
+  ASSERT_EQ(model.elements.size(), 1u);
+  ASSERT_NE(model.elements[0].materialIndex,
+            std::numeric_limits<uint32_t>::max());
+  ASSERT_LT(model.elements[0].materialIndex, model.materials.size());
+
+  const auto &material = model.materials[model.elements[0].materialIndex].pbr;
+  EXPECT_FALSE(material.specularGlossinessWorkflow);
+  EXPECT_NEAR(material.metallicFactor, 0.0f, 1.0e-6f);
+  EXPECT_NEAR(material.roughnessFactor, 0.25f, 1.0e-6f);
+  EXPECT_NEAR(material.specularColorFactor.r, 0.2f, 1.0e-6f);
+  EXPECT_NEAR(material.specularColorFactor.g, 0.4f, 1.0e-6f);
+  EXPECT_NEAR(material.specularColorFactor.b, 0.6f, 1.0e-6f);
 #else
   GTEST_SKIP() << "TinyUSDZ importer is disabled";
 #endif
@@ -371,6 +443,69 @@ TEST(UsdLoader, LoadsTinyUsdTextureAssetsWhenAvailable) {
     EXPECT_FALSE(texture.encodedBytes.empty());
   }
   EXPECT_TRUE(foundBaseColorTexture);
+#else
+  GTEST_SKIP() << "TinyUSDZ importer is disabled";
+#endif
+}
+
+TEST(UsdLoader, LoadsExternalTinyUsdTexturePathsWhenAvailable) {
+#if defined(CONTAINER_HAS_TINYUSDZ)
+  const std::filesystem::path path =
+      std::filesystem::path(CONTAINER_BINARY_DIR) / "_deps" / "tinyusdz-src" /
+      "models" / "texture-cat-plane.usda";
+  if (!std::filesystem::exists(path)) {
+    GTEST_SKIP() << "TinyUSDZ textured USDA sample is not available";
+  }
+
+  const auto model = container::geometry::usd::LoadFromFile(path);
+  ASSERT_FALSE(model.materials.empty());
+
+  bool foundBaseColorTexture = false;
+  for (const auto &material : model.materials) {
+    const auto &texture = material.texturePaths.baseColor;
+    if (texture.empty()) {
+      continue;
+    }
+
+    foundBaseColorTexture = true;
+    EXPECT_FALSE(texture.name.empty());
+    ASSERT_FALSE(texture.path.empty());
+    EXPECT_TRUE(std::filesystem::exists(texture.path));
+  }
+  EXPECT_TRUE(foundBaseColorTexture);
+#else
+  GTEST_SKIP() << "TinyUSDZ importer is disabled";
+#endif
+}
+
+TEST(UsdLoader, PreservesTinyUsdScalarTextureOutputChannelsWhenAvailable) {
+#if defined(CONTAINER_HAS_TINYUSDZ)
+  const std::filesystem::path path =
+      std::filesystem::path(CONTAINER_BINARY_DIR) / "_deps" / "tinyusdz-src" /
+      "models" / "texture-channel-001.usda";
+  if (!std::filesystem::exists(path)) {
+    GTEST_SKIP() << "TinyUSDZ texture-channel sample is not available";
+  }
+
+  const auto model = container::geometry::usd::LoadFromFile(path);
+  ASSERT_FALSE(model.materials.empty());
+
+  bool foundScalarChannelMaterial = false;
+  for (const auto &material : model.materials) {
+    if (material.texturePaths.metalness.empty() ||
+        material.texturePaths.roughness.empty()) {
+      continue;
+    }
+
+    foundScalarChannelMaterial = true;
+    EXPECT_EQ(material.pbr.metalnessTextureTransform.channel, 1u);
+    EXPECT_EQ(material.pbr.roughnessTextureTransform.channel, 2u);
+    EXPECT_FALSE(material.texturePaths.metalness.path.empty());
+    EXPECT_FALSE(material.texturePaths.roughness.path.empty());
+    EXPECT_TRUE(std::filesystem::exists(material.texturePaths.metalness.path));
+    EXPECT_TRUE(std::filesystem::exists(material.texturePaths.roughness.path));
+  }
+  EXPECT_TRUE(foundScalarChannelMaterial);
 #else
   GTEST_SKIP() << "TinyUSDZ importer is disabled";
 #endif

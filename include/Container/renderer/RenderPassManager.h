@@ -12,6 +12,7 @@ struct RenderPasses {
   VkRenderPass bimDepthPrepass{VK_NULL_HANDLE};
   VkRenderPass gBuffer{VK_NULL_HANDLE};
   VkRenderPass bimGBuffer{VK_NULL_HANDLE};
+  VkRenderPass transparentPick{VK_NULL_HANDLE};
   VkRenderPass shadow{VK_NULL_HANDLE};
   VkRenderPass lighting{VK_NULL_HANDLE};
   VkRenderPass postProcess{VK_NULL_HANDLE};
@@ -32,7 +33,8 @@ class RenderPassManager {
                VkFormat normalFormat,
                VkFormat materialFormat,
                VkFormat emissiveFormat,
-               VkFormat specularFormat);
+               VkFormat specularFormat,
+               VkFormat pickIdFormat);
 
   void destroy();
 

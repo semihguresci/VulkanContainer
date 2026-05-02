@@ -73,6 +73,8 @@ struct FrameDrawLists {
   const std::vector<DrawCommand>*   transparentSingleSidedDrawCommands{nullptr};
   const std::vector<DrawCommand>*   transparentWindingFlippedDrawCommands{nullptr};
   const std::vector<DrawCommand>*   transparentDoubleSidedDrawCommands{nullptr};
+  const std::vector<DrawCommand>*   hoveredDrawCommands{nullptr};
+  const std::vector<DrawCommand>*   selectedDrawCommands{nullptr};
 };
 
 struct FrameBimResources {
@@ -105,6 +107,7 @@ struct FrameRenderPassHandles {
   VkRenderPass bimDepthPrepass{VK_NULL_HANDLE};
   VkRenderPass gBuffer{VK_NULL_HANDLE};
   VkRenderPass bimGBuffer{VK_NULL_HANDLE};
+  VkRenderPass transparentPick{VK_NULL_HANDLE};
   VkRenderPass shadow{VK_NULL_HANDLE};
   VkRenderPass lighting{VK_NULL_HANDLE};
   VkRenderPass postProcess{VK_NULL_HANDLE};
@@ -247,6 +250,9 @@ class FrameRecorder {
 
   void recordBimGBufferPass(VkCommandBuffer cmd,
                             const FrameRecordParams& p) const;
+
+  void recordTransparentPickPass(VkCommandBuffer cmd,
+                                 const FrameRecordParams& p) const;
 
   void recordShadowPass(VkCommandBuffer cmd,
                         const FrameRecordParams& p,

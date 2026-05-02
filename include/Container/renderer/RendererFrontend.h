@@ -2,12 +2,14 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <string>
 #include <vector>
 
 #include "Container/renderer/DebugRenderState.h"
 #include "Container/renderer/PushConstantBlock.h"
+#include "Container/renderer/RenderSurfaceInteractionController.h"
 #include "Container/renderer/RenderResources.h"
 #include "Container/renderer/SceneState.h"
 #include "Container/utility/VulkanMemoryManager.h"
@@ -174,6 +176,25 @@ class RendererFrontend {
   container::scene::SceneGraph sceneGraph_{};
   SceneState sceneState_{};
   DebugRenderState debugState_{};
+  RenderSurfaceInteractionController interactionController_{};
+  uint32_t hoveredMeshNode_{container::scene::SceneGraph::kInvalidNode};
+  uint32_t hoveredBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
+  uint32_t selectedBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
+  struct HoverPickCache {
+    bool valid{false};
+    double cursorX{0.0};
+    double cursorY{0.0};
+    uint32_t selectedMeshNode{container::scene::SceneGraph::kInvalidNode};
+    uint32_t selectedBimObjectIndex{std::numeric_limits<uint32_t>::max()};
+    uint64_t objectDataRevision{0};
+    uint64_t bimObjectDataRevision{0};
+    container::gpu::CameraData cameraData{};
+  };
+  HoverPickCache hoverPickCache_{};
+  std::vector<DrawCommand> hoveredBimDrawCommands_{};
+  std::vector<DrawCommand> selectedBimDrawCommands_{};
+  std::vector<DrawCommand> hoveredDrawCommands_{};
+  std::vector<DrawCommand> selectedDrawCommands_{};
   std::string activePrimaryModelPath_{};
   float activePrimaryImportScale_{1.0f};
   std::string activeAuxiliaryModelPath_{};
@@ -197,6 +218,20 @@ class RendererFrontend {
   };
   ScreenshotState screenshot_{};
 
+  struct DepthVisibilityState {
+    container::gpu::AllocatedBuffer readbackBuffer{};
+    VkDeviceSize readbackSize{0};
+    uint32_t imageIndex{std::numeric_limits<uint32_t>::max()};
+    VkExtent2D extent{};
+    VkFormat format{VK_FORMAT_UNDEFINED};
+    container::gpu::CameraData cameraData{};
+    uint64_t objectDataRevision{0};
+    uint64_t bimObjectDataRevision{0};
+    VkFence renderFence{VK_NULL_HANDLE};
+    bool valid{false};
+  };
+  DepthVisibilityState depthVisibility_{};
+
   // ---- internal init helpers
   // --------------------------------------------------
   void createRenderPasses();
@@ -218,7 +253,24 @@ class RendererFrontend {
   bool growExactOitNodePoolIfNeeded(uint32_t imageIndex);
   void ensureScreenshotReadbackBuffer(VkExtent2D extent, VkFormat format);
   void writePendingScreenshotPng();
+  void ensureDepthVisibilityReadbackBuffer();
+  void markDepthVisibilityFrameComplete(uint32_t imageIndex);
+  [[nodiscard]] bool sampleDepthAtCursor(double cursorX,
+                                         double cursorY,
+                                         float& outDepth);
+  [[nodiscard]] bool samplePickIdAtCursor(double cursorX,
+                                          double cursorY,
+                                          uint32_t& outPickId);
+  [[nodiscard]] bool depthVisibilityFrameMatchesCurrentState() const;
   void presentSceneControls();
+  void selectMeshNodeAtCursor(double cursorX, double cursorY);
+  void hoverMeshNodeAtCursor(double cursorX, double cursorY);
+  void clearHoveredMeshNode();
+  void clearSelectedMeshNode();
+  void transformSelectedNodeByDrag(container::ui::ViewportTool tool,
+                                   container::ui::TransformSpace space,
+                                   container::ui::TransformAxis axis,
+                                   double deltaX, double deltaY);
   void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
   [[nodiscard]] FrameRecordParams buildFrameRecordParams(uint32_t imageIndex);
 

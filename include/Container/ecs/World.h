@@ -38,6 +38,11 @@ public:
                          const MaterialComponent &)>;
   void forEachRenderable(const RenderableVisitor &visitor) const;
 
+  using RenderableWithNodeVisitor =
+      std::function<void(const TransformComponent &, const MeshComponent &,
+                         const MaterialComponent &, const SceneNodeRef &)>;
+  void forEachRenderableWithNode(const RenderableWithNodeVisitor &visitor) const;
+
   // Point-light entity helpers used by lighting systems.
   using LightVisitor = std::function<void(const LightComponent &)>;
   [[nodiscard]] entt::entity

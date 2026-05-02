@@ -29,6 +29,7 @@ constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "CullStatsReadback",
     "GBuffer",
     "BimGBuffer",
+    "TransparentPick",
     "OitClear",
     "ShadowCullCascade0",
     "ShadowCullCascade1",
@@ -70,6 +71,8 @@ constexpr std::array<std::string_view, kRenderResourceIdCount>
         "GBufferMaterial",
         "GBufferEmissive",
         "GBufferSpecular",
+        "PickId",
+        "PickDepth",
         "OitStorage",
         "ShadowCullCascade0",
         "ShadowCullCascade1",
@@ -138,6 +141,9 @@ constexpr std::array kBimGBufferScheduleDependencies{
     RenderPassId::BimDepthPrepass,
     RenderPassId::GBuffer,
 };
+constexpr std::array kTransparentPickScheduleDependencies{
+    RenderPassId::GBuffer,
+};
 constexpr std::array kHiZOptionalScheduleDependencies{
     RenderPassId::BimDepthPrepass,
 };
@@ -145,6 +151,9 @@ constexpr std::array kGBufferOptionalScheduleDependencies{
     RenderPassId::BimDepthPrepass,
 };
 constexpr std::array kDepthToReadOnlyOptionalScheduleDependencies{
+    RenderPassId::BimGBuffer,
+};
+constexpr std::array kTransparentPickOptionalScheduleDependencies{
     RenderPassId::BimGBuffer,
 };
 constexpr std::array kOitClearScheduleDependencies{RenderPassId::GBuffer};
@@ -162,6 +171,7 @@ constexpr std::array kShadowCascade3ScheduleDependencies{
 };
 constexpr std::array kDepthToReadOnlyScheduleDependencies{
     RenderPassId::GBuffer,
+    RenderPassId::TransparentPick,
     RenderPassId::ShadowCascade0,
     RenderPassId::ShadowCascade1,
     RenderPassId::ShadowCascade2,
@@ -256,6 +266,7 @@ constexpr std::array kGBufferWrites{
     RenderResourceId::GBufferMaterial,
     RenderResourceId::GBufferEmissive,
     RenderResourceId::GBufferSpecular,
+    RenderResourceId::PickId,
 };
 constexpr std::array kBimGBufferReads{
     RenderResourceId::BimGeometry,
@@ -267,6 +278,7 @@ constexpr std::array kBimGBufferReads{
     RenderResourceId::GBufferMaterial,
     RenderResourceId::GBufferEmissive,
     RenderResourceId::GBufferSpecular,
+    RenderResourceId::PickId,
 };
 constexpr std::array kBimGBufferWrites{
     RenderResourceId::SceneDepth,
@@ -275,6 +287,20 @@ constexpr std::array kBimGBufferWrites{
     RenderResourceId::GBufferMaterial,
     RenderResourceId::GBufferEmissive,
     RenderResourceId::GBufferSpecular,
+    RenderResourceId::PickId,
+};
+constexpr std::array kTransparentPickReads{
+    RenderResourceId::SceneGeometry,
+    RenderResourceId::BimGeometry,
+    RenderResourceId::CameraBuffer,
+    RenderResourceId::ObjectBuffer,
+    RenderResourceId::BimObjectBuffer,
+    RenderResourceId::SceneDepth,
+    RenderResourceId::PickId,
+};
+constexpr std::array kTransparentPickWrites{
+    RenderResourceId::PickId,
+    RenderResourceId::PickDepth,
 };
 constexpr std::array kOitClearWrites{
     RenderResourceId::OitStorage,
@@ -534,6 +560,7 @@ bool isProtectedRenderPass(RenderPassId id) {
     case RenderPassId::DepthPrepass:
     case RenderPassId::GBuffer:
     case RenderPassId::OitClear:
+    case RenderPassId::TransparentPick:
     case RenderPassId::DepthToReadOnly:
     case RenderPassId::Lighting:
     case RenderPassId::ExposureAdaptation:
@@ -589,6 +616,8 @@ std::span<const RenderPassId> renderPassScheduleDependencies(RenderPassId id) {
       return kGBufferScheduleDependencies;
     case RenderPassId::BimGBuffer:
       return kBimGBufferScheduleDependencies;
+    case RenderPassId::TransparentPick:
+      return kTransparentPickScheduleDependencies;
     case RenderPassId::OitClear:
       return kOitClearScheduleDependencies;
     case RenderPassId::ShadowCullCascade0:
@@ -664,6 +693,8 @@ std::span<const RenderResourceId> renderPassResourceReads(RenderPassId id) {
       return kGBufferReads;
     case RenderPassId::BimGBuffer:
       return kBimGBufferReads;
+    case RenderPassId::TransparentPick:
+      return kTransparentPickReads;
     case RenderPassId::ShadowCullCascade0:
     case RenderPassId::ShadowCullCascade1:
     case RenderPassId::ShadowCullCascade2:
@@ -735,6 +766,8 @@ std::span<const RenderResourceId> renderPassResourceWrites(RenderPassId id) {
       return kGBufferWrites;
     case RenderPassId::BimGBuffer:
       return kBimGBufferWrites;
+    case RenderPassId::TransparentPick:
+      return kTransparentPickWrites;
     case RenderPassId::OitClear:
       return kOitClearWrites;
     case RenderPassId::ShadowCullCascade0:
@@ -776,6 +809,8 @@ std::span<const RenderPassId> renderPassOptionalScheduleDependencies(
       return kHiZOptionalScheduleDependencies;
     case RenderPassId::GBuffer:
       return kGBufferOptionalScheduleDependencies;
+    case RenderPassId::TransparentPick:
+      return kTransparentPickOptionalScheduleDependencies;
     case RenderPassId::DepthToReadOnly:
       return kDepthToReadOnlyOptionalScheduleDependencies;
     default:
@@ -835,6 +870,8 @@ std::string_view renderPassSkipReasonName(RenderPassSkipReason reason) {
       return "missing resource";
     case RenderPassSkipReason::MissingRecordCallback:
       return "missing record callback";
+    case RenderPassSkipReason::NotNeeded:
+      return "not needed";
   }
   return {};
 }
@@ -904,12 +941,14 @@ const RenderPassNode& RenderGraph::addPass(
       std::vector<RenderResourceTransition>(
           transitions.begin(), transitions.end()),
       true,
+      {},
       std::move(fn)});
   if (isValidId(id)) {
     passIndexById_[static_cast<size_t>(id)] = index;
   }
   executionOrderDirty_ = true;
   activePlanDirty_ = true;
+  invalidatePreparedFrame();
   return passes_.back();
 }
 
@@ -998,9 +1037,35 @@ void RenderGraph::execute(VkCommandBuffer cmd,
 void RenderGraph::execute(VkCommandBuffer cmd,
                           const FrameRecordParams& params,
                           const RenderPassExecutionHooks& hooks) const {
-  ensureActivePlan();
+  prepareFrame(params);
+  executePreparedFrame(cmd, params, hooks);
+}
 
-  const std::vector<uint32_t> executionOrder = activeExecutionOrder_;
+void RenderGraph::prepareFrame(const FrameRecordParams& params) const {
+  rebuildFrameExecutionOrder(params);
+  preparedFramePlanDirty_ = false;
+}
+
+void RenderGraph::executePreparedFrame(VkCommandBuffer cmd,
+                                       const FrameRecordParams& params) const {
+  executePreparedFrame(cmd, params, RenderPassExecutionHooks{});
+}
+
+void RenderGraph::executePreparedFrame(
+    VkCommandBuffer cmd,
+    const FrameRecordParams& params,
+    const RenderPassExecutionHooks& hooks) const {
+  if (lastFrameExecutionStatuses_.empty() || executionOrderDirty_ ||
+      activePlanDirty_ || preparedFramePlanDirty_) {
+    prepareFrame(params);
+  }
+
+  const std::vector<uint32_t> executionOrder = lastFrameExecutionOrder_;
+  executing_ = true;
+  struct ExecutingGuard {
+    const RenderGraph& graph;
+    ~ExecutingGuard() { graph.executing_ = false; }
+  } executingGuard{*this};
   for (uint32_t index : executionOrder) {
     const auto& pass = passes_[index];
     if (pass.record) {
@@ -1026,6 +1091,7 @@ bool RenderGraph::setPassEnabled(RenderPassId id, bool enabled) {
   if (pass->enabled != enabled) {
     pass->enabled = enabled;
     activePlanDirty_ = true;
+    invalidatePreparedFrame();
   }
   return true;
 }
@@ -1036,6 +1102,17 @@ bool RenderGraph::setPassRecord(RenderPassId id, RenderPassNode::RecordFn fn) {
 
   pass->record = std::move(fn);
   activePlanDirty_ = true;
+  invalidatePreparedFrame();
+  return true;
+}
+
+bool RenderGraph::setPassReadiness(RenderPassId id,
+                                   RenderPassNode::ReadinessFn fn) {
+  RenderPassNode* pass = mutablePass(id);
+  if (pass == nullptr) return false;
+
+  pass->readiness = std::move(fn);
+  invalidatePreparedFrame();
   return true;
 }
 
@@ -1060,6 +1137,7 @@ bool RenderGraph::setPassScheduleDependencies(
       scheduleDependencies.begin(), scheduleDependencies.end());
   executionOrderDirty_ = true;
   activePlanDirty_ = true;
+  invalidatePreparedFrame();
   return true;
 }
 
@@ -1094,6 +1172,7 @@ bool RenderGraph::setPassResourceAccess(
   pass->writes.assign(writes.begin(), writes.end());
   executionOrderDirty_ = true;
   activePlanDirty_ = true;
+  invalidatePreparedFrame();
   return true;
 }
 
@@ -1114,6 +1193,7 @@ bool RenderGraph::setPassResourceTransitions(
 
   validateResourceTransitions(id, transitions);
   pass->transitions.assign(transitions.begin(), transitions.end());
+  invalidatePreparedFrame();
   return true;
 }
 
@@ -1146,11 +1226,32 @@ std::span<const RenderPassExecutionStatus> RenderGraph::executionStatuses() cons
   return executionStatuses_;
 }
 
+std::span<const RenderPassId> RenderGraph::lastFrameActiveExecutionPassIds() const {
+  if (lastFrameExecutionStatuses_.empty()) {
+    return activeExecutionPassIds();
+  }
+  return lastFrameActiveExecutionPassIds_;
+}
+
+std::span<const RenderPassExecutionStatus>
+RenderGraph::lastFrameExecutionStatuses() const {
+  if (lastFrameExecutionStatuses_.empty()) {
+    return executionStatuses();
+  }
+  return lastFrameExecutionStatuses_;
+}
+
 const RenderPassExecutionStatus* RenderGraph::executionStatus(
     RenderPassId id) const {
-  ensureActivePlan();
+  if (executing_ && !lastFrameExecutionStatuses_.empty()) {
+    const uint32_t runtimeIndex = indexFor(id);
+    return runtimeIndex != kMissingPassIndex
+               ? &lastFrameExecutionStatuses_[runtimeIndex]
+               : nullptr;
+  }
 
   const uint32_t index = indexFor(id);
+  ensureActivePlan();
   return index != kMissingPassIndex ? &executionStatuses_[index] : nullptr;
 }
 
@@ -1171,12 +1272,17 @@ void RenderGraph::clear() {
   activeExecutionOrder_.clear();
   executionPassIds_.clear();
   activeExecutionPassIds_.clear();
+  lastFrameExecutionOrder_.clear();
+  lastFrameActiveExecutionPassIds_.clear();
   activePasses_.clear();
   executionStatuses_.clear();
+  lastFrameExecutionStatuses_.clear();
   resourceEdges_.clear();
   executionOrderDirty_ = false;
   activePlanDirty_ = true;
+  preparedFramePlanDirty_ = true;
   activePlanSignature_ = 0;
+  executing_ = false;
 }
 
 uint32_t RenderGraph::indexFor(RenderPassId id) const {
@@ -1280,6 +1386,10 @@ uint64_t RenderGraph::computeActivePlanSignature() const {
   return signature;
 }
 
+void RenderGraph::invalidatePreparedFrame() {
+  preparedFramePlanDirty_ = true;
+}
+
 void RenderGraph::ensureActivePlan() const {
   ensureCompiled();
 
@@ -1289,6 +1399,107 @@ void RenderGraph::ensureActivePlan() const {
   rebuildActiveExecutionOrder();
   activePlanSignature_ = signature;
   activePlanDirty_ = false;
+}
+
+void RenderGraph::rebuildFrameExecutionOrder(
+    const FrameRecordParams& params) const {
+  ensureActivePlan();
+
+  lastFrameExecutionOrder_.clear();
+  lastFrameActiveExecutionPassIds_.clear();
+  lastFrameExecutionStatuses_ = executionStatuses_;
+
+  std::vector<uint8_t> frameActivePasses(passes_.size(), 0u);
+  std::array<uint8_t, kRenderResourceIdCount> availableResources{};
+  for (size_t i = 0; i < availableResources.size(); ++i) {
+    const auto resourceId = static_cast<RenderResourceId>(i);
+    availableResources[i] = isExternalRenderResource(resourceId) ? 1u : 0u;
+  }
+
+  auto findInactiveRequiredPass =
+      [&](const RenderPassNode& pass) -> RenderPassId {
+    for (RenderPassId dependencyId : renderPassDependencies(pass.id)) {
+      const uint32_t dependencyIndex = indexFor(dependencyId);
+      if (dependencyIndex != kMissingPassIndex &&
+          frameActivePasses[dependencyIndex] == 0u) {
+        return dependencyId;
+      }
+    }
+    return RenderPassId::Invalid;
+  };
+
+  auto findMissingRequiredResource =
+      [&](const RenderPassNode& pass) -> RenderResourceId {
+    for (RenderResourceId resourceId : pass.reads) {
+      if (!isValidResource(resourceId)) continue;
+      if (isExternalRenderResource(resourceId)) continue;
+      if (availableResources[static_cast<size_t>(resourceId)] == 0u) {
+        return resourceId;
+      }
+    }
+    return RenderResourceId::Invalid;
+  };
+
+  auto skipPass = [&](uint32_t index,
+                      RenderPassSkipReason reason,
+                      RenderPassId blockingPass = RenderPassId::Invalid,
+                      RenderResourceId blockingResource =
+                          RenderResourceId::Invalid) {
+    auto& status = lastFrameExecutionStatuses_[index];
+    status.active = false;
+    status.skipReason = reason;
+    status.blockingPass = blockingPass;
+    status.blockingResource = blockingResource;
+  };
+
+  for (uint32_t index : executionOrder_) {
+    const RenderPassNode& pass = passes_[index];
+    auto& status = lastFrameExecutionStatuses_[index];
+
+    if (!status.active) {
+      continue;
+    }
+
+    const RenderPassId inactivePass = findInactiveRequiredPass(pass);
+    if (inactivePass != RenderPassId::Invalid) {
+      skipPass(index, RenderPassSkipReason::MissingPassDependency,
+               inactivePass);
+      continue;
+    }
+
+    const RenderResourceId missingResource = findMissingRequiredResource(pass);
+    if (missingResource != RenderResourceId::Invalid) {
+      skipPass(index, RenderPassSkipReason::MissingResource,
+               RenderPassId::Invalid, missingResource);
+      continue;
+    }
+
+    if (pass.readiness) {
+      RenderPassReadiness readiness = pass.readiness(params);
+      if (!readiness.ready) {
+        RenderPassSkipReason reason = readiness.skipReason;
+        if (reason == RenderPassSkipReason::None) {
+          reason = RenderPassSkipReason::NotNeeded;
+        }
+        skipPass(index, reason, readiness.blockingPass,
+                 readiness.blockingResource);
+        continue;
+      }
+    }
+
+    frameActivePasses[index] = 1u;
+    lastFrameExecutionOrder_.push_back(index);
+    lastFrameActiveExecutionPassIds_.push_back(pass.id);
+    status.active = true;
+    status.skipReason = RenderPassSkipReason::None;
+    status.blockingPass = RenderPassId::Invalid;
+    status.blockingResource = RenderResourceId::Invalid;
+
+    for (RenderResourceId resourceId : pass.writes) {
+      if (!isValidResource(resourceId)) continue;
+      availableResources[static_cast<size_t>(resourceId)] = 1u;
+    }
+  }
 }
 
 void RenderGraph::rebuildActiveExecutionOrder() const {

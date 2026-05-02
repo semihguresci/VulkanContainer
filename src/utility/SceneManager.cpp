@@ -79,6 +79,17 @@ bool isProceduralSphereEntry(std::string_view entry) {
   return entry == "__procedural_uv_sphere__";
 }
 
+bool hasMaterialTexture(uint32_t textureIndex) {
+  return textureIndex != std::numeric_limits<uint32_t>::max();
+}
+
+bool isForwardTransparentMaterial(
+    const container::material::Material& material) {
+  return material.alphaMode == container::material::AlphaMode::Blend ||
+         material.transmissionFactor > 0.001f ||
+         hasMaterialTexture(material.transmissionTextureIndex);
+}
+
 float sanitizeImportScale(float scale) {
   if (!std::isfinite(scale) || scale <= 0.0f) {
     return 1.0f;
@@ -606,7 +617,7 @@ container::gpu::GpuTextureTransform makeGpuTextureTransform(
       glm::vec4(transform.scale.x * sinRotation,
                 transform.scale.y * cosRotation,
                 transform.offset.y,
-                0.0f);
+                static_cast<float>(transform.channel));
   return gpuTransform;
 }
 
@@ -857,8 +868,7 @@ MaterialRenderProperties SceneManager::materialRenderProperties(
     return properties;
   }
 
-  properties.transparent =
-      material->alphaMode == container::material::AlphaMode::Blend;
+  properties.transparent = isForwardTransparentMaterial(*material);
   properties.alphaMasked =
       material->alphaMode == container::material::AlphaMode::Mask;
   properties.doubleSided = material->doubleSided;
@@ -1508,7 +1518,7 @@ float SceneManager::resolveMaterialAlphaCutoff(uint32_t materialIndex) const {
 
 bool SceneManager::isMaterialTransparent(uint32_t materialIndex) const {
   if (const auto* m = materialManager_.getMaterial(materialIndex)) {
-    return m->alphaMode == container::material::AlphaMode::Blend;
+    return isForwardTransparentMaterial(*m);
   }
   return false;
 }

@@ -45,6 +45,17 @@ void World::forEachRenderable(const RenderableVisitor &visitor) const {
   }
 }
 
+void World::forEachRenderableWithNode(
+    const RenderableWithNodeVisitor &visitor) const {
+  auto view =
+      registry_.view<const TransformComponent, const MeshComponent,
+                     const MaterialComponent, const SceneNodeRef,
+                     const RenderableTag>();
+  for (auto [entity, transform, mesh, material, node] : view.each()) {
+    visitor(transform, mesh, material, node);
+  }
+}
+
 entt::entity
 World::createPointLight(const container::gpu::PointLightData &data) {
   const auto entity = registry_.create();

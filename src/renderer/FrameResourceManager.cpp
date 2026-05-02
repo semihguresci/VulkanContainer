@@ -141,6 +141,21 @@ void FrameResourceManager::validateOitFormatSupport() const {
         "GPU does not support R32_UINT storage/transfer images for exact OIT");
 }
 
+void FrameResourceManager::validatePickIdFormatSupport() const {
+  VkFormatProperties props{};
+  vkGetPhysicalDeviceFormatProperties(device_->physicalDevice(),
+                                      formats_.pickId, &props);
+  constexpr VkFormatFeatureFlags kRequiredPickFeatures =
+      VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT |
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+      VK_FORMAT_FEATURE_TRANSFER_SRC_BIT;
+  if ((props.optimalTilingFeatures & kRequiredPickFeatures) !=
+      kRequiredPickFeatures) {
+    throw std::runtime_error(
+        "GPU does not support R32_UINT color/transfer images for picking");
+  }
+}
+
 // -----------------------------------------------------------------------
 uint32_t FrameResourceManager::computeOitNodeCapacity() const {
   const VkExtent2D ext = swapChain_->extent();
@@ -189,6 +204,7 @@ void FrameResourceManager::create(
     VkRenderPass                             bimDepthPrepassPass,
     VkRenderPass                             gBufferPass,
     VkRenderPass                             bimGBufferPass,
+    VkRenderPass                             transparentPickPass,
     VkRenderPass                             lightingPass,
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
@@ -199,9 +215,11 @@ void FrameResourceManager::create(
   bimDepthPrepassPass_ = bimDepthPrepassPass;
   gBufferPass_      = gBufferPass;
   bimGBufferPass_   = bimGBufferPass;
+  transparentPickPass_ = transparentPickPass;
   lightingPass_     = lightingPass;
 
   validateOitFormatSupport();
+  validatePickIdFormatSupport();
   ensureFallbackTileGridBuffer();
   ensureFallbackExposureStateBuffer();
 
@@ -298,6 +316,11 @@ void FrameResourceManager::create(
     f.specular = createAttachment(formats_.specular,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
+    f.pickId = createAttachment(formats_.pickId,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
+                       VK_IMAGE_USAGE_SAMPLED_BIT |
+                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT);
     f.sceneColor = createAttachment(formats_.sceneColor,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
@@ -324,8 +347,17 @@ void FrameResourceManager::create(
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
             VMA_ALLOCATION_CREATE_MAPPED_BIT);
     f.depthStencil = createAttachment(formats_.depthStencil,
-                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                       VK_IMAGE_USAGE_SAMPLED_BIT |
+                       VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                    VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    f.pickDepth = createAttachment(formats_.depthStencil,
+                   VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
+                       VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+                   VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    transitionToDepthAttachment(
+        f.pickDepth.image,
+        VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
 
     // Create a depth-only image view for shader sampling.
     {
@@ -369,9 +401,10 @@ void FrameResourceManager::create(
 
     // GBuffer framebuffer
     {
-      std::array<VkImageView, 6> views = {f.albedo.view, f.normal.view,
+      std::array<VkImageView, 7> views = {f.albedo.view, f.normal.view,
                                           f.material.view, f.emissive.view,
-                                          f.specular.view, f.depthStencil.view};
+                                          f.specular.view, f.pickId.view,
+                                          f.depthStencil.view};
       VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
       fbi.renderPass      = gBufferPass_;
       fbi.attachmentCount = static_cast<uint32_t>(views.size());
@@ -385,9 +418,10 @@ void FrameResourceManager::create(
 
     // BIM GBuffer framebuffer
     {
-      std::array<VkImageView, 6> views = {f.albedo.view, f.normal.view,
+      std::array<VkImageView, 7> views = {f.albedo.view, f.normal.view,
                                           f.material.view, f.emissive.view,
-                                          f.specular.view, f.depthStencil.view};
+                                          f.specular.view, f.pickId.view,
+                                          f.depthStencil.view};
       VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
       fbi.renderPass      = bimGBufferPass_;
       fbi.attachmentCount = static_cast<uint32_t>(views.size());
@@ -398,6 +432,23 @@ void FrameResourceManager::create(
       if (vkCreateFramebuffer(dev, &fbi, nullptr,
                               &f.bimGBufferFramebuffer) != VK_SUCCESS)
         throw std::runtime_error("failed to create BIM GBuffer framebuffer");
+    }
+
+    // Transparent pick framebuffer
+    {
+      std::array<VkImageView, 2> views = {f.pickId.view, f.pickDepth.view};
+      VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+      fbi.renderPass = transparentPickPass_;
+      fbi.attachmentCount = static_cast<uint32_t>(views.size());
+      fbi.pAttachments = views.data();
+      fbi.width = ext.width;
+      fbi.height = ext.height;
+      fbi.layers = 1;
+      if (vkCreateFramebuffer(dev, &fbi, nullptr,
+                              &f.transparentPickFramebuffer) != VK_SUCCESS) {
+        throw std::runtime_error(
+            "failed to create transparent pick framebuffer");
+      }
     }
 
     // Lighting framebuffer
@@ -430,6 +481,7 @@ void FrameResourceManager::destroy() {
     destroyFB(f.bimDepthPrepassFramebuffer);
     destroyFB(f.gBufferFramebuffer);
     destroyFB(f.bimGBufferFramebuffer);
+    destroyFB(f.transparentPickFramebuffer);
     destroyFB(f.lightingFramebuffer);
 
     destroyAttachment(f.albedo);
@@ -437,6 +489,8 @@ void FrameResourceManager::destroy() {
     destroyAttachment(f.material);
     destroyAttachment(f.emissive);
     destroyAttachment(f.specular);
+    destroyAttachment(f.pickId);
+    destroyAttachment(f.pickDepth);
     if (f.depthSamplingView != VK_NULL_HANDLE) {
       vkDestroyImageView(dev, f.depthSamplingView, nullptr);
       f.depthSamplingView = VK_NULL_HANDLE;
@@ -852,6 +906,29 @@ void FrameResourceManager::transitionToGeneral(VkImage image,
   vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
                        VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
                            VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       0, 0, nullptr, 0, nullptr, 1, &b);
+
+  endImmediate(cmd);
+}
+
+void FrameResourceManager::transitionToDepthAttachment(
+    VkImage image, VkImageAspectFlags mask) const {
+  VkCommandBuffer cmd = beginImmediate();
+
+  VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+  b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  b.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  b.image = image;
+  b.subresourceRange = {mask, 0, 1, 0, 1};
+  b.srcAccessMask = 0;
+  b.dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                    VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                       VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
+                           VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
                        0, 0, nullptr, 0, nullptr, 1, &b);
 
   endImmediate(cmd);

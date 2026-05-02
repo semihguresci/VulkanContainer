@@ -20,6 +20,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/FrameRecorder.cpp
     renderer/RenderGraph.cpp
     renderer/RenderPassGpuProfiler.cpp
+    renderer/RenderSurfaceInteractionController.cpp
     renderer/RendererTelemetry.cpp
     renderer/VulkanContextInitializer.cpp
     renderer/WindowInputBridge.cpp

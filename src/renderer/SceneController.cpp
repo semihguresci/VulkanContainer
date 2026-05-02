@@ -34,6 +34,138 @@ bool transformFlipsWinding(const glm::mat4& transform) {
   return determinant < 0.0f;
 }
 
+bool intersectRaySphere(const glm::vec3& origin, const glm::vec3& direction,
+                        const glm::vec3& center, float radius,
+                        float& outDistance) {
+  if (radius <= 0.0f) {
+    return false;
+  }
+
+  const glm::vec3 toCenter = center - origin;
+  const float projected = glm::dot(toCenter, direction);
+  const float centerDistance2 = glm::dot(toCenter, toCenter);
+  const float radius2 = radius * radius;
+  const float closestDistance2 =
+      centerDistance2 - projected * projected;
+  if (closestDistance2 > radius2) {
+    return false;
+  }
+
+  const float halfChord =
+      std::sqrt(std::max(0.0f, radius2 - closestDistance2));
+  const float t0 = projected - halfChord;
+  const float t1 = projected + halfChord;
+  if (t1 < 0.0f) {
+    return false;
+  }
+
+  outDistance = t0 >= 0.0f ? t0 : 0.0f;
+  return true;
+}
+
+enum class TriangleCullMode {
+  None,
+  Back,
+  Front,
+};
+
+struct PickRay {
+  glm::vec3 origin{0.0f};
+  glm::vec3 direction{0.0f, 0.0f, -1.0f};
+  bool valid{false};
+};
+
+PickRay makePickRay(const container::gpu::CameraData& cameraData,
+                    VkExtent2D viewportExtent,
+                    double cursorX,
+                    double cursorY) {
+  if (viewportExtent.width == 0u || viewportExtent.height == 0u) {
+    return {};
+  }
+
+  const float ndcX =
+      static_cast<float>((cursorX / static_cast<double>(viewportExtent.width)) *
+                             2.0 -
+                         1.0);
+  const float ndcY =
+      static_cast<float>(1.0 -
+                         (cursorY / static_cast<double>(viewportExtent.height)) *
+                             2.0);
+
+  const glm::vec4 nearClip{ndcX, ndcY, 1.0f, 1.0f};
+  const glm::vec4 farClip{ndcX, ndcY, 0.0f, 1.0f};
+  glm::vec4 nearWorld = cameraData.inverseViewProj * nearClip;
+  glm::vec4 farWorld = cameraData.inverseViewProj * farClip;
+  if (nearWorld.w == 0.0f || farWorld.w == 0.0f) {
+    return {};
+  }
+  nearWorld /= nearWorld.w;
+  farWorld /= farWorld.w;
+
+  PickRay ray{};
+  ray.origin = glm::vec3(nearWorld);
+  const glm::vec3 farPoint = glm::vec3(farWorld);
+  ray.direction = farPoint - ray.origin;
+  const float rayLength = glm::length(ray.direction);
+  if (rayLength <= 0.0001f) {
+    return {};
+  }
+  ray.direction /= rayLength;
+  ray.valid = true;
+  return ray;
+}
+
+bool intersectRayTriangle(const glm::vec3& origin,
+                          const glm::vec3& direction,
+                          const glm::vec3& v0,
+                          const glm::vec3& v1,
+                          const glm::vec3& v2,
+                          TriangleCullMode cullMode,
+                          float& outDistance) {
+  constexpr float kEpsilon = 0.0000001f;
+  const glm::vec3 edge1 = v1 - v0;
+  const glm::vec3 edge2 = v2 - v0;
+  const glm::vec3 pvec = glm::cross(direction, edge2);
+  const float determinant = glm::dot(edge1, pvec);
+  if ((cullMode == TriangleCullMode::Back && determinant <= kEpsilon) ||
+      (cullMode == TriangleCullMode::Front && determinant >= -kEpsilon) ||
+      (cullMode == TriangleCullMode::None &&
+       std::abs(determinant) <= kEpsilon)) {
+    return false;
+  }
+
+  const float inverseDeterminant = 1.0f / determinant;
+  const glm::vec3 tvec = origin - v0;
+  const float u = glm::dot(tvec, pvec) * inverseDeterminant;
+  if (u < 0.0f || u > 1.0f) {
+    return false;
+  }
+
+  const glm::vec3 qvec = glm::cross(tvec, edge1);
+  const float v = glm::dot(direction, qvec) * inverseDeterminant;
+  if (v < 0.0f || u + v > 1.0f) {
+    return false;
+  }
+
+  const float distance = glm::dot(edge2, qvec) * inverseDeterminant;
+  if (distance < 0.0f) {
+    return false;
+  }
+
+  outDistance = distance;
+  return true;
+}
+
+float projectDepth(const container::gpu::CameraData& cameraData,
+                   const glm::vec3& worldPosition) {
+  const glm::vec4 clip =
+      cameraData.viewProj * glm::vec4(worldPosition, 1.0f);
+  if (clip.w == 0.0f) {
+    return 0.0f;
+  }
+  return std::clamp(clip.z / clip.w, 0.0f, 1.0f);
+}
+
 }  // namespace
 
 SceneController::SceneController(
@@ -249,6 +381,7 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
   world_->syncFromSceneGraph(sceneGraph_);
 
   objectData_.clear();
+  objectNodeIndices_.clear();
   opaqueDrawCommands_.clear();
   transparentDrawCommands_.clear();
   opaqueSingleSidedDrawCommands_.clear();
@@ -259,6 +392,7 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
   transparentDoubleSidedDrawCommands_.clear();
   const uint32_t renderableCount = world_->renderableCount();
   objectData_.reserve(renderableCount);
+  objectNodeIndices_.reserve(renderableCount);
   opaqueDrawCommands_.reserve(renderableCount);
   transparentDrawCommands_.reserve(renderableCount);
   opaqueSingleSidedDrawCommands_.reserve(renderableCount);
@@ -268,10 +402,11 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
   transparentWindingFlippedDrawCommands_.reserve(renderableCount);
   transparentDoubleSidedDrawCommands_.reserve(renderableCount);
 
-  world_->forEachRenderable(
+  world_->forEachRenderableWithNode(
       [this](const container::ecs::TransformComponent& transform,
              const container::ecs::MeshComponent&      mesh,
-             const container::ecs::MaterialComponent&   material) {
+             const container::ecs::MaterialComponent&   material,
+             const container::ecs::SceneNodeRef&        nodeRef) {
         if (mesh.primitiveIndex == std::numeric_limits<uint32_t>::max() ||
             mesh.primitiveIndex >= sceneManager_.primitiveRanges().size()) {
           return;
@@ -321,6 +456,7 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
         const uint32_t objectIndex =
             static_cast<uint32_t>(objectData_.size());
         objectData_.push_back(object);
+        objectNodeIndices_.push_back(nodeRef.nodeIndex);
 
         DrawCommand drawCommand{};
         drawCommand.objectIndex = objectIndex;
@@ -372,6 +508,7 @@ void SceneController::syncObjectDataFromSceneGraph(bool showDiagCube) {
     cubeObject.objectInfo.x = sceneManager_.diagnosticMaterialIndex();
     diagCubeObjectIndex_ = static_cast<uint32_t>(objectData_.size());
     objectData_.push_back(cubeObject);
+    objectNodeIndices_.push_back(container::scene::SceneGraph::kInvalidNode);
   }
 
   cachedSceneGraphRevision_ = sceneGraph_.revision();
@@ -409,6 +546,203 @@ bool SceneController::updateObjectBuffer(
     objectBufferUploadDirty_ = false;
   }
   return bufferRecreated;
+}
+
+uint32_t SceneController::pickRenderableNode(
+    const container::gpu::CameraData& cameraData,
+    VkExtent2D viewportExtent,
+    double cursorX,
+    double cursorY) const {
+  return pickRenderableNodeHit(cameraData, viewportExtent, cursorX, cursorY)
+      .nodeIndex;
+}
+
+SceneNodePickHit SceneController::pickRenderableNodeHit(
+    const container::gpu::CameraData& cameraData,
+    VkExtent2D viewportExtent,
+    double cursorX,
+    double cursorY) const {
+  return pickRenderableNodeHitForDraws(cameraData, viewportExtent, cursorX,
+                                       cursorY, true, true);
+}
+
+SceneNodePickHit SceneController::pickTransparentRenderableNodeHit(
+    const container::gpu::CameraData& cameraData,
+    VkExtent2D viewportExtent,
+    double cursorX,
+    double cursorY) const {
+  return pickRenderableNodeHitForDraws(cameraData, viewportExtent, cursorX,
+                                       cursorY, false, true);
+}
+
+SceneNodePickHit SceneController::pickRenderableNodeHitForDraws(
+    const container::gpu::CameraData& cameraData,
+    VkExtent2D viewportExtent,
+    double cursorX,
+    double cursorY,
+    bool includeOpaque,
+    bool includeTransparent) const {
+  if (objectData_.empty()) {
+    return {};
+  }
+
+  const PickRay ray = makePickRay(cameraData, viewportExtent, cursorX, cursorY);
+  if (!ray.valid) {
+    return {};
+  }
+
+  const auto& vertices = sceneManager_.vertices();
+  const auto& indices = sceneManager_.indices();
+  SceneNodePickHit nearest{};
+  auto testDrawCommands = [&](const std::vector<DrawCommand>& commands,
+                              TriangleCullMode cullMode) {
+    for (const DrawCommand& command : commands) {
+      if (command.firstIndex >= indices.size() || command.indexCount < 3u) {
+        continue;
+      }
+      const size_t firstIndex = command.firstIndex;
+      const size_t indexCount =
+          std::min(static_cast<size_t>(command.indexCount),
+                   indices.size() - firstIndex);
+      const size_t endIndex = firstIndex + indexCount;
+      const uint32_t instanceCount = std::max(command.instanceCount, 1u);
+
+      for (uint32_t instanceOffset = 0u; instanceOffset < instanceCount;
+           ++instanceOffset) {
+        if (command.objectIndex >
+            std::numeric_limits<uint32_t>::max() - instanceOffset) {
+          break;
+        }
+        const uint32_t objectIndex = command.objectIndex + instanceOffset;
+        if (objectIndex >= objectData_.size() ||
+            objectIndex >= objectNodeIndices_.size()) {
+          continue;
+        }
+        const uint32_t nodeIndex = objectNodeIndices_[objectIndex];
+        if (nodeIndex == container::scene::SceneGraph::kInvalidNode) {
+          continue;
+        }
+
+        const glm::vec4 sphere = objectData_[objectIndex].boundingSphere;
+        float sphereDistance = 0.0f;
+        if (sphere.w > 0.0f &&
+            (!intersectRaySphere(ray.origin, ray.direction, glm::vec3(sphere),
+                                 sphere.w, sphereDistance) ||
+             sphereDistance > nearest.distance)) {
+          continue;
+        }
+
+        const glm::mat4& model = objectData_[objectIndex].model;
+        for (size_t index = firstIndex; index + 2u < endIndex; index += 3u) {
+          const uint32_t i0 = indices[index];
+          const uint32_t i1 = indices[index + 1u];
+          const uint32_t i2 = indices[index + 2u];
+          if (i0 >= vertices.size() || i1 >= vertices.size() ||
+              i2 >= vertices.size()) {
+            continue;
+          }
+
+          const glm::vec3 v0 =
+              glm::vec3(model * glm::vec4(vertices[i0].position, 1.0f));
+          const glm::vec3 v1 =
+              glm::vec3(model * glm::vec4(vertices[i1].position, 1.0f));
+          const glm::vec3 v2 =
+              glm::vec3(model * glm::vec4(vertices[i2].position, 1.0f));
+          float hitDistance = 0.0f;
+          if (intersectRayTriangle(ray.origin, ray.direction, v0, v1, v2,
+                                   cullMode, hitDistance) &&
+              hitDistance < nearest.distance) {
+            const glm::vec3 hitPosition =
+                ray.origin + ray.direction * hitDistance;
+            nearest.nodeIndex = nodeIndex;
+            nearest.distance = hitDistance;
+            nearest.depth = projectDepth(cameraData, hitPosition);
+            nearest.hit = true;
+          }
+        }
+      }
+    }
+  };
+
+  const bool hasSplitDrawCommands =
+      !opaqueSingleSidedDrawCommands_.empty() ||
+      !transparentSingleSidedDrawCommands_.empty() ||
+      !opaqueWindingFlippedDrawCommands_.empty() ||
+      !transparentWindingFlippedDrawCommands_.empty() ||
+      !opaqueDoubleSidedDrawCommands_.empty() ||
+      !transparentDoubleSidedDrawCommands_.empty();
+  if (hasSplitDrawCommands) {
+    if (includeOpaque) {
+      testDrawCommands(opaqueSingleSidedDrawCommands_, TriangleCullMode::Back);
+    }
+    if (includeTransparent) {
+      testDrawCommands(transparentSingleSidedDrawCommands_,
+                       TriangleCullMode::Back);
+    }
+    if (includeOpaque) {
+      testDrawCommands(opaqueWindingFlippedDrawCommands_,
+                       TriangleCullMode::Front);
+    }
+    if (includeTransparent) {
+      testDrawCommands(transparentWindingFlippedDrawCommands_,
+                       TriangleCullMode::Front);
+    }
+    if (includeOpaque) {
+      testDrawCommands(opaqueDoubleSidedDrawCommands_, TriangleCullMode::None);
+    }
+    if (includeTransparent) {
+      testDrawCommands(transparentDoubleSidedDrawCommands_,
+                       TriangleCullMode::None);
+    }
+  } else {
+    if (includeOpaque) {
+      testDrawCommands(opaqueDrawCommands_, TriangleCullMode::None);
+    }
+    if (includeTransparent) {
+      testDrawCommands(transparentDrawCommands_, TriangleCullMode::None);
+    }
+  }
+
+  return nearest;
+}
+
+uint32_t SceneController::nodeIndexForObject(uint32_t objectIndex) const {
+  if (objectIndex >= objectNodeIndices_.size()) {
+    return container::scene::SceneGraph::kInvalidNode;
+  }
+  return objectNodeIndices_[objectIndex];
+}
+
+void SceneController::collectDrawCommandsForNode(
+    uint32_t nodeIndex, std::vector<DrawCommand>& outCommands) const {
+  outCommands.clear();
+  if (nodeIndex == container::scene::SceneGraph::kInvalidNode) {
+    return;
+  }
+
+  auto appendMatching = [&](const std::vector<DrawCommand>& commands) {
+    for (const DrawCommand& command : commands) {
+      const uint32_t instanceCount = std::max(command.instanceCount, 1u);
+      for (uint32_t instanceOffset = 0u; instanceOffset < instanceCount;
+           ++instanceOffset) {
+        if (command.objectIndex >
+            std::numeric_limits<uint32_t>::max() - instanceOffset) {
+          break;
+        }
+        const uint32_t objectIndex = command.objectIndex + instanceOffset;
+        if (objectIndex < objectNodeIndices_.size() &&
+            objectNodeIndices_[objectIndex] == nodeIndex) {
+          DrawCommand selected = command;
+          selected.objectIndex = objectIndex;
+          selected.instanceCount = 1u;
+          outCommands.push_back(selected);
+        }
+      }
+    }
+  };
+
+  appendMatching(opaqueDrawCommands_);
+  appendMatching(transparentDrawCommands_);
 }
 
 // ---------------------------------------------------------------------------

@@ -55,9 +55,12 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     uint objectIndex = ResolveObjectIndex(pc.objectIndex, instanceID, startInstance);
     ObjectBuffer obj = uObjects[objectIndex];
     GpuMaterial material = uMaterials[obj.objectInfo.x];
+    float2 heightTexCoord = ApplyGpuTextureTransform(
+        input.inTexCoord, input.inTexCoord1, material.heightTextureTransform);
     float3 objectPosition = ApplyHeightDisplacement(
-        input.inPosition, input.inNormal, input.inTexCoord,
-        material.heightTextureIndex, material.heightScale, material.heightOffset);
+        input.inPosition, input.inNormal, heightTexCoord,
+        material.heightTextureIndex, material.heightTextureTransform,
+        material.heightScale, material.heightOffset);
     float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     output.pos = mul(uShadow.cascades[pc.cascadeIndex].viewProj, worldPos);
     output.texCoord = input.inTexCoord;
@@ -80,10 +83,10 @@ void fragMain(VSOutput input)
         discard;
     }
 
+    GpuMaterial material = uMaterials[uObjects[input.objectIndex].objectInfo.x];
     float alpha = input.baseColorAlpha;
     if (input.baseColorTextureIndex != 0xffffffff)
     {
-        GpuMaterial material = uMaterials[uObjects[input.objectIndex].objectInfo.x];
         float2 baseColorTexCoord = ApplyGpuTextureTransform(
             input.texCoord, input.texCoord1,
             material.baseColorTextureTransform);
@@ -91,7 +94,10 @@ void fragMain(VSOutput input)
             input.baseColorTextureIndex, baseColorTexCoord, 1.0.xxxx).a;
     }
     alpha = EvaluateOpacity(
-        alpha, input.opacityTextureIndex, input.opacityFactor, input.texCoord);
+        alpha, input.opacityTextureIndex, input.opacityFactor,
+        ApplyGpuTextureTransform(input.texCoord, input.texCoord1,
+                                 material.opacityTextureTransform),
+        material.opacityTextureTransform);
 
     if ((input.flags & kObjectFlagAlphaMask) != 0u &&
         !AlphaMaskPass(alpha, input.alphaCutoff, input.pos))

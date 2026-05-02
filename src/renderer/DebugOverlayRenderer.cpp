@@ -2,21 +2,36 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 
 namespace container::renderer {
 
 using container::gpu::BindlessPushConstants;
 
+namespace {
+
+constexpr uint32_t kIndirectObjectIndex = std::numeric_limits<uint32_t>::max();
+
+uint32_t drawInstanceCount(const DrawCommand& command) {
+  return std::max(command.instanceCount, 1u);
+}
+
+}  // namespace
+
 void DebugOverlayRenderer::drawScene(VkCommandBuffer cmd,
                                       VkPipelineLayout layout,
                                       const std::vector<DrawCommand>& commands,
                                       BindlessPushConstants& pc) const {
+  if (commands.empty()) {
+    return;
+  }
+  pc.objectIndex = kIndirectObjectIndex;
+  vkCmdPushConstants(cmd, layout,
+                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                     0, sizeof(BindlessPushConstants), &pc);
   for (const DrawCommand& dc : commands) {
-    pc.objectIndex = dc.objectIndex;
-    vkCmdPushConstants(cmd, layout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(BindlessPushConstants), &pc);
-    vkCmdDrawIndexed(cmd, dc.indexCount, 1, dc.firstIndex, 0, dc.objectIndex);
+    vkCmdDrawIndexed(cmd, dc.indexCount, drawInstanceCount(dc), dc.firstIndex,
+                     0, dc.objectIndex);
   }
 }
 
@@ -27,14 +42,18 @@ void DebugOverlayRenderer::drawWireframe(VkCommandBuffer cmd,
                                           float intensity,
                                           float lineWidth,
                                           WireframePushConstants& pc) const {
+  if (commands.empty()) {
+    return;
+  }
+  pc.objectIndex = kIndirectObjectIndex;
   pc.colorIntensity = glm::vec4(color, std::clamp(intensity, 0.0f, 1.0f));
   pc.lineWidth      = std::max(lineWidth, 1.0f);
+  vkCmdPushConstants(cmd, layout,
+                     VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                     0, sizeof(WireframePushConstants), &pc);
   for (const DrawCommand& dc : commands) {
-    pc.objectIndex = dc.objectIndex;
-    vkCmdPushConstants(cmd, layout,
-                       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
-                       0, sizeof(WireframePushConstants), &pc);
-    vkCmdDrawIndexed(cmd, dc.indexCount, 1, dc.firstIndex, 0, dc.objectIndex);
+    vkCmdDrawIndexed(cmd, dc.indexCount, drawInstanceCount(dc), dc.firstIndex,
+                     0, dc.objectIndex);
   }
 }
 
@@ -53,12 +72,17 @@ void DebugOverlayRenderer::recordNormalValidation(
       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
       VK_SHADER_STAGE_FRAGMENT_BIT;
 
+  if (opaque.empty() && transparent.empty()) {
+    return;
+  }
+  pc.objectIndex = kIndirectObjectIndex;
+  vkCmdPushConstants(cmd, layout, kStages, 0,
+                     sizeof(NormalValidationPushConstants), &pc);
+
   auto draw = [&](const std::vector<DrawCommand>& cmds) {
     for (const DrawCommand& dc : cmds) {
-      pc.objectIndex = dc.objectIndex;
-      vkCmdPushConstants(cmd, layout, kStages, 0,
-                         sizeof(NormalValidationPushConstants), &pc);
-      vkCmdDrawIndexed(cmd, dc.indexCount, 1, dc.firstIndex, 0, dc.objectIndex);
+      vkCmdDrawIndexed(cmd, dc.indexCount, drawInstanceCount(dc),
+                       dc.firstIndex, 0, dc.objectIndex);
     }
   };
   draw(opaque);
@@ -78,12 +102,17 @@ void DebugOverlayRenderer::recordSurfaceNormals(
       VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
       VK_SHADER_STAGE_FRAGMENT_BIT;
 
+  if (opaque.empty() && transparent.empty()) {
+    return;
+  }
+  pc.objectIndex = kIndirectObjectIndex;
+  vkCmdPushConstants(cmd, layout, kStages, 0,
+                     sizeof(SurfaceNormalPushConstants), &pc);
+
   auto draw = [&](const std::vector<DrawCommand>& cmds) {
     for (const DrawCommand& dc : cmds) {
-      pc.objectIndex = dc.objectIndex;
-      vkCmdPushConstants(cmd, layout, kStages, 0,
-                         sizeof(SurfaceNormalPushConstants), &pc);
-      vkCmdDrawIndexed(cmd, dc.indexCount, 1, dc.firstIndex, 0, dc.objectIndex);
+      vkCmdDrawIndexed(cmd, dc.indexCount, drawInstanceCount(dc),
+                       dc.firstIndex, 0, dc.objectIndex);
     }
   };
   draw(opaque);

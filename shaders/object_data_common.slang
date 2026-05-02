@@ -7,7 +7,7 @@ struct ObjectBuffer
     float4 normalMatrix0;
     float4 normalMatrix1;
     float4 normalMatrix2;
-    // x = material index; yzw are reserved for future per-object draw metadata.
+    // x = material index; y = object flags; z = pick ID source mask; w reserved.
     uint4 objectInfo;
     float4 boundingSphere;
 };

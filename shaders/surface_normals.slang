@@ -47,7 +47,8 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 
     float3 objectPosition = ApplyHeightDisplacement(
         input.inPosition, input.inNormal, input.inTexCoord,
-        material.heightTextureIndex, material.heightScale,
+        material.heightTextureIndex, material.heightTextureTransform,
+        material.heightScale,
         material.heightOffset);
     float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     output.worldPosition = worldPos.xyz;

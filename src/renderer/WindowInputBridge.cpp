@@ -24,6 +24,12 @@ WindowInputBridge::WindowInputBridge(GLFWwindow*                   nativeWindow,
     if (s) s->inputManager->handleMouseButton(btn, action);
   });
 
+  glfwSetScrollCallback(window_, [](GLFWwindow* w, double xoffset,
+                                    double yoffset) {
+    auto* s = static_cast<BridgeState*>(glfwGetWindowUserPointer(w));
+    if (s) s->inputManager->handleScroll(xoffset, yoffset);
+  });
+
   glfwSetKeyCallback(window_, [](GLFWwindow* w, int key, int, int action, int) {
     auto* s = static_cast<BridgeState*>(glfwGetWindowUserPointer(w));
     if (s) s->inputManager->handleKey(key, action);
@@ -40,6 +46,7 @@ WindowInputBridge::~WindowInputBridge() {
   glfwSetFramebufferSizeCallback(window_, nullptr);
   glfwSetCursorPosCallback(window_,       nullptr);
   glfwSetMouseButtonCallback(window_,     nullptr);
+  glfwSetScrollCallback(window_,          nullptr);
   glfwSetKeyCallback(window_,             nullptr);
   glfwSetWindowFocusCallback(window_,     nullptr);
   glfwSetWindowUserPointer(window_,       nullptr);

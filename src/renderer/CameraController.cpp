@@ -10,6 +10,7 @@
 #include "Container/utility/VulkanDevice.h"
 
 #include <algorithm>
+#include <cmath>
 #include <glm/gtc/quaternion.hpp>
 
 namespace container::renderer {
@@ -50,6 +51,13 @@ glm::mat4 composeTransform(const container::ui::TransformControls &controls) {
       glm::mat4_cast(glm::quat(glm::radians(controls.rotationDegrees)));
   transform = glm::scale(transform, safeScale);
   return transform;
+}
+
+float selectedNodeRadius(const container::scene::SceneManager *sceneManager) {
+  if (sceneManager && sceneManager->modelBounds().valid) {
+    return std::max(0.25f, sceneManager->modelBounds().radius * 0.10f);
+  }
+  return 1.0f;
 }
 
 } // namespace
@@ -144,6 +152,148 @@ void CameraController::resetCameraForScene() {
     camera_->setPosition(glm::vec3(0.0f));
   }
 }
+
+CameraController::ViewPivot
+CameraController::resolveViewPivot(uint32_t nodeIndex) const {
+  if (nodeIndex != container::scene::SceneGraph::kInvalidNode) {
+    if (const auto *node = sceneGraph_.getNode(nodeIndex)) {
+      return ViewPivot{glm::vec3(node->worldTransform[3]),
+                       selectedNodeRadius(sceneManager_), true};
+    }
+  }
+
+  if (sceneManager_ && sceneManager_->modelBounds().valid) {
+    const auto &bounds = sceneManager_->modelBounds();
+    return ViewPivot{bounds.center, std::max(bounds.radius, 0.25f), true};
+  }
+
+  if (camera_) {
+    return ViewPivot{camera_->position() + camera_->frontVector() * 5.0f, 1.0f,
+                     true};
+  }
+
+  return {};
+}
+
+void CameraController::lookAt(const glm::vec3 &target) {
+  if (!camera_) {
+    return;
+  }
+
+  glm::vec3 forward = target - camera_->position();
+  const float length = glm::length(forward);
+  if (length <= 0.0001f) {
+    return;
+  }
+  forward /= length;
+
+  const float pitchDegrees =
+      glm::degrees(std::asin(std::clamp(forward.y, -1.0f, 1.0f)));
+  const float yawDegrees = glm::degrees(std::atan2(-forward.z, forward.x));
+  camera_->setYawPitch(yawDegrees, pitchDegrees);
+}
+
+void CameraController::frameNodeOrScene(uint32_t nodeIndex) {
+  if (!camera_) {
+    return;
+  }
+
+  const ViewPivot pivot = resolveViewPivot(nodeIndex);
+  if (!pivot.valid) {
+    resetCameraForScene();
+    return;
+  }
+
+  const float distance = std::max(kDefaultNearPlane * 4.0f,
+                                  pivot.radius * 2.5f + kDefaultNearPlane);
+  camera_->setPosition(pivot.center - camera_->frontVector() * distance);
+  lookAt(pivot.center);
+  inputManager_.setMoveSpeed(std::max(kDefaultMoveSpeed, pivot.radius * 0.5f));
+}
+
+void CameraController::orbit(uint32_t nodeIndex, float deltaX, float deltaY,
+                             float sensitivityScale) {
+  if (!camera_ || (deltaX == 0.0f && deltaY == 0.0f)) {
+    return;
+  }
+
+  const ViewPivot pivot = resolveViewPivot(nodeIndex);
+  if (!pivot.valid) {
+    return;
+  }
+
+  const float distance =
+      std::max(glm::length(camera_->position() - pivot.center),
+               kDefaultNearPlane * 4.0f);
+  const float sensitivity = 0.20f * std::max(sensitivityScale, 0.01f);
+  camera_->setYawPitch(camera_->yawDegrees() + deltaX * sensitivity,
+                       camera_->pitchDegrees() + deltaY * sensitivity);
+  camera_->setPosition(pivot.center - camera_->frontVector() * distance);
+  lookAt(pivot.center);
+}
+
+void CameraController::pan(uint32_t nodeIndex, float deltaX, float deltaY,
+                           float speedScale) {
+  if (!camera_ || (deltaX == 0.0f && deltaY == 0.0f)) {
+    return;
+  }
+
+  const ViewPivot pivot = resolveViewPivot(nodeIndex);
+  const float distance =
+      pivot.valid ? glm::length(camera_->position() - pivot.center)
+                  : std::max(inputManager_.moveSpeed(), kDefaultMoveSpeed);
+  const float speed = std::max(distance, 1.0f) * 0.0015f *
+                      std::max(speedScale, 0.01f);
+  const glm::vec3 front = camera_->frontVector();
+  const glm::vec3 up = camera_->upVector(front);
+  const glm::vec3 right = camera_->rightVector(front, up);
+  camera_->move(-right, deltaX * speed);
+  camera_->move(-up, deltaY * speed);
+}
+
+void CameraController::dolly(uint32_t nodeIndex, float wheelSteps,
+                             float speedScale) {
+  if (!camera_ || wheelSteps == 0.0f) {
+    return;
+  }
+
+  const ViewPivot pivot = resolveViewPivot(nodeIndex);
+  if (pivot.valid) {
+    const glm::vec3 toPivot = pivot.center - camera_->position();
+    const float distance = glm::length(toPivot);
+    if (distance > kDefaultNearPlane * 4.0f) {
+      const float exponent = wheelSteps * std::max(speedScale, 0.01f);
+      const float nextDistance =
+          std::clamp(distance * std::pow(0.85f, exponent),
+                     kDefaultNearPlane * 4.0f, kDefaultFarPlane);
+      camera_->setPosition(pivot.center - (toPivot / distance) * nextDistance);
+      return;
+    }
+  }
+
+  float navigationScale = kDefaultMoveSpeed;
+  if (sceneManager_ && sceneManager_->modelBounds().valid) {
+    navigationScale =
+        std::max(navigationScale, sceneManager_->modelBounds().radius * 0.15f);
+  }
+  const float distance =
+      wheelSteps * std::max(navigationScale, inputManager_.moveSpeed()) *
+      std::max(speedScale, 0.01f) * 0.25f;
+  camera_->move(camera_->frontVector(), distance);
+}
+
+void CameraController::adjustMoveSpeed(float wheelSteps) {
+  if (wheelSteps == 0.0f) {
+    return;
+  }
+
+  const float multiplier = std::pow(1.15f, wheelSteps);
+  const float nextSpeed =
+      std::clamp(inputManager_.moveSpeed() * multiplier, 0.001f, 100000.0f);
+  inputManager_.setMoveSpeed(nextSpeed);
+}
+
+float CameraController::moveSpeed() const { return inputManager_.moveSpeed(); }
 
 void CameraController::updateCameraBuffer(
     container::gpu::CameraData &outCameraData,

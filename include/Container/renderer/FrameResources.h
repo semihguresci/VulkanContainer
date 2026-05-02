@@ -21,6 +21,8 @@ struct FrameResources {
   AttachmentImage material{};
   AttachmentImage emissive{};
   AttachmentImage specular{};
+  AttachmentImage pickId{};
+  AttachmentImage pickDepth{};
   AttachmentImage depthStencil{};
   VkImageView     depthSamplingView{VK_NULL_HANDLE};
   AttachmentImage sceneColor{};
@@ -33,6 +35,7 @@ struct FrameResources {
   VkFramebuffer bimDepthPrepassFramebuffer{VK_NULL_HANDLE};
   VkFramebuffer gBufferFramebuffer{VK_NULL_HANDLE};
   VkFramebuffer bimGBufferFramebuffer{VK_NULL_HANDLE};
+  VkFramebuffer transparentPickFramebuffer{VK_NULL_HANDLE};
   VkFramebuffer lightingFramebuffer{VK_NULL_HANDLE};
   VkDescriptorSet lightingDescriptorSet{VK_NULL_HANDLE};
   VkDescriptorSet postProcessDescriptorSet{VK_NULL_HANDLE};

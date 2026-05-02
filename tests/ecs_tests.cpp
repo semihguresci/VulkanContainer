@@ -24,6 +24,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 #include <vector>
@@ -242,6 +243,30 @@ TEST(ECS_World, ForEachRenderableVisitsAllRenderables) {
           const container::ecs::MeshComponent &,
           const container::ecs::MaterialComponent &) { ++callCount; });
   EXPECT_EQ(callCount, 3);
+}
+
+TEST(ECS_World, ForEachRenderableWithNodePreservesSceneNodeRefs) {
+  container::scene::SceneGraph graph;
+  const uint32_t first = graph.createNode(glm::mat4(1.0f), 0, true, 10);
+  const uint32_t second = graph.createNode(glm::mat4(1.0f), 1, true, 11);
+
+  container::ecs::World world;
+  world.syncFromSceneGraph(graph);
+
+  std::vector<uint32_t> visitedNodes;
+  world.forEachRenderableWithNode(
+      [&](const container::ecs::TransformComponent &,
+          const container::ecs::MeshComponent &,
+          const container::ecs::MaterialComponent &,
+          const container::ecs::SceneNodeRef &node) {
+        visitedNodes.push_back(node.nodeIndex);
+      });
+
+  EXPECT_EQ(visitedNodes.size(), 2u);
+  EXPECT_NE(std::find(visitedNodes.begin(), visitedNodes.end(), first),
+            visitedNodes.end());
+  EXPECT_NE(std::find(visitedNodes.begin(), visitedNodes.end(), second),
+            visitedNodes.end());
 }
 
 // ============================================================================

@@ -478,6 +478,49 @@ bool DrawTransformControls(const char* label, TransformControls& transform,
   return changed;
 }
 
+const char* ViewportGestureLabel(ViewportGesture gesture) {
+  switch (gesture) {
+    case ViewportGesture::None:
+      return "Idle";
+    case ViewportGesture::FlyLook:
+      return "Fly";
+    case ViewportGesture::Orbit:
+      return "Orbit";
+    case ViewportGesture::Pan:
+      return "Pan";
+    case ViewportGesture::TransformDrag:
+      return "Transform";
+  }
+  return "Idle";
+}
+
+bool ToolButton(const char* label, ViewportTool tool,
+                ViewportTool activeTool) {
+  if (tool == activeTool) {
+    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(
+                                               ImGuiCol_ButtonActive));
+  }
+  const bool clicked = ImGui::Button(label);
+  if (tool == activeTool) {
+    ImGui::PopStyleColor();
+  }
+  return clicked;
+}
+
+const char* TransformAxisLabel(TransformAxis axis) {
+  switch (axis) {
+    case TransformAxis::Free:
+      return "Free";
+    case TransformAxis::X:
+      return "X";
+    case TransformAxis::Y:
+      return "Y";
+    case TransformAxis::Z:
+      return "Z";
+  }
+  return "Free";
+}
+
 void DrawRenderPassToggleEntry(RenderPassToggle& pass) {
   if (pass.locked) {
     ImGui::BeginDisabled();
@@ -698,6 +741,53 @@ void GuiManager::render(VkCommandBuffer commandBuffer) {
   if (!initialized_) return;
   ImGui::Render();
   ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
+}
+
+void GuiManager::drawViewportInteractionControls(
+    const ViewportInteractionState& state,
+    const std::function<void(ViewportTool)>& setTool,
+    const std::function<void(TransformSpace)>& setTransformSpace,
+    const std::function<void(TransformAxis)>& setTransformAxis) {
+  if (!initialized_) return;
+
+  ImGui::Begin("Viewport");
+  ImGui::Text("Tool");
+  if (ToolButton("Select", ViewportTool::Select, state.tool) && setTool) {
+    setTool(ViewportTool::Select);
+  }
+  ImGui::SameLine();
+  if (ToolButton("Move", ViewportTool::Translate, state.tool) && setTool) {
+    setTool(ViewportTool::Translate);
+  }
+  ImGui::SameLine();
+  if (ToolButton("Rotate", ViewportTool::Rotate, state.tool) && setTool) {
+    setTool(ViewportTool::Rotate);
+  }
+  ImGui::SameLine();
+  if (ToolButton("Scale", ViewportTool::Scale, state.tool) && setTool) {
+    setTool(ViewportTool::Scale);
+  }
+
+  int transformSpace = static_cast<int>(state.transformSpace);
+  static constexpr const char* kTransformSpaceLabels[] = {"Local", "World"};
+  if (ImGui::Combo("Space", &transformSpace, kTransformSpaceLabels,
+                   IM_ARRAYSIZE(kTransformSpaceLabels)) &&
+      setTransformSpace) {
+    setTransformSpace(static_cast<TransformSpace>(transformSpace));
+  }
+
+  int transformAxis = static_cast<int>(state.transformAxis);
+  static constexpr const char* kTransformAxisLabels[] = {"Free", "X", "Y",
+                                                         "Z"};
+  if (ImGui::Combo("Axis", &transformAxis, kTransformAxisLabels,
+                   IM_ARRAYSIZE(kTransformAxisLabels)) &&
+      setTransformAxis) {
+    setTransformAxis(static_cast<TransformAxis>(transformAxis));
+  }
+
+  ImGui::Text("Gesture: %s", ViewportGestureLabel(state.gesture));
+  ImGui::Text("Constraint: %s", TransformAxisLabel(state.transformAxis));
+  ImGui::End();
 }
 
 void GuiManager::drawSceneControls(
@@ -1095,19 +1185,34 @@ void GuiManager::drawSceneControls(
   const auto& renderableNodes = sceneGraph.renderableNodes();
   if (!renderableNodes.empty()) {
     uint32_t activeMeshNode = selectedMeshNode;
-    if (!std::ranges::contains(renderableNodes, activeMeshNode)) {
-      activeMeshNode = renderableNodes.front();
-      selectMeshNode(activeMeshNode);
+    const bool hasActiveMesh =
+        std::ranges::contains(renderableNodes, activeMeshNode);
+    if (!hasActiveMesh) {
+      activeMeshNode = container::scene::SceneGraph::kInvalidNode;
     }
 
-    std::string selectedLabel = "Node " + std::to_string(activeMeshNode);
-    if (const auto* node = sceneGraph.getNode(activeMeshNode);
-        node != nullptr &&
-        node->primitiveIndex != container::scene::SceneGraph::kInvalidNode) {
-      selectedLabel += " / Primitive " + std::to_string(node->primitiveIndex);
+    std::string selectedLabel = activeMeshNode ==
+                                        container::scene::SceneGraph::kInvalidNode
+                                    ? "None"
+                                    : "Node " + std::to_string(activeMeshNode);
+    if (activeMeshNode != container::scene::SceneGraph::kInvalidNode) {
+      if (const auto* node = sceneGraph.getNode(activeMeshNode);
+          node != nullptr &&
+          node->primitiveIndex != container::scene::SceneGraph::kInvalidNode) {
+        selectedLabel += " / Primitive " + std::to_string(node->primitiveIndex);
+      }
     }
 
     if (ImGui::BeginCombo("Mesh", selectedLabel.c_str())) {
+      const bool noneSelected =
+          activeMeshNode == container::scene::SceneGraph::kInvalidNode;
+      if (ImGui::Selectable("None", noneSelected)) {
+        activeMeshNode = container::scene::SceneGraph::kInvalidNode;
+        selectMeshNode(activeMeshNode);
+      }
+      if (noneSelected) {
+        ImGui::SetItemDefaultFocus();
+      }
       for (uint32_t nodeIndex : renderableNodes) {
         std::string label = "Node " + std::to_string(nodeIndex);
         if (const auto* node = sceneGraph.getNode(nodeIndex);
@@ -1127,9 +1232,11 @@ void GuiManager::drawSceneControls(
       ImGui::EndCombo();
     }
 
-    TransformControls editableMeshTransform = meshTransform;
-    if (DrawTransformControls("Mesh Transform", editableMeshTransform)) {
-      applyMeshTransform(activeMeshNode, editableMeshTransform);
+    if (activeMeshNode != container::scene::SceneGraph::kInvalidNode) {
+      TransformControls editableMeshTransform = meshTransform;
+      if (DrawTransformControls("Mesh Transform", editableMeshTransform)) {
+        applyMeshTransform(activeMeshNode, editableMeshTransform);
+      }
     }
   }
 
@@ -1405,9 +1512,19 @@ void GuiManager::drawRendererTelemetryWindow() {
 }
 
 bool GuiManager::isCapturingInput() const {
+  return isCapturingMouse() || isCapturingKeyboard();
+}
+
+bool GuiManager::isCapturingMouse() const {
   if (!initialized_) return false;
   const ImGuiIO& io = ImGui::GetIO();
-  return io.WantCaptureMouse || io.WantCaptureKeyboard;
+  return io.WantCaptureMouse;
+}
+
+bool GuiManager::isCapturingKeyboard() const {
+  if (!initialized_) return false;
+  const ImGuiIO& io = ImGui::GetIO();
+  return io.WantCaptureKeyboard;
 }
 
 void GuiManager::setWireframeCapabilities(bool supported,

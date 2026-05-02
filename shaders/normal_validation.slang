@@ -46,7 +46,8 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     GpuMaterial material = uMaterials[obj.objectInfo.x];
     float3 objectPosition = ApplyHeightDisplacement(
         input.inPosition, input.inNormal, input.inTexCoord,
-        material.heightTextureIndex, material.heightScale,
+        material.heightTextureIndex, material.heightTextureTransform,
+        material.heightScale,
         material.heightOffset);
     output.pos = mul(uCamera.viewProj,
                      mul(obj.model, float4(objectPosition, 1.0)));

@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <span>
 #include <string>
 #include <vector>
@@ -27,6 +28,13 @@ class SceneManager;
 }  // namespace container::scene
 
 namespace container::renderer {
+
+struct BimPickHit {
+  uint32_t objectIndex{std::numeric_limits<uint32_t>::max()};
+  float distance{std::numeric_limits<float>::max()};
+  float depth{0.0f};
+  bool hit{false};
+};
 
 // Owns sidecar model draw data independently from the regular scene graph.
 // Supports dotbim, tessellated IFC, IFCX, USD/USDC/USDZ meshes, and
@@ -92,6 +100,19 @@ class BimManager {
   [[nodiscard]] const std::vector<DrawCommand>& transparentDoubleSidedDrawCommands() const {
     return transparentDoubleSidedDrawCommands_;
   }
+  [[nodiscard]] BimPickHit pickRenderableObject(
+      const container::gpu::CameraData& cameraData,
+      VkExtent2D viewportExtent,
+      double cursorX,
+      double cursorY) const;
+  [[nodiscard]] BimPickHit pickTransparentRenderableObject(
+      const container::gpu::CameraData& cameraData,
+      VkExtent2D viewportExtent,
+      double cursorX,
+      double cursorY) const;
+  void collectDrawCommandsForObject(
+      uint32_t objectIndex,
+      std::vector<DrawCommand>& outCommands) const;
 
  private:
   struct MeshRange {
@@ -122,6 +143,13 @@ class BimManager {
   void buildDrawDataFromModel(
       const container::geometry::dotbim::Model& model,
       container::scene::SceneManager& sceneManager);
+  [[nodiscard]] BimPickHit pickRenderableObjectForDraws(
+      const container::gpu::CameraData& cameraData,
+      VkExtent2D viewportExtent,
+      double cursorX,
+      double cursorY,
+      bool includeOpaque,
+      bool includeTransparent) const;
   void uploadGeometry(std::span<const container::geometry::Vertex> vertices,
                       std::span<const uint32_t> indices);
   void uploadObjects();
@@ -137,6 +165,8 @@ class BimManager {
   size_t objectBufferCapacity_{0};
   uint64_t objectDataRevision_{0};
 
+  std::vector<container::geometry::Vertex> vertices_{};
+  std::vector<uint32_t> indices_{};
   std::vector<container::gpu::ObjectData> objectData_{};
   std::vector<DrawCommand> opaqueDrawCommands_{};
   std::vector<DrawCommand> opaqueSingleSidedDrawCommands_{};

@@ -18,6 +18,43 @@ Player mode should feel confident and minimal. Editor mode should feel powerful
 and inspectable. AI should accelerate editing, but every AI action should remain
 previewable, reversible, and understandable.
 
+## UI Framework Direction
+
+The editor should use Qt 6 as the desktop application framework and an advanced
+docking system for the professional editor layout. ImGui should not be the main
+UI engine for the application shell.
+
+Recommended stack:
+
+- Qt 6: application lifecycle, main window, menus, toolbars, dialogs, native
+  controls, file pickers, model/view widgets, and platform integration.
+- KDDockWidgets or Qt Advanced Docking System: dockable panels, floating
+  windows, tabbed panels, saved layouts, nested docking, and workspace presets.
+- Vulkan renderer: central and secondary realtime viewports, player mode
+  viewports, editor overlays, picking, gizmos, render targets, and final render
+  output.
+- Scene engine: scene graph or ECS, assets, serialization, cameras, lights,
+  materials, BIM metadata, animation data, and runtime state.
+- Viewport manager: creation, docking, layout state, render target ownership,
+  per-view camera state, and per-view configuration.
+- Editor command layer: undo/redo, command history, AI-proposed changes, and
+  user-authored scene modifications.
+
+The ownership boundaries should stay clear:
+
+```text
+Qt 6 owns the desktop application shell.
+The advanced docking system owns panel layout and workspace presets.
+Vulkan owns viewport rendering.
+The viewport manager owns view instances, targets, and view configuration.
+The scene engine owns scene data.
+Editor commands own mutations and undo/redo.
+AI produces proposed commands, not direct hidden scene edits.
+```
+
+This keeps the renderer independent from the UI framework and allows the same
+scene engine to support both editor and player workflows.
+
 ## UX Principles
 
 - Keep the current task obvious: the user should always know whether they are
@@ -83,44 +120,66 @@ change.
 The default editor layout should be:
 
 ```text
-Top Bar
-[Project] [Scene] [Add] [Tools] [Render] [AI]     Mode: Editor / Player
-
-Left Panel
-Scene Hierarchy:
-- World
-  - Scene A
-  - Building
-  - Character
-  - Lights
-  - Cameras
-
-Center
-3D Viewport:
-- selection
-- transform gizmos
-- snapping overlays
-- camera navigation
-- debug overlays
-
-Right Panel
-Inspector:
-- transform
-- material
-- light/camera settings
-- renderer settings
-- BIM/Revit-style metadata
-- custom properties
-
-Bottom Panel
-Assets / Timeline / Console / History
-
-AI Panel
-Prompt input, proposed changes, previews, and apply/reject controls
+Qt Main Window
+| Menu Bar: File Edit Scene Add Render AI Window Help          |
+| Toolbar: Select Move Rotate Scale Snap Mode                  |
+|--------------------------------------------------------------|
+| Hierarchy Dock | Vulkan Viewport              | Inspector    |
+|                | - selection                  | Dock         |
+| - World        | - transform gizmos           |              |
+|   - Scene A    | - snapping overlays          | - transform  |
+|   - Building   | - camera navigation          | - material   |
+|   - Lights     | - debug overlays             | - metadata   |
+|   - Cameras    |                              | - renderer   |
+|--------------------------------------------------------------|
+| Assets / Timeline / Console / History / AI Proposal Docks    |
 ```
 
 This layout gives the user a familiar professional editor shape while keeping
 the first screen focused on the actual scene, not a landing page or wizard.
+The docking system should allow users to save and restore this layout as a
+workspace preset.
+
+## Multi-View Window Support
+
+The editor should support multiple view windows, not only one central viewport.
+Each view should be dockable, tabbed, split, or floating through the advanced
+docking system.
+
+Each view window should have its own view configuration:
+
+- View identity: stable view id, title, docking state, and saved layout state.
+- Target: full scene, subscene, prefab, selected object, render camera, asset
+  preview, material preview, AI proposal preview, or debug render target.
+- Camera: free editor camera, scene camera, orthographic top/front/side view,
+  player camera, light camera, reflection probe, or custom saved camera.
+- Render mode: lit, unlit, wireframe, normals, depth, material channels,
+  lighting-only, post-process output, BIM metadata visualization, or final
+  render preview.
+- Renderer configuration: resolution scale, quality preset, samples, exposure,
+  tone mapping, post-processing, overlays, clipping planes, section boxes, and
+  debug flags.
+- Interaction mode: editor selection, transform gizmo, orbit inspection,
+  player simulation, locked presentation, or read-only preview.
+- Synchronization: shared selection by default, with optional pinned selection,
+  pinned camera, or independent time/playback state per view.
+
+Example view layouts:
+
+- Main perspective view plus top/front/side orthographic views.
+- Editor viewport beside a player camera preview.
+- Lit viewport beside wireframe, depth, normals, or render graph debug output.
+- Current scene beside an AI proposal preview before applying changes.
+- Building model view beside a floor plan, section view, or elevation view.
+- Asset preview dock beside the main scene.
+- Final render preview floating on a second monitor while editing continues in
+  the main window.
+
+Multi-view support should be handled through a dedicated viewport manager. The
+renderer should receive explicit view descriptors instead of assuming a single
+global framebuffer. This allows each view to have independent swapchain or
+offscreen render targets while sharing scene data, GPU resources, and editor
+selection state where appropriate.
 
 ## Scene Authoring Model
 
@@ -267,6 +326,12 @@ or hiding essential mode controls.
 
 ### Phase 1: Mode Foundation
 
+- Create the Qt 6 application shell.
+- Integrate KDDockWidgets or another advanced Qt docking system.
+- Embed the Vulkan renderer as the central viewport.
+- Add a viewport manager that can create one or more docked/floating view
+  windows.
+- Store per-view camera, target, render mode, and quality configuration.
 - Add explicit Editor and Player modes.
 - Add a visible mode switch.
 - Define input ownership for mode-specific controls.
@@ -292,6 +357,9 @@ or hiding essential mode controls.
 
 - Add transform gizmos.
 - Add snapping and measurement tools.
+- Add multi-view presets such as perspective plus top/front/side orthographic
+  views.
+- Add per-view render modes, overlays, clipping planes, and debug targets.
 - Add material editing.
 - Add camera path and timeline tools.
 - Add workspace presets.
@@ -310,6 +378,8 @@ or hiding essential mode controls.
   modes, add content, select it, inspect it, modify it, and return to player
   mode without losing context.
 - A technical user can still access renderer debugging and performance tools.
+- Users can open multiple docked or floating view windows with different
+  targets, cameras, render modes, overlays, and quality settings.
 - Large scenes remain manageable through hierarchy, search, organization,
   metadata, and subscene composition.
 - AI accelerates authoring without reducing user control or making silent,

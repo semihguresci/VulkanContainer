@@ -58,10 +58,12 @@ VkFormat RenderPassManager::findSupportedFormat(
 
 VkFormat RenderPassManager::findDepthStencilFormat() const {
   return findSupportedFormat(
-      {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT},
+      {VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT},
       VK_IMAGE_TILING_OPTIMAL,
       VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
-          VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT);
+          VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+          VK_FORMAT_FEATURE_TRANSFER_SRC_BIT |
+          VK_FORMAT_FEATURE_TRANSFER_DST_BIT);
 }
 
 void RenderPassManager::create(VkFormat swapchainFormat,
@@ -71,7 +73,8 @@ void RenderPassManager::create(VkFormat swapchainFormat,
                                VkFormat normalFormat,
                                VkFormat materialFormat,
                                VkFormat emissiveFormat,
-                               VkFormat specularFormat) {
+                               VkFormat specularFormat,
+                               VkFormat pickIdFormat) {
   VkDevice dev = device_->device();
 
   // ---- Depth Prepass ----
@@ -172,18 +175,20 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   gbDs.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   gbDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-  std::array<VkAttachmentDescription, 6> gbAttachments = {
+  std::array<VkAttachmentDescription, 7> gbAttachments = {
       makeColor(albedoFormat), makeColor(normalFormat), makeColor(materialFormat),
-      makeColor(emissiveFormat), makeColor(specularFormat), gbDs};
+      makeColor(emissiveFormat), makeColor(specularFormat),
+      makeColor(pickIdFormat), gbDs};
 
-  std::array<VkAttachmentReference, 5> colorRefs = {{
+  std::array<VkAttachmentReference, 6> colorRefs = {{
       {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {1, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {2, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {3, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {4, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+      {5, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
   }};
-  VkAttachmentReference gbDsRef{5, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference gbDsRef{6, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
 
   VkSubpassDescription gbSubpass{};
   gbSubpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -246,10 +251,10 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   bimGbDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
   bimGbDs.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
-  std::array<VkAttachmentDescription, 6> bimGbAttachments = {
+  std::array<VkAttachmentDescription, 7> bimGbAttachments = {
       makeLoadedColor(albedoFormat), makeLoadedColor(normalFormat),
       makeLoadedColor(materialFormat), makeLoadedColor(emissiveFormat),
-      makeLoadedColor(specularFormat), bimGbDs};
+      makeLoadedColor(specularFormat), makeLoadedColor(pickIdFormat), bimGbDs};
 
   std::array<VkSubpassDependency, 2> bimGbDeps{};
   bimGbDeps[0] = MakeDependency(
@@ -279,6 +284,79 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.bimGBuffer) !=
       VK_SUCCESS) {
     throw std::runtime_error("failed to create BIM GBuffer render pass");
+  }
+
+  // ---- Transparent Picking ----
+  // Transparent picking reuses the opaque pick ID color target and renders
+  // transparent fragments against a copy of the opaque depth buffer. Depth
+  // writes are enabled in the pipeline, so the final ID at each pixel belongs
+  // to the nearest visible transparent fragment, if one exists.
+  VkAttachmentDescription pickColor{};
+  pickColor.format = pickIdFormat;
+  pickColor.samples = VK_SAMPLE_COUNT_1_BIT;
+  pickColor.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  pickColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  pickColor.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  pickColor.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  pickColor.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  pickColor.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  VkAttachmentDescription pickDepth = ds;
+  pickDepth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  pickDepth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  pickDepth.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  pickDepth.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  pickDepth.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  pickDepth.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+  std::array<VkAttachmentDescription, 2> transparentPickAttachments = {
+      pickColor, pickDepth};
+  VkAttachmentReference pickColorRef{
+      0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkAttachmentReference pickDepthRef{
+      1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+
+  VkSubpassDescription transparentPickSubpass{};
+  transparentPickSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  transparentPickSubpass.colorAttachmentCount = 1;
+  transparentPickSubpass.pColorAttachments = &pickColorRef;
+  transparentPickSubpass.pDepthStencilAttachment = &pickDepthRef;
+
+  std::array<VkSubpassDependency, 2> transparentPickDeps{};
+  transparentPickDeps[0] = MakeDependency(
+      VK_SUBPASS_EXTERNAL, 0,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | kDepthTestStages |
+          VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | kDepthTestStages,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_TRANSFER_WRITE_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+          VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      kFramebufferLocalDependency);
+  transparentPickDeps[1] = MakeDependency(
+      0, VK_SUBPASS_EXTERNAL,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | kDepthTestStages,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+          VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT,
+      kFramebufferLocalDependency);
+
+  rpInfo.attachmentCount =
+      static_cast<uint32_t>(transparentPickAttachments.size());
+  rpInfo.pAttachments = transparentPickAttachments.data();
+  rpInfo.pSubpasses = &transparentPickSubpass;
+  rpInfo.dependencyCount = static_cast<uint32_t>(transparentPickDeps.size());
+  rpInfo.pDependencies = transparentPickDeps.data();
+  if (vkCreateRenderPass(dev, &rpInfo, nullptr,
+                         &passes_.transparentPick) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create transparent pick render pass");
   }
 
   // ---- Lighting ----
@@ -448,6 +526,7 @@ void RenderPassManager::destroy() {
   destroyPass(passes_.bimDepthPrepass);
   destroyPass(passes_.gBuffer);
   destroyPass(passes_.bimGBuffer);
+  destroyPass(passes_.transparentPick);
   destroyPass(passes_.shadow);
   destroyPass(passes_.lighting);
   destroyPass(passes_.postProcess);

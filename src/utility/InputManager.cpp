@@ -14,7 +14,10 @@ void InputManager::setWindow(GLFWwindow* window) {
 }
 
 bool InputManager::update(float deltaTime) {
-  if (!camera_) return false;
+  if (!camera_) {
+    endFrame();
+    return false;
+  }
 
   const bool hadMouseDelta =
       (pendingMouseDeltaX_ != 0.0) || (pendingMouseDeltaY_ != 0.0);
@@ -23,16 +26,70 @@ bool InputManager::update(float deltaTime) {
   applyKeyboardInput(deltaTime);
 
   const bool moved = !pressedKeys_.empty();
+  endFrame();
   return moved || hadMouseDelta;
 }
 
-void InputManager::enqueueMouseDelta(double xpos, double ypos) {
-  if (!lookModeActive_) return;
+InputFrameSnapshot InputManager::frameSnapshot() const {
+  double framebufferCursorX = lastMouseX_;
+  double framebufferCursorY = lastMouseY_;
+  if (window_) {
+    int windowWidth = 0;
+    int windowHeight = 0;
+    int framebufferWidth = 0;
+    int framebufferHeight = 0;
+    glfwGetWindowSize(window_, &windowWidth, &windowHeight);
+    glfwGetFramebufferSize(window_, &framebufferWidth, &framebufferHeight);
+    if (windowWidth > 0 && windowHeight > 0 && framebufferWidth > 0 &&
+        framebufferHeight > 0) {
+      framebufferCursorX =
+          lastMouseX_ * static_cast<double>(framebufferWidth) /
+          static_cast<double>(windowWidth);
+      framebufferCursorY =
+          lastMouseY_ * static_cast<double>(framebufferHeight) /
+          static_cast<double>(windowHeight);
+    }
+  }
 
-  if (firstMouseUpdate_) {
+  return InputFrameSnapshot{
+      .cursorX = lastMouseX_,
+      .cursorY = lastMouseY_,
+      .framebufferCursorX = framebufferCursorX,
+      .framebufferCursorY = framebufferCursorY,
+      .cursorDeltaX = frameMouseDeltaX_,
+      .cursorDeltaY = frameMouseDeltaY_,
+      .scrollDeltaX = scrollDeltaX_,
+      .scrollDeltaY = scrollDeltaY_,
+      .focused = focused_,
+      .lookModeActive = lookModeActive_,
+      .pressedKeys = pressedKeys_,
+      .pressedMouseButtons = pressedMouseButtons_,
+      .keysPressedThisFrame = keysPressedThisFrame_,
+      .keysReleasedThisFrame = keysReleasedThisFrame_,
+      .mouseButtonsPressedThisFrame = mouseButtonsPressedThisFrame_,
+      .mouseButtonsReleasedThisFrame = mouseButtonsReleasedThisFrame_,
+  };
+}
+
+void InputManager::endFrame() {
+  keysPressedThisFrame_.clear();
+  keysReleasedThisFrame_.clear();
+  mouseButtonsPressedThisFrame_.clear();
+  mouseButtonsReleasedThisFrame_.clear();
+  frameMouseDeltaX_ = 0.0;
+  frameMouseDeltaY_ = 0.0;
+  scrollDeltaX_ = 0.0;
+  scrollDeltaY_ = 0.0;
+}
+
+void InputManager::enqueueMouseDelta(double xpos, double ypos) {
+  if (firstCursorEvent_) {
     lastMouseX_ = xpos;
     lastMouseY_ = ypos;
-    firstMouseUpdate_ = false;
+    firstCursorEvent_ = false;
+    if (lookModeActive_) {
+      firstMouseUpdate_ = false;
+    }
     return;
   }
 
@@ -41,32 +98,73 @@ void InputManager::enqueueMouseDelta(double xpos, double ypos) {
   lastMouseX_ = xpos;
   lastMouseY_ = ypos;
 
+  frameMouseDeltaX_ += xoffset;
+  frameMouseDeltaY_ += yoffset;
+
+  if (!lookModeActive_) return;
+
+  if (firstMouseUpdate_) {
+    firstMouseUpdate_ = false;
+    return;
+  }
+
   pendingMouseDeltaX_ += xoffset;
   pendingMouseDeltaY_ += yoffset;
 }
 
 void InputManager::handleMouseButton(int button, int action) {
-  if (button != GLFW_MOUSE_BUTTON_RIGHT) return;
-
   if (action == GLFW_PRESS) {
-    setLookMode(true);
+    const bool alreadyDown = pressedMouseButtons_.contains(button);
+    pressedMouseButtons_.insert(button);
+    if (!alreadyDown) {
+      mouseButtonsPressedThisFrame_.insert(button);
+    }
   } else if (action == GLFW_RELEASE) {
-    setLookMode(false);
+    const bool wasDown = pressedMouseButtons_.erase(button) > 0u;
+    if (wasDown) {
+      mouseButtonsReleasedThisFrame_.insert(button);
+    }
   }
 }
 
 void InputManager::handleKey(int key, int action) {
-  if (action == GLFW_PRESS || action == GLFW_REPEAT) {
+  if (action == GLFW_PRESS) {
+    const bool alreadyDown = pressedKeys_.contains(key);
+    pressedKeys_.insert(key);
+    if (!alreadyDown) {
+      keysPressedThisFrame_.insert(key);
+    }
+  } else if (action == GLFW_REPEAT) {
     pressedKeys_.insert(key);
   } else if (action == GLFW_RELEASE) {
-    pressedKeys_.erase(key);
+    const bool wasDown = pressedKeys_.erase(key) > 0u;
+    if (wasDown) {
+      keysReleasedThisFrame_.insert(key);
+    }
   }
 }
 
+void InputManager::handleScroll(double xoffset, double yoffset) {
+  scrollDeltaX_ += xoffset;
+  scrollDeltaY_ += yoffset;
+}
+
 void InputManager::handleWindowFocus(bool focused) {
+  focused_ = focused;
   if (focused) return;
 
   pressedKeys_.clear();
+  pressedMouseButtons_.clear();
+  keysPressedThisFrame_.clear();
+  keysReleasedThisFrame_.clear();
+  mouseButtonsPressedThisFrame_.clear();
+  mouseButtonsReleasedThisFrame_.clear();
+  frameMouseDeltaX_ = 0.0;
+  frameMouseDeltaY_ = 0.0;
+  scrollDeltaX_ = 0.0;
+  scrollDeltaY_ = 0.0;
+  pendingMouseDeltaX_ = 0.0;
+  pendingMouseDeltaY_ = 0.0;
   setLookMode(false);
 }
 

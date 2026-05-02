@@ -69,7 +69,7 @@ struct Node {
   glm::vec4 color{0.8f, 0.82f, 0.86f, 1.0f};
   bool hasColor{false};
   bool hasOpacity{false};
-  bool doubleSided{true};
+  bool doubleSided{false};
   bool hasDoubleSided{false};
   bool visible{true};
   bool hasVisibility{false};
@@ -846,7 +846,7 @@ bool inheritedDoubleSided(int nodeIndex, const std::vector<Node> &nodes) {
     }
     cursor = node.parent;
   }
-  return true;
+  return false;
 }
 
 glm::vec3 normalizeOrFallback(const glm::vec3 &value,
@@ -1045,6 +1045,25 @@ texCoordSlotFromTinyUsdTexture(const tinyusdz::tydra::UVTexture &texture) {
   return 0u;
 }
 
+uint32_t
+textureChannelFromTinyUsd(tinyusdz::tydra::UVTexture::Channel channel) {
+  using Channel = tinyusdz::tydra::UVTexture::Channel;
+  switch (channel) {
+  case Channel::R:
+    return 0u;
+  case Channel::G:
+    return 1u;
+  case Channel::B:
+    return 2u;
+  case Channel::A:
+    return 3u;
+  case Channel::RGB:
+  case Channel::RGBA:
+  default:
+    return 4u;
+  }
+}
+
 container::material::TextureTransform
 textureTransformFromTinyUsd(const tinyusdz::tydra::RenderScene &scene,
                             int32_t textureId) {
@@ -1057,6 +1076,7 @@ textureTransformFromTinyUsd(const tinyusdz::tydra::RenderScene &scene,
   const tinyusdz::tydra::UVTexture &texture =
       scene.textures[static_cast<size_t>(textureId)];
   transform.texCoord = texCoordSlotFromTinyUsdTexture(texture);
+  transform.channel = textureChannelFromTinyUsd(texture.connectedOutputChannel);
   if (texture.has_transform2d) {
     transform.offset = tinyVec2(texture.tx_translation);
     transform.scale = tinyVec2(texture.tx_scale);
@@ -1212,10 +1232,18 @@ convertTinyUsdMaterial(const tinyusdz::tydra::RenderScene &scene,
     material.pbr.emissiveColor =
         glm::clamp(tinyVec3(shader.emissiveColor.value), glm::vec3(0.0f),
                    glm::vec3(std::numeric_limits<float>::max()));
-    material.pbr.metallicFactor =
-        std::clamp(finiteOr(shader.metallic.value, 0.0f), 0.0f, 1.0f);
     material.pbr.roughnessFactor =
         std::clamp(finiteOr(shader.roughness.value, 0.5f), 0.0f, 1.0f);
+    if (shader.useSpecularWorkflow) {
+      material.pbr.metallicFactor = 0.0f;
+      material.pbr.specularFactor = 1.0f;
+      material.pbr.specularColorFactor =
+          glm::clamp(tinyVec3(shader.specularColor.value), glm::vec3(0.0f),
+                     glm::vec3(1.0f));
+    } else {
+      material.pbr.metallicFactor =
+          std::clamp(finiteOr(shader.metallic.value, 0.0f), 0.0f, 1.0f);
+    }
     material.pbr.opacityFactor =
         std::clamp(finiteOr(shader.opacity.value, 1.0f), 0.0f, 1.0f);
     material.pbr.alphaCutoff =
@@ -1225,7 +1253,6 @@ convertTinyUsdMaterial(const tinyusdz::tydra::RenderScene &scene,
         std::clamp(finiteOr(shader.clearcoat.value, 0.0f), 0.0f, 1.0f);
     material.pbr.clearcoatRoughnessFactor = std::clamp(
         finiteOr(shader.clearcoatRoughness.value, 0.01f), 0.0f, 1.0f);
-    material.pbr.specularGlossinessWorkflow = shader.useSpecularWorkflow;
 
     assignTinyUsdTexture(scene, shader.diffuseColor, sourceDir,
                          material.texturePaths.baseColor,
@@ -1233,6 +1260,11 @@ convertTinyUsdMaterial(const tinyusdz::tydra::RenderScene &scene,
     assignTinyUsdTexture(scene, shader.emissiveColor, sourceDir,
                          material.texturePaths.emissive,
                          material.pbr.emissiveTextureTransform);
+    if (shader.useSpecularWorkflow) {
+      assignTinyUsdTexture(scene, shader.specularColor, sourceDir,
+                           material.texturePaths.specularColor,
+                           material.pbr.specularColorTextureTransform);
+    }
     assignTinyUsdTexture(scene, shader.normal, sourceDir,
                          material.texturePaths.normal,
                          material.pbr.normalTextureTransform);
@@ -1826,7 +1858,8 @@ void appendTinyUsdNode(
     const std::unordered_set<std::string> &handledInstancePaths,
     bool insideHandledInstance) {
   const bool handledInstance =
-      insideHandledInstance || handledInstancePaths.contains(node.abs_path);
+      insideHandledInstance ||
+      (!node.abs_path.empty() && handledInstancePaths.contains(node.abs_path));
   if (!handledInstance &&
       node.category == tinyusdz::tydra::NodeCategory::Geom && node.id >= 0) {
     const auto *parts =
@@ -1933,7 +1966,8 @@ dotbim::Model modelFromTinyUsdStage(const tinyusdz::Stage &stage,
   std::unordered_set<std::string> handledInstancePaths;
   handledInstancePaths.reserve(scene.instances.size());
   for (const tinyusdz::tydra::RenderInstance &instance : scene.instances) {
-    if (instance.visible && instance.mesh_id >= 0) {
+    if (instance.visible && instance.mesh_id >= 0 &&
+        !instance.abs_path.empty()) {
       handledInstancePaths.insert(instance.abs_path);
     }
   }

@@ -38,6 +38,13 @@ class GuiManager;
 
 namespace container::renderer {
 
+struct SceneNodePickHit {
+  uint32_t nodeIndex{std::numeric_limits<uint32_t>::max()};
+  float distance{std::numeric_limits<float>::max()};
+  float depth{0.0f};
+  bool hit{false};
+};
+
 // Manages scene geometry upload, object buffer, scene-graph build/sync,
 // and model reload. Lives for the lifetime of the application.
 class SceneController {
@@ -103,6 +110,25 @@ class SceneController {
       uint32_t&                               outSelectedMeshNode,
       uint32_t&                               outCubeNode);
 
+  [[nodiscard]] uint32_t pickRenderableNode(
+      const container::gpu::CameraData& cameraData,
+      VkExtent2D viewportExtent,
+      double cursorX,
+      double cursorY) const;
+  [[nodiscard]] SceneNodePickHit pickRenderableNodeHit(
+      const container::gpu::CameraData& cameraData,
+      VkExtent2D viewportExtent,
+      double cursorX,
+      double cursorY) const;
+  [[nodiscard]] SceneNodePickHit pickTransparentRenderableNodeHit(
+      const container::gpu::CameraData& cameraData,
+      VkExtent2D viewportExtent,
+      double cursorX,
+      double cursorY) const;
+  [[nodiscard]] uint32_t nodeIndexForObject(uint32_t objectIndex) const;
+  void collectDrawCommandsForNode(uint32_t nodeIndex,
+                                  std::vector<DrawCommand>& outCommands) const;
+
   // ---- Buffer helpers (also used by other subsystems) ---------------------
 
   static void writeToBuffer(
@@ -166,6 +192,13 @@ class SceneController {
   void rebuildPrimitiveBoundsCache();
   void invalidateObjectDataCache();
   void refreshObjectDataCache(bool showDiagCube);
+  [[nodiscard]] SceneNodePickHit pickRenderableNodeHitForDraws(
+      const container::gpu::CameraData& cameraData,
+      VkExtent2D viewportExtent,
+      double cursorX,
+      double cursorY,
+      bool includeOpaque,
+      bool includeTransparent) const;
 
   std::shared_ptr<container::gpu::VulkanDevice>  device_;
   container::gpu::AllocationManager&             allocationManager_;
@@ -187,6 +220,7 @@ class SceneController {
   std::vector<DrawCommand>  transparentWindingFlippedDrawCommands_;
   std::vector<DrawCommand>  transparentDoubleSidedDrawCommands_;
   std::vector<PrimitiveBounds> primitiveBounds_;
+  std::vector<uint32_t> objectNodeIndices_;
 
   uint64_t cachedSceneGraphRevision_{std::numeric_limits<uint64_t>::max()};
   uint64_t objectDataRevision_{0};

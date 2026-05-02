@@ -18,6 +18,9 @@ struct TextureTransform {
   glm::vec2 scale{1.0f, 1.0f};
   float rotation{0.0f};
   uint32_t texCoord{0};
+  // 0-3 select RGBA. Values above 3 mean the shader should use the
+  // material-model channel convention for that texture slot.
+  uint32_t channel{4};
 };
 
 struct Material {

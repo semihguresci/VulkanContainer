@@ -68,12 +68,15 @@ float3 TextureBackedColorFactor(float3 factor, uint textureIndex)
 }
 
 float EvaluateOpacity(float baseAlpha, uint opacityTextureIndex,
-                      float opacityFactor, float2 texCoord)
+                      float opacityFactor, float2 texCoord,
+                      GpuTextureTransform opacityTextureTransform)
 {
     float alpha = baseAlpha * saturate(opacityFactor);
     if (opacityTextureIndex != kInvalidMaterialTexture)
     {
-        alpha *= SamplePbrTexture(opacityTextureIndex, texCoord, 1.0.xxxx).r;
+        alpha *= SelectGpuTextureChannel(
+            SamplePbrTexture(opacityTextureIndex, texCoord, 1.0.xxxx),
+            opacityTextureTransform, 0u);
     }
     return saturate(alpha);
 }
@@ -81,7 +84,8 @@ float EvaluateOpacity(float baseAlpha, uint opacityTextureIndex,
 float EvaluateMetalness(float factor, uint metallicRoughnessTextureIndex,
                         uint metalnessTextureIndex,
                         float2 metallicRoughnessTexCoord,
-                        float2 metalnessTexCoord)
+                        float2 metalnessTexCoord,
+                        GpuTextureTransform metalnessTextureTransform)
 {
     float metalness = factor;
     if (metallicRoughnessTextureIndex != kInvalidMaterialTexture)
@@ -92,8 +96,10 @@ float EvaluateMetalness(float factor, uint metallicRoughnessTextureIndex,
     }
     if (metalnessTextureIndex != kInvalidMaterialTexture)
     {
-        metalness *= SamplePbrTexture(
-            metalnessTextureIndex, metalnessTexCoord, 1.0.xxxx).r;
+        metalness *= SelectGpuTextureChannel(
+            SamplePbrTexture(
+                metalnessTextureIndex, metalnessTexCoord, 1.0.xxxx),
+            metalnessTextureTransform, 0u);
     }
     return saturate(metalness);
 }
@@ -102,6 +108,7 @@ float EvaluateRoughness(float factor, uint metallicRoughnessTextureIndex,
                         uint roughnessTextureIndex,
                         float2 metallicRoughnessTexCoord,
                         float2 roughnessTexCoord,
+                        GpuTextureTransform roughnessTextureTransform,
                         uint objectFlags)
 {
     if ((objectFlags & kPbrObjectFlagSpecularGlossiness) != 0u)
@@ -109,8 +116,10 @@ float EvaluateRoughness(float factor, uint metallicRoughnessTextureIndex,
         float glossiness = factor;
         if (roughnessTextureIndex != kInvalidMaterialTexture)
         {
-            glossiness *= SamplePbrTexture(
-                roughnessTextureIndex, roughnessTexCoord, 1.0.xxxx).a;
+            glossiness *= SelectGpuTextureChannel(
+                SamplePbrTexture(
+                    roughnessTextureIndex, roughnessTexCoord, 1.0.xxxx),
+                roughnessTextureTransform, 3u);
         }
         return clamp(1.0 - saturate(glossiness), 0.045, 1.0);
     }
@@ -124,21 +133,25 @@ float EvaluateRoughness(float factor, uint metallicRoughnessTextureIndex,
     }
     if (roughnessTextureIndex != kInvalidMaterialTexture)
     {
-        roughness *= SamplePbrTexture(
-            roughnessTextureIndex, roughnessTexCoord, 1.0.xxxx).r;
+        roughness *= SelectGpuTextureChannel(
+            SamplePbrTexture(
+                roughnessTextureIndex, roughnessTexCoord, 1.0.xxxx),
+            roughnessTextureTransform, 0u);
     }
     return clamp(roughness, 0.045, 1.0);
 }
 
 float EvaluateSpecularFactor(float factor, uint specularTextureIndex,
-                             float2 specularTexCoord)
+                             float2 specularTexCoord,
+                             GpuTextureTransform specularTextureTransform)
 {
     float specular = factor;
     if (specularTextureIndex != kInvalidMaterialTexture)
     {
         float4 sample = SamplePbrTexture(
             specularTextureIndex, specularTexCoord, 1.0.xxxx);
-        specular *= sample.a;
+        specular *= SelectGpuTextureChannel(
+            sample, specularTextureTransform, 3u);
     }
     return saturate(specular);
 }
@@ -163,53 +176,65 @@ float3 EvaluateSpecularColor(float3 factor, uint specularColorTextureIndex,
 }
 
 float EvaluateTransmissionFactor(float factor, uint transmissionTextureIndex,
-                                 float2 texCoord)
+                                 float2 texCoord,
+                                 GpuTextureTransform transmissionTextureTransform)
 {
     float transmission =
         TextureBackedScalarFactor(factor, transmissionTextureIndex);
     if (transmissionTextureIndex != kInvalidMaterialTexture)
     {
-        transmission *= SamplePbrTexture(
-            transmissionTextureIndex, texCoord, 1.0.xxxx).r;
+        transmission *= SelectGpuTextureChannel(
+            SamplePbrTexture(
+                transmissionTextureIndex, texCoord, 1.0.xxxx),
+            transmissionTextureTransform, 0u);
     }
     return saturate(transmission);
 }
 
 float EvaluateClearcoatFactor(float factor, uint clearcoatTextureIndex,
-                              float2 texCoord)
+                              float2 texCoord,
+                              GpuTextureTransform clearcoatTextureTransform)
 {
     float clearcoat =
         TextureBackedScalarFactor(factor, clearcoatTextureIndex);
     if (clearcoatTextureIndex != kInvalidMaterialTexture)
     {
-        clearcoat *= SamplePbrTexture(
-            clearcoatTextureIndex, texCoord, 1.0.xxxx).r;
+        clearcoat *= SelectGpuTextureChannel(
+            SamplePbrTexture(
+                clearcoatTextureIndex, texCoord, 1.0.xxxx),
+            clearcoatTextureTransform, 0u);
     }
     return saturate(clearcoat);
 }
 
 float EvaluateClearcoatRoughness(float factor,
                                  uint clearcoatRoughnessTextureIndex,
-                                 float2 texCoord)
+                                 float2 texCoord,
+                                 GpuTextureTransform clearcoatRoughnessTextureTransform)
 {
     float roughness =
         TextureBackedScalarFactor(factor, clearcoatRoughnessTextureIndex);
     if (clearcoatRoughnessTextureIndex != kInvalidMaterialTexture)
     {
-        roughness *= SamplePbrTexture(
-            clearcoatRoughnessTextureIndex, texCoord, 1.0.xxxx).g;
+        roughness *= SelectGpuTextureChannel(
+            SamplePbrTexture(
+                clearcoatRoughnessTextureIndex, texCoord, 1.0.xxxx),
+            clearcoatRoughnessTextureTransform, 1u);
     }
     return clamp(roughness, 0.045, 1.0);
 }
 
 float EvaluateThickness(float factor, uint thicknessTextureIndex,
-                        float2 texCoord)
+                        float2 texCoord,
+                        GpuTextureTransform thicknessTextureTransform)
 {
     float thickness = max(factor, 0.0);
     if (thicknessTextureIndex != kInvalidMaterialTexture)
     {
-        thickness *= SamplePbrTexture(
-            thicknessTextureIndex, texCoord, 1.0.xxxx).g;
+        thickness *= SelectGpuTextureChannel(
+            SamplePbrTexture(
+                thicknessTextureIndex, texCoord, 1.0.xxxx),
+            thicknessTextureTransform, 1u);
     }
     return max(thickness, 0.0);
 }
@@ -228,27 +253,33 @@ float3 EvaluateSheenColor(float3 factor, uint sheenColorTextureIndex,
 }
 
 float EvaluateSheenRoughness(float factor, uint sheenRoughnessTextureIndex,
-                             float2 texCoord)
+                             float2 texCoord,
+                             GpuTextureTransform sheenRoughnessTextureTransform)
 {
     float roughness =
         TextureBackedScalarFactor(factor, sheenRoughnessTextureIndex);
     if (sheenRoughnessTextureIndex != kInvalidMaterialTexture)
     {
-        roughness *= SamplePbrTexture(
-            sheenRoughnessTextureIndex, texCoord, 1.0.xxxx).a;
+        roughness *= SelectGpuTextureChannel(
+            SamplePbrTexture(
+                sheenRoughnessTextureIndex, texCoord, 1.0.xxxx),
+            sheenRoughnessTextureTransform, 3u);
     }
     return clamp(roughness, 0.045, 1.0);
 }
 
 float EvaluateIridescenceFactor(float factor, uint iridescenceTextureIndex,
-                                float2 texCoord)
+                                float2 texCoord,
+                                GpuTextureTransform iridescenceTextureTransform)
 {
     float iridescence =
         TextureBackedScalarFactor(factor, iridescenceTextureIndex);
     if (iridescenceTextureIndex != kInvalidMaterialTexture)
     {
-        iridescence *= SamplePbrTexture(
-            iridescenceTextureIndex, texCoord, 1.0.xxxx).r;
+        iridescence *= SelectGpuTextureChannel(
+            SamplePbrTexture(
+                iridescenceTextureIndex, texCoord, 1.0.xxxx),
+            iridescenceTextureTransform, 0u);
     }
     return saturate(iridescence);
 }
@@ -256,19 +287,23 @@ float EvaluateIridescenceFactor(float factor, uint iridescenceTextureIndex,
 float EvaluateIridescenceThickness(float minimumThickness,
                                    float maximumThickness,
                                    uint thicknessTextureIndex,
-                                   float2 texCoord)
+                                   float2 texCoord,
+                                   GpuTextureTransform thicknessTextureTransform)
 {
     float thicknessWeight = 1.0;
     if (thicknessTextureIndex != kInvalidMaterialTexture)
     {
-        thicknessWeight = SamplePbrTexture(
-            thicknessTextureIndex, texCoord, 1.0.xxxx).g;
+        thicknessWeight = SelectGpuTextureChannel(
+            SamplePbrTexture(
+                thicknessTextureIndex, texCoord, 1.0.xxxx),
+            thicknessTextureTransform, 1u);
     }
     return lerp(minimumThickness, maximumThickness, saturate(thicknessWeight));
 }
 
 float3 ApplyHeightDisplacement(float3 objectPosition, float3 objectNormal,
                                float2 texCoord, uint heightTextureIndex,
+                               GpuTextureTransform heightTextureTransform,
                                float heightScale, float heightOffset)
 {
     if (heightTextureIndex == kInvalidMaterialTexture ||
@@ -277,8 +312,9 @@ float3 ApplyHeightDisplacement(float3 objectPosition, float3 objectNormal,
         return objectPosition;
     }
 
-    float height = SamplePbrTextureLevel(
-        heightTextureIndex, texCoord, 0.0, 0.5.xxxx).r;
+    float height = SelectGpuTextureChannel(
+        SamplePbrTextureLevel(heightTextureIndex, texCoord, 0.0, 0.5.xxxx),
+        heightTextureTransform, 0u);
     float3 normal = SafeNormalize(objectNormal, float3(0.0, 1.0, 0.0));
     return objectPosition + normal * ((height + heightOffset) * heightScale);
 }

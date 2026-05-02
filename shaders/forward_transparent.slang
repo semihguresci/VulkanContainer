@@ -95,7 +95,8 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 
     float3 objectPosition = ApplyHeightDisplacement(
         input.inPosition, input.inNormal, heightTexCoord,
-        material.heightTextureIndex, material.heightScale,
+        material.heightTextureIndex, material.heightTextureTransform,
+        material.heightScale,
         material.heightOffset);
     float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     float3x3 modelMatrix = (float3x3)obj.model;
@@ -214,7 +215,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     }
     baseAlpha = EvaluateOpacity(
         baseAlpha, vertIn.opacityTextureIndex, vertIn.opacityFactor,
-        opacityTexCoord);
+        opacityTexCoord, material.opacityTextureTransform);
 
     if ((vertIn.flags & kObjectFlagAlphaCutoff) != 0u && baseAlpha < vertIn.alphaCutoff)
     {
@@ -229,41 +230,44 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     float sampledMetallic = EvaluateMetalness(
         vertIn.metallicRoughness.x, vertIn.metallicRoughnessTextureIndex,
         vertIn.metalnessTextureIndex, metallicRoughnessTexCoord,
-        metalnessTexCoord);
+        metalnessTexCoord, material.metalnessTextureTransform);
     float sampledRoughness = EvaluateRoughness(
         vertIn.metallicRoughness.y, vertIn.metallicRoughnessTextureIndex,
         vertIn.roughnessTextureIndex, metallicRoughnessTexCoord,
-        roughnessTexCoord, vertIn.flags);
+        roughnessTexCoord, material.roughnessTextureTransform, vertIn.flags);
     float specularFactor = EvaluateSpecularFactor(
-        vertIn.specularFactor, vertIn.specularTextureIndex, specularTexCoord);
+        vertIn.specularFactor, vertIn.specularTextureIndex, specularTexCoord,
+        material.specularTextureTransform);
     float transmissionFactor = EvaluateTransmissionFactor(
         vertIn.transmissionFactor, vertIn.transmissionTextureIndex,
-        transmissionTexCoord);
+        transmissionTexCoord, material.transmissionTextureTransform);
     float3 specularColor = EvaluateSpecularColor(
         material.specularColorFactor.rgb, material.specularColorTextureIndex,
         specularColorTexCoord, vertIn.specularTextureIndex, specularTexCoord);
     float clearcoat = EvaluateClearcoatFactor(
         material.clearcoatFactor, material.clearcoatTextureIndex,
-        clearcoatTexCoord);
+        clearcoatTexCoord, material.clearcoatTextureTransform);
     float clearcoatRoughness = EvaluateClearcoatRoughness(
         material.clearcoatRoughnessFactor,
-        material.clearcoatRoughnessTextureIndex, clearcoatRoughnessTexCoord);
+        material.clearcoatRoughnessTextureIndex, clearcoatRoughnessTexCoord,
+        material.clearcoatRoughnessTextureTransform);
     float3 sheenColor = EvaluateSheenColor(
         material.sheenColorFactor.rgb, material.sheenColorTextureIndex,
         sheenColorTexCoord);
     float sheenRoughness = EvaluateSheenRoughness(
         material.sheenRoughnessFactor, material.sheenRoughnessTextureIndex,
-        sheenRoughnessTexCoord);
+        sheenRoughnessTexCoord, material.sheenRoughnessTextureTransform);
     float iridescence = EvaluateIridescenceFactor(
         material.iridescenceFactor, material.iridescenceTextureIndex,
-        iridescenceTexCoord);
+        iridescenceTexCoord, material.iridescenceTextureTransform);
     float iridescenceThickness = EvaluateIridescenceThickness(
         material.iridescenceThicknessMinimum,
         material.iridescenceThicknessMaximum,
-        material.iridescenceThicknessTextureIndex, iridescenceThicknessTexCoord);
+        material.iridescenceThicknessTextureIndex, iridescenceThicknessTexCoord,
+        material.iridescenceThicknessTextureTransform);
     float volumeThickness = EvaluateThickness(
         material.thicknessFactor, material.thicknessTextureIndex,
-        thicknessTexCoord);
+        thicknessTexCoord, material.thicknessTextureTransform);
 
     float faceSign =
         ((vertIn.flags & kObjectFlagDoubleSided) != 0u && !isFrontFace)
@@ -331,9 +335,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                                         float3(0.0, 1.0, 0.0));
     float3 directionalRadiance =
         uLighting.directionalColorIntensity.rgb * uLighting.directionalColorIntensity.a;
-    const bool thinSurface =
-        (vertIn.flags & (kObjectFlagAlphaCutoff | kObjectFlagDoubleSided)) ==
-        (kObjectFlagAlphaCutoff | kObjectFlagDoubleSided);
+    const bool thinSurface = IsThinSurfaceGpuMaterial(vertIn.flags);
     float shadowFactor = 1.0;
     if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
     {

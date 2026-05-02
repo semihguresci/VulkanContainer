@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -12,7 +13,9 @@ namespace {
 
 using container::renderer::FrameRecordParams;
 using container::renderer::RenderGraph;
+using container::renderer::RenderPassExecutionHooks;
 using container::renderer::RenderPassId;
+using container::renderer::RenderPassReadiness;
 using container::renderer::RenderPassSkipReason;
 using container::renderer::RenderPassNode;
 using container::renderer::RenderResourceId;
@@ -27,6 +30,13 @@ RenderPassNode::RecordFn recordPass(
 
 RenderPassNode::RecordFn noopRecord() {
   return [](VkCommandBuffer, const FrameRecordParams&) {};
+}
+
+RenderPassReadiness notNeeded() {
+  RenderPassReadiness readiness{};
+  readiness.ready = false;
+  readiness.skipReason = RenderPassSkipReason::NotNeeded;
+  return readiness;
 }
 
 std::vector<RenderPassId> execute(RenderGraph& graph) {
@@ -55,13 +65,18 @@ bool activeContains(const RenderGraph& graph, RenderPassId id) {
 }
 
 const container::renderer::RenderPassExecutionStatus* statusFor(
-    const RenderGraph& graph,
+    std::span<const container::renderer::RenderPassExecutionStatus> statuses,
     RenderPassId id) {
-  const auto statuses = graph.executionStatuses();
   const auto it = std::ranges::find_if(statuses, [&](const auto& status) {
     return status.id == id;
   });
   return it == statuses.end() ? nullptr : &*it;
+}
+
+const container::renderer::RenderPassExecutionStatus* statusFor(
+    const RenderGraph& graph,
+    RenderPassId id) {
+  return statusFor(graph.executionStatuses(), id);
 }
 
 }  // namespace
@@ -461,6 +476,181 @@ TEST(RenderGraphTests, SetPassRecordUpdatesActivePlan) {
   EXPECT_TRUE(graph.isPassActive(RenderPassId::FrustumCull));
 }
 
+TEST(RenderGraphTests, ExecuteSkipsPassWhenReadinessFailsAtRuntime) {
+  RenderGraph graph;
+  std::vector<RenderPassId> recorded;
+  std::vector<RenderPassId> began;
+
+  graph.addPass(RenderPassId::FrustumCull,
+                {},
+                recordPass(recorded, RenderPassId::FrustumCull));
+  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::FrustumCull,
+                                     [](const FrameRecordParams&) {
+                                       return notNeeded();
+                                     }));
+
+  RenderPassExecutionHooks hooks{};
+  hooks.beginPass = [&](RenderPassId id, VkCommandBuffer) {
+    began.push_back(id);
+  };
+  FrameRecordParams params{};
+  graph.execute(VK_NULL_HANDLE, params, hooks);
+
+  EXPECT_TRUE(recorded.empty());
+  EXPECT_TRUE(began.empty());
+
+  const auto* status = statusFor(graph.lastFrameExecutionStatuses(),
+                                 RenderPassId::FrustumCull);
+  ASSERT_NE(status, nullptr);
+  EXPECT_FALSE(status->active);
+  EXPECT_EQ(status->skipReason, RenderPassSkipReason::NotNeeded);
+  EXPECT_TRUE(graph.isPassActive(RenderPassId::FrustumCull));
+}
+
+TEST(RenderGraphTests, PrepareFramePublishesRuntimeStatusBeforeExecute) {
+  RenderGraph graph;
+
+  graph.addPass(RenderPassId::TileCull, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::TileCull, {}, {}, {}));
+  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::TileCull,
+                                     [](const FrameRecordParams&) {
+                                       return notNeeded();
+                                     }));
+
+  FrameRecordParams params{};
+  graph.prepareFrame(params);
+
+  const auto* status = statusFor(graph.lastFrameExecutionStatuses(),
+                                 RenderPassId::TileCull);
+  ASSERT_NE(status, nullptr);
+  EXPECT_FALSE(status->active);
+  EXPECT_EQ(status->skipReason, RenderPassSkipReason::NotNeeded);
+
+  // The static plan remains available for UI/topology queries; prepared-frame
+  // status is exposed through lastFrameExecutionStatuses().
+  EXPECT_TRUE(graph.isPassActive(RenderPassId::TileCull));
+}
+
+TEST(RenderGraphTests, ExecutePreparedFrameConsumesPreparedPlan) {
+  RenderGraph graph;
+  std::vector<RenderPassId> recorded;
+  int readinessCalls = 0;
+  bool ready = false;
+
+  graph.addPass(RenderPassId::TileCull,
+                {},
+                recordPass(recorded, RenderPassId::TileCull));
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::TileCull, {}, {}, {}));
+  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::TileCull,
+                                     [&](const FrameRecordParams&) {
+                                       ++readinessCalls;
+                                       return ready ? RenderPassReadiness{}
+                                                    : notNeeded();
+                                     }));
+
+  FrameRecordParams params{};
+  graph.prepareFrame(params);
+  ready = true;
+  graph.executePreparedFrame(VK_NULL_HANDLE, params);
+
+  EXPECT_TRUE(recorded.empty());
+  EXPECT_EQ(readinessCalls, 1);
+}
+
+TEST(RenderGraphTests, ExecutePreparedFrameRebuildsAfterReadinessMutation) {
+  RenderGraph graph;
+  std::vector<RenderPassId> recorded;
+  int readinessCalls = 0;
+
+  graph.addPass(RenderPassId::TileCull,
+                {},
+                recordPass(recorded, RenderPassId::TileCull));
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::TileCull, {}, {}, {}));
+  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::TileCull,
+                                     [&](const FrameRecordParams&) {
+                                       ++readinessCalls;
+                                       return notNeeded();
+                                     }));
+
+  FrameRecordParams params{};
+  graph.prepareFrame(params);
+  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::TileCull,
+                                     [&](const FrameRecordParams&) {
+                                       ++readinessCalls;
+                                       return RenderPassReadiness{};
+                                     }));
+
+  graph.executePreparedFrame(VK_NULL_HANDLE, params);
+
+  const std::vector<RenderPassId> expected = {RenderPassId::TileCull};
+  EXPECT_EQ(recorded, expected);
+  EXPECT_EQ(readinessCalls, 2);
+}
+
+TEST(RenderGraphTests, RuntimeSkippedWriterSkipsRequiredResourceReader) {
+  RenderGraph graph;
+  std::vector<RenderPassId> recorded;
+
+  graph.addPass(RenderPassId::Bloom, {}, recordPass(recorded, RenderPassId::Bloom));
+  ASSERT_TRUE(graph.setPassResourceAccess(
+      RenderPassId::Bloom,
+      {},
+      {},
+      {RenderResourceId::BloomTexture}));
+  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::Bloom,
+                                     [](const FrameRecordParams&) {
+                                       return notNeeded();
+                                     }));
+
+  graph.addPass(RenderPassId::FrustumCull,
+                {},
+                recordPass(recorded, RenderPassId::FrustumCull));
+  ASSERT_TRUE(graph.setPassResourceAccess(
+      RenderPassId::FrustumCull,
+      {RenderResourceId::BloomTexture},
+      {},
+      {}));
+
+  FrameRecordParams params{};
+  graph.execute(VK_NULL_HANDLE, params);
+
+  EXPECT_TRUE(recorded.empty());
+
+  const auto* readerStatus = statusFor(graph.lastFrameExecutionStatuses(),
+                                       RenderPassId::FrustumCull);
+  ASSERT_NE(readerStatus, nullptr);
+  EXPECT_FALSE(readerStatus->active);
+  EXPECT_EQ(readerStatus->skipReason, RenderPassSkipReason::MissingResource);
+  EXPECT_EQ(readerStatus->blockingResource, RenderResourceId::BloomTexture);
+}
+
+TEST(RenderGraphTests, IsPassActiveUsesRuntimeStateInsideCallbacks) {
+  RenderGraph graph;
+  std::vector<RenderPassId> recorded;
+
+  graph.addPass(RenderPassId::TileCull, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::TileCull, {}, {}, {}));
+  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::TileCull,
+                                     [](const FrameRecordParams&) {
+                                       return notNeeded();
+                                     }));
+
+  graph.addPass(RenderPassId::Lighting,
+                {RenderPassId::TileCull},
+                [&](VkCommandBuffer, const FrameRecordParams&) {
+                  EXPECT_FALSE(graph.isPassActive(RenderPassId::TileCull));
+                  recorded.push_back(RenderPassId::Lighting);
+                });
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::Lighting, {}, {}, {}));
+
+  FrameRecordParams params{};
+  graph.execute(VK_NULL_HANDLE, params);
+
+  const std::vector<RenderPassId> expected = {RenderPassId::Lighting};
+  EXPECT_EQ(recorded, expected);
+  EXPECT_TRUE(graph.isPassActive(RenderPassId::TileCull));
+}
+
 TEST(RenderGraphTests, ExecuteAllowsActiveQueriesInsidePassCallbacks) {
   RenderGraph graph;
   std::vector<RenderPassId> recorded;
@@ -622,6 +812,7 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
       RenderPassId::OcclusionCull,
       RenderPassId::CullStatsReadback,
       RenderPassId::GBuffer,
+      RenderPassId::TransparentPick,
       RenderPassId::OitClear,
       RenderPassId::ShadowCullCascade0,
       RenderPassId::ShadowCullCascade1,
@@ -657,6 +848,8 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
   EXPECT_LT(executionPosition(graph, RenderPassId::OcclusionCull),
             executionPosition(graph, RenderPassId::GBuffer));
   EXPECT_LT(executionPosition(graph, RenderPassId::GBuffer),
+            executionPosition(graph, RenderPassId::TransparentPick));
+  EXPECT_LT(executionPosition(graph, RenderPassId::TransparentPick),
             executionPosition(graph, RenderPassId::DepthToReadOnly));
   EXPECT_LT(executionPosition(graph, RenderPassId::DepthToReadOnly),
             executionPosition(graph, RenderPassId::Lighting));
@@ -680,6 +873,7 @@ TEST(RenderGraphTests, BimPassesSlotIntoFrameOrderWhenRegistered) {
       RenderPassId::CullStatsReadback,
       RenderPassId::GBuffer,
       RenderPassId::BimGBuffer,
+      RenderPassId::TransparentPick,
       RenderPassId::OitClear,
       RenderPassId::ShadowCullCascade0,
       RenderPassId::ShadowCullCascade1,
@@ -715,6 +909,8 @@ TEST(RenderGraphTests, BimPassesSlotIntoFrameOrderWhenRegistered) {
   EXPECT_LT(executionPosition(graph, RenderPassId::GBuffer),
             executionPosition(graph, RenderPassId::BimGBuffer));
   EXPECT_LT(executionPosition(graph, RenderPassId::BimGBuffer),
+            executionPosition(graph, RenderPassId::TransparentPick));
+  EXPECT_LT(executionPosition(graph, RenderPassId::TransparentPick),
             executionPosition(graph, RenderPassId::DepthToReadOnly));
   EXPECT_LT(executionPosition(graph, RenderPassId::DepthToReadOnly),
             executionPosition(graph, RenderPassId::Lighting));

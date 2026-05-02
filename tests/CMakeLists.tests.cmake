@@ -73,6 +73,11 @@ add_custom_test(scene_graph_tests
     VulkanSceneRenderer_scene
 )
 
+add_custom_test(input_manager_tests
+    ${TESTS_DIR}/input_manager_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_window
+)
+
 add_custom_test(gltf_loader_tests
     ${TESTS_DIR}/gltf_loader_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry

@@ -69,6 +69,7 @@ struct PSOutput
     float4 material : SV_Target2;
     float4 emissive : SV_Target3;
     float4 specular : SV_Target4;
+    uint pickId : SV_Target5;
 };
 
 [shader("vertex")]
@@ -84,7 +85,8 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 
     float3 objectPosition = ApplyHeightDisplacement(
         input.inPosition, input.inNormal, heightTexCoord,
-        material.heightTextureIndex, material.heightScale,
+        material.heightTextureIndex, material.heightTextureTransform,
+        material.heightScale,
         material.heightOffset);
     float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     float3x3 modelMatrix = (float3x3)obj.model;
@@ -196,7 +198,7 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
     }
     baseAlpha = EvaluateOpacity(
         baseAlpha, vertIn.opacityTextureIndex, vertIn.opacityFactor,
-        opacityTexCoord);
+        opacityTexCoord, material.opacityTextureTransform);
 
     if ((vertIn.flags & kObjectFlagAlphaMask) != 0u &&
         !AlphaMaskPass(baseAlpha, vertIn.alphaCutoff, vertIn.pos))
@@ -207,13 +209,14 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
     float sampledMetallic = EvaluateMetalness(
         vertIn.metallicRoughness.x, vertIn.metallicRoughnessTextureIndex,
         vertIn.metalnessTextureIndex, metallicRoughnessTexCoord,
-        metalnessTexCoord);
+        metalnessTexCoord, material.metalnessTextureTransform);
     float sampledRoughness = EvaluateRoughness(
         vertIn.metallicRoughness.y, vertIn.metallicRoughnessTextureIndex,
         vertIn.roughnessTextureIndex, metallicRoughnessTexCoord,
-        roughnessTexCoord, vertIn.flags);
+        roughnessTexCoord, material.roughnessTextureTransform, vertIn.flags);
     float specularFactor = EvaluateSpecularFactor(
-        vertIn.specularFactor, vertIn.specularTextureIndex, specularTexCoord);
+        vertIn.specularFactor, vertIn.specularTextureIndex, specularTexCoord,
+        material.specularTextureTransform);
     float3 specularColor = EvaluateSpecularColor(
         material.specularColorFactor.rgb, material.specularColorTextureIndex,
         specularColorTexCoord, vertIn.specularTextureIndex, specularTexCoord);
@@ -254,13 +257,14 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
 
     float clearcoat = EvaluateClearcoatFactor(
         material.clearcoatFactor, material.clearcoatTextureIndex,
-        clearcoatTexCoord);
+        clearcoatTexCoord, material.clearcoatTextureTransform);
     if (clearcoat > 0.0)
     {
         float clearcoatRoughness = EvaluateClearcoatRoughness(
             material.clearcoatRoughnessFactor,
             material.clearcoatRoughnessTextureIndex,
-            clearcoatRoughnessTexCoord);
+            clearcoatRoughnessTexCoord,
+            material.clearcoatRoughnessTextureTransform);
         sampledRoughness =
             lerp(sampledRoughness, min(sampledRoughness, clearcoatRoughness),
                  clearcoat * 0.35);
@@ -275,7 +279,8 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
     {
         float sheenRoughness = EvaluateSheenRoughness(
             material.sheenRoughnessFactor,
-            material.sheenRoughnessTextureIndex, sheenRoughnessTexCoord);
+            material.sheenRoughnessTextureIndex, sheenRoughnessTexCoord,
+            material.sheenRoughnessTextureTransform);
         float grazing = pow(1.0 - NdotV, 2.0) * (1.0 - 0.35 * sheenRoughness);
         emissive += sheenColor * grazing * 0.08;
         dielectricF0 = saturate(dielectricF0 + sheenWeight * grazing * 0.004);
@@ -283,14 +288,15 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
 
     float iridescence = EvaluateIridescenceFactor(
         material.iridescenceFactor, material.iridescenceTextureIndex,
-        iridescenceTexCoord);
+        iridescenceTexCoord, material.iridescenceTextureTransform);
     if (iridescence > 0.0)
     {
         float thickness = EvaluateIridescenceThickness(
             material.iridescenceThicknessMinimum,
             material.iridescenceThicknessMaximum,
             material.iridescenceThicknessTextureIndex,
-            iridescenceThicknessTexCoord);
+            iridescenceThicknessTexCoord,
+            material.iridescenceThicknessTextureTransform);
         baseColor *= ApproximateIridescenceTint(
             iridescence * 0.25, material.iridescenceIor, thickness, NdotV);
         dielectricF0 = saturate(dielectricF0 + iridescence * 0.006);
@@ -305,6 +311,8 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         unlitOutput.material = float4(0.0, 1.0, 1.0, materialMetadata);
         unlitOutput.emissive = float4(baseColor + emissive, 0.0);
         unlitOutput.specular = 0.0.xxxx;
+        unlitOutput.pickId =
+            uObjects[vertIn.objectIndex].objectInfo.z | (vertIn.objectIndex + 1u);
         return unlitOutput;
     }
 
@@ -315,5 +323,7 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
                              materialMetadata);
     output.emissive = float4(emissive, dielectricF0);
     output.specular = float4(dielectricF0Color, dielectricF0);
+    output.pickId =
+        uObjects[vertIn.objectIndex].objectInfo.z | (vertIn.objectIndex + 1u);
     return output;
 }
