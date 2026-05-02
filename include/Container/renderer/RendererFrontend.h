@@ -1,16 +1,16 @@
 #pragma once
 
-#include "Container/renderer/DebugRenderState.h"
-#include "Container/renderer/PushConstantBlock.h"
-#include "Container/renderer/RenderResources.h"
-#include "Container/renderer/SceneState.h"
-#include "Container/utility/VulkanMemoryManager.h"
-
 #include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <string>
 #include <vector>
+
+#include "Container/renderer/DebugRenderState.h"
+#include "Container/renderer/PushConstantBlock.h"
+#include "Container/renderer/RenderResources.h"
+#include "Container/renderer/SceneState.h"
+#include "Container/utility/VulkanMemoryManager.h"
 
 struct GLFWwindow;
 
@@ -21,6 +21,7 @@ struct AppConfig;
 
 namespace container::renderer {
 class BloomManager;
+class BimManager;
 class CameraController;
 class CommandBufferManager;
 class EnvironmentManager;
@@ -62,14 +63,14 @@ namespace container::renderer {
 
 // Groups all construction parameters for RendererFrontend.
 struct RendererFrontendCreateInfo {
-  VulkanContextResult*                 ctx{nullptr};
-  container::gpu::PipelineManager*  pipelineManager{nullptr};
-  container::gpu::AllocationManager*  allocationManager{nullptr};
-  container::gpu::SwapChainManager*           swapChainManager{nullptr};
-  CommandBufferManager*                commandBufferManager{nullptr};
-  const container::app::AppConfig*                config{nullptr};
-  GLFWwindow*                          nativeWindow{nullptr};
-  container::window::InputManager*        inputManager{nullptr};
+  VulkanContextResult* ctx{nullptr};
+  container::gpu::PipelineManager* pipelineManager{nullptr};
+  container::gpu::AllocationManager* allocationManager{nullptr};
+  container::gpu::SwapChainManager* swapChainManager{nullptr};
+  CommandBufferManager* commandBufferManager{nullptr};
+  const container::app::AppConfig* config{nullptr};
+  GLFWwindow* nativeWindow{nullptr};
+  container::window::InputManager* inputManager{nullptr};
 };
 
 // RendererFrontend owns the renderer-facing lifetime graph. The application
@@ -106,7 +107,7 @@ class RendererFrontend {
   void shutdown();
 
   // Access debug state (allows the application to expose toggles if needed).
-  DebugRenderState&       debugState()       { return debugState_; }
+  DebugRenderState& debugState() { return debugState_; }
   const DebugRenderState& debugState() const { return debugState_; }
 
   const SceneState& sceneState() const { return sceneState_; }
@@ -116,67 +117,73 @@ class RendererFrontend {
   // releases them in dependency-aware order because many destructors touch
   // Vulkan objects owned by earlier services.
   struct OwnedSubsystems {
-    std::unique_ptr<RenderPassManager>                  renderPassManager;
-    std::unique_ptr<OitManager>                         oitManager;
-    std::unique_ptr<FrameResourceManager>               frameResourceManager;
-    std::unique_ptr<container::scene::SceneManager>     sceneManager;
-    std::unique_ptr<SceneController>                    sceneController;
-    std::unique_ptr<CameraController>                   cameraController;
-    std::unique_ptr<LightingManager>                    lightingManager;
-    std::unique_ptr<ShadowCullManager>                  shadowCullManager;
-    std::unique_ptr<ShadowManager>                       shadowManager;
-    std::unique_ptr<EnvironmentManager>                  environmentManager;
-    std::unique_ptr<GpuCullManager>                      gpuCullManager;
-    std::unique_ptr<BloomManager>                          bloomManager;
-    std::unique_ptr<ExposureManager>                       exposureManager;
-    std::unique_ptr<GraphicsPipelineBuilder>             pipelineBuilder;
-    std::unique_ptr<FrameRecorder>                      frameRecorder;
-    std::unique_ptr<RenderPassGpuProfiler>               renderPassGpuProfiler;
-    std::unique_ptr<RendererTelemetry>                   rendererTelemetry;
-    std::unique_ptr<container::ui::GuiManager>          guiManager;
-    std::unique_ptr<container::gpu::FrameSyncManager>   frameSyncManager;
+    std::unique_ptr<RenderPassManager> renderPassManager;
+    std::unique_ptr<OitManager> oitManager;
+    std::unique_ptr<FrameResourceManager> frameResourceManager;
+    std::unique_ptr<container::scene::SceneManager> sceneManager;
+    std::unique_ptr<BimManager> bimManager;
+    std::unique_ptr<SceneController> sceneController;
+    std::unique_ptr<CameraController> cameraController;
+    std::unique_ptr<LightingManager> lightingManager;
+    std::unique_ptr<ShadowCullManager> shadowCullManager;
+    std::unique_ptr<ShadowManager> shadowManager;
+    std::unique_ptr<EnvironmentManager> environmentManager;
+    std::unique_ptr<GpuCullManager> gpuCullManager;
+    std::unique_ptr<BloomManager> bloomManager;
+    std::unique_ptr<ExposureManager> exposureManager;
+    std::unique_ptr<GraphicsPipelineBuilder> pipelineBuilder;
+    std::unique_ptr<FrameRecorder> frameRecorder;
+    std::unique_ptr<RenderPassGpuProfiler> renderPassGpuProfiler;
+    std::unique_ptr<RendererTelemetry> rendererTelemetry;
+    std::unique_ptr<container::ui::GuiManager> guiManager;
+    std::unique_ptr<container::gpu::FrameSyncManager> frameSyncManager;
   };
 
   // External services passed in at construction. These must outlive the
   // frontend; they wrap the device, swapchain, allocator, command pool, and
   // app configuration supplied by the application layer.
   struct BorrowedServices {
-    VulkanContextResult&                  ctx;
-    container::gpu::PipelineManager&     pipelineManager;
-    container::gpu::AllocationManager&   allocationManager;
-    container::gpu::SwapChainManager&    swapChainManager;
-    CommandBufferManager&                commandBufferManager;
-    const container::app::AppConfig&     config;
-    GLFWwindow*                          nativeWindow{nullptr};
-    container::window::InputManager&     inputManager;
+    VulkanContextResult& ctx;
+    container::gpu::PipelineManager& pipelineManager;
+    container::gpu::AllocationManager& allocationManager;
+    container::gpu::SwapChainManager& swapChainManager;
+    CommandBufferManager& commandBufferManager;
+    const container::app::AppConfig& config;
+    GLFWwindow* nativeWindow{nullptr};
+    container::window::InputManager& inputManager;
   };
 
-  OwnedSubsystems   subs_;
-  BorrowedServices   svc_;
+  OwnedSubsystems subs_;
+  BorrowedServices svc_;
 
-  // ---- grouped state ----------------------------------------------------------
-  RenderResources   resources_{};
+  // ---- grouped state
+  // ----------------------------------------------------------
+  RenderResources resources_{};
   PushConstantBlock pushConstants_{};
 
   // GPU buffers backing the camera UBO and per-object SSBO.
   struct SceneBufferState {
     std::vector<container::gpu::AllocatedBuffer> cameras;
     container::gpu::AllocatedBuffer object{};
-    size_t                          objectCapacity{0};
-    container::gpu::CameraData      cameraData{};
-    bool                            shadowObjectDescriptorReady{false};
+    size_t objectCapacity{0};
+    container::gpu::CameraData cameraData{};
+    bool shadowObjectDescriptorReady{false};
   };
   SceneBufferState buffers_{};
 
   container::scene::SceneGraph sceneGraph_{};
-  SceneState                 sceneState_{};
-  DebugRenderState           debugState_{};
+  SceneState sceneState_{};
+  DebugRenderState debugState_{};
+  std::string activePrimaryModelPath_{};
+  float activePrimaryImportScale_{1.0f};
+  std::string activeAuxiliaryModelPath_{};
+  float activeAuxiliaryImportScale_{1.0f};
 
   // Per-frame synchronisation / bookkeeping.
   struct FrameState {
     std::vector<VkFence> imagesInFlight;
-    uint32_t             currentFrame{0};
-    uint64_t             submittedFrameCount{0};
+    uint32_t currentFrame{0};
+    uint64_t submittedFrameCount{0};
   };
   FrameState frame_{};
 
@@ -190,7 +197,8 @@ class RendererFrontend {
   };
   ScreenshotState screenshot_{};
 
-  // ---- internal init helpers --------------------------------------------------
+  // ---- internal init helpers
+  // --------------------------------------------------
   void createRenderPasses();
   void createGraphicsPipelines();
   void createCamera();
@@ -201,7 +209,8 @@ class RendererFrontend {
   void createFrameResources();
   void ensureCameraBuffers();
 
-  // ---- per-frame helpers ------------------------------------------------------
+  // ---- per-frame helpers
+  // ------------------------------------------------------
   void updateCameraBuffer(uint32_t imageIndex);
   void updateObjectBuffer();
   void updateFrameDescriptorSets(uint32_t imageIndex = UINT32_MAX);
@@ -213,7 +222,8 @@ class RendererFrontend {
   void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
   [[nodiscard]] FrameRecordParams buildFrameRecordParams(uint32_t imageIndex);
 
-  // ---- scene helpers ----------------------------------------------------------
+  // ---- scene helpers
+  // ----------------------------------------------------------
   void syncSceneStateFromController();
 };
 

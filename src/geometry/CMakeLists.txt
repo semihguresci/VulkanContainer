@@ -1,10 +1,14 @@
 # Geometry component
 add_library(VulkanSceneRenderer_geometry
+    DotBimLoader.cpp
     GltfModelLoader.cpp
+    IfcxLoader.cpp
+    IfcTessellatedLoader.cpp
     Mesh.cpp
     Model.cpp
+    UsdLoader.cpp
     tinygltf_impl.cpp
-    vma_impl.cpp 
+    vma_impl.cpp
     stb_impl.cpp)
 
 target_compile_features(VulkanSceneRenderer_geometry PUBLIC cxx_std_23)
@@ -18,4 +22,5 @@ target_link_libraries(VulkanSceneRenderer_geometry PUBLIC
     Dep_VulkanCore
     Dep_Math
     Dep_SceneIO
+    nlohmann_json::nlohmann_json
 )

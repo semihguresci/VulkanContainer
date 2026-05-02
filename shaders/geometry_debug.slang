@@ -13,8 +13,6 @@ ConstantBuffer<BindlessPushConstants> pc;
 struct VSInput
 {
     [[vk::location(0)]] float3 inPosition;
-    [[vk::location(1)]] float3 inColor;
-    [[vk::location(2)]] float2 inTexCoord;
 };
 
 struct VSOutput

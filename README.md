@@ -1,8 +1,8 @@
 # VulkanSceneRenderer
 
 VulkanSceneRenderer is a C++23 Vulkan renderer for real-time scene rendering,
-glTF content, physically based materials, shadows, GPU culling, and debug
-visualization.
+glTF, BIM, and USD content, physically based materials, shadows,
+GPU culling, and debug visualization.
 
 The CMake project and build targets use `VulkanSceneRenderer`. The public
 include root remains `include/Container`, and the source namespace remains
@@ -21,6 +21,27 @@ Run tests:
 
 ```powershell
 ctest --test-dir out/build/windows-release --output-on-failure
+```
+
+Run with a BIM sidecar model:
+
+```powershell
+$bim = "models\buildingSMART-IFC5-development\examples\Hello Wall\hello-wall.ifcx"
+.\out\build\windows-release\VulkanSceneRenderer.exe --bim-model $bim
+```
+
+The sidecar path also accepts USD, USDA, USDC, and USDZ mesh files through the
+TinyUSDZ-backed importer:
+
+```powershell
+$usd = "models\my_ascii_mesh.usda"
+.\out\build\windows-release\VulkanSceneRenderer.exe --bim-model $usd
+```
+
+Download the OpenUSD sample models with CMake:
+
+```powershell
+cmake --build out/build/windows-release --target download_usd_models --config Release
 ```
 
 ## Documentation

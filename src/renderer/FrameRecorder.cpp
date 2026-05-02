@@ -41,10 +41,63 @@ bool hasDrawCommands(const std::vector<DrawCommand>* commands) {
   return commands != nullptr && !commands->empty();
 }
 
+bool hasSplitOpaqueDrawCommands(const FrameDrawLists& draws) {
+  return hasDrawCommands(draws.opaqueSingleSidedDrawCommands) ||
+         hasDrawCommands(draws.opaqueWindingFlippedDrawCommands) ||
+         hasDrawCommands(draws.opaqueDoubleSidedDrawCommands);
+}
+
+bool hasOpaqueDrawCommands(const FrameDrawLists& draws) {
+  return hasSplitOpaqueDrawCommands(draws) ||
+         hasDrawCommands(draws.opaqueDrawCommands);
+}
+
+bool hasBimShadowGeometry(const FrameRecordParams& p) {
+  const auto& bimScene = p.bim.scene;
+  return p.bim.sceneDescriptorSet != VK_NULL_HANDLE &&
+         bimScene.vertexSlice.buffer != VK_NULL_HANDLE &&
+         bimScene.indexSlice.buffer != VK_NULL_HANDLE &&
+         hasOpaqueDrawCommands(p.bim.draws);
+}
+
+bool hasTransparentDrawCommands(const FrameDrawLists& draws) {
+  return hasDrawCommands(draws.transparentSingleSidedDrawCommands) ||
+         hasDrawCommands(draws.transparentWindingFlippedDrawCommands) ||
+         hasDrawCommands(draws.transparentDoubleSidedDrawCommands) ||
+         hasDrawCommands(draws.transparentDrawCommands);
+}
+
+bool hasSplitTransparentDrawCommands(const FrameDrawLists& draws) {
+  return hasDrawCommands(draws.transparentSingleSidedDrawCommands) ||
+         hasDrawCommands(draws.transparentWindingFlippedDrawCommands) ||
+         hasDrawCommands(draws.transparentDoubleSidedDrawCommands);
+}
+
+bool hasBimTransparentGeometry(const FrameRecordParams& p) {
+  const auto& bimScene = p.bim.scene;
+  return p.bim.sceneDescriptorSet != VK_NULL_HANDLE &&
+         bimScene.vertexSlice.buffer != VK_NULL_HANDLE &&
+         bimScene.indexSlice.buffer != VK_NULL_HANDLE &&
+         hasTransparentDrawCommands(p.bim.draws);
+}
+
+const std::vector<DrawCommand>* primaryOpaqueDrawCommands(
+    const FrameDrawLists& draws) {
+  return hasSplitOpaqueDrawCommands(draws)
+             ? draws.opaqueSingleSidedDrawCommands
+             : draws.opaqueDrawCommands;
+}
+
+const std::vector<DrawCommand>* primaryTransparentDrawCommands(
+    const FrameDrawLists& draws) {
+  return hasSplitTransparentDrawCommands(draws)
+             ? draws.transparentSingleSidedDrawCommands
+             : draws.transparentDrawCommands;
+}
+
 bool hasTransparentDrawCommands(const FrameRecordParams& p) {
-  return hasDrawCommands(p.draws.transparentSingleSidedDrawCommands) ||
-         hasDrawCommands(p.draws.transparentWindingFlippedDrawCommands) ||
-         hasDrawCommands(p.draws.transparentDoubleSidedDrawCommands);
+  return hasTransparentDrawCommands(p.draws) ||
+         hasTransparentDrawCommands(p.bim.draws);
 }
 
 VkPipeline choosePipeline(VkPipeline preferred, VkPipeline fallback) {
@@ -230,6 +283,10 @@ void FrameRecorder::buildGraph() {
     recordDepthPrepass(cmd, p, p.descriptors.sceneDescriptorSet);
   });
 
+  graph_.addPass(RenderPassId::BimDepthPrepass, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+    recordBimDepthPrepass(cmd, p);
+  });
+
   graph_.addPass(RenderPassId::HiZGenerate, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     if (!gpuCullManager_ || !gpuCullManager_->isReady() ||
         !p.runtime.frame || p.runtime.frame->depthSamplingView == VK_NULL_HANDLE ||
@@ -286,6 +343,10 @@ void FrameRecorder::buildGraph() {
 
   graph_.addPass(RenderPassId::GBuffer, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     recordGBufferPass(cmd, p, p.descriptors.sceneDescriptorSet);
+  });
+
+  graph_.addPass(RenderPassId::BimGBuffer, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
+    recordBimGBufferPass(cmd, p);
   });
 
   graph_.addPass(RenderPassId::OitClear, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
@@ -345,13 +406,31 @@ void FrameRecorder::buildGraph() {
             VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT |
             VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
         0, 0, nullptr, 0, nullptr, 1, &barrier);
+
+    if (!displayModeRecordsShadowAtlas(currentDisplayMode(guiManager_)) &&
+        p.shadows.shadowManager != nullptr &&
+        p.shadows.shadowManager->shadowAtlasImage() != VK_NULL_HANDLE) {
+      VkImageMemoryBarrier shadowBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+      shadowBarrier.srcAccessMask = 0;
+      shadowBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      shadowBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      shadowBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      shadowBarrier.image = p.shadows.shadowManager->shadowAtlasImage();
+      shadowBarrier.subresourceRange = {
+          VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0,
+          kShadowCascadeCount};
+      shadowBarrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      shadowBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0,
+                           nullptr, 0, nullptr, 1, &shadowBarrier);
+    }
   });
 
   graph_.addPass(RenderPassId::TileCull, [this](VkCommandBuffer cmd, const FrameRecordParams& p) {
     if (!displayModeRecordsTileCull(currentDisplayMode(guiManager_))) return;
     if (lightingManager_ && lightingManager_->isTiledLightingReady() &&
         p.runtime.frame && p.runtime.frame->depthSamplingView != VK_NULL_HANDLE) {
-      lightingManager_->resetGpuTimers(cmd, p.runtime.imageIndex);
       lightingManager_->beginClusterCullTimer(cmd);
       lightingManager_->dispatchTileCull(
           cmd, swapChainManager_.extent(),
@@ -491,6 +570,9 @@ void FrameRecorder::record(VkCommandBuffer commandBuffer,
       shadowCascadeSingleSidedDrawCommands_[cascadeIndex].clear();
       shadowCascadeWindingFlippedDrawCommands_[cascadeIndex].clear();
       shadowCascadeDoubleSidedDrawCommands_[cascadeIndex].clear();
+      bimShadowCascadeSingleSidedDrawCommands_[cascadeIndex].clear();
+      bimShadowCascadeWindingFlippedDrawCommands_[cascadeIndex].clear();
+      bimShadowCascadeDoubleSidedDrawCommands_[cascadeIndex].clear();
     }
     shadowCascadeDrawCommandCacheValid_ = false;
   }
@@ -500,6 +582,10 @@ void FrameRecorder::record(VkCommandBuffer commandBuffer,
   beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
   if (vkBeginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
     throw std::runtime_error("failed to begin recording command buffer!");
+  }
+
+  if (lightingManager_) {
+    lightingManager_->resetGpuTimers(commandBuffer, p.runtime.imageIndex);
   }
 
   if (p.services.telemetry || p.services.gpuProfiler) {
@@ -566,6 +652,9 @@ bool FrameRecorder::shouldPrepareShadowCascadeDrawCommands(
         hasDrawCommands(p.draws.opaqueSingleSidedDrawCommands)) {
       return true;
     }
+    if (hasBimShadowGeometry(p)) {
+      return true;
+    }
   }
   return false;
 }
@@ -613,7 +702,10 @@ size_t FrameRecorder::shadowCascadeCpuCommandCount(
 
   size_t count =
       shadowCascadeWindingFlippedDrawCommands_[cascadeIndex].size() +
-      shadowCascadeDoubleSidedDrawCommands_[cascadeIndex].size();
+      shadowCascadeDoubleSidedDrawCommands_[cascadeIndex].size() +
+      bimShadowCascadeSingleSidedDrawCommands_[cascadeIndex].size() +
+      bimShadowCascadeWindingFlippedDrawCommands_[cascadeIndex].size() +
+      bimShadowCascadeDoubleSidedDrawCommands_[cascadeIndex].size();
   if (!useGpuShadowCullForCascade(p, cascadeIndex)) {
     count += shadowCascadeSingleSidedDrawCommands_[cascadeIndex].size();
   }
@@ -626,6 +718,11 @@ uint64_t FrameRecorder::shadowCascadeDrawCommandSignature(
   mixHash(signature, p.scene.objectDataRevision);
   mixHash(signature, reinterpret_cast<uintptr_t>(p.scene.objectData));
   mixHash(signature, p.scene.objectData ? p.scene.objectData->size() : 0u);
+  mixHash(signature, p.bim.scene.objectDataRevision);
+  mixHash(signature, reinterpret_cast<uintptr_t>(p.bim.scene.objectData));
+  mixHash(signature,
+          p.bim.scene.objectData ? p.bim.scene.objectData->size() : 0u);
+  mixHash(signature, hasBimShadowGeometry(p) ? 1u : 0u);
   mixHash(signature, reinterpret_cast<uintptr_t>(p.shadows.shadowManager));
   mixHash(signature, p.shadows.useGpuShadowCull ? 1u : 0u);
 
@@ -655,6 +752,18 @@ uint64_t FrameRecorder::shadowCascadeDrawCommandSignature(
                          p.draws.opaqueDoubleSidedDrawCommands));
   mixHash(signature, drawCommandCount(p.draws.opaqueDoubleSidedDrawCommands));
 
+  const auto* bimSingleSidedDrawCommands = primaryOpaqueDrawCommands(p.bim.draws);
+  mixHash(signature, reinterpret_cast<uintptr_t>(bimSingleSidedDrawCommands));
+  mixHash(signature, drawCommandCount(bimSingleSidedDrawCommands));
+  mixHash(signature, reinterpret_cast<uintptr_t>(
+                         p.bim.draws.opaqueWindingFlippedDrawCommands));
+  mixHash(signature,
+          drawCommandCount(p.bim.draws.opaqueWindingFlippedDrawCommands));
+  mixHash(signature, reinterpret_cast<uintptr_t>(
+                         p.bim.draws.opaqueDoubleSidedDrawCommands));
+  mixHash(signature,
+          drawCommandCount(p.bim.draws.opaqueDoubleSidedDrawCommands));
+
   if (p.shadows.shadowData != nullptr) {
     hashBytes(signature, p.shadows.shadowData, sizeof(*p.shadows.shadowData));
   }
@@ -674,6 +783,9 @@ void FrameRecorder::prepareShadowCascadeDrawCommands(
     shadowCascadeSingleSidedDrawCommands_[cascadeIndex].clear();
     shadowCascadeWindingFlippedDrawCommands_[cascadeIndex].clear();
     shadowCascadeDoubleSidedDrawCommands_[cascadeIndex].clear();
+    bimShadowCascadeSingleSidedDrawCommands_[cascadeIndex].clear();
+    bimShadowCascadeWindingFlippedDrawCommands_[cascadeIndex].clear();
+    bimShadowCascadeDoubleSidedDrawCommands_[cascadeIndex].clear();
   }
 
   const auto shouldWriteCascade = [this, &p](
@@ -708,25 +820,18 @@ void FrameRecorder::prepareShadowCascadeDrawCommands(
     }
   };
 
-  if (p.shadows.shadowManager == nullptr || p.scene.objectData == nullptr) {
-    // Without cascade/object bounds, use the full draw list for every cascade.
-    // This keeps shadows correct and simply gives up CPU-side cascade pruning.
-    distributeCommands(p.draws.opaqueSingleSidedDrawCommands,
-                       shadowCascadeSingleSidedDrawCommands_, true);
-    distributeCommands(p.draws.opaqueWindingFlippedDrawCommands,
-                       shadowCascadeWindingFlippedDrawCommands_, false);
-    distributeCommands(p.draws.opaqueDoubleSidedDrawCommands,
-                       shadowCascadeDoubleSidedDrawCommands_, false);
-    shadowCascadeDrawCommandSignature_ = signature;
-    shadowCascadeDrawCommandCacheValid_ = true;
-    return;
-  }
-
-  const auto filterCommands = [this, &p, &shouldWriteCascade](
+  const auto filterCommands = [this, &p, &shouldWriteCascade,
+                               &distributeCommands](
                                   const std::vector<DrawCommand>* source,
+                                  const FrameSceneGeometry& scene,
                                   auto& destination,
                                   bool skipGpuCulledSingleSided) {
     if (source == nullptr) return;
+
+    if (p.shadows.shadowManager == nullptr || scene.objectData == nullptr) {
+      distributeCommands(source, destination, skipGpuCulledSingleSided);
+      return;
+    }
 
     for (uint32_t cascadeIndex = 0; cascadeIndex < kShadowCascadeCount;
          ++cascadeIndex) {
@@ -737,7 +842,7 @@ void FrameRecorder::prepareShadowCascadeDrawCommands(
     }
 
     for (const DrawCommand& command : *source) {
-      if (command.objectIndex >= p.scene.objectData->size()) {
+      if (command.objectIndex >= scene.objectData->size()) {
         for (uint32_t cascadeIndex = 0; cascadeIndex < kShadowCascadeCount;
              ++cascadeIndex) {
           if (!shouldWriteCascade(skipGpuCulledSingleSided, cascadeIndex)) {
@@ -749,7 +854,7 @@ void FrameRecorder::prepareShadowCascadeDrawCommands(
       }
 
       const glm::vec4 boundingSphere =
-          (*p.scene.objectData)[command.objectIndex].boundingSphere;
+          (*scene.objectData)[command.objectIndex].boundingSphere;
       const bool hasValidBounds = boundingSphere.w > 0.0f;
 
       for (uint32_t cascadeIndex = 0; cascadeIndex < kShadowCascadeCount;
@@ -767,11 +872,26 @@ void FrameRecorder::prepareShadowCascadeDrawCommands(
   };
 
   filterCommands(p.draws.opaqueSingleSidedDrawCommands,
-                 shadowCascadeSingleSidedDrawCommands_, true);
+                 p.scene, shadowCascadeSingleSidedDrawCommands_, true);
   filterCommands(p.draws.opaqueWindingFlippedDrawCommands,
-                 shadowCascadeWindingFlippedDrawCommands_, false);
+                 p.scene, shadowCascadeWindingFlippedDrawCommands_, false);
   filterCommands(p.draws.opaqueDoubleSidedDrawCommands,
-                 shadowCascadeDoubleSidedDrawCommands_, false);
+                 p.scene, shadowCascadeDoubleSidedDrawCommands_, false);
+
+  if (hasBimShadowGeometry(p)) {
+    filterCommands(primaryOpaqueDrawCommands(p.bim.draws),
+                   p.bim.scene,
+                   bimShadowCascadeSingleSidedDrawCommands_,
+                   false);
+    filterCommands(p.bim.draws.opaqueWindingFlippedDrawCommands,
+                   p.bim.scene,
+                   bimShadowCascadeWindingFlippedDrawCommands_,
+                   false);
+    filterCommands(p.bim.draws.opaqueDoubleSidedDrawCommands,
+                   p.bim.scene,
+                   bimShadowCascadeDoubleSidedDrawCommands_,
+                   false);
+  }
   shadowCascadeDrawCommandSignature_ = signature;
   shadowCascadeDrawCommandCacheValid_ = true;
 }
@@ -904,7 +1024,7 @@ void FrameRecorder::recordGBufferPass(VkCommandBuffer cmd, const FrameRecordPara
   clearValues[1].color        = {{0.5f, 0.5f, 1.0f, 1.0f}};
   clearValues[2].color        = {{0.0f, 1.0f, 1.0f, 1.0f}};
   clearValues[3].color        = {{0.0f, 0.0f, 0.0f, 0.0f}};
-  clearValues[4].depthStencil = {0.0f, 0};
+  clearValues[4].color        = {{0.0f, 0.0f, 0.0f, 0.0f}};
   info.clearValueCount        = static_cast<uint32_t>(clearValues.size());
   info.pClearValues           = clearValues.data();
 
@@ -961,11 +1081,145 @@ void FrameRecorder::recordGBufferPass(VkCommandBuffer cmd, const FrameRecordPara
   vkCmdEndRenderPass(cmd);
 }
 
+void FrameRecorder::recordBimDepthPrepass(
+    VkCommandBuffer cmd,
+    const FrameRecordParams& p) const {
+  const auto& bimScene = p.bim.scene;
+  const auto& bimDraws = p.bim.draws;
+  if (!p.runtime.frame || p.renderPasses.bimDepthPrepass == VK_NULL_HANDLE ||
+      p.runtime.frame->bimDepthPrepassFramebuffer == VK_NULL_HANDLE ||
+      p.bim.sceneDescriptorSet == VK_NULL_HANDLE ||
+      p.pushConstants.bindless == nullptr ||
+      bimScene.vertexSlice.buffer == VK_NULL_HANDLE ||
+      bimScene.indexSlice.buffer == VK_NULL_HANDLE ||
+      !hasOpaqueDrawCommands(bimDraws)) {
+    return;
+  }
+
+  const VkPipeline depthPipeline = choosePipeline(
+      p.pipeline.pipelines.bimDepthPrepass,
+      p.pipeline.pipelines.depthPrepass);
+  if (depthPipeline == VK_NULL_HANDLE) {
+    return;
+  }
+
+  VkRenderPassBeginInfo info{};
+  info.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+  info.renderPass        = p.renderPasses.bimDepthPrepass;
+  info.framebuffer       = p.runtime.frame->bimDepthPrepassFramebuffer;
+  info.renderArea.offset = {0, 0};
+  info.renderArea.extent = swapChainManager_.extent();
+
+  vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          p.pipeline.layouts.scene, 0, 1,
+                          &p.bim.sceneDescriptorSet, 0, nullptr);
+  setViewportAndScissor(cmd);
+  bindSceneGeometryBuffers(cmd, bimScene.vertexSlice, bimScene.indexSlice,
+                           bimScene.indexType);
+
+  const VkPipeline frontCullPipeline = choosePipeline(
+      p.pipeline.pipelines.bimDepthPrepassFrontCull, depthPipeline);
+  const VkPipeline noCullPipeline = choosePipeline(
+      p.pipeline.pipelines.bimDepthPrepassNoCull, depthPipeline);
+
+  if (const auto* commands = primaryOpaqueDrawCommands(bimDraws);
+      hasDrawCommands(commands)) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, depthPipeline);
+    debugOverlay_.drawScene(cmd, p.pipeline.layouts.scene, *commands,
+                            *p.pushConstants.bindless);
+  }
+
+  if (hasDrawCommands(bimDraws.opaqueWindingFlippedDrawCommands)) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      frontCullPipeline);
+    debugOverlay_.drawScene(cmd, p.pipeline.layouts.scene,
+                            *bimDraws.opaqueWindingFlippedDrawCommands,
+                            *p.pushConstants.bindless);
+  }
+
+  if (hasDrawCommands(bimDraws.opaqueDoubleSidedDrawCommands)) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, noCullPipeline);
+    debugOverlay_.drawScene(cmd, p.pipeline.layouts.scene,
+                            *bimDraws.opaqueDoubleSidedDrawCommands,
+                            *p.pushConstants.bindless);
+  }
+
+  vkCmdEndRenderPass(cmd);
+}
+
+void FrameRecorder::recordBimGBufferPass(
+    VkCommandBuffer cmd,
+    const FrameRecordParams& p) const {
+  const auto& bimScene = p.bim.scene;
+  const auto& bimDraws = p.bim.draws;
+  if (!p.runtime.frame || p.renderPasses.bimGBuffer == VK_NULL_HANDLE ||
+      p.runtime.frame->bimGBufferFramebuffer == VK_NULL_HANDLE ||
+      p.bim.sceneDescriptorSet == VK_NULL_HANDLE ||
+      p.pushConstants.bindless == nullptr ||
+      bimScene.vertexSlice.buffer == VK_NULL_HANDLE ||
+      bimScene.indexSlice.buffer == VK_NULL_HANDLE ||
+      !hasOpaqueDrawCommands(bimDraws)) {
+    return;
+  }
+
+  const VkPipeline gBufferPipeline = choosePipeline(
+      p.pipeline.pipelines.bimGBuffer, p.pipeline.pipelines.gBuffer);
+  if (gBufferPipeline == VK_NULL_HANDLE) {
+    return;
+  }
+
+  VkRenderPassBeginInfo info{};
+  info.sType             = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+  info.renderPass        = p.renderPasses.bimGBuffer;
+  info.framebuffer       = p.runtime.frame->bimGBufferFramebuffer;
+  info.renderArea.offset = {0, 0};
+  info.renderArea.extent = swapChainManager_.extent();
+
+  vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          p.pipeline.layouts.scene, 0, 1,
+                          &p.bim.sceneDescriptorSet, 0, nullptr);
+  setViewportAndScissor(cmd);
+  bindSceneGeometryBuffers(cmd, bimScene.vertexSlice, bimScene.indexSlice,
+                           bimScene.indexType);
+
+  const VkPipeline frontCullPipeline = choosePipeline(
+      p.pipeline.pipelines.bimGBufferFrontCull, gBufferPipeline);
+  const VkPipeline noCullPipeline = choosePipeline(
+      p.pipeline.pipelines.bimGBufferNoCull, gBufferPipeline);
+
+  if (const auto* commands = primaryOpaqueDrawCommands(bimDraws);
+      hasDrawCommands(commands)) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gBufferPipeline);
+    debugOverlay_.drawScene(cmd, p.pipeline.layouts.scene, *commands,
+                            *p.pushConstants.bindless);
+  }
+
+  if (hasDrawCommands(bimDraws.opaqueWindingFlippedDrawCommands)) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      frontCullPipeline);
+    debugOverlay_.drawScene(cmd, p.pipeline.layouts.scene,
+                            *bimDraws.opaqueWindingFlippedDrawCommands,
+                            *p.pushConstants.bindless);
+  }
+
+  if (hasDrawCommands(bimDraws.opaqueDoubleSidedDrawCommands)) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, noCullPipeline);
+    debugOverlay_.drawScene(cmd, p.pipeline.layouts.scene,
+                            *bimDraws.opaqueDoubleSidedDrawCommands,
+                            *p.pushConstants.bindless);
+  }
+
+  vkCmdEndRenderPass(cmd);
+}
+
 bool FrameRecorder::canRecordShadowPass(const FrameRecordParams& p,
                                          uint32_t cascadeIndex) const {
   return cascadeIndex < kShadowCascadeCount &&
          p.renderPasses.shadow != VK_NULL_HANDLE &&
          p.pipeline.pipelines.shadowDepth != VK_NULL_HANDLE &&
+         p.descriptors.shadowDescriptorSet != VK_NULL_HANDLE &&
          p.shadows.shadowFramebuffers != nullptr &&
          p.shadows.shadowFramebuffers[cascadeIndex] != VK_NULL_HANDLE;
 }
@@ -1095,16 +1349,17 @@ void FrameRecorder::recordShadowPassBody(VkCommandBuffer cmd,
                     0.0f,
                     p.shadows.shadowSettings.rasterSlopeBias);
 
-  std::array<VkDescriptorSet, 2> shadowSets = {
-      p.descriptors.sceneDescriptorSet, p.descriptors.shadowDescriptorSet};
-  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline.layouts.shadow, 0,
-                          static_cast<uint32_t>(shadowSets.size()),
-                          shadowSets.data(), 0, nullptr);
-
-  bindSceneGeometryBuffers(cmd, p.scene.vertexSlice, p.scene.indexSlice, p.scene.indexType);
-
   ShadowPushConstants spc{};
   spc.cascadeIndex = cascadeIndex;
+
+  const auto bindShadowDescriptorSets = [&](VkDescriptorSet sceneSet) {
+    std::array<VkDescriptorSet, 2> shadowSets = {
+        sceneSet, p.descriptors.shadowDescriptorSet};
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            p.pipeline.layouts.shadow, 0,
+                            static_cast<uint32_t>(shadowSets.size()),
+                            shadowSets.data(), 0, nullptr);
+  };
 
   const auto drawShadowList = [&](const std::vector<DrawCommand>* commands) {
     if (commands == nullptr) return;
@@ -1122,54 +1377,99 @@ void FrameRecorder::recordShadowPassBody(VkCommandBuffer cmd,
   const VkPipeline shadowNoCullPipeline =
       choosePipeline(p.pipeline.pipelines.shadowDepthNoCull, p.pipeline.pipelines.shadowDepth);
 
-  const VkBuffer gpuShadowIndirectBuffer =
-      (p.shadows.shadowCullManager != nullptr &&
-       cascadeIndex < container::gpu::kShadowCascadeCount)
-          ? p.shadows.shadowCullManager->indirectDrawBuffer(cascadeIndex)
-          : VK_NULL_HANDLE;
-  const VkBuffer gpuShadowCountBuffer =
-      (p.shadows.shadowCullManager != nullptr &&
-       cascadeIndex < container::gpu::kShadowCascadeCount)
-          ? p.shadows.shadowCullManager->drawCountBuffer(cascadeIndex)
-          : VK_NULL_HANDLE;
-  const uint32_t gpuShadowMaxDrawCount =
-      p.shadows.shadowCullManager != nullptr ? p.shadows.shadowCullManager->maxDrawCount() : 0u;
-  const bool useGpuShadowCull = useGpuShadowCullForCascade(p, cascadeIndex);
+  const bool hasSceneShadowGeometry =
+      p.descriptors.sceneDescriptorSet != VK_NULL_HANDLE &&
+      p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
+      p.scene.indexSlice.buffer != VK_NULL_HANDLE;
+  if (hasSceneShadowGeometry) {
+    bindShadowDescriptorSets(p.descriptors.sceneDescriptorSet);
+    bindSceneGeometryBuffers(cmd, p.scene.vertexSlice, p.scene.indexSlice,
+                             p.scene.indexType);
 
-  if (useGpuShadowCull) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline.pipelines.shadowDepth);
-    spc.objectIndex = kIndirectObjectIndex;
-    vkCmdPushConstants(cmd, p.pipeline.layouts.shadow,
-                       VK_SHADER_STAGE_VERTEX_BIT,
-                       0, sizeof(ShadowPushConstants), &spc);
-    vkCmdDrawIndexedIndirectCount(
-        cmd,
-        gpuShadowIndirectBuffer, 0,
-        gpuShadowCountBuffer, 0,
-        gpuShadowMaxDrawCount,
-        sizeof(container::gpu::GpuDrawIndexedIndirectCommand));
+    const VkBuffer gpuShadowIndirectBuffer =
+        (p.shadows.shadowCullManager != nullptr &&
+         cascadeIndex < container::gpu::kShadowCascadeCount)
+            ? p.shadows.shadowCullManager->indirectDrawBuffer(cascadeIndex)
+            : VK_NULL_HANDLE;
+    const VkBuffer gpuShadowCountBuffer =
+        (p.shadows.shadowCullManager != nullptr &&
+         cascadeIndex < container::gpu::kShadowCascadeCount)
+            ? p.shadows.shadowCullManager->drawCountBuffer(cascadeIndex)
+            : VK_NULL_HANDLE;
+    const uint32_t gpuShadowMaxDrawCount =
+        p.shadows.shadowCullManager != nullptr
+            ? p.shadows.shadowCullManager->maxDrawCount()
+            : 0u;
+    const bool useGpuShadowCull = useGpuShadowCullForCascade(p, cascadeIndex);
+
+    if (useGpuShadowCull) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        p.pipeline.pipelines.shadowDepth);
+      spc.objectIndex = kIndirectObjectIndex;
+      vkCmdPushConstants(cmd, p.pipeline.layouts.shadow,
+                         VK_SHADER_STAGE_VERTEX_BIT,
+                         0, sizeof(ShadowPushConstants), &spc);
+      vkCmdDrawIndexedIndirectCount(
+          cmd,
+          gpuShadowIndirectBuffer, 0,
+          gpuShadowCountBuffer, 0,
+          gpuShadowMaxDrawCount,
+          sizeof(container::gpu::GpuDrawIndexedIndirectCommand));
+    }
+
+    const auto& singleSidedCommands =
+        shadowCascadeSingleSidedDrawCommands_[cascadeIndex];
+    if (!useGpuShadowCull && !singleSidedCommands.empty()) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        p.pipeline.pipelines.shadowDepth);
+      drawShadowList(&singleSidedCommands);
+    }
+
+    const auto& windingFlippedCommands =
+        shadowCascadeWindingFlippedDrawCommands_[cascadeIndex];
+    if (!windingFlippedCommands.empty()) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        shadowFrontCullPipeline);
+      drawShadowList(&windingFlippedCommands);
+    }
+
+    const auto& doubleSidedCommands =
+        shadowCascadeDoubleSidedDrawCommands_[cascadeIndex];
+    if (!doubleSidedCommands.empty()) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        shadowNoCullPipeline);
+      drawShadowList(&doubleSidedCommands);
+    }
   }
 
-  const auto& singleSidedCommands =
-      shadowCascadeSingleSidedDrawCommands_[cascadeIndex];
-  if (!useGpuShadowCull && !singleSidedCommands.empty()) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline.pipelines.shadowDepth);
-    drawShadowList(&singleSidedCommands);
-  }
+  if (hasBimShadowGeometry(p)) {
+    bindShadowDescriptorSets(p.bim.sceneDescriptorSet);
+    bindSceneGeometryBuffers(cmd, p.bim.scene.vertexSlice,
+                             p.bim.scene.indexSlice, p.bim.scene.indexType);
 
-  const auto& windingFlippedCommands =
-      shadowCascadeWindingFlippedDrawCommands_[cascadeIndex];
-  if (!windingFlippedCommands.empty()) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                      shadowFrontCullPipeline);
-    drawShadowList(&windingFlippedCommands);
-  }
+    const auto& bimSingleSidedCommands =
+        bimShadowCascadeSingleSidedDrawCommands_[cascadeIndex];
+    if (!bimSingleSidedCommands.empty()) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        p.pipeline.pipelines.shadowDepth);
+      drawShadowList(&bimSingleSidedCommands);
+    }
 
-  const auto& doubleSidedCommands =
-      shadowCascadeDoubleSidedDrawCommands_[cascadeIndex];
-  if (!doubleSidedCommands.empty()) {
-    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowNoCullPipeline);
-    drawShadowList(&doubleSidedCommands);
+    const auto& bimWindingFlippedCommands =
+        bimShadowCascadeWindingFlippedDrawCommands_[cascadeIndex];
+    if (!bimWindingFlippedCommands.empty()) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        shadowFrontCullPipeline);
+      drawShadowList(&bimWindingFlippedCommands);
+    }
+
+    const auto& bimDoubleSidedCommands =
+        bimShadowCascadeDoubleSidedDrawCommands_[cascadeIndex];
+    if (!bimDoubleSidedCommands.empty()) {
+      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                        shadowNoCullPipeline);
+      drawShadowList(&bimDoubleSidedCommands);
+    }
   }
 }
 
@@ -1402,36 +1702,58 @@ void FrameRecorder::recordLightingPass(
   }
 
   if (transparentOitEnabled) {
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline.layouts.transparent, 0,
-                            static_cast<uint32_t>(transparentDescriptorSets.size()),
-                            transparentDescriptorSets.data(), 0, nullptr);
-    bindSceneGeometryBuffers(cmd, p.scene.vertexSlice, p.scene.indexSlice, p.scene.indexType);
     const VkPipeline transparentFrontCullPipeline =
         choosePipeline(p.pipeline.pipelines.transparentFrontCull, p.pipeline.pipelines.transparent);
     const VkPipeline transparentNoCullPipeline =
         choosePipeline(p.pipeline.pipelines.transparentNoCull, p.pipeline.pipelines.transparent);
 
-    if (p.draws.transparentSingleSidedDrawCommands &&
-        !p.draws.transparentSingleSidedDrawCommands->empty()) {
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline.pipelines.transparent);
-      debugOverlay_.drawScene(cmd, p.pipeline.layouts.transparent,
-                              *p.draws.transparentSingleSidedDrawCommands,
-                              *p.pushConstants.bindless);
+    const auto bindTransparentGeometry = [&](VkDescriptorSet sceneSet,
+                                             const FrameSceneGeometry& scene) {
+      std::array<VkDescriptorSet, 4> sets = transparentDescriptorSets;
+      sets[0] = sceneSet;
+      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                              p.pipeline.layouts.transparent, 0,
+                              static_cast<uint32_t>(sets.size()),
+                              sets.data(), 0, nullptr);
+      bindSceneGeometryBuffers(cmd, scene.vertexSlice, scene.indexSlice,
+                               scene.indexType);
+    };
+
+    const auto drawTransparentLists = [&](const FrameDrawLists& draws) {
+      if (!hasTransparentDrawCommands(draws)) return;
+
+      if (const auto* commands = primaryTransparentDrawCommands(draws);
+          hasDrawCommands(commands)) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          p.pipeline.pipelines.transparent);
+        debugOverlay_.drawScene(cmd, p.pipeline.layouts.transparent,
+                                *commands,
+                                *p.pushConstants.bindless);
+      }
+
+      if (hasDrawCommands(draws.transparentWindingFlippedDrawCommands)) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          transparentFrontCullPipeline);
+        debugOverlay_.drawScene(cmd, p.pipeline.layouts.transparent,
+                                *draws.transparentWindingFlippedDrawCommands,
+                                *p.pushConstants.bindless);
+      }
+      if (hasDrawCommands(draws.transparentDoubleSidedDrawCommands)) {
+        vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                          transparentNoCullPipeline);
+        debugOverlay_.drawScene(cmd, p.pipeline.layouts.transparent,
+                                *draws.transparentDoubleSidedDrawCommands,
+                                *p.pushConstants.bindless);
+      }
+    };
+
+    if (hasTransparentDrawCommands(p.draws)) {
+      bindTransparentGeometry(p.descriptors.sceneDescriptorSet, p.scene);
+      drawTransparentLists(p.draws);
     }
-    if (p.draws.transparentWindingFlippedDrawCommands &&
-        !p.draws.transparentWindingFlippedDrawCommands->empty()) {
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                        transparentFrontCullPipeline);
-      debugOverlay_.drawScene(cmd, p.pipeline.layouts.transparent,
-                              *p.draws.transparentWindingFlippedDrawCommands,
-                              *p.pushConstants.bindless);
-    }
-    if (p.draws.transparentDoubleSidedDrawCommands &&
-        !p.draws.transparentDoubleSidedDrawCommands->empty()) {
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, transparentNoCullPipeline);
-      debugOverlay_.drawScene(cmd, p.pipeline.layouts.transparent,
-                              *p.draws.transparentDoubleSidedDrawCommands,
-                              *p.pushConstants.bindless);
+    if (hasBimTransparentGeometry(p)) {
+      bindTransparentGeometry(p.bim.sceneDescriptorSet, p.bim.scene);
+      drawTransparentLists(p.bim.draws);
     }
   }
 

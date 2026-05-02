@@ -622,6 +622,28 @@ VkSamplerAddressMode materialSamplerAddressMode(uint32_t wrapMode) {
   }
 }
 
+uint32_t sanitizeMaterialSamplerIndex(uint32_t samplerIndex) {
+  return std::min(samplerIndex,
+                  container::gpu::kMaterialSamplerDescriptorCapacity - 1u);
+}
+
+std::string textureCacheKey(std::string_view textureName,
+                            uint32_t samplerIndex) {
+  std::string key(textureName);
+  key += "#sampler=";
+  key += std::to_string(sanitizeMaterialSamplerIndex(samplerIndex));
+  return key;
+}
+
+uint64_t hashBytes(std::span<const std::byte> bytes) {
+  uint64_t hash = 1469598103934665603ull;
+  for (std::byte byte : bytes) {
+    hash ^= static_cast<uint8_t>(byte);
+    hash *= 1099511628211ull;
+  }
+  return hash;
+}
+
 container::gpu::GpuMaterial makeGpuMaterial(
     const container::material::Material& material) {
   container::gpu::GpuMaterial gpuMaterial{};
@@ -1025,7 +1047,8 @@ void SceneManager::updateDescriptorSets(
     const container::gpu::AllocatedBuffer& objectBuffer) {
   if (cameraBuffers.empty() || descriptorSets_.empty()) return;
 
-  if (descriptorSets_.size() != cameraBuffers.size()) {
+  if (descriptorSets_.size() != cameraBuffers.size() ||
+      auxiliaryDescriptorSets_.size() != cameraBuffers.size()) {
     allocateDescriptorSets(static_cast<uint32_t>(cameraBuffers.size()));
   }
 
@@ -1035,7 +1058,91 @@ void SceneManager::updateDescriptorSets(
   }
 }
 
+void SceneManager::updateAuxiliaryDescriptorSets(
+    std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
+    const container::gpu::AllocatedBuffer& objectBuffer) {
+  if (cameraBuffers.empty()) return;
+
+  if (descriptorSets_.size() != cameraBuffers.size() ||
+      auxiliaryDescriptorSets_.size() != cameraBuffers.size()) {
+    allocateDescriptorSets(static_cast<uint32_t>(cameraBuffers.size()));
+  }
+
+  const size_t descriptorCount =
+      std::min(auxiliaryDescriptorSets_.size(), cameraBuffers.size());
+  for (size_t i = 0; i < descriptorCount; ++i) {
+    writeDescriptorSetContents(auxiliaryDescriptorSets_[i], cameraBuffers[i],
+                               objectBuffer);
+  }
+}
+
 /* ---------- Material resolution ---------- */
+
+uint32_t SceneManager::createSolidMaterial(const glm::vec4& baseColor,
+                                           bool doubleSided,
+                                           container::material::AlphaMode alphaMode) {
+  container::material::Material material{};
+  material.baseColor = baseColor;
+  material.metallicFactor = 0.0f;
+  material.roughnessFactor = 0.82f;
+  material.doubleSided = doubleSided;
+  material.alphaMode = alphaMode;
+  return materialManager_.createMaterial(material);
+}
+
+uint32_t SceneManager::createMaterial(
+    const container::material::Material& material) {
+  return materialManager_.createMaterial(material);
+}
+
+uint32_t SceneManager::loadMaterialTexture(
+    const std::filesystem::path& texturePath,
+    bool isSrgb,
+    uint32_t samplerIndex) {
+  const std::filesystem::path normalized = texturePath.lexically_normal();
+  const std::string textureName = container::util::pathToUtf8(normalized);
+  const std::string key = textureCacheKey(textureName, samplerIndex);
+  if (const auto existing = textureManager_.findTextureIndex(key)) {
+    return *existing;
+  }
+
+  auto resource = allocationManager_->createTextureFromFile(
+      textureName, isSrgb ? VK_FORMAT_R8G8B8A8_SRGB
+                          : VK_FORMAT_R8G8B8A8_UNORM);
+  resource.name = key;
+  resource.samplerIndex = sanitizeMaterialSamplerIndex(samplerIndex);
+  return textureManager_.registerTexture(resource);
+}
+
+uint32_t SceneManager::loadMaterialTextureFromBytes(
+    const std::string& textureName,
+    std::span<const std::byte> encodedBytes,
+    bool isSrgb,
+    uint32_t samplerIndex) {
+  const std::string normalizedName =
+      textureName.empty() ? std::string("embedded-usd-texture") : textureName;
+  std::string cacheName = normalizedName;
+  cacheName += "#bytes=";
+  cacheName += std::to_string(encodedBytes.size());
+  cacheName += ":";
+  cacheName += std::to_string(hashBytes(encodedBytes));
+  const std::string key = textureCacheKey(cacheName, samplerIndex);
+  if (const auto existing = textureManager_.findTextureIndex(key)) {
+    return *existing;
+  }
+
+  auto resource = allocationManager_->createTextureFromEncodedBytes(
+      normalizedName, encodedBytes,
+      isSrgb ? VK_FORMAT_R8G8B8A8_SRGB : VK_FORMAT_R8G8B8A8_UNORM);
+  resource.name = key;
+  resource.samplerIndex = sanitizeMaterialSamplerIndex(samplerIndex);
+  return textureManager_.registerTexture(resource);
+}
+
+void SceneManager::uploadMaterialResources() {
+  uploadMaterialBuffer();
+  uploadTextureMetadataBuffer();
+}
 
 glm::vec4 SceneManager::resolveMaterialColor(uint32_t materialIndex) const {
   if (const auto* m = materialManager_.getMaterial(materialIndex)) {
@@ -2130,12 +2237,14 @@ void SceneManager::updateModelBounds() {
 void SceneManager::allocateDescriptorSets(uint32_t descriptorSetCount) {
   const uint32_t textureDescriptorCount =
       std::max<uint32_t>(1u, static_cast<uint32_t>(textureManager_.textureCount()));
-  const uint32_t setCount = std::max(1u, descriptorSetCount);
+  const uint32_t frameSetCount = std::max(1u, descriptorSetCount);
+  const uint32_t setCount = frameSetCount * 2u;
 
   if (descriptorPool_ != VK_NULL_HANDLE) {
     pipelineManager_->destroyDescriptorPool(descriptorPool_);
   }
   descriptorSets_.clear();
+  auxiliaryDescriptorSets_.clear();
 
   if (textureDescriptorCount > textureDescriptorCapacity_) {
     throw std::runtime_error("Model requires more sampled-image descriptors than "
@@ -2169,11 +2278,16 @@ void SceneManager::allocateDescriptorSets(uint32_t descriptorSetCount) {
   countInfo.pDescriptorCounts = descriptorCounts.data();
   allocInfo.pNext = &countInfo;
 
-  descriptorSets_.assign(setCount, VK_NULL_HANDLE);
+  std::vector<VkDescriptorSet> allocatedSets(setCount, VK_NULL_HANDLE);
   if (vkAllocateDescriptorSets(deviceWrapper_->device(), &allocInfo,
-                               descriptorSets_.data()) != VK_SUCCESS) {
+                               allocatedSets.data()) != VK_SUCCESS) {
     throw std::runtime_error("failed to allocate scene descriptor sets");
   }
+
+  descriptorSets_.assign(allocatedSets.begin(),
+                         allocatedSets.begin() + frameSetCount);
+  auxiliaryDescriptorSets_.assign(allocatedSets.begin() + frameSetCount,
+                                  allocatedSets.end());
 }
 
 void SceneManager::writeDescriptorSetContents(

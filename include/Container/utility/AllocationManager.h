@@ -8,6 +8,7 @@
 #include "Container/utility/TextureResource.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <glm/glm.hpp>
 #include <memory>
@@ -36,6 +37,8 @@ class AllocationManager {
 
   BufferSlice uploadVertices(std::span<const geometry::Vertex> vertices);
   BufferSlice uploadIndices(std::span<const uint32_t> indices);
+  AllocatedBuffer uploadBuffer(std::span<const std::byte> bytes,
+                               VkBufferUsageFlags usage);
 
   [[nodiscard]] AllocatedBuffer createBuffer(
       VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage,
@@ -46,6 +49,10 @@ class AllocationManager {
 
   container::material::TextureResource createTextureFromFile(
       const std::string& texturePath,
+      VkFormat format = VK_FORMAT_R8G8B8A8_SRGB);
+  container::material::TextureResource createTextureFromEncodedBytes(
+      const std::string& textureName,
+      std::span<const std::byte> encodedBytes,
       VkFormat format = VK_FORMAT_R8G8B8A8_SRGB);
 
   void resetTextureAllocations();
@@ -66,6 +73,12 @@ class AllocationManager {
                          uint32_t height);
 
   VkImageView createImageView(VkImage image, VkFormat format);
+  container::material::TextureResource createTextureFromRgbaPixels(
+      const std::string& textureName,
+      std::span<const std::byte> rgbaPixels,
+      uint32_t width,
+      uint32_t height,
+      VkFormat format);
 
   VkInstance instance_{VK_NULL_HANDLE};
   VkPhysicalDevice physicalDevice_{VK_NULL_HANDLE};

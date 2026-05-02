@@ -25,9 +25,15 @@ struct GraphicsPipelines {
   VkPipeline depthPrepass{VK_NULL_HANDLE};
   VkPipeline depthPrepassFrontCull{VK_NULL_HANDLE};
   VkPipeline depthPrepassNoCull{VK_NULL_HANDLE};
+  VkPipeline bimDepthPrepass{VK_NULL_HANDLE};
+  VkPipeline bimDepthPrepassFrontCull{VK_NULL_HANDLE};
+  VkPipeline bimDepthPrepassNoCull{VK_NULL_HANDLE};
   VkPipeline gBuffer{VK_NULL_HANDLE};
   VkPipeline gBufferFrontCull{VK_NULL_HANDLE};
   VkPipeline gBufferNoCull{VK_NULL_HANDLE};
+  VkPipeline bimGBuffer{VK_NULL_HANDLE};
+  VkPipeline bimGBufferFrontCull{VK_NULL_HANDLE};
+  VkPipeline bimGBufferNoCull{VK_NULL_HANDLE};
   VkPipeline shadowDepth{VK_NULL_HANDLE};
   VkPipeline shadowDepthFrontCull{VK_NULL_HANDLE};
   VkPipeline shadowDepthNoCull{VK_NULL_HANDLE};
@@ -69,7 +75,9 @@ struct PipelineDescriptorLayouts {
 // Input render passes required to create the pipelines.
 struct PipelineRenderPasses {
   VkRenderPass depthPrepass{VK_NULL_HANDLE};
+  VkRenderPass bimDepthPrepass{VK_NULL_HANDLE};
   VkRenderPass gBuffer{VK_NULL_HANDLE};
+  VkRenderPass bimGBuffer{VK_NULL_HANDLE};
   VkRenderPass shadow{VK_NULL_HANDLE};
   VkRenderPass lighting{VK_NULL_HANDLE};
   VkRenderPass postProcess{VK_NULL_HANDLE};

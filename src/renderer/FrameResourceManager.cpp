@@ -186,7 +186,9 @@ bool FrameResourceManager::growOitPoolIfNeeded(uint32_t imageIndex) {
 void FrameResourceManager::create(
     const GBufferFormats&                    formats,
     VkRenderPass                             depthPrepassPass,
+    VkRenderPass                             bimDepthPrepassPass,
     VkRenderPass                             gBufferPass,
+    VkRenderPass                             bimGBufferPass,
     VkRenderPass                             lightingPass,
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
@@ -194,7 +196,9 @@ void FrameResourceManager::create(
 
   formats_         = formats;
   depthPrepassPass_ = depthPrepassPass;
+  bimDepthPrepassPass_ = bimDepthPrepassPass;
   gBufferPass_      = gBufferPass;
+  bimGBufferPass_   = bimGBufferPass;
   lightingPass_     = lightingPass;
 
   validateOitFormatSupport();
@@ -349,6 +353,20 @@ void FrameResourceManager::create(
         throw std::runtime_error("failed to create depth prepass framebuffer");
     }
 
+    // BIM depth prepass framebuffer
+    {
+      VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+      fbi.renderPass      = bimDepthPrepassPass_;
+      fbi.attachmentCount = 1;
+      fbi.pAttachments    = &f.depthStencil.view;
+      fbi.width           = ext.width;
+      fbi.height          = ext.height;
+      fbi.layers          = 1;
+      if (vkCreateFramebuffer(dev, &fbi, nullptr,
+                              &f.bimDepthPrepassFramebuffer) != VK_SUCCESS)
+        throw std::runtime_error("failed to create BIM depth prepass framebuffer");
+    }
+
     // GBuffer framebuffer
     {
       std::array<VkImageView, 6> views = {f.albedo.view, f.normal.view,
@@ -363,6 +381,23 @@ void FrameResourceManager::create(
       fbi.layers          = 1;
       if (vkCreateFramebuffer(dev, &fbi, nullptr, &f.gBufferFramebuffer) != VK_SUCCESS)
         throw std::runtime_error("failed to create GBuffer framebuffer");
+    }
+
+    // BIM GBuffer framebuffer
+    {
+      std::array<VkImageView, 6> views = {f.albedo.view, f.normal.view,
+                                          f.material.view, f.emissive.view,
+                                          f.specular.view, f.depthStencil.view};
+      VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+      fbi.renderPass      = bimGBufferPass_;
+      fbi.attachmentCount = static_cast<uint32_t>(views.size());
+      fbi.pAttachments    = views.data();
+      fbi.width           = ext.width;
+      fbi.height          = ext.height;
+      fbi.layers          = 1;
+      if (vkCreateFramebuffer(dev, &fbi, nullptr,
+                              &f.bimGBufferFramebuffer) != VK_SUCCESS)
+        throw std::runtime_error("failed to create BIM GBuffer framebuffer");
     }
 
     // Lighting framebuffer
@@ -392,7 +427,9 @@ void FrameResourceManager::destroy() {
       if (fb != VK_NULL_HANDLE) { vkDestroyFramebuffer(dev, fb, nullptr); fb = VK_NULL_HANDLE; }
     };
     destroyFB(f.depthPrepassFramebuffer);
+    destroyFB(f.bimDepthPrepassFramebuffer);
     destroyFB(f.gBufferFramebuffer);
+    destroyFB(f.bimGBufferFramebuffer);
     destroyFB(f.lightingFramebuffer);
 
     destroyAttachment(f.albedo);

@@ -99,7 +99,9 @@ class FrameResourceManager {
   // OIT storage. Call after swapchain resize or any layout-affecting resource change.
   void create(const GBufferFormats&                    formats,
               VkRenderPass                             depthPrepassPass,
+              VkRenderPass                             bimDepthPrepassPass,
               VkRenderPass                             gBufferPass,
+              VkRenderPass                             bimGBufferPass,
               VkRenderPass                             lightingPass,
               std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
               const container::gpu::AllocatedBuffer& objectBuffer);
@@ -193,7 +195,9 @@ class FrameResourceManager {
 
   GBufferFormats formats_{};
   VkRenderPass   depthPrepassPass_{VK_NULL_HANDLE};
+  VkRenderPass   bimDepthPrepassPass_{VK_NULL_HANDLE};
   VkRenderPass   gBufferPass_{VK_NULL_HANDLE};
+  VkRenderPass   bimGBufferPass_{VK_NULL_HANDLE};
   VkRenderPass   lightingPass_{VK_NULL_HANDLE};
 
   std::vector<FrameResources> frames_;

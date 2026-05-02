@@ -79,6 +79,9 @@ class SceneManager {
   void updateDescriptorSets(
       std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
       const container::gpu::AllocatedBuffer& objectBuffer);
+  void updateAuxiliaryDescriptorSets(
+      std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
+      const container::gpu::AllocatedBuffer& objectBuffer);
 
   VkDescriptorSetLayout descriptorSetLayout() const {
     return descriptorSetLayout_;
@@ -86,6 +89,11 @@ class SceneManager {
   VkDescriptorSet descriptorSet(uint32_t imageIndex) const {
     return imageIndex < descriptorSets_.size() ? descriptorSets_[imageIndex]
                                                : VK_NULL_HANDLE;
+  }
+  VkDescriptorSet auxiliaryDescriptorSet(uint32_t imageIndex) const {
+    return imageIndex < auxiliaryDescriptorSets_.size()
+               ? auxiliaryDescriptorSets_[imageIndex]
+               : VK_NULL_HANDLE;
   }
 
   const std::vector<container::geometry::Vertex>& vertices() const { return vertices_; }
@@ -98,6 +106,20 @@ class SceneManager {
   uint32_t defaultMaterialIndex() const { return defaultMaterialIndex_; }
   uint32_t diagnosticMaterialIndex() const;
   uint32_t resolveGpuMaterialIndex(uint32_t materialIndex) const;
+  uint32_t createSolidMaterial(const glm::vec4& baseColor,
+                               bool doubleSided = false,
+                               container::material::AlphaMode alphaMode =
+                                   container::material::AlphaMode::Opaque);
+  uint32_t createMaterial(const container::material::Material& material);
+  uint32_t loadMaterialTexture(const std::filesystem::path& texturePath,
+                               bool isSrgb,
+                               uint32_t samplerIndex = 0);
+  uint32_t loadMaterialTextureFromBytes(
+      const std::string& textureName,
+      std::span<const std::byte> encodedBytes,
+      bool isSrgb,
+      uint32_t samplerIndex = 0);
+  void uploadMaterialResources();
   const ModelBounds& modelBounds() const { return modelBounds_; }
   const std::vector<container::gpu::PointLightData>& authoredPointLights() const {
     return authoredPointLights_;
@@ -229,6 +251,7 @@ class SceneManager {
   VkDescriptorSetLayout descriptorSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};
   std::vector<VkDescriptorSet> descriptorSets_{};
+  std::vector<VkDescriptorSet> auxiliaryDescriptorSets_{};
   uint32_t textureDescriptorCapacity_{1};
 };
 

@@ -9,7 +9,9 @@ namespace container::renderer {
 
 struct RenderPasses {
   VkRenderPass depthPrepass{VK_NULL_HANDLE};
+  VkRenderPass bimDepthPrepass{VK_NULL_HANDLE};
   VkRenderPass gBuffer{VK_NULL_HANDLE};
+  VkRenderPass bimGBuffer{VK_NULL_HANDLE};
   VkRenderPass shadow{VK_NULL_HANDLE};
   VkRenderPass lighting{VK_NULL_HANDLE};
   VkRenderPass postProcess{VK_NULL_HANDLE};

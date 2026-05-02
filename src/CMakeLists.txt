@@ -5,6 +5,7 @@ add_library(VulkanSceneRenderer_Core
 
 # Renderer subsystem
 add_library(VulkanSceneRenderer_renderer
+    renderer/BimManager.cpp
     renderer/RenderPassManager.cpp
     renderer/OitManager.cpp
     renderer/DebugOverlayRenderer.cpp

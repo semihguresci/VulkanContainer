@@ -6,9 +6,8 @@
 #include <utility>
 #include <vector>
 
-#include "Container/common/CommonVulkan.h"
 #include "Container/common/CommonMath.h"
-
+#include "Container/common/CommonVulkan.h"
 #include "Container/renderer/RendererTelemetry.h"
 #include "Container/utility/SceneData.h"
 
@@ -63,9 +62,9 @@ struct TransformControls {
 
 struct RenderPassToggle {
   std::string name;
-  bool        enabled{true};
-  bool        locked{false};
-  bool        autoDisabled{false};
+  bool enabled{true};
+  bool locked{false};
+  bool autoDisabled{false};
   std::string dependencyNote{};
 };
 
@@ -105,21 +104,28 @@ class GuiManager {
           applyMeshTransform);
 
   [[nodiscard]] bool isCapturingInput() const;
-  [[nodiscard]] bool showGeometryOverlay() const { return showGeometryOverlay_; }
+  [[nodiscard]] bool showGeometryOverlay() const {
+    return showGeometryOverlay_;
+  }
   [[nodiscard]] bool showLightGizmos() const { return showLightGizmos_; }
   [[nodiscard]] bool showNormalDiagCube() const { return showNormalDiagCube_; }
   [[nodiscard]] bool showNormalValidation() const {
     return normalValidationSettings_.enabled;
   }
-  [[nodiscard]] const container::gpu::NormalValidationSettings& normalValidationSettings() const {
+  [[nodiscard]] const container::gpu::NormalValidationSettings&
+  normalValidationSettings() const {
     return normalValidationSettings_;
   }
-  [[nodiscard]] GBufferViewMode gBufferViewMode() const { return gBufferViewMode_; }
+  [[nodiscard]] GBufferViewMode gBufferViewMode() const {
+    return gBufferViewMode_;
+  }
   [[nodiscard]] const WireframeSettings& wireframeSettings() const {
     return wireframeSettings_;
   }
   [[nodiscard]] bool wireframeSupported() const { return wireframeSupported_; }
-  [[nodiscard]] const std::string& statusMessage() const { return statusMessage_; }
+  [[nodiscard]] const std::string& statusMessage() const {
+    return statusMessage_;
+  }
   [[nodiscard]] const std::string& environmentStatus() const {
     return environmentStatus_;
   }
@@ -131,12 +137,14 @@ class GuiManager {
   }
   void setWireframeCapabilities(bool supported, bool rasterModeSupported,
                                 bool wideLineSupported);
-  void setCullStats(uint32_t total, uint32_t frustumPassed, uint32_t occlusionPassed);
+  void setCullStats(uint32_t total, uint32_t frustumPassed,
+                    uint32_t occlusionPassed);
   void setLightCullingStats(const container::gpu::LightCullingStats& stats);
   void setRendererTelemetry(
       const container::renderer::RendererTelemetryView& telemetry);
   void setLightingSettings(const container::gpu::LightingSettings& settings);
-  [[nodiscard]] const container::gpu::LightingSettings& lightingSettings() const {
+  [[nodiscard]] const container::gpu::LightingSettings& lightingSettings()
+      const {
     return lightingSettings_;
   }
   [[nodiscard]] const container::gpu::ShadowSettings& shadowSettings() const {
@@ -146,12 +154,13 @@ class GuiManager {
   [[nodiscard]] bool freezeCullingRequested() const { return freezeCulling_; }
 
   // Bloom settings (bidirectional sync with BloomManager).
-  void setBloomSettings(bool enabled, float threshold, float knee, float intensity, float radius);
-  [[nodiscard]] bool  bloomEnabled()    const { return bloomEnabled_; }
-  [[nodiscard]] float bloomThreshold()  const { return bloomThreshold_; }
-  [[nodiscard]] float bloomKnee()       const { return bloomKnee_; }
-  [[nodiscard]] float bloomIntensity()  const { return bloomIntensity_; }
-  [[nodiscard]] float bloomRadius()     const { return bloomRadius_; }
+  void setBloomSettings(bool enabled, float threshold, float knee,
+                        float intensity, float radius);
+  [[nodiscard]] bool bloomEnabled() const { return bloomEnabled_; }
+  [[nodiscard]] float bloomThreshold() const { return bloomThreshold_; }
+  [[nodiscard]] float bloomKnee() const { return bloomKnee_; }
+  [[nodiscard]] float bloomIntensity() const { return bloomIntensity_; }
+  [[nodiscard]] float bloomRadius() const { return bloomRadius_; }
   [[nodiscard]] const container::gpu::ExposureSettings& exposureSettings()
       const {
     return exposureSettings_;
@@ -162,8 +171,12 @@ class GuiManager {
 
   // Render pass toggles (bidirectional sync with RenderGraph).
   void setRenderPassList(const std::vector<RenderPassToggle>& passes);
-  [[nodiscard]] std::vector<RenderPassToggle>& renderPassToggles() { return renderPassToggles_; }
-  [[nodiscard]] const std::vector<RenderPassToggle>& renderPassToggles() const { return renderPassToggles_; }
+  [[nodiscard]] std::vector<RenderPassToggle>& renderPassToggles() {
+    return renderPassToggles_;
+  }
+  [[nodiscard]] const std::vector<RenderPassToggle>& renderPassToggles() const {
+    return renderPassToggles_;
+  }
 
  private:
   void ensureInitialized() const;
@@ -187,9 +200,8 @@ class GuiManager {
   GBufferViewMode gBufferViewMode_{GBufferViewMode::Overview};
   WireframeSettings wireframeSettings_{};
   container::gpu::NormalValidationSettings normalValidationSettings_{};
-  std::string gltfPathInput_{};
-  std::string defaultModelPath_{
-      };
+  std::string modelPathInput_{};
+  std::string defaultModelPath_{};
   std::vector<SampleModelOption> sampleModelOptions_;
   int selectedSampleModelIndex_{-1};
   int importScaleIndex_{0};
@@ -204,7 +216,7 @@ class GuiManager {
   container::gpu::LightingSettings lightingSettings_{};
   container::gpu::ShadowSettings shadowSettings_{};
   bool freezeCulling_{false};
-  bool  bloomEnabled_{true};
+  bool bloomEnabled_{true};
   float bloomThreshold_{1.0f};
   float bloomKnee_{0.1f};
   float bloomIntensity_{0.3f};
@@ -214,8 +226,3 @@ class GuiManager {
 };
 
 }  // namespace container::ui
-
-
-
-
-

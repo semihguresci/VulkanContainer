@@ -1207,7 +1207,7 @@ void LightingManager::dispatchTileCull(VkCommandBuffer cmd,
                        0, 1, &barrier, 0, nullptr, 0, nullptr);
 }
 
-void LightingManager::resetGpuTimers(VkCommandBuffer cmd,
+void LightingManager::resetGpuTimers(VkCommandBuffer,
                                      uint32_t frameSlot) const {
   if (!timestampQueriesSupported_ || timestampQueryPool_ == VK_NULL_HANDLE) {
     return;
@@ -1215,8 +1215,8 @@ void LightingManager::resetGpuTimers(VkCommandBuffer cmd,
   const uint32_t slot = frameSlot % kTimingQueryFrameSlots;
   lastTimingQueryBase_ = slot * kTimingQueryCount;
   timingQueriesWritten_ = false;
-  vkCmdResetQueryPool(cmd, timestampQueryPool_, lastTimingQueryBase_,
-                      kTimingQueryCount);
+  vkResetQueryPool(device_->device(), timestampQueryPool_, lastTimingQueryBase_,
+                   kTimingQueryCount);
 }
 
 void LightingManager::beginClusterCullTimer(VkCommandBuffer cmd) const {

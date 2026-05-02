@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 
@@ -112,6 +113,24 @@ BufferSlice AllocationManager::uploadIndices(
   return slice;
 }
 
+AllocatedBuffer AllocationManager::uploadBuffer(
+    std::span<const std::byte> bytes,
+    VkBufferUsageFlags usage) {
+  if (bytes.empty()) return {};
+
+  const VkDeviceSize bufferSize = static_cast<VkDeviceSize>(bytes.size());
+  AllocatedBuffer buffer = createBuffer(
+      bufferSize, VK_BUFFER_USAGE_TRANSFER_DST_BIT | usage,
+      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+      VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
+
+  StagingBuffer stagingBuffer(*memoryManager_, bufferSize);
+  stagingBuffer.upload(bytes);
+  copyBuffer(stagingBuffer.buffer().buffer, buffer.buffer, bufferSize);
+
+  return buffer;
+}
+
 AllocatedBuffer AllocationManager::createBuffer(
     VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage,
     VmaAllocationCreateFlags allocationFlags, VkSharingMode sharingMode) {
@@ -127,7 +146,9 @@ void AllocationManager::destroyBuffer(AllocatedBuffer& buffer) {
 
 container::material::TextureResource AllocationManager::createTextureFromFile(
     const std::string& texturePath, VkFormat format) {
-  int texWidth, texHeight, texChannels;
+  int texWidth = 0;
+  int texHeight = 0;
+  int texChannels = 0;
   std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
       stbi_load(texturePath.c_str(), &texWidth, &texHeight, &texChannels,
                 STBI_rgb_alpha),
@@ -137,19 +158,82 @@ container::material::TextureResource AllocationManager::createTextureFromFile(
     throw std::runtime_error("failed to load texture: " + texturePath);
   }
 
-  VkDeviceSize imageSize = static_cast<VkDeviceSize>(texWidth) *
-                           static_cast<VkDeviceSize>(texHeight) * 4;
+  const std::string normalizedName = container::util::pathToUtf8(
+      container::util::pathFromUtf8(texturePath).lexically_normal());
+  const VkDeviceSize imageSize = static_cast<VkDeviceSize>(texWidth) *
+                                 static_cast<VkDeviceSize>(texHeight) * 4;
+  return createTextureFromRgbaPixels(
+      normalizedName,
+      {reinterpret_cast<const std::byte*>(pixels.get()),
+       static_cast<size_t>(imageSize)},
+      static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight),
+      format);
+}
+
+container::material::TextureResource
+AllocationManager::createTextureFromEncodedBytes(
+    const std::string& textureName,
+    std::span<const std::byte> encodedBytes,
+    VkFormat format) {
+  if (encodedBytes.empty()) {
+    throw std::runtime_error("texture byte payload is empty: " + textureName);
+  }
+  if (encodedBytes.size() >
+      static_cast<size_t>(std::numeric_limits<int>::max())) {
+    throw std::runtime_error("texture byte payload is too large: " +
+                             textureName);
+  }
+
+  int texWidth = 0;
+  int texHeight = 0;
+  int texChannels = 0;
+  std::unique_ptr<stbi_uc, decltype(&stbi_image_free)> pixels(
+      stbi_load_from_memory(
+          reinterpret_cast<const stbi_uc*>(encodedBytes.data()),
+          static_cast<int>(encodedBytes.size()), &texWidth, &texHeight,
+          &texChannels, STBI_rgb_alpha),
+      stbi_image_free);
+
+  if (!pixels) {
+    throw std::runtime_error("failed to decode texture: " + textureName);
+  }
+
+  const VkDeviceSize imageSize = static_cast<VkDeviceSize>(texWidth) *
+                                 static_cast<VkDeviceSize>(texHeight) * 4;
+  return createTextureFromRgbaPixels(
+      textureName,
+      {reinterpret_cast<const std::byte*>(pixels.get()),
+       static_cast<size_t>(imageSize)},
+      static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight),
+      format);
+}
+
+container::material::TextureResource
+AllocationManager::createTextureFromRgbaPixels(
+    const std::string& textureName,
+    std::span<const std::byte> rgbaPixels,
+    uint32_t width,
+    uint32_t height,
+    VkFormat format) {
+  if (width == 0u || height == 0u) {
+    throw std::runtime_error("texture dimensions are invalid: " + textureName);
+  }
+
+  const VkDeviceSize imageSize = static_cast<VkDeviceSize>(width) *
+                                 static_cast<VkDeviceSize>(height) * 4;
+  if (rgbaPixels.size() < static_cast<size_t>(imageSize)) {
+    throw std::runtime_error("texture pixel payload is truncated: " +
+                             textureName);
+  }
 
   StagingBuffer stagingBuffer(*memoryManager_, imageSize);
-  stagingBuffer.upload({reinterpret_cast<const std::byte*>(pixels.get()),
-                        static_cast<size_t>(imageSize)});
+  stagingBuffer.upload(rgbaPixels.first(static_cast<size_t>(imageSize)));
 
   VkImageCreateInfo imageInfo{};
   imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   imageInfo.imageType = VK_IMAGE_TYPE_2D;
   imageInfo.format = format;
-  imageInfo.extent = {static_cast<uint32_t>(texWidth),
-                      static_cast<uint32_t>(texHeight), 1};
+  imageInfo.extent = {width, height, 1};
   imageInfo.mipLevels = 1;
   imageInfo.arrayLayers = 1;
   imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -176,7 +260,7 @@ container::material::TextureResource AllocationManager::createTextureFromFile(
     transitionImageLayout(image, VK_IMAGE_LAYOUT_UNDEFINED,
                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
 
-    copyBufferToImage(stagingBuffer.buffer().buffer, image, texWidth, texHeight);
+    copyBufferToImage(stagingBuffer.buffer().buffer, image, width, height);
 
     transitionImageLayout(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -196,8 +280,7 @@ container::material::TextureResource AllocationManager::createTextureFromFile(
   }
 
   container::material::TextureResource resource{};
-  resource.name = container::util::pathToUtf8(
-      container::util::pathFromUtf8(texturePath).lexically_normal());
+  resource.name = textureName;
   resource.image = image;
   resource.imageView = imageView;
 

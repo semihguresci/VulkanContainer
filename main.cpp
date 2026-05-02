@@ -2,7 +2,9 @@
 #include "Container/app/Application.h"
 #include "Container/app/AppConfig.h"
 
+#include <algorithm>
 #include <array>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -13,6 +15,26 @@
 #include <utility>
 
 namespace {
+
+std::string lowerAscii(std::string_view value) {
+  std::string result(value);
+  std::ranges::transform(result, result.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return result;
+}
+
+bool isAuxiliaryRenderModelPath(std::string_view path) {
+  const size_t dot = path.find_last_of('.');
+  if (dot == std::string_view::npos) {
+    return false;
+  }
+
+  const std::string extension = lowerAscii(path.substr(dot));
+  return extension == ".bim" || extension == ".ifc" || extension == ".ifcx" ||
+         extension == ".usd" || extension == ".usda" ||
+         extension == ".usdc" || extension == ".usdz";
+}
 
 std::string_view requireValue(int argc, char** argv, int& index,
                               std::string_view option) {
@@ -53,6 +75,8 @@ std::array<float, 3> parseVec3(int argc, char** argv, int& index,
 void applyCommandLine(container::app::AppConfig& config, int argc,
                       char** argv) {
   bool positionalModelConsumed = false;
+  bool explicitBimModel = false;
+  bool explicitBimImportScale = false;
   for (int i = 1; i < argc; ++i) {
     const std::string_view arg = argv[i] ? std::string_view(argv[i]) : "";
     if (arg == "--model") {
@@ -64,6 +88,13 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.windowHeight = parseUint(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--import-scale") {
       config.importScale = parseFloat(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--bim-model") {
+      config.bimModelPath = std::string(requireValue(argc, argv, i, arg));
+      explicitBimModel = true;
+    } else if (arg == "--bim-import-scale") {
+      config.bimImportScale =
+          parseFloat(requireValue(argc, argv, i, arg), arg);
+      explicitBimImportScale = true;
     } else if (arg == "--visual-regression-capture" ||
                arg == "--screenshot") {
       config.screenshotCapturePath =
@@ -112,6 +143,14 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     } else {
       throw std::runtime_error("unknown argument: " + std::string(arg));
     }
+  }
+
+  if (!explicitBimModel && isAuxiliaryRenderModelPath(config.modelPath)) {
+    config.bimModelPath = config.modelPath;
+    if (!explicitBimImportScale) {
+      config.bimImportScale = config.importScale;
+    }
+    config.modelPath.clear();
   }
 }
 

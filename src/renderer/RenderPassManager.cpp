@@ -115,6 +115,43 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.depthPrepass) != VK_SUCCESS)
     throw std::runtime_error("failed to create depth prepass render pass");
 
+  // ---- BIM Depth Prepass ----
+  // BIM geometry extends the same depth buffer after the regular scene depth
+  // prepass. Loading depth keeps existing scene occluders intact while allowing
+  // BIM surfaces to participate in Hi-Z, GTAO, and deferred lighting.
+  VkAttachmentDescription bimDs = ds;
+  bimDs.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  bimDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  bimDs.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+  VkSubpassDescription bimDepthSubpass = depthSubpass;
+  std::array<VkSubpassDependency, 2> bimDepthDeps{};
+  bimDepthDeps[0] = MakeDependency(
+      VK_SUBPASS_EXTERNAL, 0,
+      kDepthTestStages, kDepthTestStages,
+      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      kFramebufferLocalDependency);
+  bimDepthDeps[1] = MakeDependency(
+      0, VK_SUBPASS_EXTERNAL,
+      kDepthTestStages, kDepthTestStages,
+      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      kFramebufferLocalDependency);
+
+  rpInfo.attachmentCount = 1;
+  rpInfo.pAttachments = &bimDs;
+  rpInfo.pSubpasses = &bimDepthSubpass;
+  rpInfo.dependencyCount = static_cast<uint32_t>(bimDepthDeps.size());
+  rpInfo.pDependencies = bimDepthDeps.data();
+  if (vkCreateRenderPass(dev, &rpInfo, nullptr,
+                         &passes_.bimDepthPrepass) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create BIM depth prepass render pass");
+  }
+
   // ---- GBuffer ----
   auto makeColor = [](VkFormat fmt) {
     VkAttachmentDescription a{};
@@ -186,6 +223,63 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   rpInfo.pDependencies   = gbDeps.data();
   if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.gBuffer) != VK_SUCCESS)
     throw std::runtime_error("failed to create GBuffer render pass");
+
+  // ---- BIM GBuffer ----
+  // This pass appends BIM geometry into the deferred attachments. Color
+  // attachments are loaded from the regular G-buffer and stored back for the
+  // lighting pass.
+  auto makeLoadedColor = [](VkFormat fmt) {
+    VkAttachmentDescription a{};
+    a.format         = fmt;
+    a.samples        = VK_SAMPLE_COUNT_1_BIT;
+    a.loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
+    a.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
+    a.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+    a.initialLayout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    a.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    return a;
+  };
+
+  VkAttachmentDescription bimGbDs = gbDs;
+  bimGbDs.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  bimGbDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  bimGbDs.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+
+  std::array<VkAttachmentDescription, 6> bimGbAttachments = {
+      makeLoadedColor(albedoFormat), makeLoadedColor(normalFormat),
+      makeLoadedColor(materialFormat), makeLoadedColor(emissiveFormat),
+      makeLoadedColor(specularFormat), bimGbDs};
+
+  std::array<VkSubpassDependency, 2> bimGbDeps{};
+  bimGbDeps[0] = MakeDependency(
+      VK_SUBPASS_EXTERNAL, 0,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | kDepthTestStages,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | kDepthTestStages,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+          VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT);
+  bimGbDeps[1] = MakeDependency(
+      0, VK_SUBPASS_EXTERNAL,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | kDepthTestStages,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_READ_BIT |
+          VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT |
+          VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
+      VK_ACCESS_SHADER_READ_BIT);
+
+  rpInfo.attachmentCount = static_cast<uint32_t>(bimGbAttachments.size());
+  rpInfo.pAttachments = bimGbAttachments.data();
+  rpInfo.pSubpasses = &gbSubpass;
+  rpInfo.dependencyCount = static_cast<uint32_t>(bimGbDeps.size());
+  rpInfo.pDependencies = bimGbDeps.data();
+  if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.bimGBuffer) !=
+      VK_SUCCESS) {
+    throw std::runtime_error("failed to create BIM GBuffer render pass");
+  }
 
   // ---- Lighting ----
   VkAttachmentDescription lightColor{};
@@ -351,7 +445,9 @@ void RenderPassManager::destroy() {
     }
   };
   destroyPass(passes_.depthPrepass);
+  destroyPass(passes_.bimDepthPrepass);
   destroyPass(passes_.gBuffer);
+  destroyPass(passes_.bimGBuffer);
   destroyPass(passes_.shadow);
   destroyPass(passes_.lighting);
   destroyPass(passes_.postProcess);

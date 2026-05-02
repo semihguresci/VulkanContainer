@@ -669,3 +669,53 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
   EXPECT_LT(executionPosition(graph, RenderPassId::Bloom),
             executionPosition(graph, RenderPassId::PostProcess));
 }
+
+TEST(RenderGraphTests, BimPassesSlotIntoFrameOrderWhenRegistered) {
+  constexpr std::array passes = {
+      RenderPassId::FrustumCull,
+      RenderPassId::DepthPrepass,
+      RenderPassId::BimDepthPrepass,
+      RenderPassId::HiZGenerate,
+      RenderPassId::OcclusionCull,
+      RenderPassId::CullStatsReadback,
+      RenderPassId::GBuffer,
+      RenderPassId::BimGBuffer,
+      RenderPassId::OitClear,
+      RenderPassId::ShadowCullCascade0,
+      RenderPassId::ShadowCullCascade1,
+      RenderPassId::ShadowCullCascade2,
+      RenderPassId::ShadowCullCascade3,
+      RenderPassId::ShadowCascade0,
+      RenderPassId::ShadowCascade1,
+      RenderPassId::ShadowCascade2,
+      RenderPassId::ShadowCascade3,
+      RenderPassId::DepthToReadOnly,
+      RenderPassId::TileCull,
+      RenderPassId::GTAO,
+      RenderPassId::Lighting,
+  };
+
+  RenderGraph graph;
+  for (auto it = passes.rbegin(); it != passes.rend(); ++it) {
+    graph.addPass(*it, noopRecord());
+  }
+
+  graph.compile();
+
+  EXPECT_LT(executionPosition(graph, RenderPassId::DepthPrepass),
+            executionPosition(graph, RenderPassId::BimDepthPrepass));
+  EXPECT_LT(executionPosition(graph, RenderPassId::BimDepthPrepass),
+            executionPosition(graph, RenderPassId::HiZGenerate));
+  EXPECT_LT(executionPosition(graph, RenderPassId::HiZGenerate),
+            executionPosition(graph, RenderPassId::OcclusionCull));
+  EXPECT_LT(executionPosition(graph, RenderPassId::OcclusionCull),
+            executionPosition(graph, RenderPassId::GBuffer));
+  EXPECT_LT(executionPosition(graph, RenderPassId::BimDepthPrepass),
+            executionPosition(graph, RenderPassId::GBuffer));
+  EXPECT_LT(executionPosition(graph, RenderPassId::GBuffer),
+            executionPosition(graph, RenderPassId::BimGBuffer));
+  EXPECT_LT(executionPosition(graph, RenderPassId::BimGBuffer),
+            executionPosition(graph, RenderPassId::DepthToReadOnly));
+  EXPECT_LT(executionPosition(graph, RenderPassId::DepthToReadOnly),
+            executionPosition(graph, RenderPassId::Lighting));
+}

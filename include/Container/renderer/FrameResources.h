@@ -30,7 +30,9 @@ struct FrameResources {
   container::gpu::AllocatedBuffer oitMetadataBuffer{};
   uint32_t oitNodeCapacity{0};
   VkFramebuffer depthPrepassFramebuffer{VK_NULL_HANDLE};
+  VkFramebuffer bimDepthPrepassFramebuffer{VK_NULL_HANDLE};
   VkFramebuffer gBufferFramebuffer{VK_NULL_HANDLE};
+  VkFramebuffer bimGBufferFramebuffer{VK_NULL_HANDLE};
   VkFramebuffer lightingFramebuffer{VK_NULL_HANDLE};
   VkDescriptorSet lightingDescriptorSet{VK_NULL_HANDLE};
   VkDescriptorSet postProcessDescriptorSet{VK_NULL_HANDLE};

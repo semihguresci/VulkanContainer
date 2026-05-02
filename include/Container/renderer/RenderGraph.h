@@ -24,10 +24,12 @@ struct FrameRecordParams;
 enum class RenderPassId : uint8_t {
   FrustumCull,
   DepthPrepass,
+  BimDepthPrepass,
   HiZGenerate,
   OcclusionCull,
   CullStatsReadback,
   GBuffer,
+  BimGBuffer,
   OitClear,
   ShadowCullCascade0,
   ShadowCullCascade1,
@@ -54,8 +56,10 @@ inline constexpr auto kRenderPassIdCount =
 
 enum class RenderResourceId : uint8_t {
   SceneGeometry,
+  BimGeometry,
   CameraBuffer,
   ObjectBuffer,
+  BimObjectBuffer,
   LightingData,
   ShadowData,
   EnvironmentMaps,

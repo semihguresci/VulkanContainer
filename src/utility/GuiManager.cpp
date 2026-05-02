@@ -1,27 +1,29 @@
-#include <algorithm>
-#include <array>
-#include <cctype>
-#include <cstdint>
-#include <filesystem>
-#include <optional>
-#include <stdexcept>
-#include <string>
-#include <string_view>
-#include <system_error>
-
 #include "Container/utility/GuiManager.h"
-
-#include "Container/common/CommonGLFW.h"
-#include "Container/utility/Platform.h"
-#include "Container/utility/SceneGraph.h"
 
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
 #include <imgui_stdlib.h>
 
-#include "Container/common/CommonMath.h"
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <cstddef>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <optional>
+#include <stdexcept>
+#include <string>
+#include <string_view>
+#include <system_error>
+#include <unordered_set>
+#include <vector>
 
+#include "Container/common/CommonGLFW.h"
+#include "Container/common/CommonMath.h"
+#include "Container/utility/Platform.h"
+#include "Container/utility/SceneGraph.h"
 
 namespace container::ui {
 
@@ -35,15 +37,54 @@ constexpr std::string_view kSampleModelsRelativeRoot =
     "models/glTF-Sample-Models/2.0";
 
 constexpr std::array<const char*, 4> kLightingPresetLabels = {{
-    "Sponza", "Interior", "Exterior", "Custom",
+    "Sponza",
+    "Interior",
+    "Exterior",
+    "Custom",
 }};
 
 constexpr std::array<const char*, 3> kImportScaleLabels = {{
-    "1x", "10x", "100x",
+    "1x",
+    "10x",
+    "100x",
 }};
 
 constexpr std::array<float, 3> kImportScaleValues = {{
-    1.0f, 10.0f, 100.0f,
+    1.0f,
+    10.0f,
+    100.0f,
+}};
+
+struct KnownSampleAsset {
+  const char* label;
+  const char* relativePath;
+};
+
+struct KnownSampleDirectory {
+  const char* labelPrefix;
+  const char* relativePath;
+};
+
+struct DiscoveredSampleAsset {
+  std::string label;
+  std::filesystem::path path;
+};
+
+constexpr std::array<KnownSampleAsset, 4> kKnownAuxiliarySampleAssets = {{
+    {"USD / Kitchen Set",
+     "models/OpenUSD-Sample-Assets/Kitchen_set/Kitchen_set.usd"},
+    {"USD / Kitchen Set Instanced",
+     "models/OpenUSD-Sample-Assets/Kitchen_set/Kitchen_set_instanced.usd"},
+    {"USD / Point Instanced Med City",
+     "models/OpenUSD-Sample-Assets/PointInstancedMedCity/"
+     "PointInstancedMedCity.usd"},
+    {"IFC / Tessellated Item",
+     "models/buildingSMART-Sample-Test-Files/IFC 4.0.2.1 (IFC 4)/ISO Spec - "
+     "ReferenceView_V1.2/tessellated-item.ifc"},
+}};
+
+constexpr std::array<KnownSampleDirectory, 1> kKnownAuxiliarySampleDirectories = {{
+    {"IFC5", "models/buildingSMART-IFC5-development/examples"},
 }};
 
 std::string ToLowerAscii(std::string value) {
@@ -59,6 +100,53 @@ bool IsGltfModelFile(const std::filesystem::path& path) {
   return extension == ".gltf" || extension == ".glb";
 }
 
+bool IsAuxiliaryModelFile(const std::filesystem::path& path) {
+  const std::string extension =
+      ToLowerAscii(container::util::pathToUtf8(path.extension()));
+  return extension == ".usd" || extension == ".usda" ||
+         extension == ".usdc" || extension == ".usdz" ||
+         extension == ".ifc" || extension == ".ifcx" ||
+         extension == ".bim";
+}
+
+std::optional<std::filesystem::path> ResolveRelativeAssetPath(
+    std::string_view relativePath) {
+  const auto relative =
+      container::util::pathFromUtf8(std::string(relativePath));
+  const std::array<std::filesystem::path, 2> candidates = {
+      container::util::executableDirectory() / relative,
+      std::filesystem::current_path() / relative,
+  };
+
+  for (const auto& candidate : candidates) {
+    std::error_code error;
+    if (std::filesystem::is_regular_file(candidate, error)) {
+      return candidate;
+    }
+  }
+
+  return std::nullopt;
+}
+
+std::optional<std::filesystem::path> ResolveRelativeAssetDirectory(
+    std::string_view relativePath) {
+  const auto relative =
+      container::util::pathFromUtf8(std::string(relativePath));
+  const std::array<std::filesystem::path, 2> candidates = {
+      container::util::executableDirectory() / relative,
+      std::filesystem::current_path() / relative,
+  };
+
+  for (const auto& candidate : candidates) {
+    std::error_code error;
+    if (std::filesystem::is_directory(candidate, error)) {
+      return candidate;
+    }
+  }
+
+  return std::nullopt;
+}
+
 std::filesystem::path ComparableModelPath(const std::filesystem::path& input) {
   std::filesystem::path path = input;
   if (path.is_relative()) {
@@ -69,7 +157,8 @@ std::filesystem::path ComparableModelPath(const std::filesystem::path& input) {
       path = exeRelative;
     } else {
       std::error_code currentPathError;
-      const auto workingDirectory = std::filesystem::current_path(currentPathError);
+      const auto workingDirectory =
+          std::filesystem::current_path(currentPathError);
       if (!currentPathError) {
         path = workingDirectory / path;
       }
@@ -77,7 +166,8 @@ std::filesystem::path ComparableModelPath(const std::filesystem::path& input) {
   }
 
   std::error_code canonicalError;
-  const auto canonical = std::filesystem::weakly_canonical(path, canonicalError);
+  const auto canonical =
+      std::filesystem::weakly_canonical(path, canonicalError);
   if (!canonicalError) {
     return canonical.lexically_normal();
   }
@@ -89,6 +179,118 @@ std::filesystem::path ComparableModelPath(const std::filesystem::path& input) {
   }
 
   return path.lexically_normal();
+}
+
+bool TextFileContains(const std::filesystem::path& path,
+                      std::string_view needle) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file.is_open()) {
+    return false;
+  }
+
+  constexpr size_t kBufferSize = 64u * 1024u;
+  std::string carry;
+  carry.reserve(needle.size());
+  std::array<char, kBufferSize> buffer{};
+  while (file) {
+    file.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    const std::streamsize read = file.gcount();
+    if (read <= 0) {
+      break;
+    }
+
+    std::string chunk = carry;
+    chunk.append(buffer.data(), static_cast<size_t>(read));
+    if (chunk.find(needle) != std::string::npos) {
+      return true;
+    }
+
+    const size_t carrySize = std::min(needle.size(), chunk.size());
+    carry.assign(chunk.end() - static_cast<std::ptrdiff_t>(carrySize),
+                 chunk.end());
+  }
+
+  return false;
+}
+
+bool HasRenderableAuxiliaryHint(const std::filesystem::path& path) {
+  const std::string extension =
+      ToLowerAscii(container::util::pathToUtf8(path.extension()));
+  if (extension == ".ifcx") {
+    return TextFileContains(path, "usd::usdgeom::mesh");
+  }
+  if (extension == ".ifc") {
+    return TextFileContains(path, "IFCTRIANGULATEDFACESET") ||
+           TextFileContains(path, "IFCEXTRUDEDAREASOLID");
+  }
+  return true;
+}
+
+std::string AuxiliarySampleLabel(
+    std::string_view prefix,
+    const std::filesystem::path& root,
+    const std::filesystem::path& path) {
+  std::error_code error;
+  std::filesystem::path relative = std::filesystem::relative(path, root, error);
+  if (error) {
+    relative = path.filename();
+  }
+  relative.replace_extension();
+
+  std::string relativeLabel = container::util::pathToUtf8(relative);
+  for (size_t pos = 0;
+       (pos = relativeLabel.find_first_of("/\\", pos)) != std::string::npos;) {
+    relativeLabel.replace(pos, 1, " / ");
+    pos += 3;
+  }
+
+  std::string label(prefix);
+  label += " / ";
+  label += relativeLabel;
+  return label;
+}
+
+std::vector<DiscoveredSampleAsset> DiscoverAuxiliarySampleAssets() {
+  std::vector<DiscoveredSampleAsset> assets;
+  for (const KnownSampleDirectory& directory : kKnownAuxiliarySampleDirectories) {
+    const auto root = ResolveRelativeAssetDirectory(directory.relativePath);
+    if (!root) {
+      continue;
+    }
+
+    std::error_code error;
+    for (std::filesystem::recursive_directory_iterator it(
+             *root,
+             std::filesystem::directory_options::skip_permission_denied,
+             error),
+         end;
+         !error && it != end; it.increment(error)) {
+      std::error_code fileError;
+      if (!it->is_regular_file(fileError) ||
+          !IsAuxiliaryModelFile(it->path())) {
+        continue;
+      }
+
+      const std::string extension =
+          ToLowerAscii(container::util::pathToUtf8(it->path().extension()));
+      if (std::string_view(directory.labelPrefix) == "IFC5" &&
+          extension == ".ifc") {
+        continue;
+      }
+
+      if (!HasRenderableAuxiliaryHint(it->path())) {
+        continue;
+      }
+
+      assets.push_back({
+          AuxiliarySampleLabel(directory.labelPrefix, *root, it->path()),
+          it->path(),
+      });
+    }
+  }
+
+  std::ranges::sort(assets, {}, &DiscoveredSampleAsset::label);
+  return assets;
 }
 
 std::string ModelPathKey(const std::filesystem::path& path) {
@@ -150,8 +352,8 @@ std::optional<std::filesystem::path> FindFirstModelFileRecursive(
   std::error_code error;
   std::vector<std::filesystem::path> candidates;
   for (std::filesystem::recursive_directory_iterator it(
-           directory, std::filesystem::directory_options::skip_permission_denied,
-           error),
+           directory,
+           std::filesystem::directory_options::skip_permission_denied, error),
        end;
        !error && it != end; it.increment(error)) {
     std::error_code fileError;
@@ -169,8 +371,7 @@ std::optional<std::filesystem::path> FindFirstModelFileRecursive(
 }
 
 std::optional<std::filesystem::path> PreferredSampleModelPath(
-    const std::filesystem::path& modelDirectory,
-    std::string& selectedVariant) {
+    const std::filesystem::path& modelDirectory, std::string& selectedVariant) {
   static constexpr std::array<std::string_view, 6> kPreferredVariantFolders = {{
       "glTF",
       "glTF-Binary",
@@ -260,12 +461,10 @@ float PercentOf(float value, float total) {
 }
 
 void ImGuiTextStringView(const char* label, std::string_view value) {
-  ImGui::Text("%s: %.*s", label, static_cast<int>(value.size()),
-              value.data());
+  ImGui::Text("%s: %.*s", label, static_cast<int>(value.size()), value.data());
 }
 
-bool DrawTransformControls(const char* label,
-                           TransformControls& transform,
+bool DrawTransformControls(const char* label, TransformControls& transform,
                            float dragSpeed = 0.05f) {
   bool changed = false;
   if (ImGui::TreeNode(label)) {
@@ -311,9 +510,8 @@ std::string_view RenderPassSectionName(std::string_view passName) {
     return "Shadows";
   }
 
-  if (passName == "OitClear" || passName == "TileCull" ||
-      passName == "GTAO" || passName == "Lighting" ||
-      passName == "OitResolve") {
+  if (passName == "OitClear" || passName == "TileCull" || passName == "GTAO" ||
+      passName == "Lighting" || passName == "OitResolve") {
     return "Lighting";
   }
 
@@ -383,7 +581,7 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
   ImGui_ImplVulkan_CreateFontsTexture();
 
   defaultModelPath_ = defaultModelPath;
-  gltfPathInput_ = defaultModelPath;
+  modelPathInput_ = defaultModelPath;
   const auto importScaleIt =
       std::ranges::find(kImportScaleValues, defaultImportScale);
   importScaleIndex_ =
@@ -398,37 +596,59 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
 void GuiManager::discoverSampleModels() {
   sampleModelOptions_.clear();
   selectedSampleModelIndex_ = -1;
+  std::unordered_set<std::string> knownModelPaths;
 
-  const auto sampleRoot = ResolveSampleModelsRoot();
-  if (!sampleRoot) {
-    return;
-  }
-
-  std::error_code error;
-  for (std::filesystem::directory_iterator it(*sampleRoot, error), end;
-       !error && it != end; it.increment(error)) {
-    std::error_code directoryError;
-    if (!it->is_directory(directoryError)) {
-      continue;
+  const auto appendOption = [&](std::string label,
+                                const std::filesystem::path& path) {
+    if (!knownModelPaths.insert(ModelPathKey(path)).second) {
+      return;
     }
 
-    std::string selectedVariant;
-    const auto modelPath = PreferredSampleModelPath(it->path(), selectedVariant);
+    SampleModelOption option{};
+    option.label = std::move(label);
+    option.path = container::util::pathToUtf8(path);
+    sampleModelOptions_.push_back(std::move(option));
+  };
+
+  const auto sampleRoot = ResolveSampleModelsRoot();
+  if (sampleRoot) {
+    std::error_code error;
+    for (std::filesystem::directory_iterator it(*sampleRoot, error), end;
+         !error && it != end; it.increment(error)) {
+      std::error_code directoryError;
+      if (!it->is_directory(directoryError)) {
+        continue;
+      }
+
+      std::string selectedVariant;
+      const auto modelPath =
+          PreferredSampleModelPath(it->path(), selectedVariant);
+      if (!modelPath) {
+        continue;
+      }
+
+      std::string label = container::util::pathToUtf8(it->path().filename());
+      if (!selectedVariant.empty() && selectedVariant != "glTF") {
+        label += " (" + selectedVariant + ")";
+      }
+      appendOption(std::move(label), *modelPath);
+    }
+  }
+
+  for (const KnownSampleAsset& asset : kKnownAuxiliarySampleAssets) {
+    const auto modelPath = ResolveRelativeAssetPath(asset.relativePath);
     if (!modelPath) {
       continue;
     }
 
-    SampleModelOption option{};
-    option.label = container::util::pathToUtf8(it->path().filename());
-    if (!selectedVariant.empty() && selectedVariant != "glTF") {
-      option.label += " (" + selectedVariant + ")";
-    }
-    option.path = container::util::pathToUtf8(*modelPath);
-    sampleModelOptions_.push_back(std::move(option));
+    appendOption(asset.label, *modelPath);
+  }
+  for (const DiscoveredSampleAsset& asset : DiscoverAuxiliarySampleAssets()) {
+    appendOption(asset.label, asset.path);
   }
 
   std::ranges::sort(sampleModelOptions_, {}, &SampleModelOption::label);
-  selectedSampleModelIndex_ = sampleModelIndexForPath(gltfPathInput_);
+  selectedSampleModelIndex_ = sampleModelIndexForPath(modelPathInput_);
 }
 
 int GuiManager::sampleModelIndexForPath(const std::string& path) const {
@@ -436,8 +656,7 @@ int GuiManager::sampleModelIndexForPath(const std::string& path) const {
     return -1;
   }
 
-  const std::string target =
-      ModelPathKey(container::util::pathFromUtf8(path));
+  const std::string target = ModelPathKey(container::util::pathFromUtf8(path));
   for (size_t i = 0; i < sampleModelOptions_.size(); ++i) {
     if (ModelPathKey(container::util::pathFromUtf8(
             sampleModelOptions_[i].path)) == target) {
@@ -499,45 +718,51 @@ void GuiManager::drawSceneControls(
         applyMeshTransform) {
   if (!initialized_) return;
 
-  static constexpr const char* kGBufferViewLabels[] = {
-      "Lit",       "Albedo",      "Normals", "Material",
-      "Depth",     "Emissive",    "Transparency",
-      "Revealage", "Overview",    "Surface Normals",
-      "Object Normals", "Shadow Cascades",
-      "Tile Light Heat Map", "Shadow Texel Density"};
+  static constexpr const char* kGBufferViewLabels[] = {"Lit",
+                                                       "Albedo",
+                                                       "Normals",
+                                                       "Material",
+                                                       "Depth",
+                                                       "Emissive",
+                                                       "Transparency",
+                                                       "Revealage",
+                                                       "Overview",
+                                                       "Surface Normals",
+                                                       "Object Normals",
+                                                       "Shadow Cascades",
+                                                       "Tile Light Heat Map",
+                                                       "Shadow Texel Density"};
 
   ImGui::Begin("Scene Controls");
   if (ImGui::Combo("Import scale", &importScaleIndex_,
                    kImportScaleLabels.data(),
                    static_cast<int>(kImportScaleLabels.size()))) {
-    importScaleIndex_ =
-        std::clamp(importScaleIndex_, 0,
-                   static_cast<int>(kImportScaleValues.size()) - 1);
+    importScaleIndex_ = std::clamp(
+        importScaleIndex_, 0, static_cast<int>(kImportScaleValues.size()) - 1);
     importScale_ = kImportScaleValues[static_cast<size_t>(importScaleIndex_)];
     statusMessage_ = "Import scale set to " + ImportScaleLabel(importScale_) +
                      "; reload model to apply";
   }
 
   if (!sampleModelOptions_.empty()) {
-    const bool hasSelection =
-        selectedSampleModelIndex_ >= 0 &&
-        selectedSampleModelIndex_ <
-            static_cast<int>(sampleModelOptions_.size());
+    const bool hasSelection = selectedSampleModelIndex_ >= 0 &&
+                              selectedSampleModelIndex_ <
+                                  static_cast<int>(sampleModelOptions_.size());
     const char* preview =
-        hasSelection ? sampleModelOptions_[selectedSampleModelIndex_].label.c_str()
-                     : "Select sample model";
+        hasSelection
+            ? sampleModelOptions_[selectedSampleModelIndex_].label.c_str()
+            : "Select sample model";
     if (ImGui::BeginCombo("Sample model", preview)) {
       for (int i = 0; i < static_cast<int>(sampleModelOptions_.size()); ++i) {
         const auto& option = sampleModelOptions_[i];
         const bool selected = i == selectedSampleModelIndex_;
         if (ImGui::Selectable(option.label.c_str(), selected)) {
           selectedSampleModelIndex_ = i;
-          gltfPathInput_ = option.path;
-          const bool success = reloadModel(gltfPathInput_, importScale_);
-          statusMessage_ =
-              success ? "Loaded model: " + option.label + " @ " +
-                            ImportScaleLabel(importScale_)
-                      : "Failed to load model: " + option.label;
+          modelPathInput_ = option.path;
+          const bool success = reloadModel(modelPathInput_, importScale_);
+          statusMessage_ = success ? "Loaded model: " + option.label + " @ " +
+                                         ImportScaleLabel(importScale_)
+                                   : "Failed to load model: " + option.label;
         }
         if (ImGui::IsItemHovered()) {
           ImGui::SetTooltip("%s", option.path.c_str());
@@ -552,25 +777,25 @@ void GuiManager::drawSceneControls(
     ImGui::TextDisabled("No sample models found");
   }
 
-  ImGui::InputText("glTF path", &gltfPathInput_);
+  ImGui::InputText("Model path", &modelPathInput_);
 
-  if (ImGui::Button("Load glTF")) {
-    const bool success = reloadModel(gltfPathInput_, importScale_);
-    selectedSampleModelIndex_ = sampleModelIndexForPath(gltfPathInput_);
-    statusMessage_ = success ? "Loaded model: " + gltfPathInput_ + " @ " +
+  if (ImGui::Button("Load model")) {
+    const bool success = reloadModel(modelPathInput_, importScale_);
+    selectedSampleModelIndex_ = sampleModelIndexForPath(modelPathInput_);
+    statusMessage_ = success ? "Loaded model: " + modelPathInput_ + " @ " +
                                    ImportScaleLabel(importScale_)
-                             : "Failed to load model: " + gltfPathInput_;
+                             : "Failed to load model: " + modelPathInput_;
   }
 
   ImGui::SameLine();
 
   if (ImGui::Button("Reload Default")) {
     const bool success = reloadDefault(importScale_);
-    statusMessage_ = success ? "Loaded default model @ " +
-                                   ImportScaleLabel(importScale_)
-                             : "Failed to load default model";
-    gltfPathInput_ = defaultModelPath_;
-    selectedSampleModelIndex_ = sampleModelIndexForPath(gltfPathInput_);
+    statusMessage_ =
+        success ? "Loaded default model @ " + ImportScaleLabel(importScale_)
+                : "Failed to load default model";
+    modelPathInput_ = defaultModelPath_;
+    selectedSampleModelIndex_ = sampleModelIndexForPath(modelPathInput_);
   }
 
   ImGui::Separator();
@@ -585,12 +810,12 @@ void GuiManager::drawSceneControls(
   if (normalValidationSettings_.enabled) {
     ImGui::Checkbox("Normal validation face fill",
                     &normalValidationSettings_.showFaceFill);
-    ImGui::SliderFloat("Normal line length", &normalValidationSettings_.lineLength,
-                       0.01f, 100.0f);
-    ImGui::SliderFloat("Normal line offset", &normalValidationSettings_.lineOffset,
-                       0.0f, 0.05f);
-    ImGui::SliderFloat("Normal face alpha", &normalValidationSettings_.faceAlpha,
-                       0.0f, 1.0f);
+    ImGui::SliderFloat("Normal line length",
+                       &normalValidationSettings_.lineLength, 0.01f, 100.0f);
+    ImGui::SliderFloat("Normal line offset",
+                       &normalValidationSettings_.lineOffset, 0.0f, 0.05f);
+    ImGui::SliderFloat("Normal face alpha",
+                       &normalValidationSettings_.faceAlpha, 0.0f, 1.0f);
     if (wireframeWideLineSupported_) {
       ImGui::SliderFloat("Normal line width",
                          &normalValidationSettings_.lineWidth, 1.0f, 100.0f);
@@ -605,9 +830,9 @@ void GuiManager::drawSceneControls(
 
   ImGui::Separator();
   ImGui::Text("Wireframe Debug");
-  ImGui::TextDisabled("Backend: %s",
-                      wireframeRasterModeSupported_ ? "Native raster line"
-                                                    : "Shader fallback");
+  ImGui::TextDisabled("Backend: %s", wireframeRasterModeSupported_
+                                         ? "Native raster line"
+                                         : "Shader fallback");
   if (!wireframeSupported_) {
     ImGui::BeginDisabled();
   }
@@ -620,8 +845,8 @@ void GuiManager::drawSceneControls(
   }
   ImGui::Checkbox("Wireframe Depth Test", &wireframeSettings_.depthTest);
   ImGui::ColorEdit3("Wireframe Color", &wireframeSettings_.color.x);
-  ImGui::SliderFloat("Wireframe Intensity", &wireframeSettings_.overlayIntensity,
-                     0.0f, 1.0f);
+  ImGui::SliderFloat("Wireframe Intensity",
+                     &wireframeSettings_.overlayIntensity, 0.0f, 1.0f);
   if (wireframeWideLineSupported_) {
     ImGui::SliderFloat("Wireframe Line Width", &wireframeSettings_.lineWidth,
                        1.0f, 8.0f);
@@ -650,9 +875,11 @@ void GuiManager::drawSceneControls(
     ImGui::BulletText("Input: %u", cullStatsTotal_);
     ImGui::BulletText("Frustum passed: %u", cullStatsFrustum_);
     ImGui::BulletText("Occlusion passed: %u", cullStatsOcclusion_);
-    ImGui::BulletText("Frustum culled: %u", cullStatsTotal_ - cullStatsFrustum_);
+    ImGui::BulletText("Frustum culled: %u",
+                      cullStatsTotal_ - cullStatsFrustum_);
     if (cullStatsFrustum_ > 0)
-      ImGui::BulletText("Occlusion culled: %u", cullStatsFrustum_ - cullStatsOcclusion_);
+      ImGui::BulletText("Occlusion culled: %u",
+                        cullStatsFrustum_ - cullStatsOcclusion_);
   }
 
   if (!renderPassToggles_.empty()) {
@@ -689,7 +916,9 @@ void GuiManager::drawSceneControls(
       drawRenderPassSection("Post-process");
 
       if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip("Protected passes are shown as locked. Optional passes may be auto-disabled when a dependency is off.");
+        ImGui::SetTooltip(
+            "Protected passes are shown as locked. Optional passes may be "
+            "auto-disabled when a dependency is off.");
       }
       ImGui::TreePop();
     }
@@ -706,29 +935,25 @@ void GuiManager::drawSceneControls(
                                  ? container::gpu::kExposureModeAuto
                                  : container::gpu::kExposureModeManual;
   }
-  ImGui::SliderFloat("Exposure", &exposureSettings_.manualExposure, 0.0f,
-                     4.0f, "%.3f");
+  ImGui::SliderFloat("Exposure", &exposureSettings_.manualExposure, 0.0f, 4.0f,
+                     "%.3f");
   if (exposureSettings_.mode == container::gpu::kExposureModeAuto) {
-    ImGui::SliderFloat("Target Luminance",
-                       &exposureSettings_.targetLuminance, 0.01f, 2.0f,
-                       "%.3f");
-    ImGui::SliderFloat("Min Exposure", &exposureSettings_.minExposure,
-                       0.0f, 4.0f, "%.3f");
-    ImGui::SliderFloat("Max Exposure", &exposureSettings_.maxExposure,
-                       0.0f, 16.0f, "%.3f");
+    ImGui::SliderFloat("Target Luminance", &exposureSettings_.targetLuminance,
+                       0.01f, 2.0f, "%.3f");
+    ImGui::SliderFloat("Min Exposure", &exposureSettings_.minExposure, 0.0f,
+                       4.0f, "%.3f");
+    ImGui::SliderFloat("Max Exposure", &exposureSettings_.maxExposure, 0.0f,
+                       16.0f, "%.3f");
     exposureSettings_.maxExposure =
-        std::max(exposureSettings_.maxExposure,
-                 exposureSettings_.minExposure);
-    ImGui::SliderFloat("Adaptation Rate",
-                       &exposureSettings_.adaptationRate, 0.0f, 10.0f,
-                       "%.2f");
+        std::max(exposureSettings_.maxExposure, exposureSettings_.minExposure);
+    ImGui::SliderFloat("Adaptation Rate", &exposureSettings_.adaptationRate,
+                       0.0f, 10.0f, "%.2f");
     ImGui::SliderFloat("Low Percentile",
                        &exposureSettings_.meteringLowPercentile, 0.0f, 0.99f,
                        "%.2f");
-    ImGui::SliderFloat("High Percentile",
-                       &exposureSettings_.meteringHighPercentile,
-                       exposureSettings_.meteringLowPercentile + 0.01f, 1.0f,
-                       "%.2f");
+    ImGui::SliderFloat(
+        "High Percentile", &exposureSettings_.meteringHighPercentile,
+        exposureSettings_.meteringLowPercentile + 0.01f, 1.0f, "%.2f");
     exposureSettings_.meteringHighPercentile =
         std::max(exposureSettings_.meteringHighPercentile,
                  exposureSettings_.meteringLowPercentile + 0.01f);
@@ -765,14 +990,13 @@ void GuiManager::drawSceneControls(
     ImGui::SliderFloat("Constant Depth Bias",
                        &shadowSettings_.constantDepthBias, 0.0f, 0.005f,
                        "%.5f");
-    ImGui::SliderFloat("Max Depth Bias", &shadowSettings_.maxDepthBias,
-                       0.0f, 0.02f, "%.5f");
+    ImGui::SliderFloat("Max Depth Bias", &shadowSettings_.maxDepthBias, 0.0f,
+                       0.02f, "%.5f");
     ImGui::SliderFloat("Raster Constant Bias",
                        &shadowSettings_.rasterConstantBias, -16.0f, 0.0f,
                        "%.2f");
-    ImGui::SliderFloat("Raster Slope Bias",
-                       &shadowSettings_.rasterSlopeBias, -8.0f, 0.0f,
-                       "%.2f");
+    ImGui::SliderFloat("Raster Slope Bias", &shadowSettings_.rasterSlopeBias,
+                       -8.0f, 0.0f, "%.2f");
     ImGui::TreePop();
   }
 
@@ -788,9 +1012,9 @@ void GuiManager::drawSceneControls(
 
   if (ImGui::TreeNode("Lights")) {
     ImGui::Text("Generator");
-    int presetIndex = static_cast<int>(
-        std::min<uint32_t>(lightingSettings_.preset,
-                           static_cast<uint32_t>(kLightingPresetLabels.size() - 1u)));
+    int presetIndex = static_cast<int>(std::min<uint32_t>(
+        lightingSettings_.preset,
+        static_cast<uint32_t>(kLightingPresetLabels.size() - 1u)));
     if (ImGui::Combo("Lighting Preset", &presetIndex,
                      kLightingPresetLabels.data(),
                      static_cast<int>(kLightingPresetLabels.size()))) {
@@ -805,16 +1029,18 @@ void GuiManager::drawSceneControls(
     bool lightSliderChanged = false;
     lightSliderChanged |= ImGui::SliderFloat(
         "Light Density", &lightingSettings_.density, 0.1f, 16.0f, "%.2f");
+    lightSliderChanged |=
+        ImGui::SliderFloat("Light Radius Scale", &lightingSettings_.radiusScale,
+                           0.05f, 8.0f, "%.2f");
+    lightSliderChanged |= ImGui::SliderFloat("Point Intensity Scale",
+                                             &lightingSettings_.intensityScale,
+                                             0.0f, 16.0f, "%.2f");
     lightSliderChanged |= ImGui::SliderFloat(
-        "Light Radius Scale", &lightingSettings_.radiusScale, 0.05f, 8.0f, "%.2f");
-    lightSliderChanged |= ImGui::SliderFloat(
-        "Point Intensity Scale", &lightingSettings_.intensityScale, 0.0f,
+        "Directional Intensity", &lightingSettings_.directionalIntensity, 0.0f,
         16.0f, "%.2f");
     lightSliderChanged |= ImGui::SliderFloat(
-        "Directional Intensity", &lightingSettings_.directionalIntensity, 0.0f, 16.0f, "%.2f");
-    lightSliderChanged |= ImGui::SliderFloat(
-        "Environment Intensity", &lightingSettings_.environmentIntensity,
-        0.0f, 16.0f, "%.2f");
+        "Environment Intensity", &lightingSettings_.environmentIntensity, 0.0f,
+        16.0f, "%.2f");
     if (lightSliderChanged) {
       lightingSettings_.preset =
           static_cast<uint32_t>(kLightingPresetLabels.size() - 1u);
@@ -822,7 +1048,8 @@ void GuiManager::drawSceneControls(
 
     ImGui::Separator();
     ImGui::Text("Cluster Stats");
-    ImGui::BulletText("Submitted lights: %u", lightCullingStats_.submittedLights);
+    ImGui::BulletText("Submitted lights: %u",
+                      lightCullingStats_.submittedLights);
     ImGui::BulletText("Active clusters: %u / %u",
                       lightCullingStats_.activeClusters,
                       lightCullingStats_.totalClusters);
@@ -837,8 +1064,9 @@ void GuiManager::drawSceneControls(
 
     ImGui::Separator();
     ImGui::Text("Directional");
-    ImGui::BulletText("Position: (%.2f, %.2f, %.2f)", directionalLightPosition.x,
-                      directionalLightPosition.y, directionalLightPosition.z);
+    ImGui::BulletText("Position: (%.2f, %.2f, %.2f)",
+                      directionalLightPosition.x, directionalLightPosition.y,
+                      directionalLightPosition.z);
     ImGui::BulletText("Direction: (%.2f, %.2f, %.2f)",
                       lightingData.directionalDirection.x,
                       lightingData.directionalDirection.y,
@@ -857,9 +1085,8 @@ void GuiManager::drawSceneControls(
       const auto& light = pointLights[i];
       ImGui::Separator();
       ImGui::Text("Point Light %u", i);
-      ImGui::BulletText("Position: (%.2f, %.2f, %.2f)",
-                        light.positionRadius.x, light.positionRadius.y,
-                        light.positionRadius.z);
+      ImGui::BulletText("Position: (%.2f, %.2f, %.2f)", light.positionRadius.x,
+                        light.positionRadius.y, light.positionRadius.z);
       ImGui::BulletText("Radius: %.2f", light.positionRadius.w);
     }
     ImGui::TreePop();
@@ -884,8 +1111,8 @@ void GuiManager::drawSceneControls(
       for (uint32_t nodeIndex : renderableNodes) {
         std::string label = "Node " + std::to_string(nodeIndex);
         if (const auto* node = sceneGraph.getNode(nodeIndex);
-            node != nullptr &&
-            node->primitiveIndex != container::scene::SceneGraph::kInvalidNode) {
+            node != nullptr && node->primitiveIndex !=
+                                   container::scene::SceneGraph::kInvalidNode) {
           label += " / Primitive " + std::to_string(node->primitiveIndex);
         }
         const bool selected = nodeIndex == activeMeshNode;
@@ -942,9 +1169,9 @@ void GuiManager::drawRendererTelemetryWindow() {
   const float fps = frameMs > 0.0f ? 1000.0f / frameMs : 0.0f;
   const float gpuKnownMs = latest.timing.gpuKnownMs;
 
-  if (ImGui::BeginTable("TelemetrySummary", 4,
-                        ImGuiTableFlags_BordersInnerV |
-                            ImGuiTableFlags_SizingStretchSame)) {
+  if (ImGui::BeginTable(
+          "TelemetrySummary", 4,
+          ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame)) {
     ImGui::TableNextColumn();
     ImGui::TextDisabled("FPS");
     ImGui::Text("%.1f", fps);
@@ -964,10 +1191,9 @@ void GuiManager::drawRendererTelemetryWindow() {
               static_cast<unsigned long long>(latest.frameIndex),
               latest.imageIndex, latest.sync.frameSlot,
               latest.sync.maxFramesInFlight);
-  ImGuiTextStringView(
-      "GPU timing source",
-      container::renderer::rendererGpuTimingSourceName(
-          latest.timing.gpuSource));
+  ImGuiTextStringView("GPU timing source",
+                      container::renderer::rendererGpuTimingSourceName(
+                          latest.timing.gpuSource));
   ImGui::Text("GPU profiler: %s",
               latest.gpuProfiler.available ? "available" : "unavailable");
   if (latest.gpuProfiler.resultLatencyFrames > 0u) {
@@ -977,8 +1203,7 @@ void GuiManager::drawRendererTelemetryWindow() {
   if (!latest.gpuProfiler.status.empty()) {
     ImGui::TextWrapped("%s", latest.gpuProfiler.status.c_str());
   }
-  ImGui::Text("Swapchain: %ux%u, %u images",
-              latest.resources.swapchainWidth,
+  ImGui::Text("Swapchain: %ux%u, %u images", latest.resources.swapchainWidth,
               latest.resources.swapchainHeight,
               latest.resources.swapchainImageCount);
   if (latest.sync.serializedConcurrency) {
@@ -1045,8 +1270,7 @@ void GuiManager::drawRendererTelemetryWindow() {
     }};
 
     if (ImGui::BeginTable("TelemetryCpuPhases", 3,
-                          ImGuiTableFlags_Borders |
-                              ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                               ImGuiTableFlags_SizingStretchProp)) {
       ImGui::TableSetupColumn("Phase");
       ImGui::TableSetupColumn("CPU ms");
@@ -1071,8 +1295,7 @@ void GuiManager::drawRendererTelemetryWindow() {
     ImGui::Text("Objects: %u / capacity %u", latest.workload.objectCount,
                 latest.resources.objectBufferCapacity);
     ImGui::Text("Draws: %u total, %u opaque, %u transparent",
-                latest.workload.totalDrawCount,
-                latest.workload.opaqueDrawCount,
+                latest.workload.totalDrawCount, latest.workload.opaqueDrawCount,
                 latest.workload.transparentDrawCount);
     ImGui::Text("OIT nodes: %u", latest.resources.oitNodeCapacity);
 
@@ -1081,8 +1304,7 @@ void GuiManager::drawRendererTelemetryWindow() {
             ? latest.culling.inputCount - latest.culling.frustumPassedCount
             : 0u;
     const uint32_t occlusionCulled =
-        latest.culling.frustumPassedCount >=
-                latest.culling.occlusionPassedCount
+        latest.culling.frustumPassedCount >= latest.culling.occlusionPassedCount
             ? latest.culling.frustumPassedCount -
                   latest.culling.occlusionPassedCount
             : 0u;
@@ -1097,29 +1319,25 @@ void GuiManager::drawRendererTelemetryWindow() {
     ImGui::Separator();
     ImGui::Text("Lighting");
     ImGui::Text("Submitted lights: %u", latest.lightCulling.submittedLights);
-    ImGui::Text("Active clusters: %u / %u",
-                latest.lightCulling.activeClusters,
+    ImGui::Text("Active clusters: %u / %u", latest.lightCulling.activeClusters,
                 latest.lightCulling.totalClusters);
     ImGui::Text("Max lights per cluster: %u",
                 latest.lightCulling.maxLightsPerCluster);
     ImGui::Text("Dropped light refs: %u",
                 latest.lightCulling.droppedLightReferences);
-    ImGui::Text("Cluster cull GPU: %.3f ms",
-                latest.lightCulling.clusterCullMs);
+    ImGui::Text("Cluster cull GPU: %.3f ms", latest.lightCulling.clusterCullMs);
     ImGui::Text("Clustered lighting GPU: %.3f ms",
                 latest.lightCulling.clusteredLightingMs);
   }
 
-  if (ImGui::CollapsingHeader("Render graph",
-                              ImGuiTreeNodeFlags_DefaultOpen)) {
+  if (ImGui::CollapsingHeader("Render graph", ImGuiTreeNodeFlags_DefaultOpen)) {
     ImGui::Text("Passes: %u total, %u enabled, %u active, %u skipped",
                 latest.graph.totalPasses, latest.graph.enabledPasses,
                 latest.graph.activePasses, latest.graph.skippedPasses);
-    ImGui::Text("Timed passes: %u CPU, %u GPU",
-                latest.graph.cpuTimedPasses, latest.graph.gpuTimedPasses);
+    ImGui::Text("Timed passes: %u CPU, %u GPU", latest.graph.cpuTimedPasses,
+                latest.graph.gpuTimedPasses);
     if (ImGui::BeginTable("TelemetryRenderGraph", 6,
-                          ImGuiTableFlags_Borders |
-                              ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                               ImGuiTableFlags_ScrollY,
                           ImVec2(0.0f, 220.0f))) {
       ImGui::TableSetupColumn("Pass");
@@ -1158,28 +1376,29 @@ void GuiManager::drawRendererTelemetryWindow() {
   }
 
   if (ImGui::CollapsingHeader("Synchronization")) {
-    ImGui::Text("Wait for frame: %.3f ms",
-                TelemetryPhaseMs(
-                    latest,
-                    container::renderer::RendererTelemetryPhase::WaitForFrame));
-    ImGui::Text("Image fence wait: %.3f ms",
-                TelemetryPhaseMs(
-                    latest,
-                    container::renderer::RendererTelemetryPhase::ImageFenceWait));
-    ImGui::Text("Acquire image: %.3f ms",
-                TelemetryPhaseMs(
-                    latest,
-                    container::renderer::RendererTelemetryPhase::AcquireImage));
-    ImGui::Text("Present: %.3f ms",
-                TelemetryPhaseMs(
-                    latest,
-                    container::renderer::RendererTelemetryPhase::Present));
-    ImGui::Text("Swapchain recreates: %llu",
-                static_cast<unsigned long long>(
-                    latest.sync.swapchainRecreateCount));
-    ImGui::Text("Device wait idle calls: %llu",
-                static_cast<unsigned long long>(
-                    latest.sync.deviceWaitIdleCount));
+    ImGui::Text(
+        "Wait for frame: %.3f ms",
+        TelemetryPhaseMs(
+            latest, container::renderer::RendererTelemetryPhase::WaitForFrame));
+    ImGui::Text(
+        "Image fence wait: %.3f ms",
+        TelemetryPhaseMs(
+            latest,
+            container::renderer::RendererTelemetryPhase::ImageFenceWait));
+    ImGui::Text(
+        "Acquire image: %.3f ms",
+        TelemetryPhaseMs(
+            latest, container::renderer::RendererTelemetryPhase::AcquireImage));
+    ImGui::Text(
+        "Present: %.3f ms",
+        TelemetryPhaseMs(latest,
+                         container::renderer::RendererTelemetryPhase::Present));
+    ImGui::Text(
+        "Swapchain recreates: %llu",
+        static_cast<unsigned long long>(latest.sync.swapchainRecreateCount));
+    ImGui::Text(
+        "Device wait idle calls: %llu",
+        static_cast<unsigned long long>(latest.sync.deviceWaitIdleCount));
   }
 
   ImGui::End();
@@ -1207,8 +1426,8 @@ void GuiManager::setWireframeCapabilities(bool supported,
 
 void GuiManager::setCullStats(uint32_t total, uint32_t frustumPassed,
                               uint32_t occlusionPassed) {
-  cullStatsTotal_     = total;
-  cullStatsFrustum_   = frustumPassed;
+  cullStatsTotal_ = total;
+  cullStatsFrustum_ = frustumPassed;
   cullStatsOcclusion_ = occlusionPassed;
 }
 
@@ -1227,20 +1446,19 @@ void GuiManager::setLightingSettings(
   lightingSettings_ = settings;
 }
 
-void GuiManager::setFreezeCulling(bool frozen) {
-  freezeCulling_ = frozen;
-}
+void GuiManager::setFreezeCulling(bool frozen) { freezeCulling_ = frozen; }
 
 void GuiManager::setBloomSettings(bool enabled, float threshold, float knee,
                                   float intensity, float radius) {
-  bloomEnabled_   = enabled;
+  bloomEnabled_ = enabled;
   bloomThreshold_ = threshold;
-  bloomKnee_      = knee;
+  bloomKnee_ = knee;
   bloomIntensity_ = intensity;
-  bloomRadius_    = radius;
+  bloomRadius_ = radius;
 }
 
-void GuiManager::setRenderPassList(const std::vector<RenderPassToggle>& passes) {
+void GuiManager::setRenderPassList(
+    const std::vector<RenderPassToggle>& passes) {
   // Rebuild the toggle list, preserving existing enabled states by name.
   std::vector<RenderPassToggle> updated;
   updated.reserve(passes.size());
@@ -1271,16 +1489,3 @@ void GuiManager::ensureInitialized() const {
 }
 
 }  // namespace container::ui
-
-
-
-
-
-
-
-
-
-
-
-
-

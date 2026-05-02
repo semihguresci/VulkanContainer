@@ -74,6 +74,73 @@ add_custom_target(generate_models ALL
     DEPENDS ${GENERATE_MODEL_OUTPUTS}
 )
 
+# --- buildingSMART IFC5 sample files download ----------------------------
+
+if(ENABLE_BIM_SAMPLE_MODEL_DOWNLOAD)
+    set(BIM_SAMPLE_MODELS_DIR "${MODELS_OUTPUT_DIR}/buildingSMART-IFC5-development")
+    set(BIM_SAMPLE_MODELS_STAMP "${BIM_SAMPLE_MODELS_DIR}/.fetched")
+    set(BIM_SAMPLE_MODELS_REF_URL
+        "https://api.github.com/repos/buildingSMART/IFC5-development/git/ref/heads/main")
+    set(IFC_SAMPLE_MODELS_DIR "${MODELS_OUTPUT_DIR}/buildingSMART-Sample-Test-Files")
+    set(IFC_SAMPLE_MODELS_STAMP "${IFC_SAMPLE_MODELS_DIR}/.fetched")
+    set(IFC_SAMPLE_MODELS_REF_URL
+        "https://api.github.com/repos/buildingSMART/Sample-Test-Files/git/ref/heads/main")
+
+    add_custom_target(fetch_bim_sample_models
+        COMMAND ${CMAKE_COMMAND}
+                "-DDESTINATION:PATH=${BIM_SAMPLE_MODELS_DIR}"
+                "-DSTAMP_FILE:FILEPATH=${BIM_SAMPLE_MODELS_STAMP}"
+                "-DREPO_REF_URL:STRING=${BIM_SAMPLE_MODELS_REF_URL}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/fetch_buildingsmart_ifc5_models.cmake"
+        DEPENDS "${CMAKE_SOURCE_DIR}/cmake/fetch_buildingsmart_ifc5_models.cmake"
+        COMMENT "Checking latest buildingSMART IFC5-development archive"
+        VERBATIM
+    )
+
+    add_custom_target(fetch_ifc_sample_models
+        COMMAND ${CMAKE_COMMAND}
+                "-DDESTINATION:PATH=${IFC_SAMPLE_MODELS_DIR}"
+                "-DSTAMP_FILE:FILEPATH=${IFC_SAMPLE_MODELS_STAMP}"
+                "-DREPO_REF_URL:STRING=${IFC_SAMPLE_MODELS_REF_URL}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/fetch_buildingsmart_sample_test_files.cmake"
+        DEPENDS "${CMAKE_SOURCE_DIR}/cmake/fetch_buildingsmart_sample_test_files.cmake"
+        COMMENT "Checking latest buildingSMART Sample-Test-Files archive"
+        VERBATIM
+    )
+
+    add_dependencies(generate_models fetch_bim_sample_models)
+    add_dependencies(generate_models fetch_ifc_sample_models)
+endif()
+
+# --- OpenUSD sample model downloads -------------------------------------
+
+if(ENABLE_USD_SAMPLE_MODEL_DOWNLOAD)
+    set(USD_SAMPLE_MODELS_DIR "${MODELS_OUTPUT_DIR}/OpenUSD-Sample-Assets")
+    set(USD_SAMPLE_MODELS_STAMP "${USD_SAMPLE_MODELS_DIR}/.fetched")
+    set(USD_KITCHEN_SET_URL "https://openusd.org/files/Kitchen_set.zip?")
+    set(USD_POINT_INSTANCED_MEDCITY_URL
+        "https://openusd.org/files/PointInstancedMedCity.zip?")
+
+    add_custom_target(fetch_usd_sample_models
+        COMMAND ${CMAKE_COMMAND}
+                "-DDESTINATION:PATH=${USD_SAMPLE_MODELS_DIR}"
+                "-DSTAMP_FILE:FILEPATH=${USD_SAMPLE_MODELS_STAMP}"
+                "-DKITCHEN_SET_URL:STRING=${USD_KITCHEN_SET_URL}"
+                "-DMEDCITY_URL:STRING=${USD_POINT_INSTANCED_MEDCITY_URL}"
+                -P "${CMAKE_SOURCE_DIR}/cmake/fetch_openusd_sample_models.cmake"
+        DEPENDS "${CMAKE_SOURCE_DIR}/cmake/fetch_openusd_sample_models.cmake"
+        COMMENT "Checking OpenUSD sample model archives"
+        VERBATIM
+    )
+
+    add_custom_target(download_usd_models
+        DEPENDS fetch_usd_sample_models
+        COMMENT "Downloading OpenUSD sample model archives"
+    )
+
+    add_dependencies(generate_models fetch_usd_sample_models)
+endif()
+
 # --- HDR environment maps -----------------------------------------------
 
 if(EXISTS "${CMAKE_SOURCE_DIR}/hdr")

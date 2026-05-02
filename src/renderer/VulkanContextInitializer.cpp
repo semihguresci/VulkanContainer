@@ -110,6 +110,7 @@ VulkanContextResult VulkanContextInitializer::initialize(
     vulkan12Features.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
     vulkan12Features.bufferDeviceAddress = VK_TRUE;
     vulkan12Features.drawIndirectCount = VK_TRUE;
+    vulkan12Features.hostQueryReset = VK_TRUE;
 
     VkPhysicalDeviceVulkan13Features vulkan13Features{};
     vulkan13Features.sType =

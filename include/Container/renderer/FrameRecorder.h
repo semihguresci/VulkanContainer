@@ -75,6 +75,14 @@ struct FrameDrawLists {
   const std::vector<DrawCommand>*   transparentDoubleSidedDrawCommands{nullptr};
 };
 
+struct FrameBimResources {
+  // BIM models use a separate render path so semantic overlays, selection, and
+  // future IFC metadata can evolve without perturbing regular glTF draws.
+  FrameSceneGeometry                scene{};
+  FrameDrawLists                    draws{};
+  VkDescriptorSet                   sceneDescriptorSet{VK_NULL_HANDLE};
+};
+
 struct FrameDescriptorSets {
   VkDescriptorSet                   sceneDescriptorSet{VK_NULL_HANDLE};
   VkDescriptorSet                   lightDescriptorSet{VK_NULL_HANDLE};
@@ -94,7 +102,9 @@ struct FrameCameraResources {
 
 struct FrameRenderPassHandles {
   VkRenderPass depthPrepass{VK_NULL_HANDLE};
+  VkRenderPass bimDepthPrepass{VK_NULL_HANDLE};
   VkRenderPass gBuffer{VK_NULL_HANDLE};
+  VkRenderPass bimGBuffer{VK_NULL_HANDLE};
   VkRenderPass shadow{VK_NULL_HANDLE};
   VkRenderPass lighting{VK_NULL_HANDLE};
   VkRenderPass postProcess{VK_NULL_HANDLE};
@@ -164,6 +174,7 @@ struct FramePostProcessState {
 struct FrameRecordParams {
   FrameRuntimeResources runtime{};
   FrameSceneGeometry scene{};
+  FrameBimResources bim{};
   FrameDrawLists draws{};
   FrameDescriptorSets descriptors{};
   FrameCameraResources camera{};
@@ -231,6 +242,12 @@ class FrameRecorder {
                          const FrameRecordParams& p,
                          VkDescriptorSet sceneSet) const;
 
+  void recordBimDepthPrepass(VkCommandBuffer cmd,
+                             const FrameRecordParams& p) const;
+
+  void recordBimGBufferPass(VkCommandBuffer cmd,
+                            const FrameRecordParams& p) const;
+
   void recordShadowPass(VkCommandBuffer cmd,
                         const FrameRecordParams& p,
                         uint32_t cascadeIndex) const;
@@ -295,6 +312,12 @@ class FrameRecorder {
       shadowCascadeWindingFlippedDrawCommands_;
   mutable std::array<std::vector<DrawCommand>, container::gpu::kShadowCascadeCount>
       shadowCascadeDoubleSidedDrawCommands_;
+  mutable std::array<std::vector<DrawCommand>, container::gpu::kShadowCascadeCount>
+      bimShadowCascadeSingleSidedDrawCommands_;
+  mutable std::array<std::vector<DrawCommand>, container::gpu::kShadowCascadeCount>
+      bimShadowCascadeWindingFlippedDrawCommands_;
+  mutable std::array<std::vector<DrawCommand>, container::gpu::kShadowCascadeCount>
+      bimShadowCascadeDoubleSidedDrawCommands_;
   mutable uint64_t shadowCascadeDrawCommandSignature_{0};
   mutable bool shadowCascadeDrawCommandCacheValid_{false};
 };

@@ -12,6 +12,8 @@ endif()
 include(cmake/DependenciesSettings.cmake)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 
+include(FetchContent)
+
 # ── Find Vulkan SDK ──────────────────────────────────────────────────────────
 find_package(Vulkan REQUIRED)
 
@@ -160,6 +162,68 @@ endif()
 
 find_package(mikktspace CONFIG REQUIRED)
 
+add_library(Dep_TinyUSDZ INTERFACE)
+if(ENABLE_TINYUSDZ_USD_LOADER)
+    set(TINYUSDZ_BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_C_API OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_TYDRA ON CACHE BOOL "" FORCE)
+    set(TINYUSDZ_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_BUILD_BENCHMARKS OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_BUILTIN_IMAGE_LOADER OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_USDMTLX OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_JSON OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_USD_TO_GLTF OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_USDOBJ OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_USDFBX OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_USDVOX OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_OPENSUBDIV OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_AUDIO OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_ALAC_AUDIO OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_PYTHON OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_PXR_COMPAT_API OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_QJS OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_MCP_SERVER OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_GEOGRAM OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_WAMR OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_COROUTINE OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_EXR OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_TIFF OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_COLORIO OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_WITH_MESHOPT OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_USE_CCACHE OFF CACHE BOOL "" FORCE)
+    set(TINYUSDZ_PRODUCTION_BUILD ON CACHE BOOL "" FORCE)
+
+    FetchContent_Declare(
+        tinyusdz
+        GIT_REPOSITORY https://github.com/lighttransport/tinyusdz.git
+        GIT_TAG v0.9.3
+        GIT_SHALLOW TRUE
+    )
+    FetchContent_MakeAvailable(tinyusdz)
+
+    if(TARGET tinyusdz::tinyusdz_static)
+        target_compile_definitions(tinyusdz_static PRIVATE
+            nsel_CONFIG_SELECT_EXPECTED=1
+            _CRT_SECURE_NO_WARNINGS
+            _SILENCE_CXX23_ALIGNED_STORAGE_DEPRECATION_WARNING)
+        target_compile_options(tinyusdz_static PRIVATE
+            $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/FI${CMAKE_SOURCE_DIR}/cmake/tinyusdz_msvc_compat.h>)
+        target_link_libraries(Dep_TinyUSDZ INTERFACE tinyusdz::tinyusdz_static)
+        target_include_directories(Dep_TinyUSDZ INTERFACE "${tinyusdz_SOURCE_DIR}/src")
+        target_compile_definitions(Dep_TinyUSDZ INTERFACE
+            CONTAINER_HAS_TINYUSDZ=1
+            nsel_CONFIG_SELECT_EXPECTED=1
+            _SILENCE_CXX23_ALIGNED_STORAGE_DEPRECATION_WARNING)
+        target_compile_options(Dep_TinyUSDZ INTERFACE
+            $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CXX_COMPILER_ID:MSVC>>:/FI${CMAKE_SOURCE_DIR}/cmake/tinyusdz_msvc_compat.h>)
+        message(STATUS "✅ TinyUSDZ found (FetchContent)")
+    else()
+        message(WARNING "⚠️ TinyUSDZ target was not created; USD falls back to the lightweight parser")
+    endif()
+endif()
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Targeted dependency groups (Dep_*)
 #
@@ -215,6 +279,7 @@ target_link_libraries(Dep_SceneIO INTERFACE
     $<IF:$<TARGET_EXISTS:tinygltf::tinygltf>,tinygltf::tinygltf,"">
     $<IF:$<TARGET_EXISTS:stb::stb>,stb::stb,"">
     $<IF:$<TARGET_EXISTS:tinyexr::tinyexr>,tinyexr::tinyexr,"">
+    Dep_TinyUSDZ
     mikktspace::mikktspace
 )
 

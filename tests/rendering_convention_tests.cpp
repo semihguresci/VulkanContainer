@@ -517,6 +517,42 @@ TEST(RenderingConventionTests, PrimitiveNoCullPropagatesToShaderDoubleSidedFlag)
   EXPECT_TRUE(contains(shadowDepth, "material.flags | obj.objectInfo.y"));
 }
 
+TEST(RenderingConventionTests, TransparentOitWritesAreDepthTestedEarly) {
+  const std::string pipelineBuilder =
+      readRepoTextFile("src/renderer/GraphicsPipelineBuilder.cpp");
+  const std::string transparent =
+      readRepoTextFile("shaders/forward_transparent.slang");
+
+  EXPECT_TRUE(contains(pipelineBuilder, "transparentDS = depthPrepassDS"));
+  EXPECT_TRUE(contains(pipelineBuilder,
+                       "transparentDS.depthWriteEnable = VK_FALSE"));
+  EXPECT_TRUE(contains(transparent, "[earlydepthstencil]"));
+  EXPECT_TRUE(contains(transparent, "InterlockedAdd(nodeCounter[0]"));
+  EXPECT_TRUE(contains(transparent,
+                       "InterlockedExchange(headPointerImage[pixelCoord]"));
+}
+
+TEST(RenderingConventionTests, SamplePickerDiscoversIfc5Examples) {
+  const std::string guiManager =
+      readRepoTextFile("src/utility/GuiManager.cpp");
+  const std::string sampleManifest =
+      readRepoTextFile("models/sample_model_regressions.json");
+
+  EXPECT_TRUE(contains(guiManager,
+                       "models/buildingSMART-IFC5-development/examples"));
+  EXPECT_TRUE(contains(guiManager, "DiscoverAuxiliarySampleAssets"));
+  EXPECT_TRUE(contains(guiManager, "usd::usdgeom::mesh"));
+  EXPECT_TRUE(contains(guiManager, "IFCTRIANGULATEDFACESET"));
+  EXPECT_TRUE(contains(guiManager, "IFCEXTRUDEDAREASOLID"));
+
+  EXPECT_TRUE(contains(sampleManifest,
+                       "ifc5_domestic_hot_water_ifcx_renderable"));
+  EXPECT_TRUE(contains(sampleManifest,
+                       "ifc5_pcert_infra_bridge_ifcx_renderable"));
+  EXPECT_TRUE(contains(sampleManifest,
+                       "ifc5_railway_simple_ifcx_renderable"));
+}
+
 TEST(RenderingConventionTests, PerspectiveViewMatrixIgnoresCameraScale) {
   container::scene::PerspectiveCamera camera;
   camera.setPosition({1.0f, 2.0f, 3.0f});

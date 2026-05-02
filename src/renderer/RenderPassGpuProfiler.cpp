@@ -133,10 +133,11 @@ void RenderPassGpuProfiler::beginFrame(VkCommandBuffer cmd,
   activeFrameSlot_ = frameSlot % frameSlots_;
   activeWrittenPasses_.fill(0u);
   activeFrameRecording_ = true;
-  vkCmdResetQueryPool(
-      cmd, queryPool_, queryBase(activeFrameSlot_),
+  const uint32_t queryCount =
       backend_ == Backend::PerformanceQuery ? kPerformanceQueriesPerFrame
-                                            : kQueriesPerFrame);
+                                            : kQueriesPerFrame;
+  vkResetQueryPool(device_, queryPool_, queryBase(activeFrameSlot_),
+                   queryCount);
 }
 
 void RenderPassGpuProfiler::beginPass(VkCommandBuffer cmd, RenderPassId id) {

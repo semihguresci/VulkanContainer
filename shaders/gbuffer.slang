@@ -96,7 +96,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     float4 worldTangent = BuildWorldTangent(modelMatrix, worldNormal, input.inTangent);
 
     output.pos = mul(uCamera.viewProj, worldPos);
-    output.baseColor = material.color;
+    output.baseColor = material.color * float4(input.inColor, 1.0);
     output.texCoord = input.inTexCoord;
     output.texCoord1 = input.inTexCoord1;
     output.baseColorTextureIndex = material.baseColorTextureIndex;

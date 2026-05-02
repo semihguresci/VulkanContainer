@@ -13,14 +13,18 @@ Application
 `RendererFrontend` owns renderer lifetime and frame submission. `FrameRecorder`
 owns command-buffer pass order. Specialized managers own Vulkan resources for
 lighting, shadows, frame resources, culling, OIT, bloom, environment maps, and
-scene data.
+scene data. `BimManager` owns sidecar geometry and draw data so IFC, IFCX,
+dotbim, and USD/USDZ content can be rendered without being folded
+into the primary glTF scene buffers.
 
 ## Frame Flow
 
 ```text
 Depth prepass
+  -> BIM depth prepass
   -> Hi-Z / occlusion cull
   -> G-buffer
+  -> BIM G-buffer
   -> shadow cascades
   -> tile light cull
   -> GTAO
@@ -45,6 +49,9 @@ Depth prepass
   samplers, and OIT storage.
 - `SceneManager` owns model loading, scene descriptors, materials, texture
   resources, and draw data.
+- `BimManager` owns `.bim`, `.ifc`, `.ifcx`, `.usd`, `.usda`, `.usdc`, `.usdz`, and
+  fallback glTF sidecar loading, GPU buffers, sidecar object data, and BIM draw
+  lists.
 - `LightingManager`, `ShadowManager`, `GpuCullManager`, `EnvironmentManager`,
   `OitManager`, and `BloomManager` own their focused rendering resources.
 

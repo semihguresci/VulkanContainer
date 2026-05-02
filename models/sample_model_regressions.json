@@ -1,6 +1,7 @@
 {
   "schemaVersion": 1,
   "sampleModelRoot": "models/glTF-Sample-Models/2.0",
+  "assetModelRoot": "models",
   "regressions": [
     {
       "id": "texture_settings_single_sided_culling",
@@ -66,6 +67,85 @@
       "checks": [
         {
           "kind": "finiteVertexBasis"
+        }
+      ]
+    },
+    {
+      "id": "openusd_kitchen_set_renderable",
+      "format": "usd",
+      "requires": "tinyusdz",
+      "root": "assetModelRoot",
+      "asset": "OpenUSD-Sample-Assets/Kitchen_set/Kitchen_set.usd",
+      "checks": [
+        {
+          "kind": "renderableAuxiliaryModel",
+          "minElements": 1,
+          "minMeshRanges": 1
+        }
+      ]
+    },
+    {
+      "id": "ifc5_hello_wall_ifcx_renderable",
+      "format": "ifcx",
+      "root": "assetModelRoot",
+      "asset": "buildingSMART-IFC5-development/examples/Hello Wall/hello-wall.ifcx",
+      "checks": [
+        {
+          "kind": "renderableAuxiliaryModel",
+          "minElements": 1,
+          "minMeshRanges": 1
+        }
+      ]
+    },
+    {
+      "id": "ifc5_domestic_hot_water_ifcx_renderable",
+      "format": "ifcx",
+      "root": "assetModelRoot",
+      "asset": "buildingSMART-IFC5-development/examples/Domestic Hot Water/domestic-hot-water.ifcx",
+      "checks": [
+        {
+          "kind": "renderableAuxiliaryModel",
+          "minElements": 1,
+          "minMeshRanges": 1
+        }
+      ]
+    },
+    {
+      "id": "ifc5_pcert_infra_bridge_ifcx_renderable",
+      "format": "ifcx",
+      "root": "assetModelRoot",
+      "asset": "buildingSMART-IFC5-development/examples/PCERT-Sample-Scene/Infra-Bridge.ifcx",
+      "checks": [
+        {
+          "kind": "renderableAuxiliaryModel",
+          "minElements": 1,
+          "minMeshRanges": 1
+        }
+      ]
+    },
+    {
+      "id": "ifc5_railway_simple_ifcx_renderable",
+      "format": "ifcx",
+      "root": "assetModelRoot",
+      "asset": "buildingSMART-IFC5-development/examples/Railway/Railway_project_simple_IFC5.ifcx",
+      "checks": [
+        {
+          "kind": "renderableAuxiliaryModel",
+          "minElements": 1,
+          "minMeshRanges": 1
+        }
+      ]
+    },
+    {
+      "id": "buildingsmart_tessellated_item_ifc_renderable",
+      "format": "ifc",
+      "root": "assetModelRoot",
+      "asset": "buildingSMART-Sample-Test-Files/IFC 4.0.2.1 (IFC 4)/ISO Spec - ReferenceView_V1.2/tessellated-item.ifc",
+      "checks": [
+        {
+          "kind": "renderableAuxiliaryModel",
+          "minElements": 1,
+          "minMeshRanges": 1
         }
       ]
     }

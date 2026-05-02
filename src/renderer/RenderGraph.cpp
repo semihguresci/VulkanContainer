@@ -23,10 +23,12 @@ constexpr bool isValidResource(RenderResourceId id) {
 constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "FrustumCull",
     "DepthPrepass",
+    "BimDepthPrepass",
     "HiZGenerate",
     "OcclusionCull",
     "CullStatsReadback",
     "GBuffer",
+    "BimGBuffer",
     "OitClear",
     "ShadowCullCascade0",
     "ShadowCullCascade1",
@@ -51,8 +53,10 @@ static_assert(kRenderPassNames.size() == kRenderPassIdCount);
 constexpr std::array<std::string_view, kRenderResourceIdCount>
     kRenderResourceNames = {
         "SceneGeometry",
+        "BimGeometry",
         "CameraBuffer",
         "ObjectBuffer",
+        "BimObjectBuffer",
         "LightingData",
         "ShadowData",
         "EnvironmentMaps",
@@ -112,6 +116,9 @@ constexpr std::array kGtaoDependencies{
     RenderPassId::DepthToReadOnly,
     RenderPassId::GBuffer,
 };
+constexpr std::array kBimGBufferDependencies{
+    RenderPassId::BimDepthPrepass,
+};
 constexpr std::array kExposureAdaptationDependencies{
     RenderPassId::Lighting,
 };
@@ -120,9 +127,25 @@ constexpr std::array kBloomDependencies{RenderPassId::Lighting};
 constexpr std::array kDepthPrepassScheduleDependencies{
     RenderPassId::FrustumCull,
 };
+constexpr std::array kBimDepthPrepassScheduleDependencies{
+    RenderPassId::DepthPrepass,
+};
 constexpr std::array kGBufferScheduleDependencies{
     RenderPassId::DepthPrepass,
     RenderPassId::CullStatsReadback,
+};
+constexpr std::array kBimGBufferScheduleDependencies{
+    RenderPassId::BimDepthPrepass,
+    RenderPassId::GBuffer,
+};
+constexpr std::array kHiZOptionalScheduleDependencies{
+    RenderPassId::BimDepthPrepass,
+};
+constexpr std::array kGBufferOptionalScheduleDependencies{
+    RenderPassId::BimDepthPrepass,
+};
+constexpr std::array kDepthToReadOnlyOptionalScheduleDependencies{
+    RenderPassId::BimGBuffer,
 };
 constexpr std::array kOitClearScheduleDependencies{RenderPassId::GBuffer};
 constexpr std::array kShadowCascade0ScheduleDependencies{
@@ -187,6 +210,15 @@ constexpr std::array kDepthPrepassOptionalReads{
 constexpr std::array kDepthPrepassWrites{
     RenderResourceId::SceneDepth,
 };
+constexpr std::array kBimDepthPrepassReads{
+    RenderResourceId::BimGeometry,
+    RenderResourceId::CameraBuffer,
+    RenderResourceId::BimObjectBuffer,
+    RenderResourceId::SceneDepth,
+};
+constexpr std::array kBimDepthPrepassWrites{
+    RenderResourceId::SceneDepth,
+};
 constexpr std::array kHiZReads{
     RenderResourceId::SceneDepth,
 };
@@ -225,6 +257,25 @@ constexpr std::array kGBufferWrites{
     RenderResourceId::GBufferEmissive,
     RenderResourceId::GBufferSpecular,
 };
+constexpr std::array kBimGBufferReads{
+    RenderResourceId::BimGeometry,
+    RenderResourceId::CameraBuffer,
+    RenderResourceId::BimObjectBuffer,
+    RenderResourceId::SceneDepth,
+    RenderResourceId::GBufferAlbedo,
+    RenderResourceId::GBufferNormal,
+    RenderResourceId::GBufferMaterial,
+    RenderResourceId::GBufferEmissive,
+    RenderResourceId::GBufferSpecular,
+};
+constexpr std::array kBimGBufferWrites{
+    RenderResourceId::SceneDepth,
+    RenderResourceId::GBufferAlbedo,
+    RenderResourceId::GBufferNormal,
+    RenderResourceId::GBufferMaterial,
+    RenderResourceId::GBufferEmissive,
+    RenderResourceId::GBufferSpecular,
+};
 constexpr std::array kOitClearWrites{
     RenderResourceId::OitStorage,
 };
@@ -248,8 +299,10 @@ constexpr std::array kShadowCullCascade3Writes{
 };
 constexpr std::array kShadowCascadeReads{
     RenderResourceId::SceneGeometry,
+    RenderResourceId::BimGeometry,
     RenderResourceId::CameraBuffer,
     RenderResourceId::ObjectBuffer,
+    RenderResourceId::BimObjectBuffer,
     RenderResourceId::ShadowData,
 };
 constexpr std::array kShadowCascade0OptionalReads{
@@ -498,6 +551,8 @@ std::span<const RenderPassId> renderPassDependencies(RenderPassId id) {
       return kHiZDependencies;
     case RenderPassId::OcclusionCull:
       return kOcclusionDependencies;
+    case RenderPassId::BimGBuffer:
+      return kBimGBufferDependencies;
     case RenderPassId::CullStatsReadback:
       return kCullStatsDependencies;
     case RenderPassId::ShadowCullCascade0:
@@ -522,6 +577,8 @@ std::span<const RenderPassId> renderPassScheduleDependencies(RenderPassId id) {
   switch (id) {
     case RenderPassId::DepthPrepass:
       return kDepthPrepassScheduleDependencies;
+    case RenderPassId::BimDepthPrepass:
+      return kBimDepthPrepassScheduleDependencies;
     case RenderPassId::HiZGenerate:
       return kHiZDependencies;
     case RenderPassId::OcclusionCull:
@@ -530,6 +587,8 @@ std::span<const RenderPassId> renderPassScheduleDependencies(RenderPassId id) {
       return kCullStatsDependencies;
     case RenderPassId::GBuffer:
       return kGBufferScheduleDependencies;
+    case RenderPassId::BimGBuffer:
+      return kBimGBufferScheduleDependencies;
     case RenderPassId::OitClear:
       return kOitClearScheduleDependencies;
     case RenderPassId::ShadowCullCascade0:
@@ -574,8 +633,10 @@ std::string_view renderResourceName(RenderResourceId id) {
 bool isExternalRenderResource(RenderResourceId id) {
   switch (id) {
     case RenderResourceId::SceneGeometry:
+    case RenderResourceId::BimGeometry:
     case RenderResourceId::CameraBuffer:
     case RenderResourceId::ObjectBuffer:
+    case RenderResourceId::BimObjectBuffer:
     case RenderResourceId::LightingData:
     case RenderResourceId::ShadowData:
     case RenderResourceId::EnvironmentMaps:
@@ -591,6 +652,8 @@ std::span<const RenderResourceId> renderPassResourceReads(RenderPassId id) {
       return kFrustumCullReads;
     case RenderPassId::DepthPrepass:
       return kDepthPrepassReads;
+    case RenderPassId::BimDepthPrepass:
+      return kBimDepthPrepassReads;
     case RenderPassId::HiZGenerate:
       return kHiZReads;
     case RenderPassId::OcclusionCull:
@@ -599,6 +662,8 @@ std::span<const RenderResourceId> renderPassResourceReads(RenderPassId id) {
       return kCullStatsReadbackReads;
     case RenderPassId::GBuffer:
       return kGBufferReads;
+    case RenderPassId::BimGBuffer:
+      return kBimGBufferReads;
     case RenderPassId::ShadowCullCascade0:
     case RenderPassId::ShadowCullCascade1:
     case RenderPassId::ShadowCullCascade2:
@@ -660,12 +725,16 @@ std::span<const RenderResourceId> renderPassResourceWrites(RenderPassId id) {
       return kFrustumCullWrites;
     case RenderPassId::DepthPrepass:
       return kDepthPrepassWrites;
+    case RenderPassId::BimDepthPrepass:
+      return kBimDepthPrepassWrites;
     case RenderPassId::HiZGenerate:
       return kHiZWrites;
     case RenderPassId::OcclusionCull:
       return kOcclusionCullWrites;
     case RenderPassId::GBuffer:
       return kGBufferWrites;
+    case RenderPassId::BimGBuffer:
+      return kBimGBufferWrites;
     case RenderPassId::OitClear:
       return kOitClearWrites;
     case RenderPassId::ShadowCullCascade0:
@@ -697,6 +766,20 @@ std::span<const RenderResourceId> renderPassResourceWrites(RenderPassId id) {
       return kPostProcessWrites;
     default:
       return kNoResources;
+  }
+}
+
+std::span<const RenderPassId> renderPassOptionalScheduleDependencies(
+    RenderPassId id) {
+  switch (id) {
+    case RenderPassId::HiZGenerate:
+      return kHiZOptionalScheduleDependencies;
+    case RenderPassId::GBuffer:
+      return kGBufferOptionalScheduleDependencies;
+    case RenderPassId::DepthToReadOnly:
+      return kDepthToReadOnlyOptionalScheduleDependencies;
+    default:
+      return kNoDependencies;
   }
 }
 
@@ -876,6 +959,13 @@ void RenderGraph::compile() {
             " depends on missing pass " +
             std::string(renderPassName(dependencyId)));
       }
+      addDependency(dependencyIndices[index], dependencyIndex);
+    }
+
+    for (RenderPassId dependencyId :
+         renderPassOptionalScheduleDependencies(passes_[index].id)) {
+      const uint32_t dependencyIndex = indexFor(dependencyId);
+      if (dependencyIndex == kMissingPassIndex) continue;
       addDependency(dependencyIndices[index], dependencyIndex);
     }
   }

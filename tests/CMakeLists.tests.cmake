@@ -78,6 +78,34 @@ add_custom_test(gltf_loader_tests
     VulkanSceneRenderer_geometry
 )
 
+add_custom_test(dotbim_loader_tests
+    ${TESTS_DIR}/dotbim_loader_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+
+add_custom_test(ifc_tessellated_loader_tests
+    ${TESTS_DIR}/ifc_tessellated_loader_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+
+add_custom_test(ifcx_loader_tests
+    ${TESTS_DIR}/ifcx_loader_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+target_compile_definitions(ifcx_loader_tests PRIVATE
+    CONTAINER_BINARY_DIR="${CMAKE_BINARY_DIR}"
+)
+add_dependencies(ifcx_loader_tests generate_models)
+
+add_custom_test(usd_loader_tests
+    ${TESTS_DIR}/usd_loader_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+target_compile_definitions(usd_loader_tests PRIVATE
+    CONTAINER_BINARY_DIR="${CMAKE_BINARY_DIR}"
+)
+add_dependencies(usd_loader_tests generate_models)
+
 add_custom_test(sample_model_regression_tests
     ${TESTS_DIR}/sample_model_regression_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry

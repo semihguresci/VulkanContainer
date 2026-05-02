@@ -38,6 +38,8 @@ struct AppConfig {
   bool windowVisible{true};
   std::string modelPath{std::string(kDefaultModelRelativePath)};
   float importScale{1.0f};
+  std::string bimModelPath{};
+  float bimImportScale{1.0f};
   std::string screenshotCapturePath{};
   uint32_t screenshotWarmupFrames{8};
   uint32_t screenshotCaptureFrame{9};

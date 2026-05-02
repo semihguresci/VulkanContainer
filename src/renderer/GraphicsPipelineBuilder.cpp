@@ -197,9 +197,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       {attribDescs[0], attribDescs[2], attribDescs[3], attribDescs[5]};
   std::array<VkVertexInputAttributeDescription, 3> posTexNormNoTex1Attribs =
       {attribDescs[0], attribDescs[2], attribDescs[3]};
-  std::array<VkVertexInputAttributeDescription, 5> posTexNormTangentAttribs =
-      {attribDescs[0], attribDescs[2], attribDescs[3], attribDescs[4],
-       attribDescs[5]};
+  std::array<VkVertexInputAttributeDescription, 6> posColorTexNormTangentAttribs =
+      {attribDescs[0], attribDescs[1], attribDescs[2], attribDescs[3],
+       attribDescs[4], attribDescs[5]};
 
   VkPipelineVertexInputStateCreateInfo posOnlyInput = fullVertexInput;
   posOnlyInput.vertexAttributeDescriptionCount = 1;
@@ -221,11 +221,12 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   posTexNormNoTex1Input.pVertexAttributeDescriptions =
       posTexNormNoTex1Attribs.data();
 
-  VkPipelineVertexInputStateCreateInfo posTexNormTangentInput = fullVertexInput;
-  posTexNormTangentInput.vertexAttributeDescriptionCount =
-      static_cast<uint32_t>(posTexNormTangentAttribs.size());
-  posTexNormTangentInput.pVertexAttributeDescriptions =
-      posTexNormTangentAttribs.data();
+  VkPipelineVertexInputStateCreateInfo posColorTexNormTangentInput =
+      fullVertexInput;
+  posColorTexNormTangentInput.vertexAttributeDescriptionCount =
+      static_cast<uint32_t>(posColorTexNormTangentAttribs.size());
+  posColorTexNormTangentInput.pVertexAttributeDescriptions =
+      posColorTexNormTangentAttribs.data();
 
   VkPipelineVertexInputStateCreateInfo emptyVertexInput{};
   emptyVertexInput.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
@@ -530,7 +531,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   // scene mesh base (transparent / debug variants)
   VkGraphicsPipelineCreateInfo meshPCI{};
   meshPCI.sType               = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
-  meshPCI.pVertexInputState   = &posTexNormTangentInput;
+  meshPCI.pVertexInputState   = &posColorTexNormTangentInput;
   meshPCI.pInputAssemblyState = &triAssembly;
   meshPCI.pViewportState      = &vpState;
   meshPCI.pRasterizationState = &sceneRaster;
@@ -563,14 +564,28 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.depthPrepassNoCull = pipelineManager_.createGraphicsPipeline(
       depthNoCullPCI, "depth_prepass_no_cull_pipeline");
 
+  VkGraphicsPipelineCreateInfo bimDepthPCI = scenePCI;
+  bimDepthPCI.renderPass = renderPasses.bimDepthPrepass;
+  pipelines.bimDepthPrepass = pipelineManager_.createGraphicsPipeline(
+      bimDepthPCI, "bim_depth_prepass_pipeline");
+
+  VkGraphicsPipelineCreateInfo bimDepthFrontCullPCI = bimDepthPCI;
+  bimDepthFrontCullPCI.pRasterizationState = &frontCullRaster;
+  pipelines.bimDepthPrepassFrontCull = pipelineManager_.createGraphicsPipeline(
+      bimDepthFrontCullPCI, "bim_depth_prepass_front_cull_pipeline");
+
+  VkGraphicsPipelineCreateInfo bimDepthNoCullPCI = bimDepthPCI;
+  bimDepthNoCullPCI.pRasterizationState = &noCullRaster;
+  pipelines.bimDepthPrepassNoCull = pipelineManager_.createGraphicsPipeline(
+      bimDepthNoCullPCI, "bim_depth_prepass_no_cull_pipeline");
+
   // GBuffer
   VkGraphicsPipelineCreateInfo gBufPCI = scenePCI;
   gBufPCI.stageCount          = static_cast<uint32_t>(gBufferStages.size());
   gBufPCI.pStages             = gBufferStages.data();
-  // The deferred G-buffer shader consumes normal and tangent attributes in
-  // addition to position/UV. Vertex color is intentionally omitted because the
-  // shader does not read it.
-  gBufPCI.pVertexInputState   = &posTexNormTangentInput;
+  // The deferred G-buffer shader consumes vertex color, normal, tangent, and
+  // both UV sets for PBR material evaluation.
+  gBufPCI.pVertexInputState   = &posColorTexNormTangentInput;
   gBufPCI.pDepthStencilState  = &gBufDS;
   gBufPCI.pColorBlendState    = &gBufBlend;
   gBufPCI.renderPass          = renderPasses.gBuffer;
@@ -586,6 +601,21 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   gBufNoCullPCI.pRasterizationState = &noCullRaster;
   pipelines.gBufferNoCull = pipelineManager_.createGraphicsPipeline(
       gBufNoCullPCI, "gbuffer_no_cull_pipeline");
+
+  VkGraphicsPipelineCreateInfo bimGBufPCI = gBufPCI;
+  bimGBufPCI.renderPass = renderPasses.bimGBuffer;
+  pipelines.bimGBuffer = pipelineManager_.createGraphicsPipeline(
+      bimGBufPCI, "bim_gbuffer_pipeline");
+
+  VkGraphicsPipelineCreateInfo bimGBufFrontCullPCI = bimGBufPCI;
+  bimGBufFrontCullPCI.pRasterizationState = &frontCullRaster;
+  pipelines.bimGBufferFrontCull = pipelineManager_.createGraphicsPipeline(
+      bimGBufFrontCullPCI, "bim_gbuffer_front_cull_pipeline");
+
+  VkGraphicsPipelineCreateInfo bimGBufNoCullPCI = bimGBufPCI;
+  bimGBufNoCullPCI.pRasterizationState = &noCullRaster;
+  pipelines.bimGBufferNoCull = pipelineManager_.createGraphicsPipeline(
+      bimGBufNoCullPCI, "bim_gbuffer_no_cull_pipeline");
 
   // Shadow depth
   VkPipelineRasterizationStateCreateInfo shadowRaster = sceneRaster;
