@@ -105,6 +105,7 @@ class FrameResourceManager {
               VkRenderPass                             bimGBufferPass,
               VkRenderPass                             transparentPickPass,
               VkRenderPass                             lightingPass,
+              VkRenderPass                             transformGizmoPass,
               std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
               const container::gpu::AllocatedBuffer& objectBuffer);
 
@@ -205,6 +206,7 @@ class FrameResourceManager {
   VkRenderPass   bimGBufferPass_{VK_NULL_HANDLE};
   VkRenderPass   transparentPickPass_{VK_NULL_HANDLE};
   VkRenderPass   lightingPass_{VK_NULL_HANDLE};
+  VkRenderPass   transformGizmoPass_{VK_NULL_HANDLE};
 
   std::vector<FrameResources> frames_;
   DescriptorUpdateKey descriptorUpdateKey_{};

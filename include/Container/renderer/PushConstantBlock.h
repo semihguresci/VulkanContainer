@@ -15,10 +15,12 @@ struct PushConstantBlock {
   WireframePushConstants                wireframe{};
   NormalValidationPushConstants         normalValidation{};
   SurfaceNormalPushConstants            surfaceNormal{};
+  TransformGizmoPushConstants           transformGizmo{};
 
   // Build the pointer-based view consumed by FrameRecordParams.
   FramePushConstantState state() {
-    return {&bindless, &light, &wireframe, &normalValidation, &surfaceNormal};
+    return {&bindless, &light, &wireframe, &normalValidation, &surfaceNormal,
+            &transformGizmo};
   }
 };
 

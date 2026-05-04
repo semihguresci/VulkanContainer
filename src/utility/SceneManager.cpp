@@ -21,6 +21,7 @@
 #include "Container/utility/SceneData.h"
 #include "Container/utility/SceneGraph.h"
 #include "Container/utility/SceneManager.h"
+#include "Container/utility/VulkanMemoryManager.h"
 #include "Container/utility/VulkanDevice.h"
 
 #include <glm/gtc/quaternion.hpp>
@@ -81,6 +82,42 @@ bool isProceduralSphereEntry(std::string_view entry) {
 
 bool hasMaterialTexture(uint32_t textureIndex) {
   return textureIndex != std::numeric_limits<uint32_t>::max();
+}
+
+void writeHostVisibleBuffer(container::gpu::AllocationManager& allocationManager,
+                            const container::gpu::AllocatedBuffer& buffer,
+                            const void* data,
+                            size_t size) {
+  if (buffer.buffer == VK_NULL_HANDLE || buffer.allocation == nullptr ||
+      data == nullptr || size == 0u) {
+    return;
+  }
+
+  void* mapped = buffer.allocation_info.pMappedData;
+  bool mappedHere = false;
+  if (mapped == nullptr) {
+    if (vmaMapMemory(allocationManager.memoryManager()->allocator(),
+                     buffer.allocation, &mapped) != VK_SUCCESS) {
+      throw std::runtime_error("failed to map scene uniform buffer");
+    }
+    mappedHere = true;
+  }
+
+  std::memcpy(mapped, data, size);
+  if (vmaFlushAllocation(allocationManager.memoryManager()->allocator(),
+                         buffer.allocation, 0,
+                         static_cast<VkDeviceSize>(size)) != VK_SUCCESS) {
+    if (mappedHere) {
+      vmaUnmapMemory(allocationManager.memoryManager()->allocator(),
+                     buffer.allocation);
+    }
+    throw std::runtime_error("failed to flush scene uniform buffer");
+  }
+
+  if (mappedHere) {
+    vmaUnmapMemory(allocationManager.memoryManager()->allocator(),
+                   buffer.allocation);
+  }
 }
 
 bool isForwardTransparentMaterial(
@@ -791,6 +828,9 @@ SceneManager::SceneManager(
 
 SceneManager::~SceneManager() {
   resetLoadedAssets();
+  if (sceneClipStateBuffer_.buffer != VK_NULL_HANDLE) {
+    allocationManager_->destroyBuffer(sceneClipStateBuffer_);
+  }
 
   descriptorSets_.clear();
   descriptorPool_ = VK_NULL_HANDLE;
@@ -891,6 +931,7 @@ void SceneManager::initialize(const std::string& initialModelPath,
   loadGltfAssets();
   uploadMaterialBuffer();
   uploadTextureMetadataBuffer();
+  createSceneClipStateBuffer();
   allocateDescriptorSets(descriptorSetCount);
 }
 
@@ -1084,6 +1125,16 @@ void SceneManager::updateAuxiliaryDescriptorSets(
     writeDescriptorSetContents(auxiliaryDescriptorSets_[i], cameraBuffers[i],
                                objectBuffer);
   }
+}
+
+void SceneManager::updateSceneClipState(
+    const container::gpu::SceneClipState& clipState) {
+  if (std::memcmp(&sceneClipState_, &clipState,
+                  sizeof(container::gpu::SceneClipState)) == 0) {
+    return;
+  }
+  sceneClipState_ = clipState;
+  writeSceneClipStateBuffer();
 }
 
 /* ---------- Material resolution ---------- */
@@ -1554,7 +1605,7 @@ bool SceneManager::isMaterialUnlit(uint32_t materialIndex) const {
 /* ---------- Vulkan setup ---------- */
 
 void SceneManager::createDescriptorSetLayout() {
-  std::array<VkDescriptorSetLayoutBinding, 6> bindings{};
+  std::array<VkDescriptorSetLayoutBinding, 7> bindings{};
 
   bindings[0] = {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
@@ -1582,10 +1633,16 @@ void SceneManager::createDescriptorSetLayout() {
                  VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
                  nullptr};
 
-  std::array<VkDescriptorBindingFlags, 6> bindingFlags{
+  bindings[6] = {6, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
+                 VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
+                     VK_SHADER_STAGE_FRAGMENT_BIT,
+                 nullptr};
+
+  std::array<VkDescriptorBindingFlags, 7> bindingFlags{
       0, 0, 0, 0, 0,
       VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT |
-          VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT};
+          VK_DESCRIPTOR_BINDING_VARIABLE_DESCRIPTOR_COUNT_BIT,
+      0};
 
   descriptorSetLayout_ = pipelineManager_->createDescriptorSetLayout(
       std::vector<VkDescriptorSetLayoutBinding>(bindings.begin(),
@@ -2089,6 +2146,29 @@ void SceneManager::uploadTextureMetadataBuffer() {
   }
 }
 
+void SceneManager::createSceneClipStateBuffer() {
+  if (sceneClipStateBuffer_.buffer != VK_NULL_HANDLE) {
+    return;
+  }
+
+  sceneClipStateBuffer_ = allocationManager_->createBuffer(
+      sizeof(container::gpu::SceneClipState),
+      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+      VMA_MEMORY_USAGE_AUTO,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+          VMA_ALLOCATION_CREATE_MAPPED_BIT);
+  writeSceneClipStateBuffer();
+}
+
+void SceneManager::writeSceneClipStateBuffer() {
+  if (sceneClipStateBuffer_.buffer == VK_NULL_HANDLE) {
+    createSceneClipStateBuffer();
+    return;
+  }
+  writeHostVisibleBuffer(*allocationManager_, sceneClipStateBuffer_,
+                         &sceneClipState_, sizeof(sceneClipState_));
+}
+
 std::filesystem::path SceneManager::resolveSceneAssetPath(
     std::string_view relativePath) const {
   const std::filesystem::path requestedPath =
@@ -2262,7 +2342,7 @@ void SceneManager::allocateDescriptorSets(uint32_t descriptorSetCount) {
   }
 
   std::vector<VkDescriptorPoolSize> poolSizes = {
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount * 2u},
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount * 3u},
       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
        textureDescriptorCapacity_ * setCount},
@@ -2311,6 +2391,9 @@ void SceneManager::writeDescriptorSetContents(
   if (textureMetadataBuffer_.buffer == VK_NULL_HANDLE) {
     uploadTextureMetadataBuffer();
   }
+  if (sceneClipStateBuffer_.buffer == VK_NULL_HANDLE) {
+    createSceneClipStateBuffer();
+  }
 
   VkDescriptorBufferInfo cameraInfo{cameraBuffer.buffer, 0, sizeof(container::gpu::CameraData)};
   VkDescriptorBufferInfo objectInfo{
@@ -2325,6 +2408,8 @@ void SceneManager::writeDescriptorSetContents(
       static_cast<VkDeviceSize>(
           sizeof(container::gpu::GpuTextureMetadata) *
           std::max<size_t>(1, textureMetadata_.size()))};
+  VkDescriptorBufferInfo sceneClipInfo{
+      sceneClipStateBuffer_.buffer, 0, sizeof(container::gpu::SceneClipState)};
 
   std::vector<VkWriteDescriptorSet> writes;
 
@@ -2363,6 +2448,15 @@ void SceneManager::writeDescriptorSetContents(
   textureMetadataWrite.descriptorCount = 1;
   textureMetadataWrite.pBufferInfo = &textureMetadataInfo;
   writes.push_back(textureMetadataWrite);
+
+  VkWriteDescriptorSet sceneClipWrite{};
+  sceneClipWrite.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+  sceneClipWrite.dstSet = descriptorSet;
+  sceneClipWrite.dstBinding = 6;
+  sceneClipWrite.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+  sceneClipWrite.descriptorCount = 1;
+  sceneClipWrite.pBufferInfo = &sceneClipInfo;
+  writes.push_back(sceneClipWrite);
 
   std::vector<VkDescriptorImageInfo> imageInfos;
   const size_t texCount = textureManager_.textureCount();

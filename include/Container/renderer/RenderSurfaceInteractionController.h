@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <string>
 
 #include "Container/utility/GuiManager.h"
@@ -34,9 +35,12 @@ class RenderSurfaceInteractionController {
     std::function<void(double, double)> hoverAtCursor{};
     std::function<void()> clearHover{};
     std::function<void()> clearSelection{};
+    std::function<std::optional<container::ui::TransformAxis>(double, double)>
+        pickTransformGizmoAxisAtCursor{};
     std::function<void(container::ui::ViewportTool,
                        container::ui::TransformSpace,
                        container::ui::TransformAxis,
+                       bool,
                        double,
                        double)> transformSelectedByDrag{};
     std::function<void(std::string)> setStatusMessage{};
@@ -50,6 +54,8 @@ class RenderSurfaceInteractionController {
   void setTool(container::ui::ViewportTool tool);
   void setTransformSpace(container::ui::TransformSpace transformSpace);
   void setTransformAxis(container::ui::TransformAxis transformAxis);
+  void setNavigationStyle(container::ui::ViewportNavigationStyle style);
+  void setTransformSnapEnabled(bool enabled);
 
  private:
   void handleDebugShortcuts(const container::window::InputFrameSnapshot& input,

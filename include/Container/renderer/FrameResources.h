@@ -37,6 +37,7 @@ struct FrameResources {
   VkFramebuffer bimGBufferFramebuffer{VK_NULL_HANDLE};
   VkFramebuffer transparentPickFramebuffer{VK_NULL_HANDLE};
   VkFramebuffer lightingFramebuffer{VK_NULL_HANDLE};
+  VkFramebuffer transformGizmoFramebuffer{VK_NULL_HANDLE};
   VkDescriptorSet lightingDescriptorSet{VK_NULL_HANDLE};
   VkDescriptorSet postProcessDescriptorSet{VK_NULL_HANDLE};
   VkDescriptorSet oitDescriptorSet{VK_NULL_HANDLE};

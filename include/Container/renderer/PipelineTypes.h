@@ -15,6 +15,7 @@ struct PipelineLayouts {
   VkPipelineLayout wireframe{VK_NULL_HANDLE};
   VkPipelineLayout normalValidation{VK_NULL_HANDLE};
   VkPipelineLayout surfaceNormal{VK_NULL_HANDLE};
+  VkPipelineLayout transformGizmo{VK_NULL_HANDLE};
 };
 
 // All Vulkan pipelines created by GraphicsPipelineBuilder.
@@ -57,11 +58,25 @@ struct GraphicsPipelines {
   VkPipeline wireframeDepthFrontCull{VK_NULL_HANDLE};
   VkPipeline wireframeNoDepth{VK_NULL_HANDLE};
   VkPipeline wireframeNoDepthFrontCull{VK_NULL_HANDLE};
+  VkPipeline selectionMask{VK_NULL_HANDLE};
+  VkPipeline selectionOutline{VK_NULL_HANDLE};
+  VkPipeline bimFloorPlanDepth{VK_NULL_HANDLE};
+  VkPipeline bimFloorPlanNoDepth{VK_NULL_HANDLE};
+  VkPipeline bimPointCloudDepth{VK_NULL_HANDLE};
+  VkPipeline bimPointCloudNoDepth{VK_NULL_HANDLE};
+  VkPipeline bimCurveDepth{VK_NULL_HANDLE};
+  VkPipeline bimCurveNoDepth{VK_NULL_HANDLE};
+  VkPipeline bimSectionClipCapFill{VK_NULL_HANDLE};
+  VkPipeline bimSectionClipCapHatch{VK_NULL_HANDLE};
   VkPipeline surfaceNormalLine{VK_NULL_HANDLE};
   VkPipeline objectNormalDebug{VK_NULL_HANDLE};
   VkPipeline objectNormalDebugFrontCull{VK_NULL_HANDLE};
   VkPipeline objectNormalDebugNoCull{VK_NULL_HANDLE};
   VkPipeline lightGizmo{VK_NULL_HANDLE};
+  VkPipeline transformGizmo{VK_NULL_HANDLE};
+  VkPipeline transformGizmoSolid{VK_NULL_HANDLE};
+  VkPipeline transformGizmoOverlay{VK_NULL_HANDLE};
+  VkPipeline transformGizmoSolidOverlay{VK_NULL_HANDLE};
 };
 
 // Input descriptor-set layouts required to build the pipeline layouts.
@@ -84,6 +99,7 @@ struct PipelineRenderPasses {
   VkRenderPass transparentPick{VK_NULL_HANDLE};
   VkRenderPass shadow{VK_NULL_HANDLE};
   VkRenderPass lighting{VK_NULL_HANDLE};
+  VkRenderPass transformGizmos{VK_NULL_HANDLE};
   VkRenderPass postProcess{VK_NULL_HANDLE};
 };
 

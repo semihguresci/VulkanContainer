@@ -46,6 +46,7 @@ set(SLANG_INCLUDE_SOURCES
     "${SHADERS_DIR}/shadow_common.slang"
     "${SHADERS_DIR}/oit_common.slang"
     "${SHADERS_DIR}/push_constants_common.slang"
+    "${SHADERS_DIR}/scene_clip_common.slang"
     "${SHADERS_DIR}/draw_indirect_common.slang"
 )
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/surface_normal_common\\.slang$")
@@ -60,6 +61,7 @@ list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/lighting_structs\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/shadow_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/oit_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/push_constants_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/scene_clip_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/draw_indirect_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/tile_light_cull\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/brdf_lut\\.slang$")
@@ -72,6 +74,9 @@ list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/frustum_cull\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/hiz_generate\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/occlusion_cull\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/shadow_cull\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/bim_meshlet_residency\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/bim_visibility_filter\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/bim_draw_compact\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/bloom_downsample\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/bloom_upsample\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/exposure_histogram\\.slang$")
@@ -223,6 +228,27 @@ if(EXISTS "${SHADOW_CULL_SOURCE}")
     set(SHADOW_CULL_OUTPUT "${COMPILED_SHADERS_DIR}/shadow_cull.comp.spv")
     append_slang_compile_step(
         SHADER_BUILD_SCRIPT_CONTENT "${SHADOW_CULL_SOURCE}" "computeMain" "${SHADOW_CULL_OUTPUT}")
+endif()
+
+set(BIM_MESHLET_RESIDENCY_SOURCE "${SHADERS_DIR}/bim_meshlet_residency.slang")
+if(EXISTS "${BIM_MESHLET_RESIDENCY_SOURCE}")
+    set(BIM_MESHLET_RESIDENCY_OUTPUT "${COMPILED_SHADERS_DIR}/bim_meshlet_residency.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${BIM_MESHLET_RESIDENCY_SOURCE}" "computeMain" "${BIM_MESHLET_RESIDENCY_OUTPUT}")
+endif()
+
+set(BIM_VISIBILITY_FILTER_SOURCE "${SHADERS_DIR}/bim_visibility_filter.slang")
+if(EXISTS "${BIM_VISIBILITY_FILTER_SOURCE}")
+    set(BIM_VISIBILITY_FILTER_OUTPUT "${COMPILED_SHADERS_DIR}/bim_visibility_filter.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${BIM_VISIBILITY_FILTER_SOURCE}" "computeMain" "${BIM_VISIBILITY_FILTER_OUTPUT}")
+endif()
+
+set(BIM_DRAW_COMPACT_SOURCE "${SHADERS_DIR}/bim_draw_compact.slang")
+if(EXISTS "${BIM_DRAW_COMPACT_SOURCE}")
+    set(BIM_DRAW_COMPACT_OUTPUT "${COMPILED_SHADERS_DIR}/bim_draw_compact.comp.spv")
+    append_slang_compile_step(
+        SHADER_BUILD_SCRIPT_CONTENT "${BIM_DRAW_COMPACT_SOURCE}" "computeMain" "${BIM_DRAW_COMPACT_OUTPUT}")
 endif()
 
 set(BLOOM_DOWNSAMPLE_SOURCE "${SHADERS_DIR}/bloom_downsample.slang")

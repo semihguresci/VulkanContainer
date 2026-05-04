@@ -10,11 +10,13 @@
 #include "Container/utility/VulkanDevice.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstring>
 #include <limits>
 #include <span>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace container::renderer {
 
@@ -32,6 +34,12 @@ bool transformFlipsWinding(const glm::mat4& transform) {
       y.x * (x.y * z.z - x.z * z.y) +
       z.x * (x.y * y.z - x.z * y.y);
   return determinant < 0.0f;
+}
+
+void expandBounds(glm::vec3 &boundsMin, glm::vec3 &boundsMax,
+                  const glm::vec3 &point) {
+  boundsMin = glm::min(boundsMin, point);
+  boundsMax = glm::max(boundsMax, point);
 }
 
 bool intersectRaySphere(const glm::vec3& origin, const glm::vec3& direction,
@@ -164,6 +172,11 @@ float projectDepth(const container::gpu::CameraData& cameraData,
     return 0.0f;
   }
   return std::clamp(clip.z / clip.w, 0.0f, 1.0f);
+}
+
+bool sectionPlaneClips(const glm::vec3& worldPosition, bool enabled,
+                       const glm::vec4& plane) {
+  return enabled && glm::dot(glm::vec3(plane), worldPosition) + plane.w < 0.0f;
 }
 
 }  // namespace
@@ -552,8 +565,11 @@ uint32_t SceneController::pickRenderableNode(
     const container::gpu::CameraData& cameraData,
     VkExtent2D viewportExtent,
     double cursorX,
-    double cursorY) const {
-  return pickRenderableNodeHit(cameraData, viewportExtent, cursorX, cursorY)
+    double cursorY,
+    bool sectionPlaneEnabled,
+    glm::vec4 sectionPlane) const {
+  return pickRenderableNodeHit(cameraData, viewportExtent, cursorX, cursorY,
+                               sectionPlaneEnabled, sectionPlane)
       .nodeIndex;
 }
 
@@ -561,18 +577,24 @@ SceneNodePickHit SceneController::pickRenderableNodeHit(
     const container::gpu::CameraData& cameraData,
     VkExtent2D viewportExtent,
     double cursorX,
-    double cursorY) const {
+    double cursorY,
+    bool sectionPlaneEnabled,
+    glm::vec4 sectionPlane) const {
   return pickRenderableNodeHitForDraws(cameraData, viewportExtent, cursorX,
-                                       cursorY, true, true);
+                                       cursorY, true, true,
+                                       sectionPlaneEnabled, sectionPlane);
 }
 
 SceneNodePickHit SceneController::pickTransparentRenderableNodeHit(
     const container::gpu::CameraData& cameraData,
     VkExtent2D viewportExtent,
     double cursorX,
-    double cursorY) const {
+    double cursorY,
+    bool sectionPlaneEnabled,
+    glm::vec4 sectionPlane) const {
   return pickRenderableNodeHitForDraws(cameraData, viewportExtent, cursorX,
-                                       cursorY, false, true);
+                                       cursorY, false, true,
+                                       sectionPlaneEnabled, sectionPlane);
 }
 
 SceneNodePickHit SceneController::pickRenderableNodeHitForDraws(
@@ -581,7 +603,9 @@ SceneNodePickHit SceneController::pickRenderableNodeHitForDraws(
     double cursorX,
     double cursorY,
     bool includeOpaque,
-    bool includeTransparent) const {
+    bool includeTransparent,
+    bool sectionPlaneEnabled,
+    glm::vec4 sectionPlane) const {
   if (objectData_.empty()) {
     return {};
   }
@@ -654,9 +678,15 @@ SceneNodePickHit SceneController::pickRenderableNodeHitForDraws(
               hitDistance < nearest.distance) {
             const glm::vec3 hitPosition =
                 ray.origin + ray.direction * hitDistance;
+            if (sectionPlaneClips(hitPosition, sectionPlaneEnabled,
+                                  sectionPlane)) {
+              continue;
+            }
             nearest.nodeIndex = nodeIndex;
             nearest.distance = hitDistance;
             nearest.depth = projectDepth(cameraData, hitPosition);
+            nearest.worldPosition = hitPosition;
+            nearest.hasWorldPosition = true;
             nearest.hit = true;
           }
         }
@@ -711,6 +741,69 @@ uint32_t SceneController::nodeIndexForObject(uint32_t objectIndex) const {
     return container::scene::SceneGraph::kInvalidNode;
   }
   return objectNodeIndices_[objectIndex];
+}
+
+SceneNodeWorldBounds SceneController::nodeWorldBounds(uint32_t nodeIndex) const {
+  if (nodeIndex == container::scene::SceneGraph::kInvalidNode ||
+      objectData_.empty()) {
+    return {};
+  }
+
+  std::unordered_set<uint32_t> nodeSubtree;
+  std::vector<uint32_t> stack{nodeIndex};
+  while (!stack.empty()) {
+    const uint32_t current = stack.back();
+    stack.pop_back();
+    if (!nodeSubtree.insert(current).second) {
+      continue;
+    }
+    if (const auto *node = sceneGraph_.getNode(current)) {
+      for (const uint32_t child : node->children) {
+        stack.push_back(child);
+      }
+    }
+  }
+  if (nodeSubtree.empty()) {
+    return {};
+  }
+
+  glm::vec3 boundsMin{std::numeric_limits<float>::max()};
+  glm::vec3 boundsMax{std::numeric_limits<float>::lowest()};
+  bool hasBounds = false;
+  for (uint32_t objectIndex = 0u;
+       objectIndex < objectData_.size() && objectIndex < objectNodeIndices_.size();
+       ++objectIndex) {
+    if (!nodeSubtree.contains(objectNodeIndices_[objectIndex])) {
+      continue;
+    }
+
+    const glm::vec4 sphere = objectData_[objectIndex].boundingSphere;
+    const glm::vec3 center{sphere};
+    const float radius = std::max(sphere.w, 0.0f);
+    if (radius > 0.0f && std::isfinite(radius)) {
+      expandBounds(boundsMin, boundsMax, center - glm::vec3(radius));
+      expandBounds(boundsMin, boundsMax, center + glm::vec3(radius));
+      hasBounds = true;
+      continue;
+    }
+
+    const glm::vec3 origin{objectData_[objectIndex].model[3]};
+    expandBounds(boundsMin, boundsMax, origin);
+    hasBounds = true;
+  }
+
+  if (!hasBounds) {
+    return {};
+  }
+
+  SceneNodeWorldBounds bounds{};
+  bounds.valid = true;
+  bounds.min = boundsMin;
+  bounds.max = boundsMax;
+  bounds.center = (boundsMin + boundsMax) * 0.5f;
+  bounds.size = boundsMax - boundsMin;
+  bounds.radius = std::max(0.25f, glm::length(bounds.size) * 0.5f);
+  return bounds;
 }
 
 void SceneController::collectDrawCommandsForNode(

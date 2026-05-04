@@ -36,6 +36,7 @@ struct AppConfig {
   bool enableValidationLayers{false};
   bool enableGui{true};
   bool windowVisible{true};
+  std::string renderTechnique{"deferred-raster"};
   std::string modelPath{std::string(kDefaultModelRelativePath)};
   float importScale{1.0f};
   std::string bimModelPath{};

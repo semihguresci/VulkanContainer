@@ -54,12 +54,27 @@ float transformDragSpeedScale(
   return 1.0f;
 }
 
+const char* transformAxisLabel(container::ui::TransformAxis axis) {
+  switch (axis) {
+  case container::ui::TransformAxis::Free:
+    return "Free";
+  case container::ui::TransformAxis::X:
+    return "X";
+  case container::ui::TransformAxis::Y:
+    return "Y";
+  case container::ui::TransformAxis::Z:
+    return "Z";
+  }
+  return "Free";
+}
+
 }  // namespace
 
 void RenderSurfaceInteractionController::setTool(
     container::ui::ViewportTool tool) {
   state_.tool = tool;
   state_.transformAxis = container::ui::TransformAxis::Free;
+  state_.hoverTransformAxis = container::ui::TransformAxis::Free;
 }
 
 void RenderSurfaceInteractionController::setTransformSpace(
@@ -72,9 +87,22 @@ void RenderSurfaceInteractionController::setTransformAxis(
   state_.transformAxis = transformAxis;
 }
 
+void RenderSurfaceInteractionController::setNavigationStyle(
+    container::ui::ViewportNavigationStyle style) {
+  state_.navigationStyle = style;
+}
+
+void RenderSurfaceInteractionController::setTransformSnapEnabled(
+    bool enabled) {
+  state_.transformSnapEnabled = enabled;
+}
+
 void RenderSurfaceInteractionController::setGesture(
     container::ui::ViewportGesture gesture) {
   state_.gesture = gesture;
+  if (gesture != container::ui::ViewportGesture::None) {
+    state_.hoverTransformAxis = container::ui::TransformAxis::Free;
+  }
 }
 
 void RenderSurfaceInteractionController::process(Context context) {
@@ -229,6 +257,14 @@ void RenderSurfaceInteractionController::handleToolShortcuts(
     } else if (input.keyPressed(GLFW_KEY_Z)) {
       toggleAxisWithStatus(container::ui::TransformAxis::Z, "Z");
     }
+    if (input.keyPressed(GLFW_KEY_S)) {
+      setTransformSnapEnabled(!state_.transformSnapEnabled);
+      if (context.setStatusMessage) {
+        context.setStatusMessage(state_.transformSnapEnabled
+                                     ? "Transform snapping enabled"
+                                     : "Transform snapping disabled");
+      }
+    }
   }
 }
 
@@ -253,8 +289,14 @@ void RenderSurfaceInteractionController::handleLookOwnership(
   }
 
   if (input.mouseButtonPressed(GLFW_MOUSE_BUTTON_MIDDLE)) {
-    setGesture(anyShiftKeyDown(input) ? container::ui::ViewportGesture::Pan
-                                      : container::ui::ViewportGesture::Orbit);
+    const bool shiftDown = anyShiftKeyDown(input);
+    const bool revitStyle =
+        state_.navigationStyle == container::ui::ViewportNavigationStyle::Revit;
+    setGesture(revitStyle
+                   ? (shiftDown ? container::ui::ViewportGesture::Orbit
+                                : container::ui::ViewportGesture::Pan)
+                   : (shiftDown ? container::ui::ViewportGesture::Pan
+                                : container::ui::ViewportGesture::Orbit));
     activePointerButton_ = GLFW_MOUSE_BUTTON_MIDDLE;
     return;
   }
@@ -268,10 +310,20 @@ void RenderSurfaceInteractionController::handleLookOwnership(
   if (input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) &&
       state_.tool != container::ui::ViewportTool::Select &&
       context.selectedMeshNode != std::numeric_limits<uint32_t>::max() &&
-      context.transformSelectedByDrag) {
-    setGesture(container::ui::ViewportGesture::TransformDrag);
-    activePointerButton_ = GLFW_MOUSE_BUTTON_LEFT;
-    return;
+      context.transformSelectedByDrag &&
+      context.pickTransformGizmoAxisAtCursor) {
+    if (const auto pickedAxis = context.pickTransformGizmoAxisAtCursor(
+            input.framebufferCursorX, input.framebufferCursorY)) {
+      setTransformAxis(*pickedAxis);
+      state_.hoverTransformAxis = container::ui::TransformAxis::Free;
+      setGesture(container::ui::ViewportGesture::TransformDrag);
+      activePointerButton_ = GLFW_MOUSE_BUTTON_LEFT;
+      if (context.setStatusMessage) {
+        context.setStatusMessage(std::string("Transform axis: ") +
+                                 transformAxisLabel(*pickedAxis));
+      }
+      return;
+    }
   }
 
   if (input.mouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT) && anyAltKeyDown(input)) {
@@ -280,7 +332,19 @@ void RenderSurfaceInteractionController::handleLookOwnership(
     return;
   }
 
+  if (input.mouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT) &&
+      anyShiftKeyDown(input)) {
+    setGesture(container::ui::ViewportGesture::Pan);
+    activePointerButton_ = GLFW_MOUSE_BUTTON_RIGHT;
+    return;
+  }
+
   if (input.mouseButtonPressed(GLFW_MOUSE_BUTTON_RIGHT)) {
+    if (context.cameraController.isOrthographic()) {
+      setGesture(container::ui::ViewportGesture::Pan);
+      activePointerButton_ = GLFW_MOUSE_BUTTON_RIGHT;
+      return;
+    }
     context.inputManager.setLookMode(true);
     setGesture(container::ui::ViewportGesture::FlyLook);
     activePointerButton_ = GLFW_MOUSE_BUTTON_RIGHT;
@@ -316,8 +380,42 @@ void RenderSurfaceInteractionController::handleViewportActions(
         static_cast<double>(transformDragSpeedScale(input));
     context.transformSelectedByDrag(state_.tool, state_.transformSpace,
                                     state_.transformAxis,
+                                    state_.transformSnapEnabled,
                                     input.cursorDeltaX * dragScale,
                                     input.cursorDeltaY * dragScale);
+  }
+
+  if (state_.gesture == container::ui::ViewportGesture::None &&
+      viewportInputAllowed) {
+    const bool panLeft = input.keyDown(GLFW_KEY_LEFT);
+    const bool panRight = input.keyDown(GLFW_KEY_RIGHT);
+    const bool panUp = input.keyDown(GLFW_KEY_UP);
+    const bool panDown = input.keyDown(GLFW_KEY_DOWN);
+    if (panLeft || panRight || panUp || panDown) {
+      const float baseStep = anyShiftKeyDown(input) ? 24.0f
+                         : anyControlKeyDown(input) ? 4.0f
+                                                    : 12.0f;
+      const float deltaX =
+          (panRight ? baseStep : 0.0f) - (panLeft ? baseStep : 0.0f);
+      const float deltaY =
+          (panUp ? baseStep : 0.0f) - (panDown ? baseStep : 0.0f);
+      context.cameraController.moveInViewPlane(context.selectedMeshNode, deltaX,
+                                               deltaY, 1.0f);
+    }
+  }
+
+  bool transformGizmoHovered = false;
+  state_.hoverTransformAxis = container::ui::TransformAxis::Free;
+  if (state_.gesture == container::ui::ViewportGesture::None &&
+      !anyPointerButtonDown(input) &&
+      state_.tool != container::ui::ViewportTool::Select &&
+      context.selectedMeshNode != std::numeric_limits<uint32_t>::max() &&
+      context.pickTransformGizmoAxisAtCursor) {
+    if (const auto pickedAxis = context.pickTransformGizmoAxisAtCursor(
+            input.framebufferCursorX, input.framebufferCursorY)) {
+      transformGizmoHovered = true;
+      state_.hoverTransformAxis = *pickedAxis;
+    }
   }
 
   if (input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) &&
@@ -327,8 +425,11 @@ void RenderSurfaceInteractionController::handleViewportActions(
   }
 
   if (state_.gesture == container::ui::ViewportGesture::None &&
-      !anyPointerButtonDown(input) && context.hoverAtCursor) {
+      !anyPointerButtonDown(input) && !transformGizmoHovered &&
+      context.hoverAtCursor) {
     context.hoverAtCursor(input.framebufferCursorX, input.framebufferCursorY);
+  } else if (transformGizmoHovered && context.clearHover) {
+    context.clearHover();
   } else if (state_.gesture != container::ui::ViewportGesture::None &&
              context.clearHover) {
     context.clearHover();

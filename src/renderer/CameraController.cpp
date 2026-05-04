@@ -60,6 +60,38 @@ float selectedNodeRadius(const container::scene::SceneManager *sceneManager) {
   return 1.0f;
 }
 
+void copyCameraPose(container::scene::BaseCamera &target,
+                    const container::scene::BaseCamera &source) {
+  target.setPosition(source.position());
+  target.setYawPitch(source.yawDegrees(), source.pitchDegrees());
+  target.setScale(source.scale());
+}
+
+struct CameraAngles {
+  float yawDegrees{0.0f};
+  float pitchDegrees{0.0f};
+};
+
+CameraAngles cameraAnglesFromForward(glm::vec3 forward) {
+  const float length = glm::length(forward);
+  if (!std::isfinite(length) || length <= 0.0001f) {
+    return {};
+  }
+  forward /= length;
+  return {glm::degrees(std::atan2(-forward.z, forward.x)),
+          glm::degrees(std::asin(std::clamp(forward.y, -1.0f, 1.0f)))};
+}
+
+float smoothStep(float t) {
+  t = std::clamp(t, 0.0f, 1.0f);
+  return t * t * (3.0f - 2.0f * t);
+}
+
+float lerpAngleDegrees(float from, float to, float t) {
+  const float delta = std::remainder(to - from, 360.0f);
+  return from + delta * t;
+}
+
 } // namespace
 
 CameraController::CameraController(
@@ -67,11 +99,14 @@ CameraController::CameraController(
     container::gpu::AllocationManager &allocationManager,
     container::gpu::SwapChainManager &swapChainManager,
     container::scene::SceneGraph &sceneGraph,
-    container::scene::SceneManager *sceneManager, container::ecs::World &world,
+    container::scene::SceneManager *sceneManager,
+    container::renderer::SceneController *sceneController,
+    container::ecs::World &world,
     container::window::InputManager &inputManager)
     : device_(std::move(device)), allocationManager_(allocationManager),
       swapChainManager_(swapChainManager), sceneGraph_(sceneGraph),
-      sceneManager_(sceneManager), world_(world), inputManager_(inputManager) {}
+      sceneManager_(sceneManager), sceneController_(sceneController),
+      world_(world), inputManager_(inputManager) {}
 
 void CameraController::createCamera() {
   auto perspective = std::make_unique<container::scene::PerspectiveCamera>();
@@ -84,78 +119,105 @@ void CameraController::createCamera() {
 void CameraController::resetCameraForScene() {
   if (!camera_)
     return;
+  cancelViewAnimation();
   camera_->setScale(glm::vec3(1.0f));
   inputManager_.setMoveSpeed(kDefaultMoveSpeed);
 
-  auto *perspective =
-      dynamic_cast<container::scene::PerspectiveCamera *>(camera_.get());
-  if (perspective) {
-    float farPlane = kDefaultFarPlane;
-    bool hasBounds = false;
-    glm::vec3 boundsCenter{0.0f};
-    float boundsRadius = 1.0f;
+  float farPlane = kDefaultFarPlane;
+  bool hasBounds = false;
+  glm::vec3 boundsCenter{0.0f};
+  float boundsRadius = 1.0f;
 
-    if (sceneManager_) {
-      const auto &bounds = sceneManager_->modelBounds();
-      if (bounds.valid) {
-        hasBounds = true;
-        boundsCenter = bounds.center;
-        boundsRadius = bounds.radius;
-        farPlane =
-            std::max(farPlane, glm::length(boundsCenter) + boundsRadius * 4.0f);
-      }
+  if (sceneManager_) {
+    const auto &bounds = sceneManager_->modelBounds();
+    if (bounds.valid) {
+      hasBounds = true;
+      boundsCenter = bounds.center;
+      boundsRadius = bounds.radius;
+      farPlane =
+          std::max(farPlane, glm::length(boundsCenter) + boundsRadius * 4.0f);
     }
-    perspective->setNearFar(kDefaultNearPlane, farPlane);
-
-    if (hasBounds) {
-      // For hall-like scenes (e.g. Sponza), start inside the volume looking
-      // down the longest horizontal axis. For roughly cubic scenes, fall back
-      // to the default three-quarter overview.
-      const auto &bounds = sceneManager_->modelBounds();
-      const glm::vec3 sz = bounds.size;
-      const bool xIsLong = sz.x >= sz.z;
-      const float longExtent = xIsLong ? sz.x : sz.z;
-      const float crossExtent = xIsLong ? sz.z : sz.x;
-      const bool hallLike =
-          longExtent > 1.25f * crossExtent && longExtent > 1.5f * sz.y;
-
-      if (hallLike) {
-        // RH: front.x = cos(yaw)cos(pitch), front.z = -sin(yaw)cos(pitch).
-        // Look +X => yaw = 0; -X => 180; -Z => 90; +Z => -90.
-        const float yaw = xIsLong ? 180.0f : 90.0f;
-        camera_->setYawPitch(yaw, 0.0f);
-        const float eyeHeight = bounds.min.y + sz.y * 0.32f;
-        const float endInset = longExtent * 0.10f;
-        glm::vec3 eye = boundsCenter;
-        eye.y = eyeHeight;
-        if (xIsLong) {
-          eye.x = bounds.max.x - endInset;
-        } else {
-          eye.z = bounds.max.z - endInset;
-        }
-        camera_->setPosition(eye);
-      } else {
-        camera_->setYawPitch(kDefaultYaw, kDefaultPitch);
-        const float distance = boundsRadius * 2.5f + kDefaultNearPlane;
-        const glm::vec3 front = camera_->frontVector();
-        camera_->setPosition(boundsCenter - front * distance);
-      }
-      inputManager_.setMoveSpeed(
-          std::max(kDefaultMoveSpeed,
-                   hallLike ? longExtent * 0.08f : boundsRadius * 0.5f));
-    } else {
-      camera_->setYawPitch(90.0f, 0.0f);
-      camera_->setPosition(glm::vec3(0.0f, 0.0f, 3.0f));
-    }
-  } else {
-    camera_->setYawPitch(kDefaultYaw, kDefaultPitch);
-    camera_->setPosition(glm::vec3(0.0f));
   }
+  setCameraNearFar(kDefaultNearPlane, farPlane);
+
+  if (hasBounds) {
+    // For hall-like scenes (e.g. Sponza), start inside the volume looking down
+    // the longest horizontal axis. For roughly cubic scenes, fall back to the
+    // default three-quarter overview.
+    const auto &bounds = sceneManager_->modelBounds();
+    const glm::vec3 sz = bounds.size;
+    const bool xIsLong = sz.x >= sz.z;
+    const float longExtent = xIsLong ? sz.x : sz.z;
+    const float crossExtent = xIsLong ? sz.z : sz.x;
+    const bool hallLike =
+        longExtent > 1.25f * crossExtent && longExtent > 1.5f * sz.y;
+
+    if (hallLike) {
+      // RH: front.x = cos(yaw)cos(pitch), front.z = -sin(yaw)cos(pitch).
+      // Look +X => yaw = 0; -X => 180; -Z => 90; +Z => -90.
+      const float yaw = xIsLong ? 180.0f : 90.0f;
+      camera_->setYawPitch(yaw, 0.0f);
+      const float eyeHeight = bounds.min.y + sz.y * 0.32f;
+      const float endInset = longExtent * 0.10f;
+      glm::vec3 eye = boundsCenter;
+      eye.y = eyeHeight;
+      if (xIsLong) {
+        eye.x = bounds.max.x - endInset;
+      } else {
+        eye.z = bounds.max.z - endInset;
+      }
+      camera_->setPosition(eye);
+    } else {
+      camera_->setYawPitch(kDefaultYaw, kDefaultPitch);
+      const float distance = boundsRadius * 2.5f + kDefaultNearPlane;
+      const glm::vec3 front = camera_->frontVector();
+      camera_->setPosition(boundsCenter - front * distance);
+    }
+    inputManager_.setMoveSpeed(
+        std::max(kDefaultMoveSpeed,
+                 hallLike ? longExtent * 0.08f : boundsRadius * 0.5f));
+  } else {
+    camera_->setYawPitch(90.0f, 0.0f);
+    camera_->setPosition(glm::vec3(0.0f, 0.0f, 3.0f));
+  }
+
+  syncOrthographicViewHeight(
+      ViewPivot{boundsCenter, std::max(boundsRadius, 0.25f), hasBounds});
 }
 
 CameraController::ViewPivot
 CameraController::resolveViewPivot(uint32_t nodeIndex) const {
+  if (selectionPivotOverride_ && selectionPivotOverride_->valid) {
+    return ViewPivot{selectionPivotOverride_->center,
+                     std::max(selectionPivotOverride_->radius, 0.25f), true};
+  }
+
   if (nodeIndex != container::scene::SceneGraph::kInvalidNode) {
+    if (sceneController_) {
+      const uint64_t sceneRevision = sceneGraph_.revision();
+      const uint64_t objectRevision = sceneController_->objectDataRevision();
+      if (cachedNodePivotIndex_ == nodeIndex &&
+          cachedNodePivotSceneRevision_ == sceneRevision &&
+          cachedNodePivotObjectRevision_ == objectRevision) {
+        if (cachedNodePivot_.valid) {
+          return cachedNodePivot_;
+        }
+      } else {
+        const SceneNodeWorldBounds bounds =
+            sceneController_->nodeWorldBounds(nodeIndex);
+        cachedNodePivotIndex_ = nodeIndex;
+        cachedNodePivotSceneRevision_ = sceneRevision;
+        cachedNodePivotObjectRevision_ = objectRevision;
+        cachedNodePivot_ =
+            bounds.valid
+                ? ViewPivot{bounds.center, std::max(bounds.radius, 0.25f),
+                            true}
+                : ViewPivot{};
+        if (cachedNodePivot_.valid) {
+          return cachedNodePivot_;
+        }
+      }
+    }
     if (const auto *node = sceneGraph_.getNode(nodeIndex)) {
       return ViewPivot{glm::vec3(node->worldTransform[3]),
                        selectedNodeRadius(sceneManager_), true};
@@ -173,6 +235,21 @@ CameraController::resolveViewPivot(uint32_t nodeIndex) const {
   }
 
   return {};
+}
+
+float CameraController::viewPlaneNavigationSpeed(uint32_t nodeIndex,
+                                                 float speedScale) const {
+  const ViewPivot pivot = resolveViewPivot(nodeIndex);
+  float viewScale =
+      pivot.valid ? glm::length(camera_->position() - pivot.center)
+                  : std::max(inputManager_.moveSpeed(), kDefaultMoveSpeed);
+  if (const auto *orthographic =
+          dynamic_cast<const container::scene::OrthographicCamera *>(
+              camera_.get())) {
+    viewScale = orthographic->viewHeight();
+  }
+  return std::max(viewScale, 1.0f) * 0.0015f *
+         std::max(speedScale, 0.01f);
 }
 
 void CameraController::lookAt(const glm::vec3 &target) {
@@ -193,10 +270,36 @@ void CameraController::lookAt(const glm::vec3 &target) {
   camera_->setYawPitch(yawDegrees, pitchDegrees);
 }
 
+void CameraController::setCameraNearFar(float nearPlane, float farPlane) {
+  if (auto *perspective =
+          dynamic_cast<container::scene::PerspectiveCamera *>(camera_.get())) {
+    perspective->setNearFar(nearPlane, farPlane);
+  } else if (auto *orthographic =
+                 dynamic_cast<container::scene::OrthographicCamera *>(
+                     camera_.get())) {
+    orthographic->setNearFar(nearPlane, farPlane);
+  }
+}
+
+void CameraController::syncOrthographicViewHeight(const ViewPivot &pivot) {
+  auto *orthographic =
+      dynamic_cast<container::scene::OrthographicCamera *>(camera_.get());
+  if (!orthographic) {
+    return;
+  }
+
+  const float viewHeight =
+      pivot.valid ? std::max(0.25f, pivot.radius * 2.4f) : 10.0f;
+  orthographic->setViewHeight(viewHeight);
+}
+
+void CameraController::cancelViewAnimation() { viewAnimation_.active = false; }
+
 void CameraController::frameNodeOrScene(uint32_t nodeIndex) {
   if (!camera_) {
     return;
   }
+  cancelViewAnimation();
 
   const ViewPivot pivot = resolveViewPivot(nodeIndex);
   if (!pivot.valid) {
@@ -208,6 +311,7 @@ void CameraController::frameNodeOrScene(uint32_t nodeIndex) {
                                   pivot.radius * 2.5f + kDefaultNearPlane);
   camera_->setPosition(pivot.center - camera_->frontVector() * distance);
   lookAt(pivot.center);
+  syncOrthographicViewHeight(pivot);
   inputManager_.setMoveSpeed(std::max(kDefaultMoveSpeed, pivot.radius * 0.5f));
 }
 
@@ -216,6 +320,7 @@ void CameraController::orbit(uint32_t nodeIndex, float deltaX, float deltaY,
   if (!camera_ || (deltaX == 0.0f && deltaY == 0.0f)) {
     return;
   }
+  cancelViewAnimation();
 
   const ViewPivot pivot = resolveViewPivot(nodeIndex);
   if (!pivot.valid) {
@@ -237,13 +342,9 @@ void CameraController::pan(uint32_t nodeIndex, float deltaX, float deltaY,
   if (!camera_ || (deltaX == 0.0f && deltaY == 0.0f)) {
     return;
   }
+  cancelViewAnimation();
 
-  const ViewPivot pivot = resolveViewPivot(nodeIndex);
-  const float distance =
-      pivot.valid ? glm::length(camera_->position() - pivot.center)
-                  : std::max(inputManager_.moveSpeed(), kDefaultMoveSpeed);
-  const float speed = std::max(distance, 1.0f) * 0.0015f *
-                      std::max(speedScale, 0.01f);
+  const float speed = viewPlaneNavigationSpeed(nodeIndex, speedScale);
   const glm::vec3 front = camera_->frontVector();
   const glm::vec3 up = camera_->upVector(front);
   const glm::vec3 right = camera_->rightVector(front, up);
@@ -251,34 +352,49 @@ void CameraController::pan(uint32_t nodeIndex, float deltaX, float deltaY,
   camera_->move(-up, deltaY * speed);
 }
 
+void CameraController::moveInViewPlane(uint32_t nodeIndex, float deltaRight,
+                                       float deltaUp, float speedScale) {
+  if (!camera_ || (deltaRight == 0.0f && deltaUp == 0.0f)) {
+    return;
+  }
+  cancelViewAnimation();
+
+  const float speed = viewPlaneNavigationSpeed(nodeIndex, speedScale);
+  const glm::vec3 front = camera_->frontVector();
+  const glm::vec3 up = camera_->upVector(front);
+  const glm::vec3 right = camera_->rightVector(front, up);
+  camera_->move(right, deltaRight * speed);
+  camera_->move(up, deltaUp * speed);
+}
+
 void CameraController::dolly(uint32_t nodeIndex, float wheelSteps,
                              float speedScale) {
   if (!camera_ || wheelSteps == 0.0f) {
     return;
   }
+  cancelViewAnimation();
+
+  if (auto *orthographic =
+          dynamic_cast<container::scene::OrthographicCamera *>(camera_.get())) {
+    const float exponent = wheelSteps * std::max(speedScale, 0.01f);
+    const float nextHeight =
+        std::clamp(orthographic->viewHeight() * std::pow(0.85f, exponent),
+                   0.001f, kDefaultFarPlane * 100.0f);
+    orthographic->setViewHeight(nextHeight);
+    return;
+  }
 
   const ViewPivot pivot = resolveViewPivot(nodeIndex);
+  float navigationScale = std::max(inputManager_.moveSpeed(),
+                                   kDefaultMoveSpeed);
   if (pivot.valid) {
-    const glm::vec3 toPivot = pivot.center - camera_->position();
-    const float distance = glm::length(toPivot);
-    if (distance > kDefaultNearPlane * 4.0f) {
-      const float exponent = wheelSteps * std::max(speedScale, 0.01f);
-      const float nextDistance =
-          std::clamp(distance * std::pow(0.85f, exponent),
-                     kDefaultNearPlane * 4.0f, kDefaultFarPlane);
-      camera_->setPosition(pivot.center - (toPivot / distance) * nextDistance);
-      return;
-    }
-  }
-
-  float navigationScale = kDefaultMoveSpeed;
-  if (sceneManager_ && sceneManager_->modelBounds().valid) {
     navigationScale =
-        std::max(navigationScale, sceneManager_->modelBounds().radius * 0.15f);
+        std::max(navigationScale,
+                 std::max(glm::length(camera_->position() - pivot.center),
+                          pivot.radius));
   }
   const float distance =
-      wheelSteps * std::max(navigationScale, inputManager_.moveSpeed()) *
-      std::max(speedScale, 0.01f) * 0.25f;
+      wheelSteps * navigationScale * std::max(speedScale, 0.01f) * 0.25f;
   camera_->move(camera_->frontVector(), distance);
 }
 
@@ -294,6 +410,148 @@ void CameraController::adjustMoveSpeed(float wheelSteps) {
 }
 
 float CameraController::moveSpeed() const { return inputManager_.moveSpeed(); }
+
+void CameraController::setSelectionPivotOverride(NavigationPivot pivot) {
+  if (pivot.valid) {
+    pivot.radius = std::max(pivot.radius, 0.25f);
+    selectionPivotOverride_ = pivot;
+  } else {
+    clearSelectionPivotOverride();
+  }
+}
+
+void CameraController::clearSelectionPivotOverride() {
+  selectionPivotOverride_.reset();
+}
+
+bool CameraController::isOrthographic() const {
+  return dynamic_cast<const container::scene::OrthographicCamera *>(
+             camera_.get()) != nullptr;
+}
+
+void CameraController::setOrthographic(uint32_t nodeIndex, bool enabled) {
+  if (!camera_ || enabled == isOrthographic()) {
+    return;
+  }
+
+  float nearPlane = kDefaultNearPlane;
+  float farPlane = kDefaultFarPlane;
+  if (const auto *perspective =
+          dynamic_cast<const container::scene::PerspectiveCamera *>(
+              camera_.get())) {
+    perspectiveFieldOfViewDegrees_ = perspective->fieldOfViewDegrees();
+    nearPlane = perspective->nearPlane();
+    farPlane = perspective->farPlane();
+  } else if (const auto *orthographic =
+                 dynamic_cast<const container::scene::OrthographicCamera *>(
+                     camera_.get())) {
+    nearPlane = orthographic->nearPlane();
+    farPlane = orthographic->farPlane();
+  }
+
+  std::unique_ptr<container::scene::BaseCamera> replacement;
+  if (enabled) {
+    auto orthographic = std::make_unique<container::scene::OrthographicCamera>();
+    orthographic->setNearFar(nearPlane, farPlane);
+    copyCameraPose(*orthographic, *camera_);
+    replacement = std::move(orthographic);
+  } else {
+    auto perspective = std::make_unique<container::scene::PerspectiveCamera>();
+    perspective->setFieldOfView(perspectiveFieldOfViewDegrees_);
+    perspective->setNearFar(nearPlane, farPlane);
+    copyCameraPose(*perspective, *camera_);
+    replacement = std::move(perspective);
+  }
+
+  camera_ = std::move(replacement);
+  inputManager_.setCamera(camera_.get());
+  syncOrthographicViewHeight(resolveViewPivot(nodeIndex));
+}
+
+void CameraController::toggleProjectionMode(uint32_t nodeIndex) {
+  setOrthographic(nodeIndex, !isOrthographic());
+}
+
+void CameraController::setViewPreset(uint32_t nodeIndex,
+                                     container::ui::CameraViewPreset preset) {
+  if (!camera_) {
+    return;
+  }
+
+  const ViewPivot pivot = resolveViewPivot(nodeIndex);
+  if (!pivot.valid) {
+    return;
+  }
+
+  glm::vec3 forward{0.0f, 0.0f, -1.0f};
+  switch (preset) {
+  case container::ui::CameraViewPreset::Front:
+    forward = {0.0f, 0.0f, -1.0f};
+    break;
+  case container::ui::CameraViewPreset::Back:
+    forward = {0.0f, 0.0f, 1.0f};
+    break;
+  case container::ui::CameraViewPreset::Right:
+    forward = {-1.0f, 0.0f, 0.0f};
+    break;
+  case container::ui::CameraViewPreset::Left:
+    forward = {1.0f, 0.0f, 0.0f};
+    break;
+  case container::ui::CameraViewPreset::Top:
+    forward = {0.0f, -1.0f, 0.0f};
+    break;
+  case container::ui::CameraViewPreset::Bottom:
+    forward = {0.0f, 1.0f, 0.0f};
+    break;
+  }
+
+  float distance = glm::length(camera_->position() - pivot.center);
+  if (!std::isfinite(distance) || distance <= kDefaultNearPlane * 4.0f) {
+    distance = std::max(kDefaultNearPlane * 4.0f,
+                        pivot.radius * 2.5f + kDefaultNearPlane);
+  }
+
+  const glm::vec3 targetForward = glm::normalize(forward);
+  const CameraAngles angles = cameraAnglesFromForward(targetForward);
+  viewAnimation_.active = true;
+  viewAnimation_.startPosition = camera_->position();
+  viewAnimation_.targetPosition = pivot.center - targetForward * distance;
+  viewAnimation_.startYawDegrees = camera_->yawDegrees();
+  viewAnimation_.startPitchDegrees = camera_->pitchDegrees();
+  viewAnimation_.targetYawDegrees = angles.yawDegrees;
+  viewAnimation_.targetPitchDegrees = angles.pitchDegrees;
+  viewAnimation_.elapsedSeconds = 0.0f;
+  viewAnimation_.durationSeconds = 0.22f;
+  syncOrthographicViewHeight(pivot);
+  inputManager_.setMoveSpeed(std::max(kDefaultMoveSpeed, pivot.radius * 0.5f));
+}
+
+void CameraController::updateViewAnimation(float deltaTime) {
+  if (!camera_ || !viewAnimation_.active) {
+    return;
+  }
+
+  viewAnimation_.elapsedSeconds += std::max(deltaTime, 0.0f);
+  const float rawT = viewAnimation_.durationSeconds > 0.0001f
+                         ? viewAnimation_.elapsedSeconds /
+                               viewAnimation_.durationSeconds
+                         : 1.0f;
+  const float t = smoothStep(rawT);
+  camera_->setPosition(glm::mix(viewAnimation_.startPosition,
+                                viewAnimation_.targetPosition, t));
+  camera_->setYawPitch(
+      lerpAngleDegrees(viewAnimation_.startYawDegrees,
+                       viewAnimation_.targetYawDegrees, t),
+      viewAnimation_.startPitchDegrees +
+          (viewAnimation_.targetPitchDegrees - viewAnimation_.startPitchDegrees) *
+              t);
+  if (rawT >= 1.0f) {
+    camera_->setPosition(viewAnimation_.targetPosition);
+    camera_->setYawPitch(viewAnimation_.targetYawDegrees,
+                         viewAnimation_.targetPitchDegrees);
+    viewAnimation_.active = false;
+  }
+}
 
 void CameraController::updateCameraBuffer(
     container::gpu::CameraData &outCameraData,
@@ -357,6 +615,7 @@ void CameraController::applyCameraTransform(
     const container::gpu::AllocatedBuffer &cameraBuffer) {
   if (!camera_)
     return;
+  cancelViewAnimation();
   camera_->setPosition(controls.position);
   camera_->setYawPitch(controls.rotationDegrees.y, controls.rotationDegrees.x);
   camera_->setScale(controls.scale);

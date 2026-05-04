@@ -82,6 +82,7 @@ class SceneManager {
   void updateAuxiliaryDescriptorSets(
       std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
       const container::gpu::AllocatedBuffer& objectBuffer);
+  void updateSceneClipState(const container::gpu::SceneClipState& clipState);
 
   VkDescriptorSetLayout descriptorSetLayout() const {
     return descriptorSetLayout_;
@@ -200,6 +201,8 @@ class SceneManager {
   void loadDefaultTestSceneAssets();
   void uploadMaterialBuffer();
   void uploadTextureMetadataBuffer();
+  void createSceneClipStateBuffer();
+  void writeSceneClipStateBuffer();
   void collectAuthoredPunctualLights();
   void updateModelBounds();
   void allocateDescriptorSets(uint32_t descriptorSetCount);
@@ -245,6 +248,8 @@ class SceneManager {
   std::vector<container::gpu::GpuTextureMetadata> textureMetadata_{};
   container::gpu::AllocatedBuffer textureMetadataBuffer_{};
   size_t textureMetadataBufferCapacity_{0};
+  container::gpu::SceneClipState sceneClipState_{};
+  container::gpu::AllocatedBuffer sceneClipStateBuffer_{};
 
   VkSampler baseColorSampler_{VK_NULL_HANDLE};
   std::vector<VkSampler> materialSamplers_{};

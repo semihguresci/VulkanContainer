@@ -15,6 +15,7 @@
 [[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
 [[vk::binding(0, 1)]] ConstantBuffer<ShadowBuffer> uShadow;
 
+#include "scene_clip_common.slang"
 #include "alpha_mask_common.slang"
 #include "object_index_common.slang"
 #include "pbr_material_common.slang"
@@ -42,6 +43,7 @@ struct VSOutput
     [[vk::location(6)]] float opacityFactor;
     [[vk::location(7)]] float2 texCoord1;
     [[vk::location(8)]] uint objectIndex;
+    [[vk::location(9)]] float3 worldPos;
 };
 
 static const uint kObjectFlagAlphaMask = 0x1u;
@@ -72,6 +74,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.opacityTextureIndex = material.opacityTextureIndex;
     output.opacityFactor = material.opacityFactor;
     output.objectIndex = objectIndex;
+    output.worldPos = worldPos.xyz;
     return output;
 }
 
@@ -79,6 +82,10 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 void fragMain(VSOutput input)
 {
     if ((input.flags & kObjectFlagTransparentOnly) != 0u)
+    {
+        discard;
+    }
+    if (SceneClipPlanesClip(input.worldPos, pc.sectionPlaneEnabled, pc.sectionPlane))
     {
         discard;
     }

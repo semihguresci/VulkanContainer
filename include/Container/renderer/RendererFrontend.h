@@ -4,11 +4,15 @@
 #include <filesystem>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
+#include <glm/vec3.hpp>
+
 #include "Container/renderer/DebugRenderState.h"
 #include "Container/renderer/PushConstantBlock.h"
+#include "Container/renderer/RendererDeviceCapabilities.h"
 #include "Container/renderer/RenderSurfaceInteractionController.h"
 #include "Container/renderer/RenderResources.h"
 #include "Container/renderer/SceneState.h"
@@ -24,6 +28,7 @@ struct AppConfig;
 namespace container::renderer {
 class BloomManager;
 class BimManager;
+struct BimDrawFilter;
 class CameraController;
 class CommandBufferManager;
 class EnvironmentManager;
@@ -34,6 +39,8 @@ class GraphicsPipelineBuilder;
 class GpuCullManager;
 class OitManager;
 class RenderPassGpuProfiler;
+class RenderTechnique;
+class RenderTechniqueRegistry;
 class RendererTelemetry;
 class SceneController;
 class ShadowCullManager;
@@ -51,10 +58,12 @@ class SwapChainManager;
 namespace container::scene {
 class SceneGraph;
 class SceneManager;
+class SceneProviderRegistry;
 }  // namespace container::scene
 
 namespace container::ui {
 class GuiManager;
+struct ViewpointSnapshotState;
 }
 
 namespace container::window {
@@ -135,6 +144,12 @@ class RendererFrontend {
     std::unique_ptr<ExposureManager> exposureManager;
     std::unique_ptr<GraphicsPipelineBuilder> pipelineBuilder;
     std::unique_ptr<FrameRecorder> frameRecorder;
+    std::unique_ptr<container::scene::SceneProviderRegistry>
+        sceneProviderRegistry;
+    RendererDeviceCapabilities deviceCapabilities{
+        RendererDeviceCapabilities::rasterOnly()};
+    std::unique_ptr<RenderTechniqueRegistry> techniqueRegistry;
+    RenderTechnique* activeTechnique{nullptr};
     std::unique_ptr<RenderPassGpuProfiler> renderPassGpuProfiler;
     std::unique_ptr<RendererTelemetry> rendererTelemetry;
     std::unique_ptr<container::ui::GuiManager> guiManager;
@@ -180,6 +195,14 @@ class RendererFrontend {
   uint32_t hoveredMeshNode_{container::scene::SceneGraph::kInvalidNode};
   uint32_t hoveredBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
   uint32_t selectedBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
+  struct SelectionNavigationAnchor {
+    bool valid{false};
+    glm::vec3 point{0.0f};
+    float radius{1.0f};
+    uint32_t sceneNode{container::scene::SceneGraph::kInvalidNode};
+    uint32_t bimObject{std::numeric_limits<uint32_t>::max()};
+  };
+  SelectionNavigationAnchor selectionNavigationAnchor_{};
   struct HoverPickCache {
     bool valid{false};
     double cursorX{0.0};
@@ -188,11 +211,39 @@ class RendererFrontend {
     uint32_t selectedBimObjectIndex{std::numeric_limits<uint32_t>::max()};
     uint64_t objectDataRevision{0};
     uint64_t bimObjectDataRevision{0};
+    bool bimTypeFilterEnabled{false};
+    std::string bimFilterType{};
+    bool bimStoreyFilterEnabled{false};
+    std::string bimFilterStorey{};
+    bool bimMaterialFilterEnabled{false};
+    std::string bimFilterMaterial{};
+    bool bimDisciplineFilterEnabled{false};
+    std::string bimFilterDiscipline{};
+    bool bimPhaseFilterEnabled{false};
+    std::string bimFilterPhase{};
+    bool bimFireRatingFilterEnabled{false};
+    std::string bimFilterFireRating{};
+    bool bimLoadBearingFilterEnabled{false};
+    std::string bimFilterLoadBearing{};
+    bool bimStatusFilterEnabled{false};
+    std::string bimFilterStatus{};
+    bool bimDrawBudgetEnabled{false};
+    uint32_t bimDrawBudgetMaxObjects{0};
+    bool bimIsolateSelection{false};
+    bool bimHideSelection{false};
+    bool bimPointCloudVisible{true};
+    bool bimCurvesVisible{true};
+    bool sectionPlaneEnabled{false};
+    glm::vec4 sectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
     container::gpu::CameraData cameraData{};
   };
   HoverPickCache hoverPickCache_{};
   std::vector<DrawCommand> hoveredBimDrawCommands_{};
   std::vector<DrawCommand> selectedBimDrawCommands_{};
+  std::vector<DrawCommand> hoveredBimNativePointDrawCommands_{};
+  std::vector<DrawCommand> selectedBimNativePointDrawCommands_{};
+  std::vector<DrawCommand> hoveredBimNativeCurveDrawCommands_{};
+  std::vector<DrawCommand> selectedBimNativeCurveDrawCommands_{};
   std::vector<DrawCommand> hoveredDrawCommands_{};
   std::vector<DrawCommand> selectedDrawCommands_{};
   std::string activePrimaryModelPath_{};
@@ -227,16 +278,61 @@ class RendererFrontend {
     container::gpu::CameraData cameraData{};
     uint64_t objectDataRevision{0};
     uint64_t bimObjectDataRevision{0};
+    bool sectionPlaneEnabled{false};
+    glm::vec4 sectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
+    bool bimTypeFilterEnabled{false};
+    std::string bimFilterType{};
+    bool bimStoreyFilterEnabled{false};
+    std::string bimFilterStorey{};
+    bool bimMaterialFilterEnabled{false};
+    std::string bimFilterMaterial{};
+    bool bimDisciplineFilterEnabled{false};
+    std::string bimFilterDiscipline{};
+    bool bimPhaseFilterEnabled{false};
+    std::string bimFilterPhase{};
+    bool bimFireRatingFilterEnabled{false};
+    std::string bimFilterFireRating{};
+    bool bimLoadBearingFilterEnabled{false};
+    std::string bimFilterLoadBearing{};
+    bool bimStatusFilterEnabled{false};
+    std::string bimFilterStatus{};
+    bool bimDrawBudgetEnabled{false};
+    uint32_t bimDrawBudgetMaxObjects{0};
+    bool bimIsolateSelection{false};
+    bool bimHideSelection{false};
+    bool bimPointCloudVisible{true};
+    bool bimCurvesVisible{true};
+    bool transparentPickDepthValid{false};
+    uint32_t selectedBimObjectIndex{std::numeric_limits<uint32_t>::max()};
     VkFence renderFence{VK_NULL_HANDLE};
     bool valid{false};
   };
   DepthVisibilityState depthVisibility_{};
+
+  struct TransformDragSession {
+    bool active{false};
+    uint32_t nodeIndex{std::numeric_limits<uint32_t>::max()};
+    container::ui::ViewportTool tool{container::ui::ViewportTool::Select};
+    container::ui::TransformSpace space{container::ui::TransformSpace::World};
+    container::ui::TransformAxis axis{container::ui::TransformAxis::Free};
+    bool snapEnabled{false};
+    container::ui::TransformControls startControls{};
+    glm::vec3 origin{0.0f};
+    float gizmoScale{1.0f};
+    glm::vec3 axisX{1.0f, 0.0f, 0.0f};
+    glm::vec3 axisY{0.0f, 1.0f, 0.0f};
+    glm::vec3 axisZ{0.0f, 0.0f, 1.0f};
+    double accumulatedDeltaX{0.0};
+    double accumulatedDeltaY{0.0};
+  };
+  TransformDragSession transformDragSession_{};
 
   // ---- internal init helpers
   // --------------------------------------------------
   void createRenderPasses();
   void createGraphicsPipelines();
   void createCamera();
+  void syncCameraSelectionPivotOverride();
   void initializeScene();
   void buildSceneGraph();
   void createSceneBuffers();
@@ -248,6 +344,7 @@ class RendererFrontend {
   // ------------------------------------------------------
   void updateCameraBuffer(uint32_t imageIndex);
   void updateObjectBuffer();
+  void applyBimSemanticColorMode();
   void updateFrameDescriptorSets(uint32_t imageIndex = UINT32_MAX);
   void destroyGBufferResources();
   bool growExactOitNodePoolIfNeeded(uint32_t imageIndex);
@@ -258,10 +355,23 @@ class RendererFrontend {
   [[nodiscard]] bool sampleDepthAtCursor(double cursorX,
                                          double cursorY,
                                          float& outDepth);
+  [[nodiscard]] bool samplePickDepthAtCursor(double cursorX,
+                                             double cursorY,
+                                             float& outDepth);
+  [[nodiscard]] bool sampleDepthAtCursor(double cursorX,
+                                         double cursorY,
+                                         float& outDepth,
+                                         bool pickDepth);
   [[nodiscard]] bool samplePickIdAtCursor(double cursorX,
                                           double cursorY,
                                           uint32_t& outPickId);
   [[nodiscard]] bool depthVisibilityFrameMatchesCurrentState() const;
+  [[nodiscard]] BimDrawFilter currentBimDrawFilter() const;
+  [[nodiscard]] bool bimObjectVisibleByLayer(uint32_t objectIndex) const;
+  [[nodiscard]] container::ui::ViewpointSnapshotState
+  currentViewpointSnapshot() const;
+  bool restoreViewpointSnapshot(
+      const container::ui::ViewpointSnapshotState& snapshot);
   void presentSceneControls();
   void selectMeshNodeAtCursor(double cursorX, double cursorY);
   void hoverMeshNodeAtCursor(double cursorX, double cursorY);
@@ -270,9 +380,13 @@ class RendererFrontend {
   void transformSelectedNodeByDrag(container::ui::ViewportTool tool,
                                    container::ui::TransformSpace space,
                                    container::ui::TransformAxis axis,
+                                   bool snapEnabled,
                                    double deltaX, double deltaY);
+  [[nodiscard]] std::optional<container::ui::TransformAxis>
+  pickTransformGizmoAxisAtCursor(double cursorX, double cursorY) const;
   void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
   [[nodiscard]] FrameRecordParams buildFrameRecordParams(uint32_t imageIndex);
+  [[nodiscard]] FrameTransformGizmoState buildTransformGizmoState() const;
 
   // ---- scene helpers
   // ----------------------------------------------------------

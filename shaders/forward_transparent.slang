@@ -29,6 +29,7 @@
 [[vk::binding(13, 3)]] SamplerState envSampler;
 [[vk::binding(14, 3)]] SamplerState brdfSampler;
 
+#include "scene_clip_common.slang"
 #include "object_index_common.slang"
 #include "pbr_material_common.slang"
 #include "surface_normal_common.slang"
@@ -143,6 +144,11 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 {
+    if (SceneClipPlanesClip(vertIn.worldPos, pc.sectionPlaneEnabled, pc.sectionPlane))
+    {
+        discard;
+    }
+
     GpuMaterial material =
         uMaterials[uObjects[vertIn.objectIndex].objectInfo.x];
     float2 baseColorTexCoord = ApplyGpuTextureTransform(
@@ -294,6 +300,19 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 
     float metallic = sampledMetallic;
     float roughness = sampledRoughness;
+    if (pc.semanticColorMode != kBimSemanticColorModeOff)
+    {
+        baseColor = EvaluateBimSemanticColor(
+            uObjects[vertIn.objectIndex].objectInfo.w, pc.semanticColorMode);
+        metallic = 0.0;
+        roughness = 0.74;
+        emissive = 0.0.xxx;
+        transmissionFactor = 0.0;
+        clearcoat = 0.0;
+        sheenColor = 0.0.xxx;
+        iridescence = 0.0;
+        volumeThickness = 0.0;
+    }
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - vertIn.worldPos,
                              float3(0.0, 0.0, 1.0));
     float NdotV = max(dot(surfaceNormal.shadingNormal, V), 0.0);

@@ -1,5 +1,8 @@
 #include "Container/utility/GuiManager.h"
 
+#include "Container/renderer/BimManager.h"
+#include "Container/utility/BcfViewpoint.h"
+
 #include <imgui.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_vulkan.h>
@@ -8,16 +11,20 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "Container/common/CommonGLFW.h"
@@ -36,14 +43,14 @@ namespace {
 constexpr std::string_view kSampleModelsRelativeRoot =
     "models/glTF-Sample-Models/2.0";
 
-constexpr std::array<const char*, 4> kLightingPresetLabels = {{
+constexpr std::array<const char *, 4> kLightingPresetLabels = {{
     "Sponza",
     "Interior",
     "Exterior",
     "Custom",
 }};
 
-constexpr std::array<const char*, 3> kImportScaleLabels = {{
+constexpr std::array<const char *, 3> kImportScaleLabels = {{
     "1x",
     "10x",
     "100x",
@@ -56,13 +63,13 @@ constexpr std::array<float, 3> kImportScaleValues = {{
 }};
 
 struct KnownSampleAsset {
-  const char* label;
-  const char* relativePath;
+  const char *label;
+  const char *relativePath;
 };
 
 struct KnownSampleDirectory {
-  const char* labelPrefix;
-  const char* relativePath;
+  const char *labelPrefix;
+  const char *relativePath;
 };
 
 struct DiscoveredSampleAsset {
@@ -83,9 +90,10 @@ constexpr std::array<KnownSampleAsset, 4> kKnownAuxiliarySampleAssets = {{
      "ReferenceView_V1.2/tessellated-item.ifc"},
 }};
 
-constexpr std::array<KnownSampleDirectory, 1> kKnownAuxiliarySampleDirectories = {{
-    {"IFC5", "models/buildingSMART-IFC5-development/examples"},
-}};
+constexpr std::array<KnownSampleDirectory, 1> kKnownAuxiliarySampleDirectories =
+    {{
+        {"IFC5", "models/buildingSMART-IFC5-development/examples"},
+    }};
 
 std::string ToLowerAscii(std::string value) {
   std::ranges::transform(value, value.begin(), [](unsigned char c) {
@@ -94,23 +102,52 @@ std::string ToLowerAscii(std::string value) {
   return value;
 }
 
-bool IsGltfModelFile(const std::filesystem::path& path) {
+std::string TrimAscii(std::string_view value) {
+  size_t first = 0u;
+  while (first < value.size() &&
+         std::isspace(static_cast<unsigned char>(value[first])) != 0) {
+    ++first;
+  }
+  size_t last = value.size();
+  while (last > first &&
+         std::isspace(static_cast<unsigned char>(value[last - 1u])) != 0) {
+    --last;
+  }
+  return std::string(value.substr(first, last - first));
+}
+
+std::vector<std::string> SplitBcfTopicLabels(std::string_view value) {
+  std::vector<std::string> labels;
+  size_t start = 0u;
+  for (size_t i = 0u; i <= value.size(); ++i) {
+    if (i != value.size() && value[i] != ',' && value[i] != ';') {
+      continue;
+    }
+    std::string label = TrimAscii(value.substr(start, i - start));
+    if (!label.empty() && !std::ranges::contains(labels, label)) {
+      labels.push_back(std::move(label));
+    }
+    start = i + 1u;
+  }
+  return labels;
+}
+
+bool IsGltfModelFile(const std::filesystem::path &path) {
   const std::string extension =
       ToLowerAscii(container::util::pathToUtf8(path.extension()));
   return extension == ".gltf" || extension == ".glb";
 }
 
-bool IsAuxiliaryModelFile(const std::filesystem::path& path) {
+bool IsAuxiliaryModelFile(const std::filesystem::path &path) {
   const std::string extension =
       ToLowerAscii(container::util::pathToUtf8(path.extension()));
-  return extension == ".usd" || extension == ".usda" ||
-         extension == ".usdc" || extension == ".usdz" ||
-         extension == ".ifc" || extension == ".ifcx" ||
+  return extension == ".usd" || extension == ".usda" || extension == ".usdc" ||
+         extension == ".usdz" || extension == ".ifc" || extension == ".ifcx" ||
          extension == ".bim";
 }
 
-std::optional<std::filesystem::path> ResolveRelativeAssetPath(
-    std::string_view relativePath) {
+std::optional<std::filesystem::path>
+ResolveRelativeAssetPath(std::string_view relativePath) {
   const auto relative =
       container::util::pathFromUtf8(std::string(relativePath));
   const std::array<std::filesystem::path, 2> candidates = {
@@ -118,7 +155,7 @@ std::optional<std::filesystem::path> ResolveRelativeAssetPath(
       std::filesystem::current_path() / relative,
   };
 
-  for (const auto& candidate : candidates) {
+  for (const auto &candidate : candidates) {
     std::error_code error;
     if (std::filesystem::is_regular_file(candidate, error)) {
       return candidate;
@@ -128,8 +165,8 @@ std::optional<std::filesystem::path> ResolveRelativeAssetPath(
   return std::nullopt;
 }
 
-std::optional<std::filesystem::path> ResolveRelativeAssetDirectory(
-    std::string_view relativePath) {
+std::optional<std::filesystem::path>
+ResolveRelativeAssetDirectory(std::string_view relativePath) {
   const auto relative =
       container::util::pathFromUtf8(std::string(relativePath));
   const std::array<std::filesystem::path, 2> candidates = {
@@ -137,7 +174,7 @@ std::optional<std::filesystem::path> ResolveRelativeAssetDirectory(
       std::filesystem::current_path() / relative,
   };
 
-  for (const auto& candidate : candidates) {
+  for (const auto &candidate : candidates) {
     std::error_code error;
     if (std::filesystem::is_directory(candidate, error)) {
       return candidate;
@@ -147,7 +184,7 @@ std::optional<std::filesystem::path> ResolveRelativeAssetDirectory(
   return std::nullopt;
 }
 
-std::filesystem::path ComparableModelPath(const std::filesystem::path& input) {
+std::filesystem::path ComparableModelPath(const std::filesystem::path &input) {
   std::filesystem::path path = input;
   if (path.is_relative()) {
     std::error_code existsError;
@@ -181,7 +218,7 @@ std::filesystem::path ComparableModelPath(const std::filesystem::path& input) {
   return path.lexically_normal();
 }
 
-bool TextFileContains(const std::filesystem::path& path,
+bool TextFileContains(const std::filesystem::path &path,
                       std::string_view needle) {
   std::ifstream file(path, std::ios::binary);
   if (!file.is_open()) {
@@ -213,7 +250,7 @@ bool TextFileContains(const std::filesystem::path& path,
   return false;
 }
 
-bool HasRenderableAuxiliaryHint(const std::filesystem::path& path) {
+bool HasRenderableAuxiliaryHint(const std::filesystem::path &path) {
   const std::string extension =
       ToLowerAscii(container::util::pathToUtf8(path.extension()));
   if (extension == ".ifcx") {
@@ -226,10 +263,9 @@ bool HasRenderableAuxiliaryHint(const std::filesystem::path& path) {
   return true;
 }
 
-std::string AuxiliarySampleLabel(
-    std::string_view prefix,
-    const std::filesystem::path& root,
-    const std::filesystem::path& path) {
+std::string AuxiliarySampleLabel(std::string_view prefix,
+                                 const std::filesystem::path &root,
+                                 const std::filesystem::path &path) {
   std::error_code error;
   std::filesystem::path relative = std::filesystem::relative(path, root, error);
   if (error) {
@@ -252,7 +288,8 @@ std::string AuxiliarySampleLabel(
 
 std::vector<DiscoveredSampleAsset> DiscoverAuxiliarySampleAssets() {
   std::vector<DiscoveredSampleAsset> assets;
-  for (const KnownSampleDirectory& directory : kKnownAuxiliarySampleDirectories) {
+  for (const KnownSampleDirectory &directory :
+       kKnownAuxiliarySampleDirectories) {
     const auto root = ResolveRelativeAssetDirectory(directory.relativePath);
     if (!root) {
       continue;
@@ -260,8 +297,7 @@ std::vector<DiscoveredSampleAsset> DiscoverAuxiliarySampleAssets() {
 
     std::error_code error;
     for (std::filesystem::recursive_directory_iterator it(
-             *root,
-             std::filesystem::directory_options::skip_permission_denied,
+             *root, std::filesystem::directory_options::skip_permission_denied,
              error),
          end;
          !error && it != end; it.increment(error)) {
@@ -293,7 +329,7 @@ std::vector<DiscoveredSampleAsset> DiscoverAuxiliarySampleAssets() {
   return assets;
 }
 
-std::string ModelPathKey(const std::filesystem::path& path) {
+std::string ModelPathKey(const std::filesystem::path &path) {
   std::string key = container::util::pathToUtf8(ComparableModelPath(path));
 #ifdef _WIN32
   key = ToLowerAscii(std::move(key));
@@ -309,7 +345,7 @@ std::optional<std::filesystem::path> ResolveSampleModelsRoot() {
           std::filesystem::path(kSampleModelsRelativeRoot),
   };
 
-  for (const auto& candidate : candidates) {
+  for (const auto &candidate : candidates) {
     std::error_code error;
     if (std::filesystem::is_directory(candidate, error)) {
       return candidate;
@@ -319,8 +355,8 @@ std::optional<std::filesystem::path> ResolveSampleModelsRoot() {
   return std::nullopt;
 }
 
-std::optional<std::filesystem::path> FindFirstModelFileInDirectory(
-    const std::filesystem::path& directory) {
+std::optional<std::filesystem::path>
+FindFirstModelFileInDirectory(const std::filesystem::path &directory) {
   std::error_code error;
   if (!std::filesystem::is_directory(directory, error)) {
     return std::nullopt;
@@ -340,15 +376,15 @@ std::optional<std::filesystem::path> FindFirstModelFileInDirectory(
   }
 
   std::ranges::sort(candidates);
-  const auto gltf = std::ranges::find_if(candidates, [](const auto& path) {
+  const auto gltf = std::ranges::find_if(candidates, [](const auto &path) {
     return ToLowerAscii(container::util::pathToUtf8(path.extension())) ==
            ".gltf";
   });
   return gltf != candidates.end() ? *gltf : candidates.front();
 }
 
-std::optional<std::filesystem::path> FindFirstModelFileRecursive(
-    const std::filesystem::path& directory) {
+std::optional<std::filesystem::path>
+FindFirstModelFileRecursive(const std::filesystem::path &directory) {
   std::error_code error;
   std::vector<std::filesystem::path> candidates;
   for (std::filesystem::recursive_directory_iterator it(
@@ -370,8 +406,9 @@ std::optional<std::filesystem::path> FindFirstModelFileRecursive(
   return candidates.front();
 }
 
-std::optional<std::filesystem::path> PreferredSampleModelPath(
-    const std::filesystem::path& modelDirectory, std::string& selectedVariant) {
+std::optional<std::filesystem::path>
+PreferredSampleModelPath(const std::filesystem::path &modelDirectory,
+                         std::string &selectedVariant) {
   static constexpr std::array<std::string_view, 6> kPreferredVariantFolders = {{
       "glTF",
       "glTF-Binary",
@@ -412,26 +449,26 @@ LightingSettings LightingPreset(uint32_t preset) {
   LightingSettings settings{};
   settings.preset = preset;
   switch (preset) {
-    case 1:
-      settings.density = 1.8f;
-      settings.radiusScale = 1.25f;
-      settings.intensityScale = 1.35f;
-      settings.directionalIntensity = 1.15f;
-      break;
-    case 2:
-      settings.density = 0.55f;
-      settings.radiusScale = 1.8f;
-      settings.intensityScale = 0.65f;
-      settings.directionalIntensity = 3.25f;
-      break;
-    case 0:
-    default:
-      settings.preset = 0u;
-      settings.density = 1.0f;
-      settings.radiusScale = 1.0f;
-      settings.intensityScale = 1.0f;
-      settings.directionalIntensity = 2.0f;
-      break;
+  case 1:
+    settings.density = 1.8f;
+    settings.radiusScale = 1.25f;
+    settings.intensityScale = 1.35f;
+    settings.directionalIntensity = 1.15f;
+    break;
+  case 2:
+    settings.density = 0.55f;
+    settings.radiusScale = 1.8f;
+    settings.intensityScale = 0.65f;
+    settings.directionalIntensity = 3.25f;
+    break;
+  case 0:
+  default:
+    settings.preset = 0u;
+    settings.density = 1.0f;
+    settings.radiusScale = 1.0f;
+    settings.intensityScale = 1.0f;
+    settings.directionalIntensity = 2.0f;
+    break;
   }
   return settings;
 }
@@ -442,13 +479,13 @@ void CheckVkResult(VkResult result) {
   }
 }
 
-constexpr size_t TelemetryPhaseIndex(
-    container::renderer::RendererTelemetryPhase phase) {
+constexpr size_t
+TelemetryPhaseIndex(container::renderer::RendererTelemetryPhase phase) {
   return static_cast<size_t>(phase);
 }
 
 float TelemetryPhaseMs(
-    const container::renderer::RendererTelemetrySnapshot& snapshot,
+    const container::renderer::RendererTelemetrySnapshot &snapshot,
     container::renderer::RendererTelemetryPhase phase) {
   if (phase == container::renderer::RendererTelemetryPhase::Count) {
     return 0.0f;
@@ -460,11 +497,11 @@ float PercentOf(float value, float total) {
   return total > 0.0f ? (value / total) * 100.0f : 0.0f;
 }
 
-void ImGuiTextStringView(const char* label, std::string_view value) {
+void ImGuiTextStringView(const char *label, std::string_view value) {
   ImGui::Text("%s: %.*s", label, static_cast<int>(value.size()), value.data());
 }
 
-bool DrawTransformControls(const char* label, TransformControls& transform,
+bool DrawTransformControls(const char *label, TransformControls &transform,
                            float dragSpeed = 0.05f) {
   bool changed = false;
   if (ImGui::TreeNode(label)) {
@@ -478,50 +515,53 @@ bool DrawTransformControls(const char* label, TransformControls& transform,
   return changed;
 }
 
-const char* ViewportGestureLabel(ViewportGesture gesture) {
+const char *ViewportGestureLabel(ViewportGesture gesture) {
   switch (gesture) {
-    case ViewportGesture::None:
-      return "Idle";
-    case ViewportGesture::FlyLook:
-      return "Fly";
-    case ViewportGesture::Orbit:
-      return "Orbit";
-    case ViewportGesture::Pan:
-      return "Pan";
-    case ViewportGesture::TransformDrag:
-      return "Transform";
+  case ViewportGesture::None:
+    return "Idle";
+  case ViewportGesture::FlyLook:
+    return "Fly";
+  case ViewportGesture::Orbit:
+    return "Orbit";
+  case ViewportGesture::Pan:
+    return "Pan";
+  case ViewportGesture::TransformDrag:
+    return "Transform";
   }
   return "Idle";
 }
 
-bool ToolButton(const char* label, ViewportTool tool,
-                ViewportTool activeTool) {
+bool ToolButton(const char *label, ViewportTool tool, ViewportTool activeTool,
+                const char *tooltip = nullptr) {
   if (tool == activeTool) {
-    ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(
-                                               ImGuiCol_ButtonActive));
+    ImGui::PushStyleColor(ImGuiCol_Button,
+                          ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
   }
   const bool clicked = ImGui::Button(label);
   if (tool == activeTool) {
     ImGui::PopStyleColor();
   }
+  if (tooltip != nullptr && ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("%s", tooltip);
+  }
   return clicked;
 }
 
-const char* TransformAxisLabel(TransformAxis axis) {
+const char *TransformAxisLabel(TransformAxis axis) {
   switch (axis) {
-    case TransformAxis::Free:
-      return "Free";
-    case TransformAxis::X:
-      return "X";
-    case TransformAxis::Y:
-      return "Y";
-    case TransformAxis::Z:
-      return "Z";
+  case TransformAxis::Free:
+    return "Free";
+  case TransformAxis::X:
+    return "X";
+  case TransformAxis::Y:
+    return "Y";
+  case TransformAxis::Z:
+    return "Z";
   }
   return "Free";
 }
 
-void DrawRenderPassToggleEntry(RenderPassToggle& pass) {
+void DrawRenderPassToggleEntry(RenderPassToggle &pass) {
   if (pass.locked) {
     ImGui::BeginDisabled();
     ImGui::Checkbox(pass.name.c_str(), &pass.enabled);
@@ -561,7 +601,271 @@ std::string_view RenderPassSectionName(std::string_view passName) {
   return "Post-process";
 }
 
-}  // namespace
+std::string ViewpointSnapshotDisplayName(const ViewpointSnapshotState &snapshot,
+                                         size_t fallbackIndex) {
+  if (!snapshot.label.empty()) {
+    return snapshot.label;
+  }
+  return "Viewpoint " + std::to_string(fallbackIndex + 1u);
+}
+
+std::string CompactIdentifier(std::string_view value, size_t maxLength = 72u) {
+  if (value.size() <= maxLength) {
+    return std::string(value);
+  }
+  if (maxLength <= 3u) {
+    return std::string(value.substr(0u, maxLength));
+  }
+  const size_t prefixLength = (maxLength - 3u) / 2u;
+  const size_t suffixLength = maxLength - 3u - prefixLength;
+  return std::string(value.substr(0u, prefixLength)) + "..." +
+         std::string(value.substr(value.size() - suffixLength));
+}
+
+std::string
+ViewpointSnapshotSelectionLabel(const ViewpointSnapshotState &snapshot) {
+  if (!snapshot.selectedBimGuid.empty()) {
+    return snapshot.selectedBimType.empty()
+               ? snapshot.selectedBimGuid
+               : snapshot.selectedBimType + " [" + snapshot.selectedBimGuid +
+                     "]";
+  }
+  if (!snapshot.selectedBimSourceId.empty()) {
+    const std::string sourceId =
+        CompactIdentifier(snapshot.selectedBimSourceId);
+    return snapshot.selectedBimType.empty()
+               ? sourceId
+               : snapshot.selectedBimType + " [" + sourceId + "]";
+  }
+  if (!snapshot.selectedBimType.empty()) {
+    return snapshot.selectedBimType;
+  }
+  if (snapshot.selectedBimObjectIndex != std::numeric_limits<uint32_t>::max()) {
+    return "BIM object " + std::to_string(snapshot.selectedBimObjectIndex);
+  }
+  if (snapshot.selectedMeshNode != std::numeric_limits<uint32_t>::max()) {
+    return "Scene node " + std::to_string(snapshot.selectedMeshNode);
+  }
+  return "None";
+}
+
+std::string ViewpointModelPathKey(std::string_view value) {
+  if (value.empty()) {
+    return {};
+  }
+
+  const std::filesystem::path path =
+      container::util::pathFromUtf8(std::string(value));
+  std::string key = container::util::pathToUtf8(ComparableModelPath(path));
+  std::ranges::replace(key, '\\', '/');
+#ifdef _WIN32
+  key = ToLowerAscii(std::move(key));
+#endif
+  return key;
+}
+
+bool ViewpointSnapshotModelMismatch(const ViewpointSnapshotState &snapshot,
+                                    const BimInspectionState &inspection) {
+  if (!inspection.hasScene || inspection.modelPath.empty() ||
+      snapshot.bimModelPath.empty()) {
+    return false;
+  }
+  return ViewpointModelPathKey(snapshot.bimModelPath) !=
+         ViewpointModelPathKey(inspection.modelPath);
+}
+
+float BimMeasurementExtent(float extent) {
+  return std::isfinite(extent) ? std::max(extent, 0.0f) : 0.0f;
+}
+
+glm::vec3 BimMeasurementDimensions(const glm::vec3 &size) {
+  return {BimMeasurementExtent(size.x), BimMeasurementExtent(size.y),
+          BimMeasurementExtent(size.z)};
+}
+
+float BimMeasurementFootprintArea(const glm::vec3 &dimensions) {
+  return dimensions.x * dimensions.z;
+}
+
+float BimMeasurementVolume(const glm::vec3 &dimensions) {
+  return dimensions.x * dimensions.y * dimensions.z;
+}
+
+std::string BimMeasurementSelectionLabel(
+    const BimInspectionState &inspection) {
+  if (!inspection.displayName.empty()) {
+    return inspection.displayName;
+  }
+
+  std::string label = inspection.type.empty() ? "BIM object" : inspection.type;
+  label += " ";
+  label += std::to_string(inspection.selectedObjectIndex);
+  if (!inspection.guid.empty()) {
+    label += " [";
+    label += CompactIdentifier(inspection.guid, 36u);
+    label += "]";
+  } else if (!inspection.sourceId.empty()) {
+    label += " [";
+    label += CompactIdentifier(inspection.sourceId, 36u);
+    label += "]";
+  }
+  return label;
+}
+
+struct BimMeasurementDistanceStats {
+  float distance{0.0f};
+  float horizontalDistance{0.0f};
+  float elevationDelta{0.0f};
+  float slopeAngleDegrees{0.0f};
+  float elevationAxisAngleDegrees{0.0f};
+};
+
+BimMeasurementDistanceStats BimMeasurementBetweenCenters(
+    const glm::vec3 &a, const glm::vec3 &b) {
+  constexpr float kRadiansToDegrees = 57.29577951308232f;
+  const glm::vec3 delta = b - a;
+  const float horizontal =
+      std::sqrt(delta.x * delta.x + delta.z * delta.z);
+  const float distance =
+      std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+
+  BimMeasurementDistanceStats stats{};
+  stats.distance = distance;
+  stats.horizontalDistance = horizontal;
+  stats.elevationDelta = delta.y;
+  stats.slopeAngleDegrees =
+      horizontal == 0.0f && delta.y == 0.0f
+          ? 0.0f
+          : std::atan2(delta.y, horizontal) * kRadiansToDegrees;
+  stats.elevationAxisAngleDegrees =
+      distance <= 0.0f
+          ? 0.0f
+          : std::acos(std::clamp(std::abs(delta.y) / distance, 0.0f, 1.0f)) *
+                kRadiansToDegrees;
+  return stats;
+}
+
+ImVec4 BimSemanticLegendColor(
+    container::renderer::BimSemanticColorMode mode,
+    size_t valueIndex) {
+  static constexpr std::array<ImVec4, 14> kBimSemanticLegendPalette{{
+      {0.16f, 0.47f, 0.86f, 1.0f},
+      {0.86f, 0.29f, 0.24f, 1.0f},
+      {0.13f, 0.58f, 0.39f, 1.0f},
+      {0.88f, 0.58f, 0.16f, 1.0f},
+      {0.55f, 0.36f, 0.80f, 1.0f},
+      {0.10f, 0.65f, 0.72f, 1.0f},
+      {0.82f, 0.33f, 0.58f, 1.0f},
+      {0.45f, 0.52f, 0.22f, 1.0f},
+      {0.93f, 0.42f, 0.18f, 1.0f},
+      {0.22f, 0.62f, 0.93f, 1.0f},
+      {0.62f, 0.43f, 0.25f, 1.0f},
+      {0.42f, 0.46f, 0.58f, 1.0f},
+      {0.70f, 0.28f, 0.42f, 1.0f},
+      {0.34f, 0.68f, 0.51f, 1.0f},
+  }};
+
+  const uint32_t semanticId =
+      static_cast<uint32_t>(std::min<size_t>(
+          valueIndex + 1u, std::numeric_limits<uint32_t>::max()));
+  const uint32_t paletteIndex =
+      (semanticId - 1u + static_cast<uint32_t>(mode) * 3u) %
+      static_cast<uint32_t>(kBimSemanticLegendPalette.size());
+  return kBimSemanticLegendPalette[paletteIndex];
+}
+
+std::span<const std::string> BimSemanticLegendValues(
+    container::renderer::BimSemanticColorMode mode,
+    const BimInspectionState &inspection) {
+  switch (mode) {
+  case container::renderer::BimSemanticColorMode::Type:
+    return inspection.elementTypes;
+  case container::renderer::BimSemanticColorMode::Storey:
+    return inspection.elementStoreys;
+  case container::renderer::BimSemanticColorMode::Material:
+    return inspection.elementMaterials;
+  case container::renderer::BimSemanticColorMode::FireRating:
+    return inspection.elementFireRatings;
+  case container::renderer::BimSemanticColorMode::LoadBearing:
+    return inspection.elementLoadBearingValues;
+  case container::renderer::BimSemanticColorMode::Status:
+    return inspection.elementStatuses;
+  case container::renderer::BimSemanticColorMode::Off:
+    break;
+  }
+  return {};
+}
+
+std::string BimSemanticSelectionValue(
+    container::renderer::BimSemanticColorMode mode,
+    const BimInspectionState &inspection) {
+  switch (mode) {
+  case container::renderer::BimSemanticColorMode::Type:
+    return inspection.type;
+  case container::renderer::BimSemanticColorMode::Storey:
+    return !inspection.storeyName.empty() ? inspection.storeyName
+                                          : inspection.storeyId;
+  case container::renderer::BimSemanticColorMode::Material:
+    return !inspection.materialName.empty() ? inspection.materialName
+                                            : inspection.materialCategory;
+  case container::renderer::BimSemanticColorMode::FireRating:
+    return inspection.fireRating;
+  case container::renderer::BimSemanticColorMode::LoadBearing:
+    return inspection.loadBearing;
+  case container::renderer::BimSemanticColorMode::Status:
+    return inspection.status;
+  case container::renderer::BimSemanticColorMode::Off:
+    break;
+  }
+  return {};
+}
+
+std::optional<size_t> FindStringIndex(std::span<const std::string> values,
+                                      const std::string &value) {
+  if (value.empty()) {
+    return std::nullopt;
+  }
+  const auto it = std::ranges::find(values, value);
+  if (it == values.end()) {
+    return std::nullopt;
+  }
+  return static_cast<size_t>(std::distance(values.begin(), it));
+}
+
+bool ContainsCaseInsensitive(std::string_view haystack,
+                             std::string_view needle) {
+  if (needle.empty()) {
+    return true;
+  }
+  return ToLowerAscii(std::string(haystack))
+             .find(ToLowerAscii(std::string(needle))) != std::string::npos;
+}
+
+bool PropertyMatchesSearch(
+    const container::renderer::BimElementProperty &property,
+    std::string_view search) {
+  return ContainsCaseInsensitive(property.set, search) ||
+         ContainsCaseInsensitive(property.name, search) ||
+         ContainsCaseInsensitive(property.value, search) ||
+         ContainsCaseInsensitive(property.category, search);
+}
+
+void DrawSemanticLegendEntry(
+    container::renderer::BimSemanticColorMode mode,
+    size_t valueIndex,
+    const std::string &label) {
+  ImGui::PushID(static_cast<int>(valueIndex));
+  const ImVec4 color = BimSemanticLegendColor(mode, valueIndex);
+  ImGui::ColorButton("##SemanticLegendSwatch", color,
+                     ImGuiColorEditFlags_NoTooltip |
+                         ImGuiColorEditFlags_NoDragDrop,
+                     ImVec2(16.0f, 16.0f));
+  ImGui::SameLine();
+  ImGui::TextWrapped("%s", label.c_str());
+  ImGui::PopID();
+}
+
+} // namespace
 
 GuiManager::~GuiManager() = default;
 
@@ -569,10 +873,11 @@ void GuiManager::initialize(VkInstance instance, VkDevice device,
                             VkPhysicalDevice physicalDevice,
                             VkQueue graphicsQueue, uint32_t graphicsQueueFamily,
                             VkRenderPass renderPass, uint32_t imageCount,
-                            GLFWwindow* window,
-                            const std::string& defaultModelPath,
+                            GLFWwindow *window,
+                            const std::string &defaultModelPath,
                             float defaultImportScale) {
-  if (initialized_) return;
+  if (initialized_)
+    return;
 
   IMGUI_CHECKVERSION();
   ImGui::CreateContext();
@@ -642,7 +947,7 @@ void GuiManager::discoverSampleModels() {
   std::unordered_set<std::string> knownModelPaths;
 
   const auto appendOption = [&](std::string label,
-                                const std::filesystem::path& path) {
+                                const std::filesystem::path &path) {
     if (!knownModelPaths.insert(ModelPathKey(path)).second) {
       return;
     }
@@ -678,7 +983,7 @@ void GuiManager::discoverSampleModels() {
     }
   }
 
-  for (const KnownSampleAsset& asset : kKnownAuxiliarySampleAssets) {
+  for (const KnownSampleAsset &asset : kKnownAuxiliarySampleAssets) {
     const auto modelPath = ResolveRelativeAssetPath(asset.relativePath);
     if (!modelPath) {
       continue;
@@ -686,7 +991,7 @@ void GuiManager::discoverSampleModels() {
 
     appendOption(asset.label, *modelPath);
   }
-  for (const DiscoveredSampleAsset& asset : DiscoverAuxiliarySampleAssets()) {
+  for (const DiscoveredSampleAsset &asset : DiscoverAuxiliarySampleAssets()) {
     appendOption(asset.label, asset.path);
   }
 
@@ -694,7 +999,7 @@ void GuiManager::discoverSampleModels() {
   selectedSampleModelIndex_ = sampleModelIndexForPath(modelPathInput_);
 }
 
-int GuiManager::sampleModelIndexForPath(const std::string& path) const {
+int GuiManager::sampleModelIndexForPath(const std::string &path) const {
   if (path.empty()) {
     return -1;
   }
@@ -711,7 +1016,8 @@ int GuiManager::sampleModelIndexForPath(const std::string& path) const {
 }
 
 void GuiManager::shutdown(VkDevice device) {
-  if (!initialized_) return;
+  if (!initialized_)
+    return;
 
   ImGui_ImplVulkan_Shutdown();
   ImGui_ImplGlfw_Shutdown();
@@ -726,50 +1032,64 @@ void GuiManager::shutdown(VkDevice device) {
 }
 
 void GuiManager::updateSwapchainImageCount(uint32_t imageCount) {
-  if (!initialized_) return;
+  if (!initialized_)
+    return;
   ImGui_ImplVulkan_SetMinImageCount(imageCount);
 }
 
 void GuiManager::startFrame() {
-  if (!initialized_) return;
+  if (!initialized_)
+    return;
   ImGui_ImplVulkan_NewFrame();
   ImGui_ImplGlfw_NewFrame();
   ImGui::NewFrame();
 }
 
 void GuiManager::render(VkCommandBuffer commandBuffer) {
-  if (!initialized_) return;
+  if (!initialized_)
+    return;
   ImGui::Render();
   ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), commandBuffer);
 }
 
 void GuiManager::drawViewportInteractionControls(
-    const ViewportInteractionState& state,
-    const std::function<void(ViewportTool)>& setTool,
-    const std::function<void(TransformSpace)>& setTransformSpace,
-    const std::function<void(TransformAxis)>& setTransformAxis) {
-  if (!initialized_) return;
+    const ViewportInteractionState &state,
+    const std::function<void(ViewportTool)> &setTool,
+    const std::function<void(TransformSpace)> &setTransformSpace,
+    const std::function<void(TransformAxis)> &setTransformAxis,
+    const std::function<void(ViewportNavigationStyle)> &setNavigationStyle,
+    const std::function<void(bool)> &setTransformSnapEnabled) {
+  if (!initialized_)
+    return;
 
   ImGui::Begin("Viewport");
   ImGui::Text("Tool");
-  if (ToolButton("Select", ViewportTool::Select, state.tool) && setTool) {
+  if (ToolButton("Select", ViewportTool::Select, state.tool,
+                 "Click visible geometry to select it.") &&
+      setTool) {
     setTool(ViewportTool::Select);
   }
   ImGui::SameLine();
-  if (ToolButton("Move", ViewportTool::Translate, state.tool) && setTool) {
+  if (ToolButton("Move", ViewportTool::Translate, state.tool,
+                 "Drag a gizmo arrow or center box to move the selection.") &&
+      setTool) {
     setTool(ViewportTool::Translate);
   }
   ImGui::SameLine();
-  if (ToolButton("Rotate", ViewportTool::Rotate, state.tool) && setTool) {
+  if (ToolButton("Rotate", ViewportTool::Rotate, state.tool,
+                 "Drag a gizmo ring to rotate the selection.") &&
+      setTool) {
     setTool(ViewportTool::Rotate);
   }
   ImGui::SameLine();
-  if (ToolButton("Scale", ViewportTool::Scale, state.tool) && setTool) {
+  if (ToolButton("Scale", ViewportTool::Scale, state.tool,
+                 "Drag a gizmo box handle to scale the selection.") &&
+      setTool) {
     setTool(ViewportTool::Scale);
   }
 
   int transformSpace = static_cast<int>(state.transformSpace);
-  static constexpr const char* kTransformSpaceLabels[] = {"Local", "World"};
+  static constexpr const char *kTransformSpaceLabels[] = {"Local", "World"};
   if (ImGui::Combo("Space", &transformSpace, kTransformSpaceLabels,
                    IM_ARRAYSIZE(kTransformSpaceLabels)) &&
       setTransformSpace) {
@@ -777,38 +1097,408 @@ void GuiManager::drawViewportInteractionControls(
   }
 
   int transformAxis = static_cast<int>(state.transformAxis);
-  static constexpr const char* kTransformAxisLabels[] = {"Free", "X", "Y",
-                                                         "Z"};
+  static constexpr const char *kTransformAxisLabels[] = {"Free", "X", "Y", "Z"};
   if (ImGui::Combo("Axis", &transformAxis, kTransformAxisLabels,
                    IM_ARRAYSIZE(kTransformAxisLabels)) &&
       setTransformAxis) {
     setTransformAxis(static_cast<TransformAxis>(transformAxis));
   }
 
+  int navigationStyle = static_cast<int>(state.navigationStyle);
+  static constexpr const char *kNavigationStyleLabels[] = {"Revit", "Blender"};
+  if (ImGui::Combo("Navigation", &navigationStyle, kNavigationStyleLabels,
+                   IM_ARRAYSIZE(kNavigationStyleLabels)) &&
+      setNavigationStyle) {
+    setNavigationStyle(static_cast<ViewportNavigationStyle>(navigationStyle));
+  }
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip(
+        state.navigationStyle == ViewportNavigationStyle::Revit
+            ? "Revit: middle drag pans, Shift+middle orbits."
+            : "Blender: middle drag orbits, Shift+middle pans.");
+  }
+
+  bool transformSnapEnabled = state.transformSnapEnabled;
+  if (ImGui::Checkbox("Snap", &transformSnapEnabled) &&
+      setTransformSnapEnabled) {
+    setTransformSnapEnabled(transformSnapEnabled);
+  }
+  if (ImGui::IsItemHovered()) {
+    ImGui::SetTooltip("Snap Move to 0.25, Rotate to 15 deg, Scale to 0.1.");
+  }
+
   ImGui::Text("Gesture: %s", ViewportGestureLabel(state.gesture));
   ImGui::Text("Constraint: %s", TransformAxisLabel(state.transformAxis));
+  if (state.hoverTransformAxis != TransformAxis::Free &&
+      state.transformAxis == TransformAxis::Free) {
+    ImGui::Text("Handle: %s", TransformAxisLabel(state.hoverTransformAxis));
+  }
   ImGui::End();
 }
 
-void GuiManager::drawSceneControls(
-    const container::scene::SceneGraph& sceneGraph,
-    const std::function<bool(const std::string&, float)>& reloadModel,
-    const std::function<bool(float)>& reloadDefault,
-    const TransformControls& cameraTransform,
-    const std::function<void(const TransformControls&)>& applyCameraTransform,
-    const TransformControls& sceneTransform,
-    const std::function<void(const TransformControls&)>& applySceneTransform,
-    const glm::vec3& directionalLightPosition,
-    const container::gpu::LightingData& lightingData,
-    const std::vector<container::gpu::PointLightData>& pointLights,
-    uint32_t selectedMeshNode,
-    const std::function<void(uint32_t)>& selectMeshNode,
-    const TransformControls& meshTransform,
-    const std::function<void(uint32_t, const TransformControls&)>&
-        applyMeshTransform) {
-  if (!initialized_) return;
+void GuiManager::drawViewportNavigationOverlay(
+    const ViewportNavigationState &state,
+    const std::function<void(CameraViewPreset)> &setViewPreset,
+    const std::function<void(float, float)> &freeRotate,
+    const std::function<void(float, float)> &panView,
+    const std::function<void()> &toggleProjectionMode) {
+  if (!initialized_)
+    return;
 
-  static constexpr const char* kGBufferViewLabels[] = {"Lit",
+  const ImGuiViewport *viewport = ImGui::GetMainViewport();
+  const ImVec2 widgetSize{172.0f, 214.0f};
+  const ImVec2 windowPos{viewport->WorkPos.x + viewport->WorkSize.x -
+                             widgetSize.x - 18.0f,
+                         viewport->WorkPos.y + 18.0f};
+  ImGui::SetNextWindowPos(windowPos, ImGuiCond_Always);
+  ImGui::SetNextWindowSize(widgetSize, ImGuiCond_Always);
+  ImGui::SetNextWindowBgAlpha(0.0f);
+
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+  const ImGuiWindowFlags flags =
+      ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+      ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+      ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+      ImGuiWindowFlags_NoNav;
+  if (ImGui::Begin("Viewport Navigation", nullptr, flags)) {
+    ImDrawList *drawList = ImGui::GetWindowDrawList();
+    const ImVec2 origin = ImGui::GetCursorScreenPos();
+    const ImVec2 center{origin.x + widgetSize.x * 0.5f,
+                        origin.y + 126.0f};
+    const bool orthographic =
+        state.projectionMode == CameraProjectionMode::Orthographic;
+    const glm::vec3 right =
+        glm::normalize(glm::length(state.cameraRight) > 0.0001f
+                           ? state.cameraRight
+                           : glm::vec3{1.0f, 0.0f, 0.0f});
+    const glm::vec3 up =
+        glm::normalize(glm::length(state.cameraUp) > 0.0001f
+                           ? state.cameraUp
+                           : glm::vec3{0.0f, 1.0f, 0.0f});
+    const glm::vec3 forward =
+        glm::normalize(glm::length(state.cameraForward) > 0.0001f
+                           ? state.cameraForward
+                           : glm::vec3{0.0f, 0.0f, -1.0f});
+    const auto projectAxis = [&](const glm::vec3 &axis) {
+      const float x = glm::dot(axis, right);
+      const float y = -glm::dot(axis, up);
+      const float length = std::sqrt(x * x + y * y);
+      ImVec2 direction{0.0f, 0.0f};
+      if (length > 0.0001f) {
+        direction = {x / length, y / length};
+      } else {
+        direction = {0.0f, glm::dot(axis, forward) > 0.0f ? 1.0f : -1.0f};
+      }
+      const float radius = 20.0f + 48.0f * std::clamp(length, 0.0f, 1.0f);
+      return ImVec2(center.x + direction.x * radius,
+                    center.y + direction.y * radius);
+    };
+
+    struct AxisEndpoint {
+      const char *id;
+      const char *label;
+      const char *tooltip;
+      glm::vec3 axis;
+      ImU32 color;
+      CameraViewPreset preset;
+      bool positive;
+      float depth;
+      ImVec2 position;
+      float radius;
+      bool hovered{false};
+    };
+
+    std::array<AxisEndpoint, 6> endpoints{{
+        {"##nav-axis-x-pos", "X", "Right view (+X)", {1.0f, 0.0f, 0.0f},
+         IM_COL32(255, 78, 91, 255), CameraViewPreset::Right, true, 0.0f,
+         {}, 15.0f},
+        {"##nav-axis-x-neg", "", "Left view (-X)", {-1.0f, 0.0f, 0.0f},
+         IM_COL32(255, 78, 91, 255), CameraViewPreset::Left, false, 0.0f,
+         {}, 13.0f},
+        {"##nav-axis-y-pos", "Y", "Top view (+Y)", {0.0f, 1.0f, 0.0f},
+         IM_COL32(126, 220, 56, 255), CameraViewPreset::Top, true, 0.0f,
+         {}, 15.0f},
+        {"##nav-axis-y-neg", "", "Bottom view (-Y)", {0.0f, -1.0f, 0.0f},
+         IM_COL32(126, 220, 56, 255), CameraViewPreset::Bottom, false, 0.0f,
+         {}, 13.0f},
+        {"##nav-axis-z-pos", "Z", "Front view (+Z)", {0.0f, 0.0f, 1.0f},
+         IM_COL32(67, 140, 255, 255), CameraViewPreset::Front, true, 0.0f,
+         {}, 15.0f},
+        {"##nav-axis-z-neg", "", "Back view (-Z)", {0.0f, 0.0f, -1.0f},
+         IM_COL32(67, 140, 255, 255), CameraViewPreset::Back, false, 0.0f,
+         {}, 13.0f},
+    }};
+
+    for (auto &endpoint : endpoints) {
+      endpoint.depth = glm::dot(endpoint.axis, forward);
+      endpoint.position = projectAxis(endpoint.axis);
+    }
+
+    std::ranges::sort(endpoints, [](const AxisEndpoint &lhs,
+                                    const AxisEndpoint &rhs) {
+      return lhs.depth > rhs.depth;
+    });
+
+    const ImVec2 mouse = ImGui::GetIO().MousePos;
+    const auto distanceSquared = [](const ImVec2 &a, const ImVec2 &b) {
+      const float dx = a.x - b.x;
+      const float dy = a.y - b.y;
+      return dx * dx + dy * dy;
+    };
+    const bool diskHovered =
+        distanceSquared(mouse, center) <= 78.0f * 78.0f &&
+        ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem);
+    bool axisHovered = false;
+    for (const auto &endpoint : endpoints) {
+      const float hoverRadius = endpoint.radius + 5.0f;
+      axisHovered = axisHovered ||
+                    distanceSquared(mouse, endpoint.position) <=
+                        hoverRadius * hoverRadius;
+    }
+
+    if (!axisHovered && diskHovered) {
+      constexpr float kDiskDragRadius = 78.0f;
+      ImGui::SetCursorScreenPos(ImVec2(center.x - kDiskDragRadius,
+                                       center.y - kDiskDragRadius));
+      ImGui::InvisibleButton(
+          "##viewport-nav-disk-drag",
+          ImVec2(kDiskDragRadius * 2.0f, kDiskDragRadius * 2.0f),
+          ImGuiButtonFlags_MouseButtonLeft |
+              ImGuiButtonFlags_MouseButtonMiddle |
+              ImGuiButtonFlags_MouseButtonRight);
+      if (ImGui::IsItemHovered() || ImGui::IsItemActive()) {
+        ImGui::SetTooltip("Drag to rotate. Middle/right drag to pan.");
+      }
+      if ((ImGui::IsItemHovered() || ImGui::IsItemActive()) &&
+          ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
+        viewportNavFreeRotateActive_ = true;
+      }
+      if ((ImGui::IsItemHovered() || ImGui::IsItemActive()) &&
+          (ImGui::IsMouseClicked(ImGuiMouseButton_Middle) ||
+           ImGui::IsMouseClicked(ImGuiMouseButton_Right))) {
+        viewportNavPanActive_ = true;
+      }
+    }
+
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+      viewportNavFreeRotateActive_ = false;
+    }
+    if (!ImGui::IsMouseDown(ImGuiMouseButton_Middle) &&
+        !ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
+      viewportNavPanActive_ = false;
+    }
+
+    const ImVec2 navigationDragDelta = ImGui::GetIO().MouseDelta;
+    if (viewportNavFreeRotateActive_ && freeRotate) {
+      if (navigationDragDelta.x != 0.0f || navigationDragDelta.y != 0.0f) {
+        freeRotate(navigationDragDelta.x, navigationDragDelta.y);
+      }
+    }
+    if (viewportNavPanActive_ && panView) {
+      if (navigationDragDelta.x != 0.0f || navigationDragDelta.y != 0.0f) {
+        panView(navigationDragDelta.x, navigationDragDelta.y);
+      }
+    }
+
+    if (diskHovered || axisHovered || viewportNavFreeRotateActive_ ||
+        viewportNavPanActive_) {
+      drawList->AddCircleFilled(
+          center, 78.0f,
+          viewportNavPanActive_ ? IM_COL32(220, 224, 230, 118)
+                                : IM_COL32(220, 224, 230, 86),
+          72);
+    }
+    drawList->AddCircle(center, 66.0f, IM_COL32(236, 240, 245, 116), 72,
+                        1.7f);
+    drawList->AddCircle(center, 4.0f, IM_COL32(238, 242, 247, 210), 16, 1.5f);
+
+    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(24, 27, 32, 228));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, IM_COL32(44, 49, 58, 242));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, IM_COL32(56, 64, 76, 255));
+    ImGui::SetCursorScreenPos(ImVec2(origin.x + 38.0f, origin.y + 8.0f));
+    if (ImGui::Button("Options v", ImVec2(96.0f, 30.0f))) {
+      ImGui::OpenPopup("##viewport-nav-options");
+    }
+    if (ImGui::BeginPopup("##viewport-nav-options")) {
+      ImGui::TextDisabled("%s", orthographic ? "Orthographic" : "Perspective");
+      if (ImGui::Selectable(orthographic ? "Perspective" : "Orthographic") &&
+          toggleProjectionMode) {
+        toggleProjectionMode();
+      }
+      ImGui::EndPopup();
+    }
+    ImGui::PopStyleColor(3);
+
+    for (const auto &endpoint : endpoints) {
+      drawList->AddLine(center, endpoint.position, endpoint.color, 2.2f);
+    }
+
+    const auto projectCubePoint = [&](const glm::vec3 &point) {
+      constexpr float kCubeScale = 21.0f;
+      const float depth = glm::dot(point, forward);
+      const float projectionScale =
+          orthographic ? 1.0f
+                       : 1.0f /
+                             std::clamp(1.0f - depth * 0.18f, 0.74f, 1.26f);
+      return ImVec2(center.x + glm::dot(point, right) * kCubeScale *
+                                   projectionScale,
+                    center.y - glm::dot(point, up) * kCubeScale *
+                                   projectionScale);
+    };
+
+    const std::array<glm::vec3, 8> cubeCorners{{
+        {-1.0f, -1.0f, -1.0f},
+        {1.0f, -1.0f, -1.0f},
+        {1.0f, 1.0f, -1.0f},
+        {-1.0f, 1.0f, -1.0f},
+        {-1.0f, -1.0f, 1.0f},
+        {1.0f, -1.0f, 1.0f},
+        {1.0f, 1.0f, 1.0f},
+        {-1.0f, 1.0f, 1.0f},
+    }};
+
+    struct CubeFace {
+      std::array<uint32_t, 4> cornerIndices{};
+      glm::vec3 normal{0.0f};
+      const char *label{""};
+      float visibility{0.0f};
+      float depth{0.0f};
+      bool visible{false};
+    };
+
+    std::array<CubeFace, 6> cubeFaces{{
+        {{{0u, 1u, 2u, 3u}}, {0.0f, 0.0f, -1.0f}, "BACK"},
+        {{{4u, 7u, 6u, 5u}}, {0.0f, 0.0f, 1.0f}, "FRONT"},
+        {{{0u, 3u, 7u, 4u}}, {-1.0f, 0.0f, 0.0f}, "LEFT"},
+        {{{1u, 5u, 6u, 2u}}, {1.0f, 0.0f, 0.0f}, "RIGHT"},
+        {{{0u, 4u, 5u, 1u}}, {0.0f, -1.0f, 0.0f}, "BOTTOM"},
+        {{{3u, 2u, 6u, 7u}}, {0.0f, 1.0f, 0.0f}, "TOP"},
+    }};
+
+    bool hasVisibleCubeFace = false;
+    float closestFaceVisibility = 1.0f;
+    size_t closestFaceIndex = 0u;
+    for (size_t faceIndex = 0; faceIndex < cubeFaces.size(); ++faceIndex) {
+      auto &face = cubeFaces[faceIndex];
+      face.visibility = glm::dot(face.normal, forward);
+      face.visible = face.visibility < -0.001f;
+      hasVisibleCubeFace = hasVisibleCubeFace || face.visible;
+      face.depth = 0.0f;
+      for (const uint32_t cornerIndex : face.cornerIndices) {
+        face.depth += glm::dot(cubeCorners[cornerIndex], forward);
+      }
+      face.depth *= 0.25f;
+      if (face.visibility < closestFaceVisibility) {
+        closestFaceVisibility = face.visibility;
+        closestFaceIndex = faceIndex;
+      }
+    }
+    if (!hasVisibleCubeFace) {
+      cubeFaces[closestFaceIndex].visible = true;
+    }
+
+    std::ranges::sort(cubeFaces, [](const CubeFace &lhs,
+                                    const CubeFace &rhs) {
+      return lhs.depth > rhs.depth;
+    });
+
+    for (const auto &face : cubeFaces) {
+      if (!face.visible) {
+        continue;
+      }
+      std::array<ImVec2, 4> points{};
+      ImVec2 faceCenter{0.0f, 0.0f};
+      for (size_t corner = 0; corner < points.size(); ++corner) {
+        points[corner] = projectCubePoint(cubeCorners[face.cornerIndices[corner]]);
+        faceCenter.x += points[corner].x;
+        faceCenter.y += points[corner].y;
+      }
+      faceCenter.x *= 0.25f;
+      faceCenter.y *= 0.25f;
+
+      const float shade =
+          std::clamp(0.72f - face.visibility * 0.16f, 0.55f, 0.92f);
+      const auto channel = [shade](float value) {
+        return static_cast<int>(std::clamp(value * shade, 0.0f, 255.0f));
+      };
+      const ImU32 fill = IM_COL32(channel(118.0f), channel(128.0f),
+                                  channel(142.0f), 226);
+      drawList->AddQuadFilled(points[0], points[1], points[2], points[3],
+                              fill);
+      drawList->AddQuad(points[0], points[1], points[2], points[3],
+                        IM_COL32(232, 236, 242, 225), 1.2f);
+
+      const ImVec2 textSize = ImGui::CalcTextSize(face.label);
+      drawList->AddText(ImVec2(faceCenter.x - textSize.x * 0.5f,
+                               faceCenter.y - textSize.y * 0.5f),
+                        IM_COL32(42, 47, 56, 235), face.label);
+    }
+
+    for (auto &endpoint : endpoints) {
+      const float hitRadius = endpoint.radius + 5.0f;
+      ImGui::SetCursorScreenPos(ImVec2(endpoint.position.x - hitRadius,
+                                       endpoint.position.y - hitRadius));
+      ImGui::InvisibleButton(endpoint.id,
+                             ImVec2(hitRadius * 2.0f, hitRadius * 2.0f));
+      endpoint.hovered = ImGui::IsItemHovered();
+      if (endpoint.hovered) {
+        ImGui::SetTooltip("%s", endpoint.tooltip);
+      }
+      if (ImGui::IsItemClicked() && setViewPreset) {
+        setViewPreset(endpoint.preset);
+      }
+
+      const float drawRadius = endpoint.radius + (endpoint.hovered ? 2.0f : 0.0f);
+      if (endpoint.positive) {
+        drawList->AddCircleFilled(endpoint.position, drawRadius, endpoint.color,
+                                  32);
+        if (endpoint.hovered) {
+          drawList->AddCircle(endpoint.position, drawRadius + 3.0f,
+                              IM_COL32(255, 255, 255, 240), 32, 2.0f);
+        }
+        const ImVec2 textSize = ImGui::CalcTextSize(endpoint.label);
+        drawList->AddText(
+            ImVec2(endpoint.position.x - textSize.x * 0.5f,
+                   endpoint.position.y - textSize.y * 0.5f),
+            endpoint.hovered ? IM_COL32(255, 255, 255, 255)
+                             : IM_COL32(8, 10, 14, 255),
+            endpoint.label);
+      } else {
+        drawList->AddCircleFilled(endpoint.position, drawRadius,
+                                  IM_COL32(28, 32, 38, endpoint.hovered ? 170 : 82),
+                                  32);
+        drawList->AddCircle(endpoint.position, drawRadius, endpoint.color, 32,
+                            endpoint.hovered ? 2.8f : 2.0f);
+      }
+    }
+  }
+  ImGui::End();
+  ImGui::PopStyleVar(2);
+}
+
+void GuiManager::drawSceneControls(
+    const container::scene::SceneGraph &sceneGraph,
+    const std::function<bool(const std::string &, float)> &reloadModel,
+    const std::function<bool(float)> &reloadDefault,
+    const TransformControls &cameraTransform,
+    const std::function<void(const TransformControls &)> &applyCameraTransform,
+    const TransformControls &sceneTransform,
+    const std::function<void(const TransformControls &)> &applySceneTransform,
+    const glm::vec3 &directionalLightPosition,
+    const container::gpu::LightingData &lightingData,
+    const std::vector<container::gpu::PointLightData> &pointLights,
+    uint32_t selectedMeshNode, const BimInspectionState &bimInspection,
+    const ViewpointSnapshotState &currentViewpoint,
+    const std::function<bool(const ViewpointSnapshotState &)> &restoreViewpoint,
+    const std::function<void(uint32_t)> &selectMeshNode,
+    const TransformControls &meshTransform,
+    const std::function<void(uint32_t, const TransformControls &)>
+        &applyMeshTransform) {
+  if (!initialized_)
+    return;
+
+  static constexpr const char *kGBufferViewLabels[] = {"Lit",
                                                        "Albedo",
                                                        "Normals",
                                                        "Material",
@@ -838,13 +1528,13 @@ void GuiManager::drawSceneControls(
     const bool hasSelection = selectedSampleModelIndex_ >= 0 &&
                               selectedSampleModelIndex_ <
                                   static_cast<int>(sampleModelOptions_.size());
-    const char* preview =
+    const char *preview =
         hasSelection
             ? sampleModelOptions_[selectedSampleModelIndex_].label.c_str()
             : "Select sample model";
     if (ImGui::BeginCombo("Sample model", preview)) {
       for (int i = 0; i < static_cast<int>(sampleModelOptions_.size()); ++i) {
-        const auto& option = sampleModelOptions_[i];
+        const auto &option = sampleModelOptions_[i];
         const bool selected = i == selectedSampleModelIndex_;
         if (ImGui::Selectable(option.label.c_str(), selected)) {
           selectedSampleModelIndex_ = i;
@@ -928,7 +1618,7 @@ void GuiManager::drawSceneControls(
   }
   ImGui::Checkbox("Wireframe Enabled", &wireframeSettings_.enabled);
   int wireframeMode = static_cast<int>(wireframeSettings_.mode);
-  static constexpr const char* kWireframeModeLabels[] = {"Overlay", "Full"};
+  static constexpr const char *kWireframeModeLabels[] = {"Overlay", "Full"};
   if (ImGui::Combo("Wireframe Mode", &wireframeMode, kWireframeModeLabels,
                    IM_ARRAYSIZE(kWireframeModeLabels))) {
     wireframeSettings_.mode = static_cast<WireframeMode>(wireframeMode);
@@ -956,6 +1646,2421 @@ void GuiManager::drawSceneControls(
   ImGui::Text("Renderable primitives: %zu",
               sceneGraph.renderableNodes().size());
 
+  if (!bimInspection.hasScene) {
+    bimMeasurementModelPath_.clear();
+    bimMeasurementEffectiveImportScale_ = 1.0f;
+    bimMeasurementObjectCount_ = 0u;
+    bimMeasurementPointA_ = {};
+    bimMeasurementPointB_ = {};
+    bimMeasurementAnnotations_.clear();
+    nextBimMeasurementAnnotationId_ = 1u;
+    selectedBimMeasurementAnnotationIndex_ = -1;
+    selectedBimStoreyRangeIndex_ = -1;
+    bimSelectionSets_.clear();
+    selectedBimSelectionSetIndex_ = -1;
+    nextBimSelectionSetId_ = 1u;
+  } else {
+    const float effectiveScale = bimInspection.hasEffectiveImportScale
+                                     ? bimInspection.effectiveImportScale
+                                     : (bimInspection.hasImportScale
+                                            ? bimInspection.importScale
+                                            : 1.0f);
+    const bool measurementSourceChanged =
+        bimMeasurementModelPath_ != bimInspection.modelPath ||
+        std::abs(bimMeasurementEffectiveImportScale_ - effectiveScale) >
+            0.000001f ||
+        bimMeasurementObjectCount_ != bimInspection.objectCount;
+    if (measurementSourceChanged) {
+      bimMeasurementModelPath_ = bimInspection.modelPath;
+      bimMeasurementEffectiveImportScale_ = effectiveScale;
+      bimMeasurementObjectCount_ = bimInspection.objectCount;
+      bimMeasurementPointA_ = {};
+      bimMeasurementPointB_ = {};
+      bimMeasurementAnnotations_.clear();
+      nextBimMeasurementAnnotationId_ = 1u;
+      selectedBimMeasurementAnnotationIndex_ = -1;
+      selectedBimStoreyRangeIndex_ = -1;
+      bimSelectionSets_.clear();
+      selectedBimSelectionSetIndex_ = -1;
+      nextBimSelectionSetId_ = 1u;
+    }
+  }
+
+  if (bimInspection.hasScene) {
+    ImGui::Separator();
+    if (ImGui::TreeNode("BIM")) {
+      ImGui::Text("Objects: %zu", bimInspection.objectCount);
+      ImGui::Text("Objects by geometry: %zu mesh, %zu point-cloud, %zu curve",
+                  bimInspection.meshObjectCount,
+                  bimInspection.pointObjectCount,
+                  bimInspection.curveObjectCount);
+      ImGui::Text("Mesh draws: %zu opaque, %zu transparent",
+                  bimInspection.opaqueDrawCount,
+                  bimInspection.transparentDrawCount);
+      ImGui::Text("Point-cloud draws: %zu opaque, %zu transparent",
+                  bimInspection.pointOpaqueDrawCount,
+                  bimInspection.pointTransparentDrawCount);
+      ImGui::Text("Curve draws: %zu opaque, %zu transparent",
+                  bimInspection.curveOpaqueDrawCount,
+                  bimInspection.curveTransparentDrawCount);
+      ImGui::Text("Native point draws: %zu opaque, %zu transparent",
+                  bimInspection.nativePointOpaqueDrawCount,
+                  bimInspection.nativePointTransparentDrawCount);
+      ImGui::Text("Native curve draws: %zu opaque, %zu transparent",
+                  bimInspection.nativeCurveOpaqueDrawCount,
+                  bimInspection.nativeCurveTransparentDrawCount);
+      ImGui::Text("Meshlet clusters: %zu (%zu source, %zu estimated)",
+                  bimInspection.meshletClusterCount,
+                  bimInspection.meshletSourceClusterCount,
+                  bimInspection.meshletEstimatedClusterCount);
+      ImGui::Text("Cluster references: %zu object refs, max LOD %u",
+                  bimInspection.meshletObjectReferenceCount,
+                  bimInspection.meshletMaxLodLevel);
+      ImGui::Text(
+          "GPU meshlet residency: %zu objects, %zu clusters, %.2f MB, compute %s%s",
+                  bimInspection.meshletGpuResidentObjectCount,
+                  bimInspection.meshletGpuResidentClusterCount,
+                  static_cast<double>(bimInspection.meshletGpuBufferBytes) /
+                      (1024.0 * 1024.0),
+          bimInspection.meshletGpuComputeReady ? "ready" : "offline",
+          bimInspection.meshletGpuDispatchPending ? ", pending" : "");
+      ImGui::Text("Optimized metadata cacheable: %s",
+                  bimInspection.optimizedModelMetadataCacheable ? "yes"
+                                                               : "no");
+      ImGui::Text("Optimized metadata cache: %s",
+                  !bimInspection.optimizedModelMetadataCacheStatus.empty()
+                      ? bimInspection.optimizedModelMetadataCacheStatus.c_str()
+                      : bimInspection.optimizedModelMetadataCacheHit
+                            ? "hit"
+                        : bimInspection.optimizedModelMetadataCacheWritten
+                            ? "written"
+                            : "not written");
+      ImGui::Text("Floor-plan overlays: %zu", bimInspection.floorPlanDrawCount);
+      ImGui::Text("Types: %zu", bimInspection.uniqueTypeCount);
+      ImGui::Text("Storeys: %zu", bimInspection.uniqueStoreyCount);
+      ImGui::Text("Materials: %zu", bimInspection.uniqueMaterialCount);
+      ImGui::Text("Disciplines: %zu", bimInspection.uniqueDisciplineCount);
+      ImGui::Text("Phases: %zu", bimInspection.uniquePhaseCount);
+      ImGui::Text("Fire ratings: %zu", bimInspection.uniqueFireRatingCount);
+      ImGui::Text("Load-bearing values: %zu",
+                  bimInspection.uniqueLoadBearingCount);
+      ImGui::Text("Statuses: %zu", bimInspection.uniqueStatusCount);
+      if (!bimInspection.modelPath.empty()) {
+        ImGui::TextWrapped("Source: %s", bimInspection.modelPath.c_str());
+      }
+      if (bimInspection.hasSourceUnits) {
+        ImGui::TextWrapped("Source units: %s",
+                           bimInspection.sourceUnits.c_str());
+      }
+      if (bimInspection.hasMetersPerUnit) {
+        ImGui::Text("Meters per unit: %.9g", bimInspection.metersPerUnit);
+      }
+      if (bimInspection.hasImportScale) {
+        ImGui::Text("Import scale: %.9g", bimInspection.importScale);
+      }
+      if (bimInspection.hasEffectiveImportScale) {
+        ImGui::Text("Effective import scale: %.9g",
+                    bimInspection.effectiveImportScale);
+      }
+      if (bimInspection.hasSourceUpAxis) {
+        ImGui::TextWrapped("Source up axis: %s",
+                           bimInspection.sourceUpAxis.c_str());
+      }
+      if (bimInspection.hasCoordinateOffset) {
+        ImGui::Text("Coordinate offset: %.3f, %.3f, %.3f",
+                    bimInspection.coordinateOffset.x,
+                    bimInspection.coordinateOffset.y,
+                    bimInspection.coordinateOffset.z);
+        if (!bimInspection.coordinateOffsetSource.empty()) {
+          ImGui::TextWrapped("Offset source: %s",
+                             bimInspection.coordinateOffsetSource.c_str());
+        }
+      }
+      if (!bimInspection.crsName.empty() ||
+          !bimInspection.crsAuthority.empty() ||
+          !bimInspection.crsCode.empty()) {
+        std::string crs = bimInspection.crsName;
+        if (!bimInspection.crsAuthority.empty() ||
+            !bimInspection.crsCode.empty()) {
+          if (!crs.empty()) {
+            crs += " ";
+          }
+          crs += "(" + bimInspection.crsAuthority;
+          if (!bimInspection.crsAuthority.empty() &&
+              !bimInspection.crsCode.empty()) {
+            crs += ":";
+          }
+          crs += bimInspection.crsCode + ")";
+        }
+        ImGui::TextWrapped("CRS: %s", crs.c_str());
+      }
+      if (!bimInspection.mapConversionName.empty()) {
+        ImGui::TextWrapped("Map conversion: %s",
+                           bimInspection.mapConversionName.c_str());
+      }
+      if (ImGui::TreeNode("Georeference and Units")) {
+        auto drawMetadataRow = [](const char *label,
+                                  const std::string &value) {
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::TextDisabled("%s", label);
+          ImGui::TableNextColumn();
+          if (value.empty()) {
+            ImGui::TextDisabled("not exposed");
+          } else {
+            ImGui::TextWrapped("%s", value.c_str());
+          }
+        };
+        auto drawMetadataFloatRow = [](const char *label, bool present,
+                                       float value, const char *format) {
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::TextDisabled("%s", label);
+          ImGui::TableNextColumn();
+          if (present) {
+            ImGui::Text(format, value);
+          } else {
+            ImGui::TextDisabled("not exposed");
+          }
+        };
+        if (ImGui::BeginTable("BimGeoreferenceAndUnits", 2,
+                              ImGuiTableFlags_BordersInnerV |
+                                  ImGuiTableFlags_RowBg |
+                                  ImGuiTableFlags_SizingStretchProp)) {
+          drawMetadataRow("Source path", bimInspection.modelPath);
+          drawMetadataRow("Source units", bimInspection.sourceUnits);
+          drawMetadataFloatRow("Meters per unit",
+                               bimInspection.hasMetersPerUnit,
+                               bimInspection.metersPerUnit, "%.9g");
+          drawMetadataFloatRow("Import scale", bimInspection.hasImportScale,
+                               bimInspection.importScale, "%.9g");
+          drawMetadataFloatRow("Effective import scale",
+                               bimInspection.hasEffectiveImportScale,
+                               bimInspection.effectiveImportScale, "%.9g");
+          drawMetadataRow("Source up axis", bimInspection.sourceUpAxis);
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          ImGui::TextDisabled("Coordinate offset");
+          ImGui::TableNextColumn();
+          if (bimInspection.hasCoordinateOffset) {
+            ImGui::Text("%.3f, %.3f, %.3f",
+                        bimInspection.coordinateOffset.x,
+                        bimInspection.coordinateOffset.y,
+                        bimInspection.coordinateOffset.z);
+          } else {
+            ImGui::TextDisabled("not exposed");
+          }
+          drawMetadataRow("Offset source",
+                          bimInspection.coordinateOffsetSource);
+          drawMetadataRow("CRS name", bimInspection.crsName);
+          drawMetadataRow("CRS authority", bimInspection.crsAuthority);
+          drawMetadataRow("CRS code", bimInspection.crsCode);
+          drawMetadataRow("Map conversion", bimInspection.mapConversionName);
+          ImGui::EndTable();
+        }
+        if (bimInspection.crsName.empty() &&
+            bimInspection.crsAuthority.empty() &&
+            bimInspection.crsCode.empty()) {
+          ImGui::TextDisabled("No CRS metadata exposed");
+        }
+        ImGui::TreePop();
+      }
+
+      const std::string semanticColorLabel(
+          container::renderer::bimSemanticColorModeLabel(
+              bimSemanticColorMode_));
+      if (ImGui::BeginCombo("Semantic color",
+                            semanticColorLabel.c_str())) {
+        for (container::renderer::BimSemanticColorMode mode :
+             container::renderer::kBimSemanticColorModes) {
+          const std::string label(
+              container::renderer::bimSemanticColorModeLabel(mode));
+          const bool selected = bimSemanticColorMode_ == mode;
+          if (ImGui::Selectable(label.c_str(), selected)) {
+            bimSemanticColorMode_ = mode;
+          }
+          if (selected) {
+            ImGui::SetItemDefaultFocus();
+          }
+        }
+        ImGui::EndCombo();
+      }
+      if (ImGui::TreeNode("Semantic color legend")) {
+        if (bimSemanticColorMode_ ==
+            container::renderer::BimSemanticColorMode::Off) {
+          ImGui::TextDisabled(
+              "Original materials do not have a generated semantic legend");
+          if (bimInspection.hasSelection) {
+            glm::vec4 color = bimInspection.sourceColor;
+            ImGui::BeginDisabled();
+            ImGui::ColorEdit4("Selected source color", &color.x);
+            ImGui::EndDisabled();
+          }
+        } else {
+          const std::span<const std::string> legendValues =
+              BimSemanticLegendValues(bimSemanticColorMode_, bimInspection);
+          if (bimInspection.hasSelection) {
+            const std::string selectedSemanticValue =
+                BimSemanticSelectionValue(bimSemanticColorMode_,
+                                          bimInspection);
+            ImGui::TextWrapped(
+                "Selected semantic value: %s",
+                selectedSemanticValue.empty() ? "not assigned"
+                                              : selectedSemanticValue.c_str());
+            if (const auto selectedLegendIndex =
+                    FindStringIndex(legendValues, selectedSemanticValue)) {
+              ImGui::ColorButton(
+                  "Selected semantic color",
+                  BimSemanticLegendColor(bimSemanticColorMode_,
+                                         *selectedLegendIndex),
+                  ImGuiColorEditFlags_NoTooltip |
+                      ImGuiColorEditFlags_NoDragDrop,
+                  ImVec2(18.0f, 18.0f));
+              ImGui::SameLine();
+              ImGui::Text("Semantic ID: %u",
+                          static_cast<uint32_t>(*selectedLegendIndex + 1u));
+            } else if (!selectedSemanticValue.empty()) {
+              ImGui::TextDisabled("Selected value is not in the exposed legend");
+            }
+          }
+          if (legendValues.empty()) {
+            ImGui::TextDisabled("No legend values exposed for this mode");
+          } else {
+            ImGui::TextDisabled("Palette matches the active BIM semantic mode");
+            const size_t visibleLegendCount =
+                std::min<size_t>(legendValues.size(), 48u);
+            for (size_t i = 0; i < visibleLegendCount; ++i) {
+              DrawSemanticLegendEntry(bimSemanticColorMode_, i,
+                                      legendValues[i]);
+            }
+            if (visibleLegendCount < legendValues.size()) {
+              ImGui::TextDisabled("%zu more legend values",
+                                  legendValues.size() - visibleLegendCount);
+            }
+          }
+        }
+        ImGui::TreePop();
+      }
+
+      auto drawStringFilterCombo = [](const char *label,
+                                      const char *allLabel,
+                                      std::span<const std::string> values,
+                                      bool &filterEnabled,
+                                      std::string &filterValue) {
+        if (values.empty()) {
+          filterEnabled = false;
+          filterValue.clear();
+          return;
+        }
+        std::string currentLabel =
+            filterEnabled && !filterValue.empty() ? filterValue : allLabel;
+        const bool currentKnown =
+            !filterEnabled || std::ranges::contains(values, filterValue);
+        if (!currentKnown) {
+          currentLabel = allLabel;
+          filterEnabled = false;
+          filterValue.clear();
+        }
+        if (ImGui::BeginCombo(label, currentLabel.c_str())) {
+          const bool allSelected = !filterEnabled;
+          if (ImGui::Selectable(allLabel, allSelected)) {
+            filterEnabled = false;
+            filterValue.clear();
+          }
+          if (allSelected) {
+            ImGui::SetItemDefaultFocus();
+          }
+          for (const std::string &value : values) {
+            const bool selected = filterEnabled && filterValue == value;
+            if (ImGui::Selectable(value.c_str(), selected)) {
+              filterEnabled = true;
+              filterValue = value;
+            }
+            if (selected) {
+              ImGui::SetItemDefaultFocus();
+            }
+          }
+          ImGui::EndCombo();
+        }
+      };
+
+      auto applyStoreyFilter =
+          [&](const container::renderer::BimStoreyRange &storeyRange) {
+            bimFilterState_.storeyFilterEnabled = true;
+            bimFilterState_.storey = storeyRange.label;
+          };
+      auto applyStoreyPlanSlice =
+          [&](const container::renderer::BimStoreyRange &storeyRange,
+              bool enableFloorPlanOverlay) {
+            const float height =
+                storeyRange.maxElevation - storeyRange.minElevation;
+            const float margin = std::max(0.05f, height * 0.03f);
+            applyStoreyFilter(storeyRange);
+            sectionPlaneState_.enabled = true;
+            sectionPlaneAxis_ = 1;
+            sectionPlaneState_.normal = {0.0f, -1.0f, 0.0f};
+            sectionPlaneState_.offset = -(storeyRange.maxElevation + margin);
+            if (enableFloorPlanOverlay) {
+              bimFloorPlanOverlayState_.enabled = true;
+              bimFloorPlanOverlayState_.elevationMode =
+                  BimFloorPlanElevationMode::SourceElevation;
+            }
+          };
+      auto clearStoreyPlanPreset = [&]() {
+        bimFilterState_.storeyFilterEnabled = false;
+        bimFilterState_.storey.clear();
+        sectionPlaneState_ = {};
+        sectionPlaneAxis_ = 1;
+        selectedBimStoreyRangeIndex_ = -1;
+      };
+      auto floorSliceMatchesStorey =
+          [&](const container::renderer::BimStoreyRange &storeyRange) {
+            return sectionPlaneState_.enabled && sectionPlaneAxis_ == 1 &&
+                   sectionPlaneState_.normal.y < 0.0f &&
+                   bimFilterState_.storeyFilterEnabled &&
+                   bimFilterState_.storey == storeyRange.label;
+          };
+
+      if (ImGui::TreeNode("Search and Filters")) {
+        ImGui::InputText("Search filter values", &bimQuickFilterSearch_);
+        if (ImGui::SmallButton("Clear search")) {
+          bimQuickFilterSearch_.clear();
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Clear all BIM filters")) {
+          bimFilterState_ = {};
+          selectedBimStoreyRangeIndex_ = -1;
+          statusMessage_ = "Cleared BIM filters";
+        }
+        ImGui::TextWrapped(
+            "Active filters: %s%s%s%s%s%s%s%s%s",
+            bimFilterState_.typeFilterEnabled ? "type " : "",
+            bimFilterState_.storeyFilterEnabled ? "storey " : "",
+            bimFilterState_.materialFilterEnabled ? "material " : "",
+            bimFilterState_.disciplineFilterEnabled ? "discipline " : "",
+            bimFilterState_.phaseFilterEnabled ? "phase " : "",
+            bimFilterState_.fireRatingFilterEnabled ? "fire rating " : "",
+            bimFilterState_.loadBearingFilterEnabled ? "load-bearing " : "",
+            bimFilterState_.statusFilterEnabled ? "status " : "",
+            (bimFilterState_.isolateSelection || bimFilterState_.hideSelection)
+                ? "selection"
+                : "");
+
+        if (bimInspection.hasSelection) {
+          if (ImGui::SmallButton("Use selected type") &&
+              !bimInspection.type.empty()) {
+            bimFilterState_.typeFilterEnabled = true;
+            bimFilterState_.type = bimInspection.type;
+          }
+          ImGui::SameLine();
+          const std::string selectedStorey =
+              !bimInspection.storeyName.empty() ? bimInspection.storeyName
+                                                : bimInspection.storeyId;
+          if (ImGui::SmallButton("Use selected storey") &&
+              !selectedStorey.empty()) {
+            bimFilterState_.storeyFilterEnabled = true;
+            bimFilterState_.storey = selectedStorey;
+          }
+          ImGui::SameLine();
+          const std::string selectedMaterial =
+              !bimInspection.materialName.empty()
+                  ? bimInspection.materialName
+                  : bimInspection.materialCategory;
+          if (ImGui::SmallButton("Use selected material") &&
+              !selectedMaterial.empty()) {
+            bimFilterState_.materialFilterEnabled = true;
+            bimFilterState_.material = selectedMaterial;
+          }
+        }
+
+        if (bimQuickFilterSearch_.empty()) {
+          ImGui::TextDisabled(
+              "Type to search exposed BIM type, storey, material, phase, and status values");
+        } else if (ImGui::BeginTable("BimQuickFilterMatches", 3,
+                                     ImGuiTableFlags_Borders |
+                                         ImGuiTableFlags_RowBg |
+                                         ImGuiTableFlags_SizingStretchProp,
+                                     ImVec2(0.0f, 220.0f))) {
+          ImGui::TableSetupColumn("Category");
+          ImGui::TableSetupColumn("Value");
+          ImGui::TableSetupColumn("Action");
+          ImGui::TableHeadersRow();
+          size_t visibleMatches = 0u;
+          size_t totalMatches = 0u;
+          auto drawFilterMatches =
+              [&](const char *category, std::span<const std::string> values,
+                  bool &filterEnabled, std::string &filterValue) {
+                for (const std::string &value : values) {
+                  if (!ContainsCaseInsensitive(value, bimQuickFilterSearch_)) {
+                    continue;
+                  }
+                  ++totalMatches;
+                  if (visibleMatches >= 96u) {
+                    continue;
+                  }
+                  ImGui::PushID(category);
+                  ImGui::PushID(static_cast<int>(visibleMatches));
+                  ImGui::TableNextRow();
+                  ImGui::TableNextColumn();
+                  ImGui::TextUnformatted(category);
+                  ImGui::TableNextColumn();
+                  ImGui::TextWrapped("%s", value.c_str());
+                  ImGui::TableNextColumn();
+                  if (ImGui::SmallButton("Use")) {
+                    filterEnabled = true;
+                    filterValue = value;
+                  }
+                  ImGui::PopID();
+                  ImGui::PopID();
+                  ++visibleMatches;
+                }
+              };
+          drawFilterMatches("Type", bimInspection.elementTypes,
+                            bimFilterState_.typeFilterEnabled,
+                            bimFilterState_.type);
+          drawFilterMatches("Storey", bimInspection.elementStoreys,
+                            bimFilterState_.storeyFilterEnabled,
+                            bimFilterState_.storey);
+          drawFilterMatches("Material", bimInspection.elementMaterials,
+                            bimFilterState_.materialFilterEnabled,
+                            bimFilterState_.material);
+          drawFilterMatches("Discipline", bimInspection.elementDisciplines,
+                            bimFilterState_.disciplineFilterEnabled,
+                            bimFilterState_.discipline);
+          drawFilterMatches("Phase", bimInspection.elementPhases,
+                            bimFilterState_.phaseFilterEnabled,
+                            bimFilterState_.phase);
+          drawFilterMatches("Fire rating", bimInspection.elementFireRatings,
+                            bimFilterState_.fireRatingFilterEnabled,
+                            bimFilterState_.fireRating);
+          drawFilterMatches("Load-bearing",
+                            bimInspection.elementLoadBearingValues,
+                            bimFilterState_.loadBearingFilterEnabled,
+                            bimFilterState_.loadBearing);
+          drawFilterMatches("Status", bimInspection.elementStatuses,
+                            bimFilterState_.statusFilterEnabled,
+                            bimFilterState_.status);
+          ImGui::EndTable();
+          if (totalMatches == 0u) {
+            ImGui::TextDisabled("No filter values match the search");
+          } else if (visibleMatches < totalMatches) {
+            ImGui::TextDisabled("%zu more matches", totalMatches -
+                                                   visibleMatches);
+          }
+        }
+        ImGui::TreePop();
+      }
+
+      if (ImGui::TreeNode("Selection Sets")) {
+        ImGui::InputText("Selection set name", &bimSelectionSetNameInput_);
+        auto makeSelectionSetLabel = [&]() {
+          if (!bimSelectionSetNameInput_.empty()) {
+            return bimSelectionSetNameInput_;
+          }
+          return "Selection Set " + std::to_string(nextBimSelectionSetId_);
+        };
+        auto makeSelectionSetMember = [&]() {
+          BimSelectionSetMemberState member{};
+          member.label = BimMeasurementSelectionLabel(bimInspection);
+          member.type = bimInspection.type;
+          member.storey = !bimInspection.storeyName.empty()
+                             ? bimInspection.storeyName
+                             : bimInspection.storeyId;
+          member.material = !bimInspection.materialName.empty()
+                                ? bimInspection.materialName
+                                : bimInspection.materialCategory;
+          member.snapshot = currentViewpoint;
+          member.snapshot.bimModelPath = bimInspection.modelPath;
+          member.snapshot.selectedBimObjectIndex =
+              bimInspection.selectedObjectIndex;
+          member.snapshot.selectedBimGuid = bimInspection.guid;
+          member.snapshot.selectedBimType = bimInspection.type;
+          member.snapshot.selectedBimSourceId = bimInspection.sourceId;
+          member.snapshot.bimFilter = bimFilterState_;
+          return member;
+        };
+        auto addSelectionMemberToSet = [&](BimSelectionSetState &set,
+                                           BimSelectionSetMemberState member) {
+          const auto duplicate = std::ranges::find_if(
+              set.members, [&](const BimSelectionSetMemberState &existing) {
+                const auto &lhs = existing.snapshot;
+                const auto &rhs = member.snapshot;
+                return lhs.selectedBimObjectIndex ==
+                           rhs.selectedBimObjectIndex ||
+                       (!lhs.selectedBimGuid.empty() &&
+                        lhs.selectedBimGuid == rhs.selectedBimGuid) ||
+                       (!lhs.selectedBimSourceId.empty() &&
+                        lhs.selectedBimSourceId == rhs.selectedBimSourceId);
+              });
+          if (duplicate != set.members.end()) {
+            statusMessage_ = "Selection set already contains " + member.label;
+            return;
+          }
+          set.members.push_back(std::move(member));
+          statusMessage_ = "Added BIM selection to " + set.label;
+        };
+
+        if (ImGui::SmallButton("Create selection set")) {
+          BimSelectionSetState set{};
+          set.id = nextBimSelectionSetId_++;
+          set.label = makeSelectionSetLabel();
+          set.modelPath = bimInspection.modelPath;
+          bimSelectionSets_.push_back(std::move(set));
+          selectedBimSelectionSetIndex_ =
+              static_cast<int>(bimSelectionSets_.size()) - 1;
+        }
+        if (bimInspection.hasSelection) {
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Create set from selection")) {
+            BimSelectionSetState set{};
+            set.id = nextBimSelectionSetId_++;
+            set.label = makeSelectionSetLabel();
+            set.modelPath = bimInspection.modelPath;
+            set.members.push_back(makeSelectionSetMember());
+            bimSelectionSets_.push_back(std::move(set));
+            selectedBimSelectionSetIndex_ =
+                static_cast<int>(bimSelectionSets_.size()) - 1;
+            statusMessage_ = "Created BIM selection set";
+          }
+        }
+
+        if (bimSelectionSets_.empty()) {
+          selectedBimSelectionSetIndex_ = -1;
+          ImGui::TextDisabled("No BIM selection sets");
+        } else {
+          selectedBimSelectionSetIndex_ =
+              std::clamp(selectedBimSelectionSetIndex_, 0,
+                         static_cast<int>(bimSelectionSets_.size()) - 1);
+          const std::string preview =
+              bimSelectionSets_[static_cast<size_t>(
+                                   selectedBimSelectionSetIndex_)]
+                  .label;
+          if (ImGui::BeginCombo("Active selection set", preview.c_str())) {
+            for (size_t i = 0; i < bimSelectionSets_.size(); ++i) {
+              const bool selected =
+                  selectedBimSelectionSetIndex_ == static_cast<int>(i);
+              if (ImGui::Selectable(bimSelectionSets_[i].label.c_str(),
+                                    selected)) {
+                selectedBimSelectionSetIndex_ = static_cast<int>(i);
+              }
+              if (selected) {
+                ImGui::SetItemDefaultFocus();
+              }
+            }
+            ImGui::EndCombo();
+          }
+
+          BimSelectionSetState &set =
+              bimSelectionSets_[static_cast<size_t>(
+                  selectedBimSelectionSetIndex_)];
+          ImGui::Text("Members: %zu", set.members.size());
+          if (bimInspection.hasSelection) {
+            if (ImGui::SmallButton("Add selection to set")) {
+              addSelectionMemberToSet(set, makeSelectionSetMember());
+            }
+          } else {
+            ImGui::BeginDisabled();
+            ImGui::SmallButton("Add selection to set");
+            ImGui::EndDisabled();
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Clear set")) {
+            set.members.clear();
+            statusMessage_ = "Cleared BIM selection set";
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Delete set")) {
+            bimSelectionSets_.erase(bimSelectionSets_.begin() +
+                                    selectedBimSelectionSetIndex_);
+            if (bimSelectionSets_.empty()) {
+              selectedBimSelectionSetIndex_ = -1;
+            } else {
+              selectedBimSelectionSetIndex_ = std::min<int>(
+                  selectedBimSelectionSetIndex_,
+                  static_cast<int>(bimSelectionSets_.size()) - 1);
+            }
+          }
+
+          int removeMemberIndex = -1;
+          if (!set.members.empty() &&
+              ImGui::BeginTable("BimSelectionSetMembers", 5,
+                                ImGuiTableFlags_Borders |
+                                    ImGuiTableFlags_RowBg |
+                                    ImGuiTableFlags_SizingStretchProp,
+                                ImVec2(0.0f, 180.0f))) {
+            ImGui::TableSetupColumn("Element");
+            ImGui::TableSetupColumn("Type");
+            ImGui::TableSetupColumn("Storey");
+            ImGui::TableSetupColumn("Material");
+            ImGui::TableSetupColumn("Action");
+            ImGui::TableHeadersRow();
+            for (size_t i = 0; i < set.members.size(); ++i) {
+              const BimSelectionSetMemberState &member = set.members[i];
+              ImGui::PushID(static_cast<int>(i));
+              ImGui::TableNextRow();
+              ImGui::TableNextColumn();
+              ImGui::TextWrapped("%s", member.label.c_str());
+              ImGui::TableNextColumn();
+              ImGui::TextWrapped("%s", member.type.c_str());
+              ImGui::TableNextColumn();
+              ImGui::TextWrapped("%s", member.storey.c_str());
+              ImGui::TableNextColumn();
+              ImGui::TextWrapped("%s", member.material.c_str());
+              ImGui::TableNextColumn();
+              if (ImGui::SmallButton("Restore")) {
+                const bool restored =
+                    restoreViewpoint ? restoreViewpoint(member.snapshot)
+                                     : false;
+                statusMessage_ =
+                    restored ? "Restored BIM selection set member"
+                             : "Failed to restore BIM selection set member";
+              }
+              ImGui::SameLine();
+              if (ImGui::SmallButton("Remove")) {
+                removeMemberIndex = static_cast<int>(i);
+              }
+              ImGui::PopID();
+            }
+            ImGui::EndTable();
+          }
+          if (removeMemberIndex >= 0) {
+            set.members.erase(set.members.begin() + removeMemberIndex);
+          }
+        }
+        ImGui::TextDisabled(
+            "Selection sets are stored in UI memory; multi-select rendering is not connected");
+        ImGui::TreePop();
+      }
+
+      if (ImGui::TreeNode("Property Browser")) {
+        if (bimInspection.hasSelection) {
+          auto drawPropertyRow = [](const char *label,
+                                    const std::string &value) {
+            if (value.empty()) {
+              return;
+            }
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%s", label);
+            ImGui::TableNextColumn();
+            ImGui::TextWrapped("%s", value.c_str());
+          };
+          auto drawPropertyIndexRow = [](const char *label, uint32_t value) {
+            if (value == std::numeric_limits<uint32_t>::max()) {
+              return;
+            }
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextDisabled("%s", label);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", value);
+          };
+          if (ImGui::BeginTable("BimPropertyBrowser", 2,
+                                ImGuiTableFlags_BordersInnerV |
+                                    ImGuiTableFlags_RowBg |
+                                    ImGuiTableFlags_SizingStretchProp)) {
+            drawPropertyIndexRow("Object index",
+                                 bimInspection.selectedObjectIndex);
+            drawPropertyRow("Name", bimInspection.displayName);
+            drawPropertyRow("IFC class / type", bimInspection.type);
+            drawPropertyRow("Object type", bimInspection.objectType);
+            drawPropertyRow("GUID", bimInspection.guid);
+            drawPropertyRow("Source ID", bimInspection.sourceId);
+            drawPropertyRow("Storey", bimInspection.storeyName);
+            drawPropertyRow("Storey ID", bimInspection.storeyId);
+            drawPropertyRow("Material", bimInspection.materialName);
+            drawPropertyRow("Material category",
+                            bimInspection.materialCategory);
+            drawPropertyRow("Discipline", bimInspection.discipline);
+            drawPropertyRow("Phase", bimInspection.phase);
+            drawPropertyRow("Fire rating", bimInspection.fireRating);
+            drawPropertyRow("Load-bearing", bimInspection.loadBearing);
+            drawPropertyRow("Status", bimInspection.status);
+            drawPropertyRow("Geometry", bimInspection.geometryKind);
+            drawPropertyIndexRow("Source element",
+                                 bimInspection.sourceElementIndex);
+            drawPropertyIndexRow("Mesh", bimInspection.meshId);
+            drawPropertyIndexRow("Source material",
+                                 bimInspection.sourceMaterialIndex);
+            drawPropertyIndexRow("Render material",
+                                 bimInspection.materialIndex);
+            drawPropertyIndexRow("Semantic type",
+                                 bimInspection.semanticTypeId);
+            ImGui::EndTable();
+          }
+          if (ImGui::TreeNode("Extended properties")) {
+            if (bimInspection.properties.empty()) {
+              ImGui::TextDisabled(
+                  "No generic element properties are exposed for this element");
+            } else {
+              ImGui::InputText("Property search", &bimPropertySearch_);
+              ImGui::SameLine();
+              if (ImGui::SmallButton("Clear property search")) {
+                bimPropertySearch_.clear();
+              }
+              if (ImGui::BeginTable(
+                      "BimExtendedProperties", 4,
+                      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_SizingStretchProp,
+                      ImVec2(0.0f, 220.0f))) {
+                ImGui::TableSetupColumn("Set");
+                ImGui::TableSetupColumn("Name");
+                ImGui::TableSetupColumn("Value");
+                ImGui::TableSetupColumn("Category");
+                ImGui::TableHeadersRow();
+                size_t visiblePropertyCount = 0u;
+                size_t matchedPropertyCount = 0u;
+                for (size_t i = 0; i < bimInspection.properties.size(); ++i) {
+                  const container::renderer::BimElementProperty &property =
+                      bimInspection.properties[i];
+                  if (!PropertyMatchesSearch(property, bimPropertySearch_)) {
+                    continue;
+                  }
+                  ++matchedPropertyCount;
+                  if (visiblePropertyCount >= 128u) {
+                    continue;
+                  }
+                  ++visiblePropertyCount;
+                  ImGui::TableNextRow();
+                  ImGui::TableNextColumn();
+                  ImGui::TextWrapped("%s", property.set.c_str());
+                  ImGui::TableNextColumn();
+                  ImGui::TextWrapped("%s", property.name.c_str());
+                  ImGui::TableNextColumn();
+                  ImGui::TextWrapped("%s", property.value.c_str());
+                  ImGui::TableNextColumn();
+                  ImGui::TextWrapped("%s", property.category.c_str());
+                }
+                ImGui::EndTable();
+                if (matchedPropertyCount == 0u) {
+                  ImGui::TextDisabled("No properties match the search");
+                } else if (visiblePropertyCount < matchedPropertyCount) {
+                  ImGui::TextDisabled("%zu more matching properties",
+                                      matchedPropertyCount -
+                                          visiblePropertyCount);
+                }
+              }
+            }
+            ImGui::TreePop();
+          }
+        } else {
+          ImGui::TextDisabled("No selected BIM element");
+          ImGui::TextDisabled(
+              "Select an element to inspect generic properties");
+        }
+        ImGui::TreePop();
+      }
+
+      if (ImGui::TreeNode("IFC Relationships")) {
+        if (bimInspection.hasSelection) {
+          auto drawRelationshipRow =
+              [&](const char *relationship, const std::string &value,
+                  const char *actionLabel,
+                  const std::function<void()> &applyAction) {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextDisabled("%s", relationship);
+                ImGui::TableNextColumn();
+                if (value.empty()) {
+                  ImGui::TextDisabled("not assigned");
+                } else {
+                  ImGui::TextWrapped("%s", value.c_str());
+                }
+                ImGui::TableNextColumn();
+                if (value.empty()) {
+                  ImGui::BeginDisabled();
+                }
+                if (ImGui::SmallButton(actionLabel)) {
+                  applyAction();
+                }
+                if (value.empty()) {
+                  ImGui::EndDisabled();
+                }
+              };
+          const std::string selectedStorey =
+              !bimInspection.storeyName.empty() ? bimInspection.storeyName
+                                                : bimInspection.storeyId;
+          const std::string selectedMaterial =
+              !bimInspection.materialName.empty()
+                  ? bimInspection.materialName
+                  : bimInspection.materialCategory;
+          const std::string selectedType =
+              !bimInspection.objectType.empty() ? bimInspection.objectType
+                                                : bimInspection.type;
+          if (ImGui::BeginTable("BimIfcRelationshipBrowser", 3,
+                                ImGuiTableFlags_Borders |
+                                    ImGuiTableFlags_RowBg |
+                                    ImGuiTableFlags_SizingStretchProp)) {
+            ImGui::TableSetupColumn("Relationship");
+            ImGui::TableSetupColumn("Current element");
+            ImGui::TableSetupColumn("Action");
+            ImGui::TableHeadersRow();
+            drawRelationshipRow(
+                "Spatial containment", selectedStorey,
+                "Filter related storey", [&]() {
+                  bimFilterState_.storeyFilterEnabled = true;
+                  bimFilterState_.storey = selectedStorey;
+                  statusMessage_ =
+                      "Filtered BIM relationship storey: " + selectedStorey;
+                });
+            drawRelationshipRow(
+                "Material assignment", selectedMaterial,
+                "Filter related material", [&]() {
+                  bimFilterState_.materialFilterEnabled = true;
+                  bimFilterState_.material = selectedMaterial;
+                  statusMessage_ =
+                      "Filtered BIM relationship material: " +
+                      selectedMaterial;
+                });
+            drawRelationshipRow(
+                "Type/classification", selectedType, "Filter related type",
+                [&]() {
+                  bimFilterState_.typeFilterEnabled = true;
+                  bimFilterState_.type = selectedType;
+                  statusMessage_ =
+                      "Filtered BIM relationship type: " + selectedType;
+                });
+            drawRelationshipRow(
+                "Identity", !bimInspection.guid.empty()
+                                ? bimInspection.guid
+                                : bimInspection.sourceId,
+                "Copy via selection set", [&]() {
+                  BimSelectionSetState set{};
+                  set.id = nextBimSelectionSetId_++;
+                  set.label = "IFC relationship selection";
+                  set.modelPath = bimInspection.modelPath;
+                  BimSelectionSetMemberState member{};
+                  member.label = BimMeasurementSelectionLabel(bimInspection);
+                  member.type = bimInspection.type;
+                  member.storey = selectedStorey;
+                  member.material = selectedMaterial;
+                  member.snapshot = currentViewpoint;
+                  member.snapshot.bimModelPath = bimInspection.modelPath;
+                  member.snapshot.selectedBimObjectIndex =
+                      bimInspection.selectedObjectIndex;
+                  member.snapshot.selectedBimGuid = bimInspection.guid;
+                  member.snapshot.selectedBimType = bimInspection.type;
+                  member.snapshot.selectedBimSourceId =
+                      bimInspection.sourceId;
+                  member.snapshot.bimFilter = bimFilterState_;
+                  set.members.push_back(std::move(member));
+                  bimSelectionSets_.push_back(std::move(set));
+                  selectedBimSelectionSetIndex_ =
+                      static_cast<int>(bimSelectionSets_.size()) - 1;
+                  statusMessage_ =
+                      "Created IFC relationship selection set";
+                });
+            ImGui::EndTable();
+          }
+          if (bimInspection.properties.empty()) {
+            ImGui::TextDisabled(
+                "No property-set relationships are exposed for this element");
+          } else if (ImGui::BeginTable(
+                         "BimIfcPropertySetSummary", 3,
+                         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                             ImGuiTableFlags_SizingStretchProp,
+                         ImVec2(0.0f, 160.0f))) {
+            ImGui::TableSetupColumn("Property set");
+            ImGui::TableSetupColumn("Category");
+            ImGui::TableSetupColumn("Properties");
+            ImGui::TableHeadersRow();
+            size_t visiblePropertySetCount = 0u;
+            std::vector<std::string> visiblePropertySetKeys;
+            for (const container::renderer::BimElementProperty &property :
+                 bimInspection.properties) {
+              const std::string setName =
+                  !property.set.empty() ? property.set : "(unassigned set)";
+              const std::string categoryName =
+                  !property.category.empty() ? property.category
+                                             : "(unassigned category)";
+              const std::string key = setName + "\n" + categoryName;
+              if (std::ranges::contains(visiblePropertySetKeys, key)) {
+                continue;
+              }
+              size_t propertyCount = 0u;
+              for (const container::renderer::BimElementProperty &candidate :
+                   bimInspection.properties) {
+                const std::string candidateSet =
+                    !candidate.set.empty() ? candidate.set
+                                           : "(unassigned set)";
+                const std::string candidateCategory =
+                    !candidate.category.empty() ? candidate.category
+                                                : "(unassigned category)";
+                if (candidateSet == setName &&
+                    candidateCategory == categoryName) {
+                  ++propertyCount;
+                }
+              }
+              visiblePropertySetKeys.push_back(key);
+              if (visiblePropertySetCount >= 32u) {
+                continue;
+              }
+              ++visiblePropertySetCount;
+              ImGui::TableNextRow();
+              ImGui::TableNextColumn();
+              ImGui::TextWrapped("%s", setName.c_str());
+              ImGui::TableNextColumn();
+              ImGui::TextWrapped("%s", categoryName.c_str());
+              ImGui::TableNextColumn();
+              ImGui::Text("%zu", propertyCount);
+            }
+            ImGui::EndTable();
+            if (visiblePropertySetCount < visiblePropertySetKeys.size()) {
+              ImGui::TextDisabled("%zu more property sets",
+                                  visiblePropertySetKeys.size() -
+                                      visiblePropertySetCount);
+            }
+          }
+          ImGui::TextDisabled(
+              "Full IFC inverse relationship graph is not exposed by backend");
+        } else {
+          ImGui::TextDisabled(
+              "Select an element to browse inferred IFC relationships");
+          ImGui::TextDisabled(
+              "Full IFC inverse relationship graph is not exposed by backend");
+        }
+        ImGui::TreePop();
+      }
+
+      if (ImGui::TreeNode("Spatial Browser")) {
+        if (bimInspection.elementStoreyRanges.empty() &&
+            bimInspection.elementStoreys.empty()) {
+          ImGui::TextDisabled("No spatial hierarchy exposed by renderer");
+        } else if (!bimInspection.elementStoreyRanges.empty()) {
+          const int storeyRangeCount = static_cast<int>(std::min<size_t>(
+              bimInspection.elementStoreyRanges.size(),
+              static_cast<size_t>(std::numeric_limits<int>::max())));
+          if (selectedBimStoreyRangeIndex_ >= storeyRangeCount) {
+            selectedBimStoreyRangeIndex_ = storeyRangeCount - 1;
+          }
+          if (selectedBimStoreyRangeIndex_ < 0 &&
+              bimFilterState_.storeyFilterEnabled &&
+              !bimFilterState_.storey.empty()) {
+            for (int i = 0; i < storeyRangeCount; ++i) {
+              if (bimInspection.elementStoreyRanges[static_cast<size_t>(i)]
+                      .label == bimFilterState_.storey) {
+                selectedBimStoreyRangeIndex_ = i;
+                break;
+              }
+            }
+          }
+          auto selectRelativePlanStorey = [&](int delta) {
+            if (storeyRangeCount <= 0) {
+              return;
+            }
+            if (selectedBimStoreyRangeIndex_ < 0) {
+              selectedBimStoreyRangeIndex_ = delta < 0 ? storeyRangeCount - 1
+                                                       : 0;
+              return;
+            }
+            selectedBimStoreyRangeIndex_ = std::clamp(
+                selectedBimStoreyRangeIndex_ + delta, 0,
+                storeyRangeCount - 1);
+          };
+          const char *planStoreyPreview =
+              selectedBimStoreyRangeIndex_ >= 0
+                  ? bimInspection
+                        .elementStoreyRanges[static_cast<size_t>(
+                            selectedBimStoreyRangeIndex_)]
+                        .label.c_str()
+                  : "Select storey";
+          if (ImGui::BeginCombo("Plan storey", planStoreyPreview)) {
+            if (ImGui::Selectable("Select storey",
+                                  selectedBimStoreyRangeIndex_ < 0)) {
+              selectedBimStoreyRangeIndex_ = -1;
+            }
+            for (int i = 0; i < storeyRangeCount; ++i) {
+              const auto &storeyRange =
+                  bimInspection.elementStoreyRanges[static_cast<size_t>(i)];
+              const bool selected = selectedBimStoreyRangeIndex_ == i;
+              char label[256]{};
+              std::snprintf(label, sizeof(label), "%s (%.2f..%.2f)",
+                            storeyRange.label.c_str(),
+                            storeyRange.minElevation,
+                            storeyRange.maxElevation);
+              if (ImGui::Selectable(label, selected)) {
+                selectedBimStoreyRangeIndex_ = i;
+              }
+              if (selected) {
+                ImGui::SetItemDefaultFocus();
+              }
+            }
+            ImGui::EndCombo();
+          }
+          if (ImGui::SmallButton("Previous storey")) {
+            selectRelativePlanStorey(-1);
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Next storey")) {
+            selectRelativePlanStorey(1);
+          }
+
+          const bool hasPlanStorey = selectedBimStoreyRangeIndex_ >= 0 &&
+                                     selectedBimStoreyRangeIndex_ <
+                                         storeyRangeCount;
+          if (hasPlanStorey) {
+            const auto &storeyRange =
+                bimInspection.elementStoreyRanges[static_cast<size_t>(
+                    selectedBimStoreyRangeIndex_)];
+            ImGui::Text("Plan navigation storey: %s  %.2f..%.2f",
+                        storeyRange.label.c_str(), storeyRange.minElevation,
+                        storeyRange.maxElevation);
+          }
+          if (!hasPlanStorey) {
+            ImGui::BeginDisabled();
+          }
+          if (ImGui::SmallButton("Show storey only")) {
+            const auto &storeyRange =
+                bimInspection.elementStoreyRanges[static_cast<size_t>(
+                    selectedBimStoreyRangeIndex_)];
+            applyStoreyFilter(storeyRange);
+            statusMessage_ = "Applied storey visibility preset: " +
+                             storeyRange.label;
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Plan slice preset")) {
+            const auto &storeyRange =
+                bimInspection.elementStoreyRanges[static_cast<size_t>(
+                    selectedBimStoreyRangeIndex_)];
+            applyStoreyPlanSlice(storeyRange, true);
+            statusMessage_ = "Applied storey plan preset: " +
+                             storeyRange.label;
+          }
+          if (!hasPlanStorey) {
+            ImGui::EndDisabled();
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Clear storey preset")) {
+            clearStoreyPlanPreset();
+            statusMessage_ = "Cleared storey visibility preset";
+          }
+
+          if (ImGui::BeginTable("BimSpatialStoreys", 4,
+                                ImGuiTableFlags_Borders |
+                                    ImGuiTableFlags_RowBg |
+                                    ImGuiTableFlags_SizingStretchProp,
+                                ImVec2(0.0f, 220.0f))) {
+            ImGui::TableSetupColumn("Storey");
+            ImGui::TableSetupColumn("Elevation");
+            ImGui::TableSetupColumn("Objects");
+            ImGui::TableSetupColumn("Preset");
+            ImGui::TableHeadersRow();
+            for (int i = 0; i < storeyRangeCount; ++i) {
+              const auto &storeyRange =
+                  bimInspection.elementStoreyRanges[static_cast<size_t>(i)];
+              ImGui::PushID(i);
+              ImGui::TableNextRow();
+              ImGui::TableNextColumn();
+              ImGui::TextWrapped("%s", storeyRange.label.c_str());
+              ImGui::TableNextColumn();
+              ImGui::Text("%.2f..%.2f", storeyRange.minElevation,
+                          storeyRange.maxElevation);
+              ImGui::TableNextColumn();
+              ImGui::Text("%zu", storeyRange.objectCount);
+              ImGui::TableNextColumn();
+              if (ImGui::SmallButton("Filter")) {
+                selectedBimStoreyRangeIndex_ = i;
+                applyStoreyFilter(storeyRange);
+              }
+              ImGui::SameLine();
+              if (ImGui::SmallButton("Plan")) {
+                selectedBimStoreyRangeIndex_ = i;
+                applyStoreyPlanSlice(storeyRange, true);
+              }
+              if (floorSliceMatchesStorey(storeyRange)) {
+                ImGui::SameLine();
+                ImGui::TextDisabled("active");
+              }
+              ImGui::PopID();
+            }
+            ImGui::EndTable();
+          }
+        } else {
+          const size_t visibleStoreyCount =
+              std::min<size_t>(bimInspection.elementStoreys.size(), 64u);
+          for (size_t i = 0; i < visibleStoreyCount; ++i) {
+            ImGui::PushID(static_cast<int>(i));
+            ImGui::BulletText("%s", bimInspection.elementStoreys[i].c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Filter")) {
+              bimFilterState_.storeyFilterEnabled = true;
+              bimFilterState_.storey = bimInspection.elementStoreys[i];
+            }
+            ImGui::PopID();
+          }
+          if (visibleStoreyCount < bimInspection.elementStoreys.size()) {
+            ImGui::TextDisabled("%zu more storeys",
+                                bimInspection.elementStoreys.size() -
+                                    visibleStoreyCount);
+          }
+          ImGui::TextDisabled(
+              "Storey elevation ranges are not exposed for plan slicing");
+        }
+        ImGui::TreePop();
+      }
+
+      std::string currentTypeLabel =
+          bimFilterState_.typeFilterEnabled && !bimFilterState_.type.empty()
+              ? bimFilterState_.type
+              : "All types";
+      const bool currentTypeKnown =
+          !bimFilterState_.typeFilterEnabled ||
+          std::ranges::contains(bimInspection.elementTypes,
+                                bimFilterState_.type);
+      if (!currentTypeKnown) {
+        currentTypeLabel = "All types";
+        bimFilterState_.typeFilterEnabled = false;
+        bimFilterState_.type.clear();
+      }
+      if (ImGui::BeginCombo("Type filter", currentTypeLabel.c_str())) {
+        const bool allSelected = !bimFilterState_.typeFilterEnabled;
+        if (ImGui::Selectable("All types", allSelected)) {
+          bimFilterState_.typeFilterEnabled = false;
+          bimFilterState_.type.clear();
+        }
+        if (allSelected) {
+          ImGui::SetItemDefaultFocus();
+        }
+        for (const std::string &type : bimInspection.elementTypes) {
+          const bool selected =
+              bimFilterState_.typeFilterEnabled && bimFilterState_.type == type;
+          if (ImGui::Selectable(type.c_str(), selected)) {
+            bimFilterState_.typeFilterEnabled = true;
+            bimFilterState_.type = type;
+          }
+          if (selected) {
+            ImGui::SetItemDefaultFocus();
+          }
+        }
+        ImGui::EndCombo();
+      }
+      std::string currentStoreyLabel =
+          bimFilterState_.storeyFilterEnabled &&
+                  !bimFilterState_.storey.empty()
+              ? bimFilterState_.storey
+              : "All storeys";
+      const bool currentStoreyKnown =
+          !bimFilterState_.storeyFilterEnabled ||
+          std::ranges::contains(bimInspection.elementStoreys,
+                                bimFilterState_.storey);
+      if (!currentStoreyKnown) {
+        const bool floorSliceUsesStoreyFilter =
+            sectionPlaneState_.enabled && sectionPlaneAxis_ == 1 &&
+            sectionPlaneState_.normal.y < 0.0f &&
+            bimFilterState_.storeyFilterEnabled &&
+            !bimFilterState_.storey.empty();
+        currentStoreyLabel = "All storeys";
+        bimFilterState_.storeyFilterEnabled = false;
+        bimFilterState_.storey.clear();
+        if (floorSliceUsesStoreyFilter) {
+          sectionPlaneState_ = {};
+          sectionPlaneAxis_ = 1;
+        }
+      }
+      if (ImGui::BeginCombo("Storey filter", currentStoreyLabel.c_str())) {
+        const bool allSelected = !bimFilterState_.storeyFilterEnabled;
+        if (ImGui::Selectable("All storeys", allSelected)) {
+          bimFilterState_.storeyFilterEnabled = false;
+          bimFilterState_.storey.clear();
+        }
+        if (allSelected) {
+          ImGui::SetItemDefaultFocus();
+        }
+        for (const std::string &storey : bimInspection.elementStoreys) {
+          const bool selected = bimFilterState_.storeyFilterEnabled &&
+                                bimFilterState_.storey == storey;
+          if (ImGui::Selectable(storey.c_str(), selected)) {
+            bimFilterState_.storeyFilterEnabled = true;
+            bimFilterState_.storey = storey;
+          }
+          if (selected) {
+            ImGui::SetItemDefaultFocus();
+          }
+        }
+        ImGui::EndCombo();
+      }
+      if (!bimInspection.elementStoreyRanges.empty()) {
+        std::string currentFloorSliceLabel = "No floor slice";
+        if (sectionPlaneState_.enabled && sectionPlaneAxis_ == 1 &&
+            sectionPlaneState_.normal.y < 0.0f &&
+            bimFilterState_.storeyFilterEnabled &&
+            !bimFilterState_.storey.empty()) {
+          currentFloorSliceLabel = bimFilterState_.storey;
+        }
+        if (ImGui::BeginCombo("Floor slice",
+                              currentFloorSliceLabel.c_str())) {
+          const bool noSliceSelected = !sectionPlaneState_.enabled ||
+                                       sectionPlaneAxis_ != 1 ||
+                                       sectionPlaneState_.normal.y >= 0.0f;
+          if (ImGui::Selectable("No floor slice", noSliceSelected)) {
+            sectionPlaneState_.enabled = false;
+          }
+          if (noSliceSelected) {
+            ImGui::SetItemDefaultFocus();
+          }
+          for (const container::renderer::BimStoreyRange &storeyRange :
+               bimInspection.elementStoreyRanges) {
+            char label[256]{};
+            std::snprintf(label, sizeof(label), "%s (%.2f..%.2f)",
+                          storeyRange.label.c_str(),
+                          storeyRange.minElevation,
+                          storeyRange.maxElevation);
+            const bool selected = sectionPlaneState_.enabled &&
+                                  sectionPlaneAxis_ == 1 &&
+                                  sectionPlaneState_.normal.y < 0.0f &&
+                                  bimFilterState_.storeyFilterEnabled &&
+                                  bimFilterState_.storey == storeyRange.label;
+            if (ImGui::Selectable(label, selected)) {
+              const float height =
+                  storeyRange.maxElevation - storeyRange.minElevation;
+              const float margin = std::max(0.05f, height * 0.03f);
+              bimFilterState_.storeyFilterEnabled = true;
+              bimFilterState_.storey = storeyRange.label;
+              sectionPlaneState_.enabled = true;
+              sectionPlaneAxis_ = 1;
+              sectionPlaneState_.normal = {0.0f, -1.0f, 0.0f};
+              sectionPlaneState_.offset =
+                  -(storeyRange.maxElevation + margin);
+            }
+            if (selected) {
+              ImGui::SetItemDefaultFocus();
+            }
+          }
+          ImGui::EndCombo();
+        }
+      }
+      std::string currentMaterialLabel =
+          bimFilterState_.materialFilterEnabled &&
+                  !bimFilterState_.material.empty()
+              ? bimFilterState_.material
+              : "All materials";
+      const bool currentMaterialKnown =
+          !bimFilterState_.materialFilterEnabled ||
+          std::ranges::contains(bimInspection.elementMaterials,
+                                bimFilterState_.material);
+      if (!currentMaterialKnown) {
+        currentMaterialLabel = "All materials";
+        bimFilterState_.materialFilterEnabled = false;
+        bimFilterState_.material.clear();
+      }
+      if (ImGui::BeginCombo("Material filter", currentMaterialLabel.c_str())) {
+        const bool allSelected = !bimFilterState_.materialFilterEnabled;
+        if (ImGui::Selectable("All materials", allSelected)) {
+          bimFilterState_.materialFilterEnabled = false;
+          bimFilterState_.material.clear();
+        }
+        if (allSelected) {
+          ImGui::SetItemDefaultFocus();
+        }
+        for (const std::string &material : bimInspection.elementMaterials) {
+          const bool selected = bimFilterState_.materialFilterEnabled &&
+                                bimFilterState_.material == material;
+          if (ImGui::Selectable(material.c_str(), selected)) {
+            bimFilterState_.materialFilterEnabled = true;
+            bimFilterState_.material = material;
+          }
+          if (selected) {
+            ImGui::SetItemDefaultFocus();
+          }
+        }
+        ImGui::EndCombo();
+      }
+      drawStringFilterCombo("Discipline filter", "All disciplines",
+                            bimInspection.elementDisciplines,
+                            bimFilterState_.disciplineFilterEnabled,
+                            bimFilterState_.discipline);
+      drawStringFilterCombo("Phase filter", "All phases",
+                            bimInspection.elementPhases,
+                            bimFilterState_.phaseFilterEnabled,
+                            bimFilterState_.phase);
+      drawStringFilterCombo("Fire rating filter", "All fire ratings",
+                            bimInspection.elementFireRatings,
+                            bimFilterState_.fireRatingFilterEnabled,
+                            bimFilterState_.fireRating);
+      drawStringFilterCombo("Load-bearing filter", "All load-bearing values",
+                            bimInspection.elementLoadBearingValues,
+                            bimFilterState_.loadBearingFilterEnabled,
+                            bimFilterState_.loadBearing);
+      drawStringFilterCombo("Status filter", "All statuses",
+                            bimInspection.elementStatuses,
+                            bimFilterState_.statusFilterEnabled,
+                            bimFilterState_.status);
+      if (!bimInspection.hasSelection) {
+        ImGui::BeginDisabled();
+      }
+      if (ImGui::Checkbox("Isolate selected",
+                          &bimFilterState_.isolateSelection) &&
+          bimFilterState_.isolateSelection) {
+        bimFilterState_.hideSelection = false;
+      }
+      if (ImGui::Checkbox("Hide selected", &bimFilterState_.hideSelection) &&
+          bimFilterState_.hideSelection) {
+        bimFilterState_.isolateSelection = false;
+      }
+      if (!bimInspection.hasSelection) {
+        bimFilterState_.isolateSelection = false;
+        bimFilterState_.hideSelection = false;
+        ImGui::EndDisabled();
+      } else if (bimFilterState_.isolateSelection) {
+        if (bimFilterState_.typeFilterEnabled &&
+            bimFilterState_.type != bimInspection.type) {
+          if (bimInspection.type.empty()) {
+            bimFilterState_.typeFilterEnabled = false;
+            bimFilterState_.type.clear();
+          } else {
+            bimFilterState_.type = bimInspection.type;
+          }
+        }
+        const std::string selectedStorey =
+            !bimInspection.storeyName.empty() ? bimInspection.storeyName
+                                              : bimInspection.storeyId;
+        if (bimFilterState_.storeyFilterEnabled &&
+            bimFilterState_.storey != selectedStorey) {
+          if (selectedStorey.empty()) {
+            bimFilterState_.storeyFilterEnabled = false;
+            bimFilterState_.storey.clear();
+          } else {
+            bimFilterState_.storey = selectedStorey;
+          }
+        }
+        const std::string selectedMaterial =
+            !bimInspection.materialName.empty()
+                ? bimInspection.materialName
+                : bimInspection.materialCategory;
+        if (bimFilterState_.materialFilterEnabled &&
+            bimFilterState_.material != selectedMaterial) {
+          if (selectedMaterial.empty()) {
+            bimFilterState_.materialFilterEnabled = false;
+            bimFilterState_.material.clear();
+          } else {
+            bimFilterState_.material = selectedMaterial;
+          }
+        }
+        auto syncSelectionFilter = [](bool &filterEnabled,
+                                      std::string &filterValue,
+                                      const std::string &selectedValue) {
+          if (!filterEnabled || filterValue == selectedValue) {
+            return;
+          }
+          if (selectedValue.empty()) {
+            filterEnabled = false;
+            filterValue.clear();
+          } else {
+            filterValue = selectedValue;
+          }
+        };
+        syncSelectionFilter(bimFilterState_.disciplineFilterEnabled,
+                            bimFilterState_.discipline,
+                            bimInspection.discipline);
+        syncSelectionFilter(bimFilterState_.phaseFilterEnabled,
+                            bimFilterState_.phase, bimInspection.phase);
+        syncSelectionFilter(bimFilterState_.fireRatingFilterEnabled,
+                            bimFilterState_.fireRating,
+                            bimInspection.fireRating);
+        syncSelectionFilter(bimFilterState_.loadBearingFilterEnabled,
+                            bimFilterState_.loadBearing,
+                            bimInspection.loadBearing);
+        syncSelectionFilter(bimFilterState_.statusFilterEnabled,
+                            bimFilterState_.status, bimInspection.status);
+      }
+      if (bimFilterState_.hideSelection && bimFilterState_.isolateSelection) {
+        bimFilterState_.hideSelection = false;
+      }
+      if (bimFilterState_.typeFilterEnabled && bimFilterState_.type.empty()) {
+        bimFilterState_.typeFilterEnabled = false;
+      }
+      if (bimFilterState_.storeyFilterEnabled &&
+          bimFilterState_.storey.empty()) {
+        bimFilterState_.storeyFilterEnabled = false;
+      }
+      if (bimFilterState_.materialFilterEnabled &&
+          bimFilterState_.material.empty()) {
+        bimFilterState_.materialFilterEnabled = false;
+      }
+      if (bimFilterState_.disciplineFilterEnabled &&
+          bimFilterState_.discipline.empty()) {
+        bimFilterState_.disciplineFilterEnabled = false;
+      }
+      if (bimFilterState_.phaseFilterEnabled && bimFilterState_.phase.empty()) {
+        bimFilterState_.phaseFilterEnabled = false;
+      }
+      if (bimFilterState_.fireRatingFilterEnabled &&
+          bimFilterState_.fireRating.empty()) {
+        bimFilterState_.fireRatingFilterEnabled = false;
+      }
+      if (bimFilterState_.loadBearingFilterEnabled &&
+          bimFilterState_.loadBearing.empty()) {
+        bimFilterState_.loadBearingFilterEnabled = false;
+      }
+      if (bimFilterState_.statusFilterEnabled &&
+          bimFilterState_.status.empty()) {
+        bimFilterState_.statusFilterEnabled = false;
+      }
+
+      if (ImGui::TreeNode("Layer Visibility")) {
+        bool layerStateChanged = false;
+        layerStateChanged |= ImGui::Checkbox(
+            "Point-cloud visibility",
+            &bimLayerVisibilityState_.pointCloudVisible);
+        layerStateChanged |= ImGui::Checkbox(
+            "Curve visibility",
+            &bimLayerVisibilityState_.curvesVisible);
+        ImGui::Separator();
+        layerStateChanged |= ImGui::Checkbox(
+            "X-ray layer (placeholder)",
+            &bimLayerVisibilityState_.xrayLayerVisible);
+        layerStateChanged |= ImGui::Checkbox(
+            "Clash layer (placeholder)",
+            &bimLayerVisibilityState_.clashLayerVisible);
+        layerStateChanged |= ImGui::Checkbox(
+            "Markup layer (placeholder)",
+            &bimLayerVisibilityState_.markupLayerVisible);
+        if (layerStateChanged) {
+          statusMessage_ = "Layer visibility updated";
+        }
+        ImGui::TextDisabled(
+            "Point-cloud and curve toggles mask their BIM draw lists");
+        ImGui::TreePop();
+      }
+
+      if (ImGui::TreeNode("LOD / Streaming")) {
+        ImGui::Text("Loaded BIM objects: %zu", bimInspection.objectCount);
+        ImGui::Text("Mesh / point / curve objects: %zu / %zu / %zu",
+                    bimInspection.meshObjectCount,
+                    bimInspection.pointObjectCount,
+                    bimInspection.curveObjectCount);
+        ImGui::Text("Visible draw lists: opaque %zu, transparent %zu",
+                    bimInspection.opaqueDrawCount,
+                    bimInspection.transparentDrawCount);
+        ImGui::Text("Point draws: %zu / %zu",
+                    bimInspection.pointOpaqueDrawCount,
+                    bimInspection.pointTransparentDrawCount);
+        ImGui::Text("Curve draws: %zu / %zu",
+                    bimInspection.curveOpaqueDrawCount,
+                    bimInspection.curveTransparentDrawCount);
+        ImGui::Text("Native point draws: %zu / %zu",
+                    bimInspection.nativePointOpaqueDrawCount,
+                    bimInspection.nativePointTransparentDrawCount);
+        ImGui::Text("Native curve draws: %zu / %zu",
+                    bimInspection.nativeCurveOpaqueDrawCount,
+                    bimInspection.nativeCurveTransparentDrawCount);
+        ImGui::Text("Meshlet clusters: %zu (%zu source, %zu estimated)",
+                    bimInspection.meshletClusterCount,
+                    bimInspection.meshletSourceClusterCount,
+                    bimInspection.meshletEstimatedClusterCount);
+        ImGui::Text("Cluster refs / max LOD: %zu / %u",
+                    bimInspection.meshletObjectReferenceCount,
+                    bimInspection.meshletMaxLodLevel);
+        ImGui::Text(
+            "GPU residency: %zu objects, %zu clusters, %.2f MB, compute %s%s",
+                    bimInspection.meshletGpuResidentObjectCount,
+                    bimInspection.meshletGpuResidentClusterCount,
+                    static_cast<double>(bimInspection.meshletGpuBufferBytes) /
+                        (1024.0 * 1024.0),
+            bimInspection.meshletGpuComputeReady ? "ready" : "offline",
+            bimInspection.meshletGpuDispatchPending ? ", pending" : "");
+        ImGui::Text("Optimized metadata cacheable: %s",
+                    bimInspection.optimizedModelMetadataCacheable ? "yes"
+                                                                 : "no");
+        ImGui::Text("Optimized metadata cache: %s",
+                    !bimInspection.optimizedModelMetadataCacheStatus.empty()
+                        ? bimInspection.optimizedModelMetadataCacheStatus.c_str()
+                        : bimInspection.optimizedModelMetadataCacheHit
+                              ? "hit"
+                          : bimInspection.optimizedModelMetadataCacheWritten
+                              ? "written"
+                              : "not written");
+        if (!bimInspection.optimizedModelMetadataCacheKey.empty()) {
+          ImGui::TextWrapped("Cache key: %s",
+                             bimInspection.optimizedModelMetadataCacheKey.c_str());
+        }
+        if (!bimInspection.optimizedModelMetadataCachePath.empty()) {
+          ImGui::TextWrapped("Cache path: %s",
+                             bimInspection.optimizedModelMetadataCachePath.c_str());
+        }
+        ImGui::Text("Floor plan draws: %zu",
+                    bimInspection.floorPlanDrawCount);
+        ImGui::Separator();
+        ImGui::Checkbox("Auto LOD request",
+                        &bimLodStreamingUiState_.autoLod);
+        ImGui::Checkbox("Draw budget enabled",
+                        &bimLodStreamingUiState_.drawBudgetEnabled);
+        if (!bimLodStreamingUiState_.drawBudgetEnabled) {
+          ImGui::BeginDisabled();
+        }
+        ImGui::SliderInt("Max visible BIM objects",
+                         &bimLodStreamingUiState_.drawBudgetMaxObjects, 100,
+                         200000);
+        if (!bimLodStreamingUiState_.drawBudgetEnabled) {
+          ImGui::EndDisabled();
+        }
+        ImGui::SliderInt("LOD bias", &bimLodStreamingUiState_.lodBias, -4, 4);
+        ImGui::SliderFloat("Screen error pixels",
+                           &bimLodStreamingUiState_.screenErrorPixels, 0.25f,
+                           16.0f, "%.2f");
+        ImGui::Checkbox("Pause streaming request",
+                        &bimLodStreamingUiState_.pauseStreamingRequest);
+        ImGui::Checkbox("Keep visible storeys resident",
+                        &bimLodStreamingUiState_.keepVisibleStoreysResident);
+        bimLodStreamingUiState_.drawBudgetMaxObjects =
+            std::clamp(bimLodStreamingUiState_.drawBudgetMaxObjects, 100,
+                       200000);
+        bimFilterState_.drawBudgetEnabled =
+            bimLodStreamingUiState_.drawBudgetEnabled;
+        bimFilterState_.drawBudgetMaxObjects =
+            bimLodStreamingUiState_.drawBudgetEnabled
+                ? static_cast<uint32_t>(
+                      bimLodStreamingUiState_.drawBudgetMaxObjects)
+                : 0u;
+        ImGui::Text("Budget visible: %zu objects (%zu mesh), %zu cluster refs",
+                    bimInspection.drawBudgetVisibleObjectCount,
+                    bimInspection.drawBudgetVisibleMeshObjectCount,
+                    bimInspection.drawBudgetVisibleMeshletClusterCount);
+        ImGui::Text("Budget max LOD: %u",
+                    bimInspection.drawBudgetVisibleMaxLodLevel);
+        ImGui::TextDisabled(
+            "Draw budget preserves BIM object identity; meshlet residency buffers are GPU-side and cacheable for streaming decisions");
+        ImGui::TreePop();
+      }
+
+      ImGui::Separator();
+      ImGui::Checkbox("Floor plan overlay",
+                      &bimFloorPlanOverlayState_.enabled);
+      if (bimFloorPlanOverlayState_.enabled) {
+        static constexpr const char *kFloorPlanElevationModeLabels[] = {
+            "Projected on ground", "Source elevation"};
+        int floorPlanElevationMode =
+            static_cast<int>(bimFloorPlanOverlayState_.elevationMode);
+        if (ImGui::Combo("Floor plan elevation", &floorPlanElevationMode,
+                         kFloorPlanElevationModeLabels,
+                         IM_ARRAYSIZE(kFloorPlanElevationModeLabels))) {
+          bimFloorPlanOverlayState_.elevationMode =
+              static_cast<BimFloorPlanElevationMode>(
+                  std::clamp(floorPlanElevationMode, 0, 1));
+        }
+        ImGui::Checkbox("Floor plan depth test",
+                        &bimFloorPlanOverlayState_.depthTest);
+        ImGui::ColorEdit3("Floor plan color",
+                          &bimFloorPlanOverlayState_.color.x);
+        ImGui::SliderFloat("Floor plan opacity",
+                           &bimFloorPlanOverlayState_.opacity, 0.05f, 1.0f,
+                           "%.2f");
+        if (wireframeWideLineSupported_) {
+          ImGui::SliderFloat("Floor plan line width",
+                             &bimFloorPlanOverlayState_.lineWidth, 1.0f, 8.0f,
+                             "%.1f");
+        } else {
+          bimFloorPlanOverlayState_.lineWidth = 1.0f;
+          ImGui::BeginDisabled();
+          ImGui::SliderFloat("Floor plan line width",
+                             &bimFloorPlanOverlayState_.lineWidth, 1.0f, 1.0f,
+                             "%.1f");
+          ImGui::EndDisabled();
+        }
+        bimFloorPlanOverlayState_.opacity =
+            std::clamp(bimFloorPlanOverlayState_.opacity, 0.05f, 1.0f);
+        bimFloorPlanOverlayState_.lineWidth =
+            std::max(bimFloorPlanOverlayState_.lineWidth, 1.0f);
+      }
+
+      ImGui::Separator();
+      if (ImGui::TreeNode("Clip / Cap / Hatching")) {
+        ImGui::Checkbox("Section plane", &sectionPlaneState_.enabled);
+        static constexpr const char *kSectionAxisLabels[] = {"X", "Y", "Z"};
+        if (ImGui::Combo("Section axis", &sectionPlaneAxis_,
+                         kSectionAxisLabels,
+                         IM_ARRAYSIZE(kSectionAxisLabels))) {
+          switch (sectionPlaneAxis_) {
+          case 0:
+            sectionPlaneState_.normal = {1.0f, 0.0f, 0.0f};
+            break;
+          case 2:
+            sectionPlaneState_.normal = {0.0f, 0.0f, 1.0f};
+            break;
+          default:
+            sectionPlaneAxis_ = 1;
+            sectionPlaneState_.normal = {0.0f, 1.0f, 0.0f};
+            break;
+          }
+        }
+        ImGui::SliderFloat("Section offset", &sectionPlaneState_.offset,
+                           -100.0f, 100.0f, "%.3f");
+        if (ImGui::SmallButton("Flip section")) {
+          sectionPlaneState_.normal = -sectionPlaneState_.normal;
+          sectionPlaneState_.offset = -sectionPlaneState_.offset;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reset section")) {
+          sectionPlaneState_ = {};
+          sectionPlaneAxis_ = 1;
+        }
+        ImGui::Separator();
+        ImGui::Checkbox("Box clip", &bimBoxClipState_.enabled);
+        if (bimBoxClipState_.enabled) {
+          ImGui::Checkbox("Invert box clip", &bimBoxClipState_.invert);
+          ImGui::DragFloat3("Box min", &bimBoxClipState_.min.x, 0.1f,
+                            -10000.0f, 10000.0f, "%.3f");
+          ImGui::DragFloat3("Box max", &bimBoxClipState_.max.x, 0.1f,
+                            -10000.0f, 10000.0f, "%.3f");
+          for (int axis = 0; axis < 3; ++axis) {
+            if (bimBoxClipState_.min[axis] > bimBoxClipState_.max[axis]) {
+              std::swap(bimBoxClipState_.min[axis],
+                        bimBoxClipState_.max[axis]);
+            }
+          }
+          if (ImGui::SmallButton("Reset box clip")) {
+            bimBoxClipState_ = {};
+          }
+          ImGui::Separator();
+        }
+        ImGui::Checkbox("Section cap fill",
+                        &bimClipCapHatchingUiState_.capPreview);
+        if (!bimClipCapHatchingUiState_.capPreview) {
+          ImGui::BeginDisabled();
+        }
+        ImGui::ColorEdit3("Cap fill color",
+                          &bimClipCapHatchingUiState_.capColor.x);
+        ImGui::SliderFloat("Cap fill opacity",
+                           &bimClipCapHatchingUiState_.capOpacity, 0.05f,
+                           1.0f, "%.2f");
+        if (!bimClipCapHatchingUiState_.capPreview) {
+          ImGui::EndDisabled();
+        }
+        ImGui::Checkbox("Section hatch overlay",
+                        &bimClipCapHatchingUiState_.hatchingPreview);
+        if (!bimClipCapHatchingUiState_.hatchingPreview) {
+          ImGui::BeginDisabled();
+        }
+        ImGui::SliderFloat("Hatch spacing",
+                           &bimClipCapHatchingUiState_.hatchSpacing, 0.05f,
+                           5.0f, "%.2f");
+        ImGui::SliderFloat("Hatch angle degrees",
+                           &bimClipCapHatchingUiState_.hatchAngleDegrees,
+                           0.0f, 180.0f, "%.1f");
+        ImGui::SliderFloat("Hatch line width",
+                           &bimClipCapHatchingUiState_.hatchLineWidth, 1.0f,
+                           8.0f, "%.1f");
+        ImGui::ColorEdit3("Hatch color",
+                          &bimClipCapHatchingUiState_.hatchColor.x);
+        if (!bimClipCapHatchingUiState_.hatchingPreview) {
+          ImGui::EndDisabled();
+        }
+        bimClipCapHatchingUiState_.hatchSpacing =
+            std::clamp(bimClipCapHatchingUiState_.hatchSpacing, 0.05f, 5.0f);
+        bimClipCapHatchingUiState_.hatchAngleDegrees =
+            std::clamp(bimClipCapHatchingUiState_.hatchAngleDegrees, 0.0f,
+                       180.0f);
+        bimClipCapHatchingUiState_.capOpacity =
+            std::clamp(bimClipCapHatchingUiState_.capOpacity, 0.05f, 1.0f);
+        bimClipCapHatchingUiState_.hatchLineWidth =
+            std::clamp(bimClipCapHatchingUiState_.hatchLineWidth, 1.0f, 8.0f);
+        ImGui::TextDisabled(
+            "Section caps rebuild when the section plane or hatch style changes");
+        ImGui::TreePop();
+      }
+
+      ImGui::Separator();
+      if (ImGui::TreeNode("Measurements")) {
+        if (bimInspection.hasSelectionBounds) {
+          const glm::vec3 dimensions =
+              BimMeasurementDimensions(bimInspection.selectionBoundsSize);
+          ImGui::TextUnformatted("Selected element");
+          ImGui::Text("Dimensions (X/Y/Z): %.3f / %.3f / %.3f",
+                      dimensions.x, dimensions.y, dimensions.z);
+          ImGui::Text("Footprint (X*Z): %.3f",
+                      BimMeasurementFootprintArea(dimensions));
+          ImGui::Text("Volume (bounds): %.3f",
+                      BimMeasurementVolume(dimensions));
+          ImGui::Text("Center: %.3f, %.3f, %.3f",
+                      bimInspection.selectionBoundsCenter.x,
+                      bimInspection.selectionBoundsCenter.y,
+                      bimInspection.selectionBoundsCenter.z);
+          ImGui::Text("Live floor elevation: %.3f",
+                      bimInspection.selectionFloorElevation);
+        } else if (bimInspection.hasSelection) {
+          ImGui::TextDisabled("Selected element has no bounds");
+        } else {
+          ImGui::TextDisabled("No selected BIM element");
+        }
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Center-to-center");
+        auto captureMeasurementPoint = [&](BimMeasurementPointState &point) {
+          point.captured = true;
+          point.center = bimInspection.selectionBoundsCenter;
+          point.objectIndex = bimInspection.selectedObjectIndex;
+          point.label = BimMeasurementSelectionLabel(bimInspection);
+          point.modelPath = bimInspection.modelPath;
+        };
+        const bool canCaptureMeasurement = bimInspection.hasSelectionBounds;
+        if (!canCaptureMeasurement) {
+          ImGui::BeginDisabled();
+        }
+        if (ImGui::SmallButton("Set A from selection center")) {
+          captureMeasurementPoint(bimMeasurementPointA_);
+          statusMessage_ =
+              "Set BIM measurement A from " + bimMeasurementPointA_.label;
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Set B from selection center")) {
+          captureMeasurementPoint(bimMeasurementPointB_);
+          statusMessage_ =
+              "Set BIM measurement B from " + bimMeasurementPointB_.label;
+        }
+        if (!canCaptureMeasurement) {
+          ImGui::EndDisabled();
+        }
+        ImGui::SameLine();
+        const bool hasMeasurementPoint =
+            bimMeasurementPointA_.captured || bimMeasurementPointB_.captured;
+        if (!hasMeasurementPoint) {
+          ImGui::BeginDisabled();
+        }
+        if (ImGui::SmallButton("Clear measurement")) {
+          bimMeasurementPointA_ = {};
+          bimMeasurementPointB_ = {};
+          statusMessage_ = "Cleared BIM measurement";
+        }
+        if (!hasMeasurementPoint) {
+          ImGui::EndDisabled();
+        }
+
+        auto drawMeasurementPoint =
+            [](const char *name, const BimMeasurementPointState &point) {
+              if (!point.captured) {
+                ImGui::TextDisabled("%s: not set", name);
+                return;
+              }
+              ImGui::TextWrapped("%s: %s", name, point.label.c_str());
+              ImGui::Text("  Object: %u  Center: %.3f, %.3f, %.3f",
+                          point.objectIndex, point.center.x, point.center.y,
+                          point.center.z);
+            };
+        drawMeasurementPoint("A", bimMeasurementPointA_);
+        drawMeasurementPoint("B", bimMeasurementPointB_);
+
+        if (bimMeasurementPointA_.captured &&
+            bimMeasurementPointB_.captured) {
+          const BimMeasurementDistanceStats stats =
+              BimMeasurementBetweenCenters(bimMeasurementPointA_.center,
+                                           bimMeasurementPointB_.center);
+          ImGui::Text("Distance: %.3f", stats.distance);
+          ImGui::Text("Horizontal distance: %.3f",
+                      stats.horizontalDistance);
+          ImGui::Text("Elevation delta: %.3f", stats.elevationDelta);
+          ImGui::Text("Slope angle: %.2f deg", stats.slopeAngleDegrees);
+          ImGui::Text("Angle to elevation axis: %.2f deg",
+                      stats.elevationAxisAngleDegrees);
+          if (ImGui::SmallButton("Save measurement annotation")) {
+            BimMeasurementAnnotationState annotation{};
+            annotation.id = nextBimMeasurementAnnotationId_++;
+            annotation.label =
+                "Measurement " + std::to_string(annotation.id);
+            annotation.pointA = bimMeasurementPointA_;
+            annotation.pointB = bimMeasurementPointB_;
+            annotation.distance = stats.distance;
+            annotation.horizontalDistance = stats.horizontalDistance;
+            annotation.elevationDelta = stats.elevationDelta;
+            annotation.slopeAngleDegrees = stats.slopeAngleDegrees;
+            annotation.elevationAxisAngleDegrees =
+                stats.elevationAxisAngleDegrees;
+            bimMeasurementAnnotations_.push_back(std::move(annotation));
+            selectedBimMeasurementAnnotationIndex_ =
+                static_cast<int>(bimMeasurementAnnotations_.size()) - 1;
+            statusMessage_ = "Saved BIM measurement annotation";
+          }
+        } else {
+          ImGui::TextDisabled("Set A and B from selected BIM centers");
+        }
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("Measurement annotations");
+        if (bimMeasurementAnnotations_.empty()) {
+          selectedBimMeasurementAnnotationIndex_ = -1;
+          ImGui::TextDisabled("No saved measurement annotations");
+        } else {
+          if (selectedBimMeasurementAnnotationIndex_ >=
+              static_cast<int>(bimMeasurementAnnotations_.size())) {
+            selectedBimMeasurementAnnotationIndex_ =
+                static_cast<int>(bimMeasurementAnnotations_.size()) - 1;
+          }
+          if (ImGui::SmallButton("Clear annotations")) {
+            bimMeasurementAnnotations_.clear();
+            selectedBimMeasurementAnnotationIndex_ = -1;
+            statusMessage_ = "Cleared BIM measurement annotations";
+          }
+          int eraseAnnotationIndex = -1;
+          if (!bimMeasurementAnnotations_.empty() &&
+              ImGui::BeginTable("BimMeasurementAnnotations", 6,
+                                ImGuiTableFlags_Borders |
+                                    ImGuiTableFlags_RowBg |
+                                    ImGuiTableFlags_SizingStretchProp,
+                                ImVec2(0.0f, 180.0f))) {
+            ImGui::TableSetupColumn("Name");
+            ImGui::TableSetupColumn("Distance");
+            ImGui::TableSetupColumn("Horizontal");
+            ImGui::TableSetupColumn("Elevation");
+            ImGui::TableSetupColumn("Axis angle");
+            ImGui::TableSetupColumn("Action");
+            ImGui::TableHeadersRow();
+            for (size_t i = 0; i < bimMeasurementAnnotations_.size(); ++i) {
+              const BimMeasurementAnnotationState &annotation =
+                  bimMeasurementAnnotations_[i];
+              ImGui::PushID(static_cast<int>(i));
+              ImGui::TableNextRow();
+              ImGui::TableNextColumn();
+              const bool selected =
+                  selectedBimMeasurementAnnotationIndex_ ==
+                  static_cast<int>(i);
+              if (ImGui::Selectable(annotation.label.c_str(), selected,
+                                    ImGuiSelectableFlags_SpanAllColumns)) {
+                selectedBimMeasurementAnnotationIndex_ = static_cast<int>(i);
+              }
+              if (ImGui::IsItemHovered()) {
+                ImGui::SetTooltip("%s to %s",
+                                  annotation.pointA.label.c_str(),
+                                  annotation.pointB.label.c_str());
+              }
+              ImGui::TableNextColumn();
+              ImGui::Text("%.3f", annotation.distance);
+              ImGui::TableNextColumn();
+              ImGui::Text("%.3f", annotation.horizontalDistance);
+              ImGui::TableNextColumn();
+              ImGui::Text("%.3f", annotation.elevationDelta);
+              ImGui::TableNextColumn();
+              ImGui::Text("%.2f deg",
+                          annotation.elevationAxisAngleDegrees);
+              ImGui::TableNextColumn();
+              if (ImGui::SmallButton("Delete")) {
+                eraseAnnotationIndex = static_cast<int>(i);
+              }
+              ImGui::PopID();
+            }
+            ImGui::EndTable();
+          }
+          if (eraseAnnotationIndex >= 0) {
+            bimMeasurementAnnotations_.erase(
+                bimMeasurementAnnotations_.begin() + eraseAnnotationIndex);
+            if (bimMeasurementAnnotations_.empty()) {
+              selectedBimMeasurementAnnotationIndex_ = -1;
+            } else {
+              selectedBimMeasurementAnnotationIndex_ = std::min<int>(
+                  selectedBimMeasurementAnnotationIndex_,
+                  static_cast<int>(bimMeasurementAnnotations_.size()) - 1);
+            }
+          }
+        }
+        ImGui::TreePop();
+      }
+
+      ImGui::Separator();
+      if (ImGui::TreeNode("Viewpoints")) {
+        if (ImGui::SmallButton("Capture viewpoint")) {
+          ViewpointSnapshotState snapshot = currentViewpoint;
+          snapshot.bimFilter = bimFilterState_;
+          snapshot.bimModelPath = bimInspection.modelPath;
+          snapshot.label =
+              "Viewpoint " + std::to_string(nextViewpointSnapshotId_++);
+          const std::string selectionLabel =
+              ViewpointSnapshotSelectionLabel(snapshot);
+          if (selectionLabel != "None") {
+            snapshot.label += " - " + selectionLabel;
+          }
+          viewpointSnapshots_.push_back(std::move(snapshot));
+          selectedViewpointSnapshotIndex_ =
+              static_cast<int>(viewpointSnapshots_.size()) - 1;
+          statusMessage_ = "Captured " + ViewpointSnapshotDisplayName(
+                                             viewpointSnapshots_.back(),
+                                              viewpointSnapshots_.size() - 1u);
+        }
+
+        auto normalizedCurrentViewpoint = [&]() {
+          ViewpointSnapshotState snapshot = currentViewpoint;
+          snapshot.bimFilter = bimFilterState_;
+          snapshot.bimModelPath = bimInspection.modelPath;
+          if (snapshot.label.empty()) {
+            snapshot.label = "Current viewpoint";
+          }
+          return snapshot;
+        };
+        auto saveBcfViewpoint = [&](const ViewpointSnapshotState &snapshot) {
+          const std::filesystem::path path{bcfViewpointPath_};
+          if (path.has_parent_path()) {
+            std::error_code directoryError;
+            std::filesystem::create_directories(path.parent_path(),
+                                                directoryError);
+            if (directoryError) {
+              statusMessage_ = "Failed to create BCF viewpoint directory: " +
+                               path.parent_path().string();
+              return;
+            }
+          }
+          statusMessage_ = bcf::SaveVisualizationInfo(snapshot, path)
+                               ? "Exported BCF viewpoint: " + path.string()
+                               : "Failed to export BCF viewpoint: " +
+                                     path.string();
+        };
+        auto makeBcfTopicFolder =
+            [&](const ViewpointSnapshotState &snapshot,
+                uint32_t topicId) {
+              bcf::BcfTopicFolder topic{};
+              const std::string topicGuid =
+                  "container-topic-" + std::to_string(topicId);
+              const std::string viewpointGuid =
+                  "container-viewpoint-" + std::to_string(topicId);
+              topic.markup.topic.guid = topicGuid;
+              topic.markup.topic.title =
+                  TrimAscii(bcfTopicTitleInput_).empty()
+                      ? "BIM issue"
+                      : TrimAscii(bcfTopicTitleInput_);
+              topic.markup.topic.status =
+                  TrimAscii(bcfTopicStatusInput_).empty()
+                      ? "Open"
+                      : TrimAscii(bcfTopicStatusInput_);
+              topic.markup.topic.priority = TrimAscii(bcfTopicPriorityInput_);
+              topic.markup.topic.labels =
+                  SplitBcfTopicLabels(bcfTopicLabelsInput_);
+              topic.markup.topic.tags = {"Container"};
+
+              bcf::BcfTopicViewpoint viewpoint{};
+              viewpoint.markup.guid = viewpointGuid;
+              viewpoint.markup.viewpointFile = "viewpoint-0001.bcfv";
+              viewpoint.snapshot = snapshot;
+              if (bimInspection.hasSelection) {
+                bcf::BcfPin pin{};
+                pin.guid = bcf::StablePinGuid(bimInspection.guid,
+                                              bimInspection.sourceId,
+                                              topicGuid);
+                pin.label = BimMeasurementSelectionLabel(bimInspection);
+                pin.location = bimInspection.hasSelectionBounds
+                                   ? bimInspection.selectionBoundsCenter
+                                   : snapshot.camera.position;
+                pin.ifcGuid = bimInspection.guid;
+                pin.sourceId = bimInspection.sourceId;
+                viewpoint.markup.pins.push_back(std::move(pin));
+              }
+              topic.markup.viewpoints.push_back(viewpoint.markup);
+              topic.viewpoints.push_back(std::move(viewpoint));
+
+              const std::string commentText =
+                  TrimAscii(bcfTopicCommentInput_);
+              if (!commentText.empty()) {
+                bcf::BcfComment comment{};
+                comment.guid =
+                    "container-comment-" + std::to_string(topicId);
+                comment.author = "Container";
+                comment.text = commentText;
+                comment.viewpointGuid = viewpointGuid;
+                topic.markup.comments.push_back(std::move(comment));
+              }
+              return topic;
+            };
+        auto storeBcfTopicArchiveEntry =
+            [&](const bcf::BcfTopicFolder &topic,
+                const std::filesystem::path &path) {
+              BcfTopicArchiveEntryState entry{};
+              entry.id = nextBcfTopicArchiveId_++;
+              entry.label = topic.markup.topic.title.empty()
+                                ? "BCF topic " + std::to_string(entry.id)
+                                : topic.markup.topic.title;
+              entry.status = topic.markup.topic.status;
+              entry.priority = topic.markup.topic.priority;
+              entry.path = path.empty() ? std::string{} : path.string();
+              if (!topic.viewpoints.empty() &&
+                  topic.viewpoints.front().snapshot) {
+                entry.hasSnapshot = true;
+                entry.snapshot = *topic.viewpoints.front().snapshot;
+                if (entry.snapshot.label.empty()) {
+                  entry.snapshot.label = entry.label;
+                }
+              }
+              bcfTopicArchiveEntries_.push_back(std::move(entry));
+              selectedBcfTopicArchiveIndex_ =
+                  static_cast<int>(bcfTopicArchiveEntries_.size()) - 1;
+            };
+
+        ImGui::InputText("BCF viewpoint file", &bcfViewpointPath_);
+        const bool hasBcfPath = !bcfViewpointPath_.empty();
+        if (!hasBcfPath) {
+          ImGui::BeginDisabled();
+        }
+        if (ImGui::SmallButton("Export current BCF")) {
+          saveBcfViewpoint(normalizedCurrentViewpoint());
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Import BCF")) {
+          const std::filesystem::path path{bcfViewpointPath_};
+          if (auto snapshot = bcf::LoadVisualizationInfo(path)) {
+            if (snapshot->label.empty()) {
+              snapshot->label = "Imported viewpoint " +
+                                std::to_string(nextViewpointSnapshotId_++);
+            }
+            viewpointSnapshots_.push_back(std::move(*snapshot));
+            selectedViewpointSnapshotIndex_ =
+                static_cast<int>(viewpointSnapshots_.size()) - 1;
+            statusMessage_ = "Imported BCF viewpoint: " + path.string();
+          } else {
+            statusMessage_ = "Failed to import BCF viewpoint: " + path.string();
+          }
+        }
+        if (!hasBcfPath) {
+          ImGui::EndDisabled();
+        }
+
+        if (ImGui::TreeNode("BCF Topics")) {
+          ImGui::InputText("BCF topic folder", &bcfTopicFolderPath_);
+          ImGui::InputText("BCF topic archive file",
+                           &bcfTopicArchivePath_);
+          ImGui::InputText("Topic title", &bcfTopicTitleInput_);
+          ImGui::InputText("Topic status", &bcfTopicStatusInput_);
+          ImGui::InputText("Topic priority", &bcfTopicPriorityInput_);
+          ImGui::InputText("Topic labels", &bcfTopicLabelsInput_);
+          ImGui::InputTextMultiline("Topic comment", &bcfTopicCommentInput_,
+                                    ImVec2(0.0f, 64.0f));
+          auto makeCurrentBcfTopic = [&]() {
+            ViewpointSnapshotState snapshot = normalizedCurrentViewpoint();
+            snapshot.selectedBimObjectIndex =
+                bimInspection.hasSelection
+                    ? bimInspection.selectedObjectIndex
+                    : snapshot.selectedBimObjectIndex;
+            snapshot.selectedBimGuid =
+                bimInspection.hasSelection ? bimInspection.guid
+                                           : snapshot.selectedBimGuid;
+            snapshot.selectedBimType =
+                bimInspection.hasSelection ? bimInspection.type
+                                           : snapshot.selectedBimType;
+            snapshot.selectedBimSourceId =
+                bimInspection.hasSelection ? bimInspection.sourceId
+                                           : snapshot.selectedBimSourceId;
+            return makeBcfTopicFolder(snapshot, nextBcfTopicArchiveId_);
+          };
+          if (ImGui::SmallButton("Archive current topic")) {
+            bcf::BcfTopicFolder topic = makeCurrentBcfTopic();
+            storeBcfTopicArchiveEntry(topic, {});
+            statusMessage_ = "Archived current BCF topic in UI memory";
+          }
+          ImGui::SameLine();
+          const bool hasTopicFolderPath = !bcfTopicFolderPath_.empty();
+          if (!hasTopicFolderPath) {
+            ImGui::BeginDisabled();
+          }
+          if (ImGui::SmallButton("Save topic folder")) {
+            const std::filesystem::path path{bcfTopicFolderPath_};
+            bcf::BcfTopicFolder topic = makeCurrentBcfTopic();
+            if (bcf::SaveTopicFolder(topic, path)) {
+              storeBcfTopicArchiveEntry(topic, path);
+              statusMessage_ = "Saved BCF topic folder: " + path.string();
+            } else {
+              statusMessage_ =
+                  "Failed to save BCF topic folder: " + path.string();
+            }
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Load topic folder")) {
+            const std::filesystem::path path{bcfTopicFolderPath_};
+            if (auto topic = bcf::LoadTopicFolder(path)) {
+              storeBcfTopicArchiveEntry(*topic, path);
+              statusMessage_ = "Loaded BCF topic folder: " + path.string();
+            } else {
+              statusMessage_ =
+                  "Failed to load BCF topic folder: " + path.string();
+            }
+          }
+          if (!hasTopicFolderPath) {
+            ImGui::EndDisabled();
+          }
+
+          const bool hasTopicArchivePath = !bcfTopicArchivePath_.empty();
+          if (!hasTopicArchivePath) {
+            ImGui::BeginDisabled();
+          }
+          if (ImGui::SmallButton("Save topic archive")) {
+            const std::filesystem::path path{bcfTopicArchivePath_};
+            bcf::BcfTopicFolder topic = makeCurrentBcfTopic();
+            if (bcf::SaveBcfArchive(topic, path)) {
+              storeBcfTopicArchiveEntry(topic, path);
+              statusMessage_ = "Saved BCF topic archive: " + path.string();
+            } else {
+              statusMessage_ =
+                  "Failed to save BCF topic archive: " + path.string();
+            }
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Load topic archive")) {
+            const std::filesystem::path path{bcfTopicArchivePath_};
+            if (auto topic = bcf::LoadBcfArchive(path)) {
+              storeBcfTopicArchiveEntry(*topic, path);
+              statusMessage_ = "Loaded BCF topic archive: " + path.string();
+            } else {
+              statusMessage_ =
+                  "Failed to load BCF topic archive: " + path.string();
+            }
+          }
+          if (!hasTopicArchivePath) {
+            ImGui::EndDisabled();
+          }
+
+          if (bcfTopicArchiveEntries_.empty()) {
+            selectedBcfTopicArchiveIndex_ = -1;
+            ImGui::TextDisabled("No archived BCF topics");
+          } else {
+            selectedBcfTopicArchiveIndex_ =
+                std::clamp(selectedBcfTopicArchiveIndex_, 0,
+                           static_cast<int>(bcfTopicArchiveEntries_.size()) -
+                               1);
+            const BcfTopicArchiveEntryState &selectedTopic =
+                bcfTopicArchiveEntries_[static_cast<size_t>(
+                    selectedBcfTopicArchiveIndex_)];
+            const std::string preview =
+                selectedTopic.label.empty() ? "BCF topic" : selectedTopic.label;
+            if (ImGui::BeginCombo("Archived topic", preview.c_str())) {
+              for (size_t i = 0; i < bcfTopicArchiveEntries_.size(); ++i) {
+                const BcfTopicArchiveEntryState &entry =
+                    bcfTopicArchiveEntries_[i];
+                const bool selected =
+                    selectedBcfTopicArchiveIndex_ == static_cast<int>(i);
+                std::string label = entry.label.empty()
+                                        ? "BCF topic " + std::to_string(i + 1u)
+                                        : entry.label;
+                if (!entry.status.empty()) {
+                  label += " [" + entry.status + "]";
+                }
+                if (ImGui::Selectable(label.c_str(), selected)) {
+                  selectedBcfTopicArchiveIndex_ = static_cast<int>(i);
+                }
+                if (selected) {
+                  ImGui::SetItemDefaultFocus();
+                }
+              }
+              ImGui::EndCombo();
+            }
+            const BcfTopicArchiveEntryState &entry =
+                bcfTopicArchiveEntries_[static_cast<size_t>(
+                    selectedBcfTopicArchiveIndex_)];
+            ImGui::TextWrapped("Topic status: %s",
+                               entry.status.empty() ? "not specified"
+                                                    : entry.status.c_str());
+            ImGui::TextWrapped("Topic priority: %s",
+                               entry.priority.empty()
+                                   ? "not specified"
+                                   : entry.priority.c_str());
+            if (!entry.path.empty()) {
+              ImGui::TextWrapped("Topic path: %s", entry.path.c_str());
+            }
+            if (!entry.hasSnapshot) {
+              ImGui::BeginDisabled();
+            }
+            if (ImGui::SmallButton("Restore archived topic viewpoint")) {
+              const bool restored =
+                  restoreViewpoint ? restoreViewpoint(entry.snapshot) : false;
+              statusMessage_ =
+                  restored ? "Restored archived BCF topic viewpoint"
+                           : "Failed to restore archived BCF topic viewpoint";
+            }
+            if (!entry.hasSnapshot) {
+              ImGui::EndDisabled();
+              ImGui::TextDisabled(
+                  "Archived BCF topic has no viewpoint snapshot");
+            }
+          }
+          ImGui::TextDisabled(
+              "BCF topic archive hooks are local file import/export; issue server sync is not connected");
+          ImGui::TreePop();
+        }
+
+        if (viewpointSnapshots_.empty()) {
+          selectedViewpointSnapshotIndex_ = -1;
+          ImGui::TextDisabled("No captured viewpoints");
+        } else {
+          selectedViewpointSnapshotIndex_ =
+              std::clamp(selectedViewpointSnapshotIndex_, 0,
+                         static_cast<int>(viewpointSnapshots_.size()) - 1);
+          const std::string preview = ViewpointSnapshotDisplayName(
+              viewpointSnapshots_[static_cast<size_t>(
+                  selectedViewpointSnapshotIndex_)],
+              static_cast<size_t>(selectedViewpointSnapshotIndex_));
+          if (ImGui::BeginCombo("Stored viewpoint", preview.c_str())) {
+            for (size_t i = 0; i < viewpointSnapshots_.size(); ++i) {
+              const bool selected =
+                  static_cast<int>(i) == selectedViewpointSnapshotIndex_;
+              const std::string label =
+                  ViewpointSnapshotDisplayName(viewpointSnapshots_[i], i);
+              if (ImGui::Selectable(label.c_str(), selected)) {
+                selectedViewpointSnapshotIndex_ = static_cast<int>(i);
+              }
+              if (selected) {
+                ImGui::SetItemDefaultFocus();
+              }
+            }
+            ImGui::EndCombo();
+          }
+
+          ViewpointSnapshotState &selectedSnapshot =
+              viewpointSnapshots_[static_cast<size_t>(
+                  selectedViewpointSnapshotIndex_)];
+          const bool modelMismatch =
+              ViewpointSnapshotModelMismatch(selectedSnapshot, bimInspection);
+          ImGui::InputText("Viewpoint name", &selectedSnapshot.label);
+          if (modelMismatch) {
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f),
+                               "Snapshot model differs");
+            ImGui::TextWrapped("Snapshot source: %s",
+                               selectedSnapshot.bimModelPath.c_str());
+          }
+          ImGui::Text("Camera: %.2f, %.2f, %.2f",
+                      selectedSnapshot.camera.position.x,
+                      selectedSnapshot.camera.position.y,
+                      selectedSnapshot.camera.position.z);
+          ImGui::Text("Rotation: %.1f, %.1f",
+                      selectedSnapshot.camera.rotationDegrees.x,
+                      selectedSnapshot.camera.rotationDegrees.y);
+          ImGui::TextWrapped(
+              "Selection: %s",
+              ViewpointSnapshotSelectionLabel(selectedSnapshot).c_str());
+          if (selectedSnapshot.bimFilter.typeFilterEnabled &&
+              !selectedSnapshot.bimFilter.type.empty()) {
+            ImGui::TextWrapped("Filter: %s",
+                               selectedSnapshot.bimFilter.type.c_str());
+          }
+          if (selectedSnapshot.bimFilter.isolateSelection) {
+            ImGui::TextDisabled("Isolate selected");
+          }
+
+          if (ImGui::Button("Restore viewpoint")) {
+            const BimFilterState previousFilter = bimFilterState_;
+            if (!modelMismatch) {
+              bimFilterState_ = selectedSnapshot.bimFilter;
+            }
+            const bool restored =
+                restoreViewpoint ? restoreViewpoint(selectedSnapshot) : false;
+            if (!restored) {
+              bimFilterState_ = previousFilter;
+            }
+            const std::string restoredName = ViewpointSnapshotDisplayName(
+                selectedSnapshot,
+                static_cast<size_t>(selectedViewpointSnapshotIndex_));
+            statusMessage_ =
+                restored ? (modelMismatch
+                                ? "Restored camera from " + restoredName +
+                                      "; kept current BIM filters"
+                                : "Restored " + restoredName)
+                         : "Failed to restore viewpoint";
+          }
+          ImGui::SameLine();
+          if (!hasBcfPath) {
+            ImGui::BeginDisabled();
+          }
+          if (ImGui::SmallButton("Export selected BCF")) {
+            saveBcfViewpoint(selectedSnapshot);
+          }
+          if (!hasBcfPath) {
+            ImGui::EndDisabled();
+          }
+          ImGui::SameLine();
+          if (ImGui::SmallButton("Delete viewpoint")) {
+            const size_t removedIndex =
+                static_cast<size_t>(selectedViewpointSnapshotIndex_);
+            const std::string removedName = ViewpointSnapshotDisplayName(
+                viewpointSnapshots_[removedIndex], removedIndex);
+            viewpointSnapshots_.erase(viewpointSnapshots_.begin() +
+                                      selectedViewpointSnapshotIndex_);
+            if (viewpointSnapshots_.empty()) {
+              selectedViewpointSnapshotIndex_ = -1;
+            } else {
+              selectedViewpointSnapshotIndex_ = std::min<int>(
+                  selectedViewpointSnapshotIndex_,
+                  static_cast<int>(viewpointSnapshots_.size()) - 1);
+            }
+            statusMessage_ = "Deleted " + removedName;
+          }
+        }
+        ImGui::TreePop();
+      }
+
+      if (!bimInspection.elementTypes.empty() &&
+          ImGui::TreeNode("Element Types")) {
+        const size_t visibleTypeCount =
+            std::min<size_t>(bimInspection.elementTypes.size(), 48u);
+        for (size_t i = 0; i < visibleTypeCount; ++i) {
+          ImGui::BulletText("%s", bimInspection.elementTypes[i].c_str());
+        }
+        if (visibleTypeCount < bimInspection.elementTypes.size()) {
+          ImGui::TextDisabled("%zu more", bimInspection.elementTypes.size() -
+                                              visibleTypeCount);
+        }
+        ImGui::TreePop();
+      }
+
+      ImGui::Separator();
+      if (bimInspection.hasSelection) {
+        auto drawIndexLine = [](const char *label, uint32_t value) {
+          if (value == std::numeric_limits<uint32_t>::max()) {
+            ImGui::TextDisabled("%s: n/a", label);
+          } else {
+            ImGui::Text("%s: %u", label, value);
+          }
+        };
+        auto drawTextLine = [](const char *label, const std::string &value) {
+          if (!value.empty()) {
+            ImGui::TextWrapped("%s: %s", label, value.c_str());
+          }
+        };
+        auto drawVec3Line = [](const char *label, const glm::vec3 &value) {
+          ImGui::Text("%s: %.3f, %.3f, %.3f", label, value.x, value.y,
+                      value.z);
+        };
+        ImGui::Text("Selected BIM Object: %u",
+                    bimInspection.selectedObjectIndex);
+        drawTextLine("Name", bimInspection.displayName);
+        if (!bimInspection.type.empty()) {
+          ImGui::TextWrapped("Type: %s", bimInspection.type.c_str());
+        }
+        drawTextLine("Object type", bimInspection.objectType);
+        if (!bimInspection.guid.empty()) {
+          ImGui::TextWrapped("GUID: %s", bimInspection.guid.c_str());
+        }
+        drawTextLine("Source ID", bimInspection.sourceId);
+        drawTextLine("Storey", bimInspection.storeyName);
+        drawTextLine("Storey ID", bimInspection.storeyId);
+        drawTextLine("Material", bimInspection.materialName);
+        drawTextLine("Material category", bimInspection.materialCategory);
+        drawTextLine("Discipline", bimInspection.discipline);
+        drawTextLine("Phase", bimInspection.phase);
+        drawTextLine("Fire rating", bimInspection.fireRating);
+        drawTextLine("Load-bearing", bimInspection.loadBearing);
+        drawTextLine("Status", bimInspection.status);
+        drawTextLine("Geometry", bimInspection.geometryKind);
+        drawIndexLine("Source element", bimInspection.sourceElementIndex);
+        drawIndexLine("Mesh", bimInspection.meshId);
+        drawIndexLine("Source material", bimInspection.sourceMaterialIndex);
+        drawIndexLine("Render material", bimInspection.materialIndex);
+        drawIndexLine("Semantic type", bimInspection.semanticTypeId);
+        ImGui::Text("Transparent: %s",
+                    bimInspection.transparent ? "yes" : "no");
+        ImGui::Text("Double-sided: %s",
+                    bimInspection.doubleSided ? "yes" : "no");
+        if (bimInspection.hasSelectionBounds) {
+          ImGui::Separator();
+          ImGui::TextUnformatted("Bounds");
+          drawVec3Line("Min", bimInspection.selectionBoundsMin);
+          drawVec3Line("Max", bimInspection.selectionBoundsMax);
+          drawVec3Line("Center", bimInspection.selectionBoundsCenter);
+          drawVec3Line("Size", bimInspection.selectionBoundsSize);
+          ImGui::Text("Radius: %.3f", bimInspection.selectionBoundsRadius);
+          ImGui::Text("Floor elevation: %.3f",
+                      bimInspection.selectionFloorElevation);
+        }
+        glm::vec4 color = bimInspection.sourceColor;
+        ImGui::BeginDisabled();
+        ImGui::ColorEdit4("Source color", &color.x);
+        ImGui::EndDisabled();
+      } else {
+        ImGui::TextDisabled("No BIM selection");
+      }
+      ImGui::TreePop();
+    }
+  }
+
   if (cullStatsTotal_ > 0) {
     ImGui::Separator();
     ImGui::Text("GPU Culling");
@@ -976,12 +4081,13 @@ void GuiManager::drawSceneControls(
     ImGui::Separator();
     if (ImGui::TreeNode("Render Passes")) {
       if (ImGui::SmallButton("Enable All")) {
-        for (auto& p : renderPassToggles_) p.enabled = true;
+        for (auto &p : renderPassToggles_)
+          p.enabled = true;
       }
       ImGui::SameLine();
       if (ImGui::SmallButton("Disable All")) {
         // Keep PostProcess always on so the UI remains visible.
-        for (auto& p : renderPassToggles_) {
+        for (auto &p : renderPassToggles_) {
           p.enabled = p.locked;
         }
       }
@@ -991,7 +4097,7 @@ void GuiManager::drawSceneControls(
           return;
         }
 
-        for (auto& p : renderPassToggles_) {
+        for (auto &p : renderPassToggles_) {
           if (RenderPassSectionName(p.name) == sectionName) {
             DrawRenderPassToggleEntry(p);
           }
@@ -1018,7 +4124,7 @@ void GuiManager::drawSceneControls(
   ImGui::Text("Post-process");
   int exposureMode =
       exposureSettings_.mode == container::gpu::kExposureModeAuto ? 1 : 0;
-  static constexpr const char* kExposureModeLabels[] = {"Manual", "Auto"};
+  static constexpr const char *kExposureModeLabels[] = {"Manual", "Auto"};
   if (ImGui::Combo("Exposure Mode", &exposureMode, kExposureModeLabels,
                    IM_ARRAYSIZE(kExposureModeLabels))) {
     exposureSettings_.mode = exposureMode == 1
@@ -1172,7 +4278,7 @@ void GuiManager::drawSceneControls(
       ImGui::Text("Showing first %u SSBO lights", visiblePointLightCount);
     }
     for (uint32_t i = 0; i < visiblePointLightCount; ++i) {
-      const auto& light = pointLights[i];
+      const auto &light = pointLights[i];
       ImGui::Separator();
       ImGui::Text("Point Light %u", i);
       ImGui::BulletText("Position: (%.2f, %.2f, %.2f)", light.positionRadius.x,
@@ -1182,7 +4288,7 @@ void GuiManager::drawSceneControls(
     ImGui::TreePop();
   }
 
-  const auto& renderableNodes = sceneGraph.renderableNodes();
+  const auto &renderableNodes = sceneGraph.renderableNodes();
   if (!renderableNodes.empty()) {
     uint32_t activeMeshNode = selectedMeshNode;
     const bool hasActiveMesh =
@@ -1191,12 +4297,12 @@ void GuiManager::drawSceneControls(
       activeMeshNode = container::scene::SceneGraph::kInvalidNode;
     }
 
-    std::string selectedLabel = activeMeshNode ==
-                                        container::scene::SceneGraph::kInvalidNode
-                                    ? "None"
-                                    : "Node " + std::to_string(activeMeshNode);
+    std::string selectedLabel =
+        activeMeshNode == container::scene::SceneGraph::kInvalidNode
+            ? "None"
+            : "Node " + std::to_string(activeMeshNode);
     if (activeMeshNode != container::scene::SceneGraph::kInvalidNode) {
-      if (const auto* node = sceneGraph.getNode(activeMeshNode);
+      if (const auto *node = sceneGraph.getNode(activeMeshNode);
           node != nullptr &&
           node->primitiveIndex != container::scene::SceneGraph::kInvalidNode) {
         selectedLabel += " / Primitive " + std::to_string(node->primitiveIndex);
@@ -1215,7 +4321,7 @@ void GuiManager::drawSceneControls(
       }
       for (uint32_t nodeIndex : renderableNodes) {
         std::string label = "Node " + std::to_string(nodeIndex);
-        if (const auto* node = sceneGraph.getNode(nodeIndex);
+        if (const auto *node = sceneGraph.getNode(nodeIndex);
             node != nullptr && node->primitiveIndex !=
                                    container::scene::SceneGraph::kInvalidNode) {
           label += " / Primitive " + std::to_string(node->primitiveIndex);
@@ -1256,15 +4362,16 @@ void GuiManager::drawSceneControls(
 }
 
 void GuiManager::drawRendererTelemetryWindow() {
-  if (!initialized_) return;
+  if (!initialized_)
+    return;
 
-  const auto& telemetry = rendererTelemetry_;
+  const auto &telemetry = rendererTelemetry_;
   if (!ImGui::Begin("Renderer Telemetry")) {
     ImGui::End();
     return;
   }
 
-  const auto& latest = telemetry.latest;
+  const auto &latest = telemetry.latest;
   if (!latest.valid) {
     ImGui::TextDisabled("No renderer telemetry captured yet");
     ImGui::End();
@@ -1276,9 +4383,9 @@ void GuiManager::drawRendererTelemetryWindow() {
   const float fps = frameMs > 0.0f ? 1000.0f / frameMs : 0.0f;
   const float gpuKnownMs = latest.timing.gpuKnownMs;
 
-  if (ImGui::BeginTable(
-          "TelemetrySummary", 4,
-          ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchSame)) {
+  if (ImGui::BeginTable("TelemetrySummary", 4,
+                        ImGuiTableFlags_BordersInnerV |
+                            ImGuiTableFlags_SizingStretchSame)) {
     ImGui::TableNextColumn();
     ImGui::TextDisabled("FPS");
     ImGui::Text("%.1f", fps);
@@ -1328,7 +4435,7 @@ void GuiManager::drawRendererTelemetryWindow() {
     std::vector<float> gpuHistory;
     cpuHistory.reserve(telemetry.history.size());
     gpuHistory.reserve(telemetry.history.size());
-    for (const auto& sample : telemetry.history) {
+    for (const auto &sample : telemetry.history) {
       cpuHistory.push_back(sample.cpuFrameMs);
       gpuHistory.push_back(sample.gpuKnownMs);
     }
@@ -1361,7 +4468,7 @@ void GuiManager::drawRendererTelemetryWindow() {
             container::renderer::RendererTelemetryPhase::Screenshot,
             container::renderer::RendererTelemetryPhase::Present,
         }};
-    static constexpr std::array<const char*, kPhases.size()> kLabels{{
+    static constexpr std::array<const char *, kPhases.size()> kLabels{{
         "Frame wait",
         "Readbacks",
         "Acquire image",
@@ -1454,7 +4561,7 @@ void GuiManager::drawRendererTelemetryWindow() {
       ImGui::TableSetupColumn("Known GPU ms");
       ImGui::TableSetupColumn("Blocker");
       ImGui::TableHeadersRow();
-      for (const auto& pass : latest.passes) {
+      for (const auto &pass : latest.passes) {
         ImGui::TableNextRow();
         ImGui::TableNextColumn();
         ImGui::TextUnformatted(pass.name.c_str());
@@ -1516,14 +4623,16 @@ bool GuiManager::isCapturingInput() const {
 }
 
 bool GuiManager::isCapturingMouse() const {
-  if (!initialized_) return false;
-  const ImGuiIO& io = ImGui::GetIO();
+  if (!initialized_)
+    return false;
+  const ImGuiIO &io = ImGui::GetIO();
   return io.WantCaptureMouse;
 }
 
 bool GuiManager::isCapturingKeyboard() const {
-  if (!initialized_) return false;
-  const ImGuiIO& io = ImGui::GetIO();
+  if (!initialized_)
+    return false;
+  const ImGuiIO &io = ImGui::GetIO();
   return io.WantCaptureKeyboard;
 }
 
@@ -1549,17 +4658,17 @@ void GuiManager::setCullStats(uint32_t total, uint32_t frustumPassed,
 }
 
 void GuiManager::setLightCullingStats(
-    const container::gpu::LightCullingStats& stats) {
+    const container::gpu::LightCullingStats &stats) {
   lightCullingStats_ = stats;
 }
 
 void GuiManager::setRendererTelemetry(
-    const container::renderer::RendererTelemetryView& telemetry) {
+    const container::renderer::RendererTelemetryView &telemetry) {
   rendererTelemetry_ = telemetry;
 }
 
 void GuiManager::setLightingSettings(
-    const container::gpu::LightingSettings& settings) {
+    const container::gpu::LightingSettings &settings) {
   lightingSettings_ = settings;
 }
 
@@ -1575,13 +4684,13 @@ void GuiManager::setBloomSettings(bool enabled, float threshold, float knee,
 }
 
 void GuiManager::setRenderPassList(
-    const std::vector<RenderPassToggle>& passes) {
+    const std::vector<RenderPassToggle> &passes) {
   // Rebuild the toggle list, preserving existing enabled states by name.
   std::vector<RenderPassToggle> updated;
   updated.reserve(passes.size());
-  for (const auto& incoming : passes) {
+  for (const auto &incoming : passes) {
     bool found = false;
-    for (const auto& existing : renderPassToggles_) {
+    for (const auto &existing : renderPassToggles_) {
       if (existing.name == incoming.name) {
         RenderPassToggle merged = existing;
         merged.locked = incoming.locked;
@@ -1605,4 +4714,4 @@ void GuiManager::ensureInitialized() const {
   }
 }
 
-}  // namespace container::ui
+} // namespace container::ui

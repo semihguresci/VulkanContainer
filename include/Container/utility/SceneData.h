@@ -25,7 +25,8 @@ struct ObjectData {
   alignas(16) glm::vec4 normalMatrix0{1.0f, 0.0f, 0.0f, 0.0f};
   alignas(16) glm::vec4 normalMatrix1{0.0f, 1.0f, 0.0f, 0.0f};
   alignas(16) glm::vec4 normalMatrix2{0.0f, 0.0f, 1.0f, 0.0f};
-  // x = material index; y = object flags; z = pick ID source mask; w reserved.
+  // x = material index; y = object flags; z = pick ID source mask;
+  // w = optional semantic/material class id for sidecar renderers.
   alignas(16) glm::uvec4 objectInfo{0, 0, 0, 0};
   // Bounding sphere in world space: xyz = center, w = radius.
   alignas(16) glm::vec4 boundingSphere{0.0f, 0.0f, 0.0f, 0.0f};
@@ -125,6 +126,18 @@ struct NormalValidationSettings
 
 struct BindlessPushConstants {
   uint32_t objectIndex{0};
+  uint32_t sectionPlaneEnabled{0};
+  uint32_t semanticColorMode{0};
+  uint32_t padding0{0};
+  alignas(16) glm::vec4 sectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
+};
+
+struct SceneClipState {
+  uint32_t boxClipEnabled{0};
+  uint32_t boxClipInvert{0};
+  uint32_t boxClipPlaneCount{0};
+  uint32_t padding0{0};
+  alignas(16) glm::vec4 boxClipPlanes[6]{};
 };
 
 inline constexpr uint32_t kObjectFlagAlphaMask = 1u << 0;
@@ -236,6 +249,9 @@ struct ShadowCullCountData {
 struct ShadowPushConstants {
   uint32_t objectIndex{0};
   uint32_t cascadeIndex{0};
+  uint32_t sectionPlaneEnabled{0};
+  uint32_t padding0{0};
+  alignas(16) glm::vec4 sectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
 };
 
 struct PointLightData {
@@ -645,19 +661,29 @@ static_assert(offsetof(ShadowCullPushConstants, objectCount) == 12,
 static_assert(sizeof(ShadowCullCountData) == sizeof(uint32_t) * kShadowCascadeCount,
               "ShadowCullCountData stores one visible count per shadow cascade.");
 
-static_assert(sizeof(BindlessPushConstants) == 4,
+static_assert(sizeof(BindlessPushConstants) == 32,
               "BindlessPushConstants size mismatch with "
               "shaders/push_constants_common.slang BindlessPushConstants.");
 static_assert(offsetof(BindlessPushConstants, objectIndex) == 0,
               "BindlessPushConstants.objectIndex offset");
+static_assert(offsetof(BindlessPushConstants, sectionPlaneEnabled) == 4,
+              "BindlessPushConstants.sectionPlaneEnabled offset");
+static_assert(offsetof(BindlessPushConstants, semanticColorMode) == 8,
+              "BindlessPushConstants.semanticColorMode offset");
+static_assert(offsetof(BindlessPushConstants, sectionPlane) == 16,
+              "BindlessPushConstants.sectionPlane offset");
 
-static_assert(sizeof(ShadowPushConstants) == 8,
+static_assert(sizeof(ShadowPushConstants) == 32,
               "ShadowPushConstants size mismatch with "
               "shaders/push_constants_common.slang ShadowPushConstants.");
 static_assert(offsetof(ShadowPushConstants, objectIndex) == 0,
               "ShadowPushConstants.objectIndex offset");
 static_assert(offsetof(ShadowPushConstants, cascadeIndex) == 4,
               "ShadowPushConstants.cascadeIndex offset");
+static_assert(offsetof(ShadowPushConstants, sectionPlaneEnabled) == 8,
+              "ShadowPushConstants.sectionPlaneEnabled offset");
+static_assert(offsetof(ShadowPushConstants, sectionPlane) == 16,
+              "ShadowPushConstants.sectionPlane offset");
 
 static_assert(sizeof(ExposureSettings) == 32,
               "ExposureSettings stores CPU-side post-process exposure controls.");
@@ -966,6 +992,17 @@ static_assert(offsetof(ObjectData, objectInfo) == 112,
               "ObjectData.objectInfo offset");
 static_assert(offsetof(ObjectData, boundingSphere) == 128,
               "ObjectData.boundingSphere offset");
+
+static_assert(sizeof(SceneClipState) == 112,
+              "SceneClipState size mismatch with shaders/scene_clip_common.slang.");
+static_assert(alignof(SceneClipState) == 16,
+              "SceneClipState must be 16-byte aligned.");
+static_assert(offsetof(SceneClipState, boxClipEnabled) == 0,
+              "SceneClipState.boxClipEnabled offset");
+static_assert(offsetof(SceneClipState, boxClipPlaneCount) == 8,
+              "SceneClipState.boxClipPlaneCount offset");
+static_assert(offsetof(SceneClipState, boxClipPlanes) == 16,
+              "SceneClipState.boxClipPlanes offset");
 
 static_assert(sizeof(GpuTextureTransform) == 32,
               "GpuTextureTransform size mismatch with "

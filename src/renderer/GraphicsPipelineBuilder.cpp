@@ -110,6 +110,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkShaderModule wfFbVert         = loadModule("spv_shaders/wireframe_fallback.vert.spv");
   VkShaderModule wfFbGeom         = loadModule("spv_shaders/wireframe_fallback.geom.spv");
   VkShaderModule wfFbFrag         = loadModule("spv_shaders/wireframe_fallback.frag.spv");
+  VkShaderModule selOutlineVert   = loadModule("spv_shaders/selection_outline.vert.spv");
+  VkShaderModule selOutlineFrag   = loadModule("spv_shaders/selection_outline.frag.spv");
   VkShaderModule snVert           = loadModule("spv_shaders/surface_normals.vert.spv");
   VkShaderModule snGeom           = loadModule("spv_shaders/surface_normals.geom.spv");
   VkShaderModule snFrag           = loadModule("spv_shaders/surface_normals.frag.spv");
@@ -117,6 +119,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkShaderModule onFrag           = loadModule("spv_shaders/object_normals.frag.spv");
   VkShaderModule lgVert           = loadModule("spv_shaders/light_gizmo.vert.spv");
   VkShaderModule lgFrag           = loadModule("spv_shaders/light_gizmo.frag.spv");
+  VkShaderModule tgVert           = loadModule("spv_shaders/transform_gizmo.vert.spv");
+  VkShaderModule tgFrag           = loadModule("spv_shaders/transform_gizmo.frag.spv");
   VkShaderModule sdVert           = loadModule("spv_shaders/shadow_depth.vert.spv");
   VkShaderModule sdFrag           = loadModule("spv_shaders/shadow_depth.frag.spv");
   VkShaderModule tlVert           = loadModule("spv_shaders/tiled_lighting.vert.spv");
@@ -164,6 +168,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       makeStage(wfFbVert, VK_SHADER_STAGE_VERTEX_BIT),
       makeStage(wfFbGeom, VK_SHADER_STAGE_GEOMETRY_BIT),
       makeStage(wfFbFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
+  std::array<VkPipelineShaderStageCreateInfo, 2> selOutlineStages = {
+      makeStage(selOutlineVert, VK_SHADER_STAGE_VERTEX_BIT),
+      makeStage(selOutlineFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
   std::array<VkPipelineShaderStageCreateInfo, 3> snStages = {
       makeStage(snVert,  VK_SHADER_STAGE_VERTEX_BIT),
       makeStage(snGeom,  VK_SHADER_STAGE_GEOMETRY_BIT),
@@ -174,6 +181,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   std::array<VkPipelineShaderStageCreateInfo, 2> lgStages = {
       makeStage(lgVert,  VK_SHADER_STAGE_VERTEX_BIT),
       makeStage(lgFrag,  VK_SHADER_STAGE_FRAGMENT_BIT)};
+  std::array<VkPipelineShaderStageCreateInfo, 2> tgStages = {
+      makeStage(tgVert,  VK_SHADER_STAGE_VERTEX_BIT),
+      makeStage(tgFrag,  VK_SHADER_STAGE_FRAGMENT_BIT)};
   std::array<VkPipelineShaderStageCreateInfo, 2> sdStages = {
       makeStage(sdVert,  VK_SHADER_STAGE_VERTEX_BIT),
       makeStage(sdFrag,  VK_SHADER_STAGE_FRAGMENT_BIT)};
@@ -423,6 +433,20 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkPipelineDepthStencilStateCreateInfo wfDepthDS    = normalLineDS;
   VkPipelineDepthStencilStateCreateInfo wfNoDepthDS  = noDS;
 
+  VkPipelineDepthStencilStateCreateInfo selectionMaskDS = noDS;
+  selectionMaskDS.stencilTestEnable = VK_TRUE;
+  selectionMaskDS.front = {VK_STENCIL_OP_KEEP, VK_STENCIL_OP_REPLACE,
+                           VK_STENCIL_OP_KEEP, VK_COMPARE_OP_ALWAYS, 0xff,
+                           0xff, 1};
+  selectionMaskDS.back = selectionMaskDS.front;
+
+  VkPipelineDepthStencilStateCreateInfo selectionOutlineDS = noDS;
+  selectionOutlineDS.stencilTestEnable = VK_TRUE;
+  selectionOutlineDS.front = {VK_STENCIL_OP_KEEP, VK_STENCIL_OP_KEEP,
+                              VK_STENCIL_OP_KEEP, VK_COMPARE_OP_NOT_EQUAL,
+                              0xff, 0x00, 1};
+  selectionOutlineDS.back = selectionOutlineDS.front;
+
   VkPipelineDepthStencilStateCreateInfo stencilDS = depthPrepassDS;
   stencilDS.depthWriteEnable  = VK_FALSE;
   stencilDS.stencilTestEnable = VK_TRUE;
@@ -469,13 +493,18 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
                      VK_SHADER_STAGE_FRAGMENT_BIT;
   snPCR.size       = sizeof(SurfaceNormalPushConstants);
 
+  VkPushConstantRange transformGizmoPCR{};
+  transformGizmoPCR.stageFlags =
+      VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+  transformGizmoPCR.size = sizeof(TransformGizmoPushConstants);
+
   VkPushConstantRange nvPCR{};
   nvPCR.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_GEOMETRY_BIT |
                      VK_SHADER_STAGE_FRAGMENT_BIT;
   nvPCR.size       = sizeof(NormalValidationPushConstants);
 
   VkPushConstantRange shadowPCR{};
-  shadowPCR.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+  shadowPCR.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
   shadowPCR.size       = sizeof(ShadowPushConstants);
 
   VkPushConstantRange tiledLightPCR{};
@@ -508,6 +537,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       {descriptorLayouts.scene}, {nvPCR});
   layouts.surfaceNormal = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.scene}, {snPCR});
+  layouts.transformGizmo = pipelineManager_.createPipelineLayout(
+      {descriptorLayouts.lighting}, {transformGizmoPCR});
 
   // ---- base pipeline create info --------------------------------------------
   // scene geometry base (depth prepass / gbuffer)
@@ -836,6 +867,97 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.wireframeNoDepthFrontCull = pipelineManager_.createGraphicsPipeline(
       wfPCI, "wireframe_no_depth_front_cull_pipeline");
 
+  VkGraphicsPipelineCreateInfo selectionMaskPCI = meshPCI;
+  selectionMaskPCI.stageCount = static_cast<uint32_t>(wfStages.size());
+  selectionMaskPCI.pStages = wfStages.data();
+  selectionMaskPCI.pVertexInputState = &posTexNormNoTex1Input;
+  selectionMaskPCI.pInputAssemblyState = &triAssembly;
+  selectionMaskPCI.pRasterizationState = &noCullRaster;
+  selectionMaskPCI.pColorBlendState = &noColorBlend;
+  selectionMaskPCI.pDepthStencilState = &selectionMaskDS;
+  selectionMaskPCI.pDynamicState = &dynState;
+  selectionMaskPCI.layout = layouts.wireframe;
+  selectionMaskPCI.renderPass = renderPasses.lighting;
+  pipelines.selectionMask = pipelineManager_.createGraphicsPipeline(
+      selectionMaskPCI, "selection_mask_pipeline");
+
+  VkGraphicsPipelineCreateInfo selectionOutlinePCI = meshPCI;
+  selectionOutlinePCI.stageCount =
+      static_cast<uint32_t>(selOutlineStages.size());
+  selectionOutlinePCI.pStages = selOutlineStages.data();
+  selectionOutlinePCI.pVertexInputState = &posTexNormNoTex1Input;
+  selectionOutlinePCI.pInputAssemblyState = &triAssembly;
+  selectionOutlinePCI.pRasterizationState = &noCullRaster;
+  selectionOutlinePCI.pColorBlendState = &overlayBlend;
+  selectionOutlinePCI.pDepthStencilState = &selectionOutlineDS;
+  selectionOutlinePCI.pDynamicState = &dynState;
+  selectionOutlinePCI.layout = layouts.wireframe;
+  selectionOutlinePCI.renderPass = renderPasses.lighting;
+  pipelines.selectionOutline = pipelineManager_.createGraphicsPipeline(
+      selectionOutlinePCI, "selection_outline_pipeline");
+
+  VkGraphicsPipelineCreateInfo floorPlanPCI = wfPCI;
+  floorPlanPCI.stageCount = static_cast<uint32_t>(wfStages.size());
+  floorPlanPCI.pStages = wfStages.data();
+  floorPlanPCI.pInputAssemblyState = &lineAssembly;
+  floorPlanPCI.pRasterizationState = &normalLineRaster;
+  floorPlanPCI.pColorBlendState = &overlayBlend;
+  floorPlanPCI.pDynamicState = &lineDynState;
+  floorPlanPCI.layout = layouts.wireframe;
+  floorPlanPCI.renderPass = renderPasses.lighting;
+  floorPlanPCI.pDepthStencilState = &wfDepthDS;
+  pipelines.bimFloorPlanDepth = pipelineManager_.createGraphicsPipeline(
+      floorPlanPCI, "bim_floor_plan_depth_pipeline");
+
+  floorPlanPCI.pDepthStencilState = &wfNoDepthDS;
+  pipelines.bimFloorPlanNoDepth = pipelineManager_.createGraphicsPipeline(
+      floorPlanPCI, "bim_floor_plan_no_depth_pipeline");
+
+  VkGraphicsPipelineCreateInfo pointCloudPCI = meshPCI;
+  pointCloudPCI.stageCount = static_cast<uint32_t>(wfStages.size());
+  pointCloudPCI.pStages = wfStages.data();
+  pointCloudPCI.pVertexInputState = &posTexNormNoTex1Input;
+  pointCloudPCI.pInputAssemblyState = &pointAssembly;
+  pointCloudPCI.pRasterizationState = &noCullRaster;
+  pointCloudPCI.pColorBlendState = &overlayBlend;
+  pointCloudPCI.pDynamicState = &dynState;
+  pointCloudPCI.layout = layouts.wireframe;
+  pointCloudPCI.renderPass = renderPasses.lighting;
+  pointCloudPCI.pDepthStencilState = &wfDepthDS;
+  pipelines.bimPointCloudDepth = pipelineManager_.createGraphicsPipeline(
+      pointCloudPCI, "bim_point_cloud_depth_pipeline");
+
+  pointCloudPCI.pDepthStencilState = &wfNoDepthDS;
+  pipelines.bimPointCloudNoDepth = pipelineManager_.createGraphicsPipeline(
+      pointCloudPCI, "bim_point_cloud_no_depth_pipeline");
+
+  VkGraphicsPipelineCreateInfo curvePCI = pointCloudPCI;
+  curvePCI.pInputAssemblyState = &lineAssembly;
+  curvePCI.pRasterizationState = &normalLineRaster;
+  curvePCI.pDynamicState = &lineDynState;
+  curvePCI.pDepthStencilState = &wfDepthDS;
+  pipelines.bimCurveDepth = pipelineManager_.createGraphicsPipeline(
+      curvePCI, "bim_curve_depth_pipeline");
+
+  curvePCI.pDepthStencilState = &wfNoDepthDS;
+  pipelines.bimCurveNoDepth = pipelineManager_.createGraphicsPipeline(
+      curvePCI, "bim_curve_no_depth_pipeline");
+
+  VkGraphicsPipelineCreateInfo capFillPCI = pointCloudPCI;
+  capFillPCI.pInputAssemblyState = &triAssembly;
+  capFillPCI.pRasterizationState = &noCullRaster;
+  capFillPCI.pDynamicState = &dynState;
+  capFillPCI.pDepthStencilState = &wfDepthDS;
+  pipelines.bimSectionClipCapFill = pipelineManager_.createGraphicsPipeline(
+      capFillPCI, "bim_section_clip_cap_fill_pipeline");
+
+  VkGraphicsPipelineCreateInfo capHatchPCI = capFillPCI;
+  capHatchPCI.pInputAssemblyState = &lineAssembly;
+  capHatchPCI.pRasterizationState = &normalLineRaster;
+  capHatchPCI.pDynamicState = &lineDynState;
+  pipelines.bimSectionClipCapHatch = pipelineManager_.createGraphicsPipeline(
+      capHatchPCI, "bim_section_clip_cap_hatch_pipeline");
+
   // Surface normal lines
   VkGraphicsPipelineCreateInfo snPCI = meshPCI;
   snPCI.stageCount           = static_cast<uint32_t>(snStages.size());
@@ -885,6 +1007,33 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   lgPCI.renderPass          = renderPasses.lighting;
   pipelines.lightGizmo = pipelineManager_.createGraphicsPipeline(
       lgPCI, "light_gizmo_pipeline");
+
+  // Transform gizmo
+  VkGraphicsPipelineCreateInfo tgPCI = fsPCI;
+  tgPCI.stageCount = static_cast<uint32_t>(tgStages.size());
+  tgPCI.pStages = tgStages.data();
+  tgPCI.pVertexInputState = &emptyVertexInput;
+  tgPCI.pInputAssemblyState = &lineAssembly;
+  tgPCI.pColorBlendState = &overlayBlend;
+  tgPCI.pDepthStencilState = &noDS;
+  tgPCI.pDynamicState = &lineDynState;
+  tgPCI.layout = layouts.transformGizmo;
+  tgPCI.renderPass = renderPasses.transformGizmos;
+  pipelines.transformGizmo = pipelineManager_.createGraphicsPipeline(
+      tgPCI, "transform_gizmo_pipeline");
+  VkGraphicsPipelineCreateInfo tgSolidPCI = tgPCI;
+  tgSolidPCI.pInputAssemblyState = &triAssembly;
+  tgSolidPCI.pDynamicState = &dynState;
+  pipelines.transformGizmoSolid = pipelineManager_.createGraphicsPipeline(
+      tgSolidPCI, "transform_gizmo_solid_pipeline");
+  VkGraphicsPipelineCreateInfo tgOverlayPCI = tgPCI;
+  tgOverlayPCI.renderPass = renderPasses.postProcess;
+  pipelines.transformGizmoOverlay = pipelineManager_.createGraphicsPipeline(
+      tgOverlayPCI, "transform_gizmo_overlay_pipeline");
+  VkGraphicsPipelineCreateInfo tgSolidOverlayPCI = tgSolidPCI;
+  tgSolidOverlayPCI.renderPass = renderPasses.postProcess;
+  pipelines.transformGizmoSolidOverlay = pipelineManager_.createGraphicsPipeline(
+      tgSolidOverlayPCI, "transform_gizmo_solid_overlay_pipeline");
 
   // Tiled point light (fullscreen, additive blend, no stencil)
   VkGraphicsPipelineCreateInfo tlPCI = fsPCI;

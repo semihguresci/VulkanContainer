@@ -206,6 +206,7 @@ void FrameResourceManager::create(
     VkRenderPass                             bimGBufferPass,
     VkRenderPass                             transparentPickPass,
     VkRenderPass                             lightingPass,
+    VkRenderPass                             transformGizmoPass,
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
   destroy();
@@ -217,6 +218,7 @@ void FrameResourceManager::create(
   bimGBufferPass_   = bimGBufferPass;
   transparentPickPass_ = transparentPickPass;
   lightingPass_     = lightingPass;
+  transformGizmoPass_ = transformGizmoPass;
 
   validateOitFormatSupport();
   validatePickIdFormatSupport();
@@ -464,6 +466,22 @@ void FrameResourceManager::create(
       if (vkCreateFramebuffer(dev, &fbi, nullptr, &f.lightingFramebuffer) != VK_SUCCESS)
         throw std::runtime_error("failed to create lighting framebuffer");
     }
+
+    // Transform gizmo framebuffer
+    {
+      VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
+      fbi.renderPass = transformGizmoPass_;
+      fbi.attachmentCount = 1;
+      fbi.pAttachments = &f.sceneColor.view;
+      fbi.width = ext.width;
+      fbi.height = ext.height;
+      fbi.layers = 1;
+      if (vkCreateFramebuffer(dev, &fbi, nullptr,
+                              &f.transformGizmoFramebuffer) != VK_SUCCESS) {
+        throw std::runtime_error(
+            "failed to create transform gizmo framebuffer");
+      }
+    }
   }
 
   updateDescriptorSets(cameraBuffers, objectBuffer);
@@ -483,6 +501,7 @@ void FrameResourceManager::destroy() {
     destroyFB(f.bimGBufferFramebuffer);
     destroyFB(f.transparentPickFramebuffer);
     destroyFB(f.lightingFramebuffer);
+    destroyFB(f.transformGizmoFramebuffer);
 
     destroyAttachment(f.albedo);
     destroyAttachment(f.normal);

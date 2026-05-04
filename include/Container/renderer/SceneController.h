@@ -42,7 +42,18 @@ struct SceneNodePickHit {
   uint32_t nodeIndex{std::numeric_limits<uint32_t>::max()};
   float distance{std::numeric_limits<float>::max()};
   float depth{0.0f};
+  glm::vec3 worldPosition{0.0f};
+  bool hasWorldPosition{false};
   bool hit{false};
+};
+
+struct SceneNodeWorldBounds {
+  bool valid{false};
+  glm::vec3 min{0.0f};
+  glm::vec3 max{0.0f};
+  glm::vec3 center{0.0f};
+  glm::vec3 size{0.0f};
+  float radius{0.0f};
 };
 
 // Manages scene geometry upload, object buffer, scene-graph build/sync,
@@ -114,18 +125,25 @@ class SceneController {
       const container::gpu::CameraData& cameraData,
       VkExtent2D viewportExtent,
       double cursorX,
-      double cursorY) const;
+      double cursorY,
+      bool sectionPlaneEnabled = false,
+      glm::vec4 sectionPlane = {0.0f, 1.0f, 0.0f, 0.0f}) const;
   [[nodiscard]] SceneNodePickHit pickRenderableNodeHit(
       const container::gpu::CameraData& cameraData,
       VkExtent2D viewportExtent,
       double cursorX,
-      double cursorY) const;
+      double cursorY,
+      bool sectionPlaneEnabled = false,
+      glm::vec4 sectionPlane = {0.0f, 1.0f, 0.0f, 0.0f}) const;
   [[nodiscard]] SceneNodePickHit pickTransparentRenderableNodeHit(
       const container::gpu::CameraData& cameraData,
       VkExtent2D viewportExtent,
       double cursorX,
-      double cursorY) const;
+      double cursorY,
+      bool sectionPlaneEnabled = false,
+      glm::vec4 sectionPlane = {0.0f, 1.0f, 0.0f, 0.0f}) const;
   [[nodiscard]] uint32_t nodeIndexForObject(uint32_t objectIndex) const;
+  [[nodiscard]] SceneNodeWorldBounds nodeWorldBounds(uint32_t nodeIndex) const;
   void collectDrawCommandsForNode(uint32_t nodeIndex,
                                   std::vector<DrawCommand>& outCommands) const;
 
@@ -198,7 +216,9 @@ class SceneController {
       double cursorX,
       double cursorY,
       bool includeOpaque,
-      bool includeTransparent) const;
+      bool includeTransparent,
+      bool sectionPlaneEnabled,
+      glm::vec4 sectionPlane) const;
 
   std::shared_ptr<container::gpu::VulkanDevice>  device_;
   container::gpu::AllocationManager&             allocationManager_;

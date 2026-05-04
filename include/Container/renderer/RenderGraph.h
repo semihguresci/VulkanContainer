@@ -8,7 +8,10 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
+
+#include "Container/renderer/TechniqueDebugModel.h"
 
 // Forward declaration. No Vulkan header needed here.
 struct VkCommandBuffer_T;
@@ -44,6 +47,7 @@ enum class RenderPassId : uint8_t {
   TileCull,
   GTAO,
   Lighting,
+  TransformGizmos,
   ExposureAdaptation,
   OitResolve,
   Bloom,
@@ -279,6 +283,7 @@ class RenderGraph {
   [[nodiscard]] const RenderPassExecutionStatus* executionStatus(RenderPassId id) const;
   [[nodiscard]] bool isPassActive(RenderPassId id) const;
   [[nodiscard]] std::span<const RenderResourceEdge> resourceEdges() const;
+  [[nodiscard]] RenderGraphDebugModel debugModel() const;
 
   // Remove all passes.
   void clear();
@@ -311,6 +316,70 @@ class RenderGraph {
   mutable bool preparedFramePlanDirty_{true};
   mutable uint64_t activePlanSignature_{0};
   mutable bool executing_{false};
+};
+
+class RenderGraphBuilder {
+ public:
+  explicit RenderGraphBuilder(RenderGraph& graph) : graph_(graph) {}
+
+  void clear() { graph_.clear(); }
+
+  const RenderPassNode& addPass(RenderPassId id,
+                                RenderPassNode::RecordFn fn) {
+    return graph_.addPass(id, std::move(fn));
+  }
+
+  const RenderPassNode& addPass(
+      RenderPassId id,
+      std::initializer_list<RenderPassId> scheduleDependencies,
+      RenderPassNode::RecordFn fn) {
+    return graph_.addPass(id, scheduleDependencies, std::move(fn));
+  }
+
+  const RenderPassNode& addPass(
+      RenderPassId id,
+      std::span<const RenderPassId> scheduleDependencies,
+      RenderPassNode::RecordFn fn) {
+    return graph_.addPass(id, scheduleDependencies, std::move(fn));
+  }
+
+  bool setPassReadiness(RenderPassId id,
+                        RenderPassNode::ReadinessFn readiness) {
+    return graph_.setPassReadiness(id, std::move(readiness));
+  }
+
+  bool setPassResourceAccess(
+      RenderPassId id,
+      std::initializer_list<RenderResourceId> reads,
+      std::initializer_list<RenderResourceId> optionalReads,
+      std::initializer_list<RenderResourceId> writes) {
+    return graph_.setPassResourceAccess(id, reads, optionalReads, writes);
+  }
+
+  bool setPassResourceAccess(
+      RenderPassId id,
+      std::span<const RenderResourceId> reads,
+      std::span<const RenderResourceId> optionalReads,
+      std::span<const RenderResourceId> writes) {
+    return graph_.setPassResourceAccess(id, reads, optionalReads, writes);
+  }
+
+  bool setPassResourceTransitions(
+      RenderPassId id,
+      std::initializer_list<RenderResourceTransition> transitions) {
+    return graph_.setPassResourceTransitions(id, transitions);
+  }
+
+  bool setPassResourceTransitions(
+      RenderPassId id,
+      std::span<const RenderResourceTransition> transitions) {
+    return graph_.setPassResourceTransitions(id, transitions);
+  }
+
+  void compile() { graph_.compile(); }
+
+ private:
+  RenderGraph& graph_;
 };
 
 }  // namespace container::renderer

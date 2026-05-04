@@ -171,6 +171,28 @@ TEST(RenderGraphTests, ActiveExecutionPassIdsRefreshAfterToggleChange) {
   EXPECT_TRUE(activeContains(graph, RenderPassId::HiZGenerate));
 }
 
+TEST(RenderGraphTests, DebugModelReportsPassStatusWithoutUiCoupling) {
+  RenderGraph graph;
+  graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
+  graph.addPass(RenderPassId::HiZGenerate, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::HiZGenerate, {}, {},
+                                          {}));
+  ASSERT_TRUE(graph.setPassEnabled(RenderPassId::HiZGenerate, false));
+
+  const container::renderer::RenderGraphDebugModel debugModel =
+      graph.debugModel();
+
+  ASSERT_EQ(debugModel.passes.size(), 2u);
+  EXPECT_EQ(debugModel.passes[0].passName, "FrustumCull");
+  EXPECT_TRUE(debugModel.passes[0].enabled);
+  EXPECT_TRUE(debugModel.passes[0].active);
+  EXPECT_EQ(debugModel.passes[0].skipReason, "active");
+  EXPECT_EQ(debugModel.passes[1].passName, "HiZGenerate");
+  EXPECT_FALSE(debugModel.passes[1].enabled);
+  EXPECT_FALSE(debugModel.passes[1].active);
+  EXPECT_EQ(debugModel.passes[1].skipReason, "disabled");
+}
+
 TEST(RenderGraphTests, ExecuteSkipsPassWhenRequiredDependencyIsDisabled) {
   RenderGraph graph;
   graph.addPass(RenderPassId::FrustumCull, {}, noopRecord());
@@ -826,6 +848,7 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
       RenderPassId::TileCull,
       RenderPassId::GTAO,
       RenderPassId::Lighting,
+      RenderPassId::TransformGizmos,
       RenderPassId::ExposureAdaptation,
       RenderPassId::OitResolve,
       RenderPassId::Bloom,
@@ -854,6 +877,8 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
   EXPECT_LT(executionPosition(graph, RenderPassId::DepthToReadOnly),
             executionPosition(graph, RenderPassId::Lighting));
   EXPECT_LT(executionPosition(graph, RenderPassId::Lighting),
+            executionPosition(graph, RenderPassId::TransformGizmos));
+  EXPECT_LT(executionPosition(graph, RenderPassId::TransformGizmos),
             executionPosition(graph, RenderPassId::ExposureAdaptation));
   EXPECT_LT(executionPosition(graph, RenderPassId::ExposureAdaptation),
             executionPosition(graph, RenderPassId::OitResolve));
@@ -887,6 +912,7 @@ TEST(RenderGraphTests, BimPassesSlotIntoFrameOrderWhenRegistered) {
       RenderPassId::TileCull,
       RenderPassId::GTAO,
       RenderPassId::Lighting,
+      RenderPassId::TransformGizmos,
   };
 
   RenderGraph graph;
@@ -914,4 +940,6 @@ TEST(RenderGraphTests, BimPassesSlotIntoFrameOrderWhenRegistered) {
             executionPosition(graph, RenderPassId::DepthToReadOnly));
   EXPECT_LT(executionPosition(graph, RenderPassId::DepthToReadOnly),
             executionPosition(graph, RenderPassId::Lighting));
+  EXPECT_LT(executionPosition(graph, RenderPassId::Lighting),
+            executionPosition(graph, RenderPassId::TransformGizmos));
 }

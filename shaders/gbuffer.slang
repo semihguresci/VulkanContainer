@@ -10,6 +10,7 @@
 [[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
 [[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
 
+#include "scene_clip_common.slang"
 #include "alpha_mask_common.slang"
 #include "object_index_common.slang"
 #include "pbr_material_common.slang"
@@ -131,6 +132,10 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
 {
     if ((vertIn.flags & kObjectFlagTransparentOnly) != 0u)
+    {
+        discard;
+    }
+    if (SceneClipPlanesClip(vertIn.worldPos, pc.sectionPlaneEnabled, pc.sectionPlane))
     {
         discard;
     }
@@ -300,6 +305,17 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         baseColor *= ApproximateIridescenceTint(
             iridescence * 0.25, material.iridescenceIor, thickness, NdotV);
         dielectricF0 = saturate(dielectricF0 + iridescence * 0.006);
+    }
+
+    if (pc.semanticColorMode != kBimSemanticColorModeOff)
+    {
+        baseColor = EvaluateBimSemanticColor(
+            uObjects[vertIn.objectIndex].objectInfo.w, pc.semanticColorMode);
+        sampledMetallic = 0.0;
+        sampledRoughness = 0.74;
+        emissive = 0.0.xxx;
+        dielectricF0Color = 0.04.xxx;
+        dielectricF0 = 0.04;
     }
 
     if ((vertIn.flags & kPbrObjectFlagUnlit) != 0u)

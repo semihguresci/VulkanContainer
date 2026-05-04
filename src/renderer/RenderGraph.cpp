@@ -43,6 +43,7 @@ constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "TileCull",
     "GTAO",
     "Lighting",
+    "TransformGizmos",
     "ExposureAdaptation",
     "OitResolve",
     "Bloom",
@@ -184,11 +185,14 @@ constexpr std::array kLightingScheduleDependencies{
     RenderPassId::GTAO,
     RenderPassId::OitClear,
 };
-constexpr std::array kExposureAdaptationScheduleDependencies{
+constexpr std::array kTransformGizmosScheduleDependencies{
     RenderPassId::Lighting,
 };
+constexpr std::array kExposureAdaptationScheduleDependencies{
+    RenderPassId::TransformGizmos,
+};
 constexpr std::array kOitResolveScheduleDependencies{
-    RenderPassId::Lighting,
+    RenderPassId::TransformGizmos,
     RenderPassId::ExposureAdaptation,
 };
 constexpr std::array kBloomScheduleDependencies{
@@ -387,6 +391,13 @@ constexpr std::array kLightingOptionalReads{
 constexpr std::array kLightingWrites{
     RenderResourceId::SceneColor,
     RenderResourceId::OitStorage,
+};
+constexpr std::array kTransformGizmosReads{
+    RenderResourceId::CameraBuffer,
+    RenderResourceId::SceneColor,
+};
+constexpr std::array kTransformGizmosWrites{
+    RenderResourceId::SceneColor,
 };
 constexpr std::array kExposureAdaptationReads{
     RenderResourceId::SceneColor,
@@ -641,6 +652,8 @@ std::span<const RenderPassId> renderPassScheduleDependencies(RenderPassId id) {
       return kGtaoDependencies;
     case RenderPassId::Lighting:
       return kLightingScheduleDependencies;
+    case RenderPassId::TransformGizmos:
+      return kTransformGizmosScheduleDependencies;
     case RenderPassId::ExposureAdaptation:
       return kExposureAdaptationScheduleDependencies;
     case RenderPassId::OitResolve:
@@ -713,6 +726,8 @@ std::span<const RenderResourceId> renderPassResourceReads(RenderPassId id) {
       return kGtaoReads;
     case RenderPassId::Lighting:
       return kLightingReads;
+    case RenderPassId::TransformGizmos:
+      return kTransformGizmosReads;
     case RenderPassId::ExposureAdaptation:
       return kExposureAdaptationReads;
     case RenderPassId::OitResolve:
@@ -791,6 +806,8 @@ std::span<const RenderResourceId> renderPassResourceWrites(RenderPassId id) {
       return kGtaoWrites;
     case RenderPassId::Lighting:
       return kLightingWrites;
+    case RenderPassId::TransformGizmos:
+      return kTransformGizmosWrites;
     case RenderPassId::ExposureAdaptation:
       return kExposureAdaptationWrites;
     case RenderPassId::Bloom:
@@ -1263,6 +1280,27 @@ bool RenderGraph::isPassActive(RenderPassId id) const {
 std::span<const RenderResourceEdge> RenderGraph::resourceEdges() const {
   ensureCompiled();
   return resourceEdges_;
+}
+
+RenderGraphDebugModel RenderGraph::debugModel() const {
+  ensureActivePlan();
+
+  RenderGraphDebugModel model{};
+  model.passes.reserve(passes_.size());
+  for (const RenderPassNode& pass : passes_) {
+    const RenderPassExecutionStatus* status = executionStatus(pass.id);
+    RenderGraphPassDebugState passState{};
+    passState.passName = std::string(renderPassName(pass.id));
+    passState.enabled = pass.enabled;
+    passState.active = status != nullptr ? status->active : false;
+    passState.skipReason =
+        status != nullptr ? std::string(renderPassSkipReasonName(
+                             status->skipReason))
+                          : std::string(renderPassSkipReasonName(
+                                RenderPassSkipReason::MissingRecordCallback));
+    model.passes.push_back(std::move(passState));
+  }
+  return model;
 }
 
 void RenderGraph::clear() {

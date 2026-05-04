@@ -22,12 +22,41 @@ TEST(DotBimLoader, ParsesMeshElementTransformAndColor) {
       "mesh_id": 7,
       "guid": "element-1",
       "type": "Wall",
+      "displayName": "North wall",
+      "objectType": "Basic wall",
+      "storeyName": "Level 01",
+      "storeyId": "storey-1",
+      "materialName": "Concrete",
+      "materialCategory": "Structural",
+      "discipline": "Architecture",
+      "phase": "New construction",
+      "fireRating": "2h",
+      "loadBearing": true,
+      "status": "Existing",
+      "sourceId": "#42",
       "vector": {"x": 4.0, "y": 5.0, "z": 6.0},
       "rotation": {"qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0},
-      "color": {"r": 10, "g": 20, "b": 30, "a": 255}
+      "color": {"r": 10, "g": 20, "b": 30, "a": 255},
+      "properties": [
+        {
+          "set": "Pset_WallCommon",
+          "name": "AcousticRating",
+          "value": "Rw40",
+          "category": "pset"
+        }
+      ]
     }
   ],
-  "info": {}
+  "info": {
+    "georeference": {
+      "sourceUpAxis": "Z",
+      "crsName": "EPSG test CRS",
+      "crsAuthority": "EPSG",
+      "crsCode": "1234",
+      "coordinateOffset": [1000.0, 2000.0, 12.5],
+      "mapConversionName": "IfcMapConversion"
+    }
+  }
 }
 )json";
 
@@ -39,6 +68,21 @@ TEST(DotBimLoader, ParsesMeshElementTransformAndColor) {
   ASSERT_EQ(model.meshRanges.size(), 1u);
   ASSERT_EQ(model.elements.size(), 1u);
 
+  EXPECT_FALSE(model.unitMetadata.hasSourceUnits);
+  EXPECT_FALSE(model.unitMetadata.hasMetersPerUnit);
+  EXPECT_TRUE(model.unitMetadata.hasImportScale);
+  EXPECT_NEAR(model.unitMetadata.importScale, 2.0f, 1.0e-6f);
+  EXPECT_TRUE(model.unitMetadata.hasEffectiveImportScale);
+  EXPECT_NEAR(model.unitMetadata.effectiveImportScale, 2.0f, 1.0e-6f);
+  EXPECT_TRUE(model.georeferenceMetadata.hasSourceUpAxis);
+  EXPECT_EQ(model.georeferenceMetadata.sourceUpAxis, "Z");
+  EXPECT_TRUE(model.georeferenceMetadata.hasCoordinateOffset);
+  EXPECT_NEAR(model.georeferenceMetadata.coordinateOffset.x, 1000.0, 1.0e-9);
+  EXPECT_NEAR(model.georeferenceMetadata.coordinateOffset.y, 2000.0, 1.0e-9);
+  EXPECT_NEAR(model.georeferenceMetadata.coordinateOffset.z, 12.5, 1.0e-9);
+  EXPECT_EQ(model.georeferenceMetadata.crsAuthority, "EPSG");
+  EXPECT_EQ(model.georeferenceMetadata.crsCode, "1234");
+
   EXPECT_EQ(model.meshRanges[0].meshId, 7u);
   EXPECT_EQ(model.meshRanges[0].firstIndex, 0u);
   EXPECT_EQ(model.meshRanges[0].indexCount, 3u);
@@ -49,6 +93,23 @@ TEST(DotBimLoader, ParsesMeshElementTransformAndColor) {
   EXPECT_EQ(element.meshId, 7u);
   EXPECT_EQ(element.guid, "element-1");
   EXPECT_EQ(element.type, "Wall");
+  EXPECT_EQ(element.displayName, "North wall");
+  EXPECT_EQ(element.objectType, "Basic wall");
+  EXPECT_EQ(element.storeyName, "Level 01");
+  EXPECT_EQ(element.storeyId, "storey-1");
+  EXPECT_EQ(element.materialName, "Concrete");
+  EXPECT_EQ(element.materialCategory, "Structural");
+  EXPECT_EQ(element.discipline, "Architecture");
+  EXPECT_EQ(element.phase, "New construction");
+  EXPECT_EQ(element.fireRating, "2h");
+  EXPECT_EQ(element.loadBearing, "true");
+  EXPECT_EQ(element.status, "Existing");
+  EXPECT_EQ(element.sourceId, "#42");
+  ASSERT_EQ(element.properties.size(), 1u);
+  EXPECT_EQ(element.properties[0].set, "Pset_WallCommon");
+  EXPECT_EQ(element.properties[0].name, "AcousticRating");
+  EXPECT_EQ(element.properties[0].value, "Rw40");
+  EXPECT_EQ(element.properties[0].category, "pset");
   EXPECT_NEAR(element.transform[0].x, 2.0f, 1.0e-5f);
   EXPECT_NEAR(element.transform[1].z, -2.0f, 1.0e-5f);
   EXPECT_NEAR(element.transform[2].y, 2.0f, 1.0e-5f);

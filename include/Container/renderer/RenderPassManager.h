@@ -15,6 +15,7 @@ struct RenderPasses {
   VkRenderPass transparentPick{VK_NULL_HANDLE};
   VkRenderPass shadow{VK_NULL_HANDLE};
   VkRenderPass lighting{VK_NULL_HANDLE};
+  VkRenderPass transformGizmos{VK_NULL_HANDLE};
   VkRenderPass postProcess{VK_NULL_HANDLE};
 };
 

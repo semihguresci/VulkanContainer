@@ -4,7 +4,9 @@
 #include "Container/utility/GuiManager.h"
 
 #include <cstdint>
+#include <limits>
 #include <memory>
+#include <optional>
 
 namespace container::gpu {
 class AllocationManager;
@@ -29,15 +31,24 @@ class InputManager;
 
 namespace container::renderer {
 
+class SceneController;
+
 // Manages the application camera: creation, reset, update, and transform
 // helpers for both camera and scene-graph nodes.
 class CameraController {
 public:
+  struct NavigationPivot {
+    glm::vec3 center{0.0f};
+    float radius{1.0f};
+    bool valid{false};
+  };
+
   CameraController(std::shared_ptr<container::gpu::VulkanDevice> device,
                    container::gpu::AllocationManager &allocationManager,
                    container::gpu::SwapChainManager &swapChainManager,
                    container::scene::SceneGraph &sceneGraph,
                    container::scene::SceneManager *sceneManager,
+                   SceneController *sceneController,
                    container::ecs::World &world,
                    container::window::InputManager &inputManager);
 
@@ -59,9 +70,19 @@ public:
              float sensitivityScale = 1.0f);
   void pan(uint32_t nodeIndex, float deltaX, float deltaY,
            float speedScale = 1.0f);
+  void moveInViewPlane(uint32_t nodeIndex, float deltaRight, float deltaUp,
+                       float speedScale = 1.0f);
   void dolly(uint32_t nodeIndex, float wheelSteps, float speedScale = 1.0f);
   void adjustMoveSpeed(float wheelSteps);
   [[nodiscard]] float moveSpeed() const;
+  [[nodiscard]] bool isOrthographic() const;
+  void setOrthographic(uint32_t nodeIndex, bool enabled);
+  void toggleProjectionMode(uint32_t nodeIndex);
+  void setViewPreset(uint32_t nodeIndex,
+                     container::ui::CameraViewPreset preset);
+  void updateViewAnimation(float deltaTime);
+  void setSelectionPivotOverride(NavigationPivot pivot);
+  void clearSelectionPivotOverride();
 
   // ---- Per-frame ----------------------------------------------------------
 
@@ -104,17 +125,44 @@ private:
   };
 
   [[nodiscard]] ViewPivot resolveViewPivot(uint32_t nodeIndex) const;
+  [[nodiscard]] float viewPlaneNavigationSpeed(uint32_t nodeIndex,
+                                               float speedScale) const;
   void lookAt(const glm::vec3& target);
+  void setCameraNearFar(float nearPlane, float farPlane);
+  void syncOrthographicViewHeight(const ViewPivot &pivot);
+  void cancelViewAnimation();
+
+  struct ViewAnimation {
+    bool active{false};
+    glm::vec3 startPosition{0.0f};
+    glm::vec3 targetPosition{0.0f};
+    float startYawDegrees{0.0f};
+    float startPitchDegrees{0.0f};
+    float targetYawDegrees{0.0f};
+    float targetPitchDegrees{0.0f};
+    float elapsedSeconds{0.0f};
+    float durationSeconds{0.22f};
+  };
 
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager &allocationManager_;
   container::gpu::SwapChainManager &swapChainManager_;
   container::scene::SceneGraph &sceneGraph_;
   container::scene::SceneManager *sceneManager_{nullptr};
+  SceneController *sceneController_{nullptr};
   container::ecs::World &world_;
   container::window::InputManager &inputManager_;
 
   std::unique_ptr<container::scene::BaseCamera> camera_;
+  float perspectiveFieldOfViewDegrees_{60.0f};
+  ViewAnimation viewAnimation_{};
+  std::optional<NavigationPivot> selectionPivotOverride_{};
+  mutable uint32_t cachedNodePivotIndex_{std::numeric_limits<uint32_t>::max()};
+  mutable uint64_t
+      cachedNodePivotSceneRevision_{std::numeric_limits<uint64_t>::max()};
+  mutable uint64_t
+      cachedNodePivotObjectRevision_{std::numeric_limits<uint64_t>::max()};
+  mutable ViewPivot cachedNodePivot_{};
 };
 
 } // namespace container::renderer

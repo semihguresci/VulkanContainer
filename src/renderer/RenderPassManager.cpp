@@ -429,6 +429,57 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.lighting) != VK_SUCCESS)
     throw std::runtime_error("failed to create lighting render pass");
 
+  // ---- Transform Gizmos ----
+  // Renderer-native transform handles are composited after lighting into the
+  // HDR scene color target and leave it shader-readable for exposure, bloom,
+  // OIT resolve, and post-process passes.
+  VkAttachmentDescription gizmoColor{};
+  gizmoColor.format = sceneColorFormat;
+  gizmoColor.samples = VK_SAMPLE_COUNT_1_BIT;
+  gizmoColor.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  gizmoColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+  gizmoColor.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  gizmoColor.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+  gizmoColor.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  gizmoColor.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+  VkAttachmentReference gizmoColorRef{
+      0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL};
+  VkSubpassDescription gizmoSubpass{};
+  gizmoSubpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+  gizmoSubpass.colorAttachmentCount = 1;
+  gizmoSubpass.pColorAttachments = &gizmoColorRef;
+
+  std::array<VkSubpassDependency, 2> gizmoDeps{};
+  gizmoDeps[0] = MakeDependency(
+      VK_SUBPASS_EXTERNAL, 0,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT |
+          VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_SHADER_READ_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+      kFramebufferLocalDependency);
+  gizmoDeps[1] = MakeDependency(
+      0, VK_SUBPASS_EXTERNAL,
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+      VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+      VK_ACCESS_SHADER_READ_BIT,
+      kFramebufferLocalDependency);
+
+  rpInfo.attachmentCount = 1;
+  rpInfo.pAttachments = &gizmoColor;
+  rpInfo.subpassCount = 1;
+  rpInfo.pSubpasses = &gizmoSubpass;
+  rpInfo.dependencyCount = static_cast<uint32_t>(gizmoDeps.size());
+  rpInfo.pDependencies = gizmoDeps.data();
+  if (vkCreateRenderPass(dev, &rpInfo, nullptr,
+                         &passes_.transformGizmos) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create transform gizmo render pass");
+  }
+
   // ---- Shadow Depth ----
   // Depth-only render pass for shadow map cascades. Uses the same depth format
   // as the main scene but renders into a 2D array layer per cascade.
@@ -529,6 +580,7 @@ void RenderPassManager::destroy() {
   destroyPass(passes_.transparentPick);
   destroyPass(passes_.shadow);
   destroyPass(passes_.lighting);
+  destroyPass(passes_.transformGizmos);
   destroyPass(passes_.postProcess);
 }
 
