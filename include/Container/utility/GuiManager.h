@@ -11,8 +11,7 @@
 
 #include "Container/common/CommonMath.h"
 #include "Container/common/CommonVulkan.h"
-#include "Container/renderer/BimSemanticColorMode.h"
-#include "Container/renderer/RendererTelemetry.h"
+#include "Container/utility/GuiDebugState.h"
 #include "Container/utility/SceneData.h"
 
 struct GLFWwindow;
@@ -22,9 +21,11 @@ class SceneGraph;
 } // namespace container::scene
 
 namespace container::renderer {
+enum class BimSemanticColorMode : uint32_t;
 struct BimElementProperty;
 struct BimStoreyRange;
 struct CullStats;
+struct RendererTelemetryView;
 } // namespace container::renderer
 
 namespace container::ui {
@@ -127,14 +128,6 @@ struct TransformControls {
   glm::vec3 position{0.0f, 0.0f, 0.0f};
   glm::vec3 rotationDegrees{0.0f, 0.0f, 0.0f};
   glm::vec3 scale{1.0f, 1.0f, 1.0f};
-};
-
-struct RenderPassToggle {
-  std::string name;
-  bool enabled{true};
-  bool locked{false};
-  bool autoDisabled{false};
-  std::string dependencyNote{};
 };
 
 struct BimFilterState {
@@ -575,7 +568,7 @@ private:
   uint32_t cullStatsFrustum_{0};
   uint32_t cullStatsOcclusion_{0};
   container::gpu::LightCullingStats lightCullingStats_{};
-  container::renderer::RendererTelemetryView rendererTelemetry_{};
+  GuiRendererTelemetryView rendererTelemetry_{};
   container::gpu::LightingSettings lightingSettings_{};
   container::gpu::ShadowSettings shadowSettings_{};
   bool freezeCulling_{false};
@@ -591,8 +584,7 @@ private:
   BimLayerVisibilityState bimLayerVisibilityState_{};
   std::string bimQuickFilterSearch_{};
   std::string bimPropertySearch_{};
-  container::renderer::BimSemanticColorMode bimSemanticColorMode_{
-      container::renderer::BimSemanticColorMode::Off};
+  container::renderer::BimSemanticColorMode bimSemanticColorMode_{};
   SectionPlaneState sectionPlaneState_{};
   BimBoxClipUiState bimBoxClipState_{};
   int sectionPlaneAxis_{1};

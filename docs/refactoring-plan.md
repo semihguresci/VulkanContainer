@@ -363,7 +363,7 @@ Several headers pull in enormous transitive include trees:
    // Before (SceneManager.h)
    #include "Container/utility/AllocationManager.h"
    #include "Container/utility/TextureManager.h"
-   #include "Container/renderer/LightingManager.h"
+   #include "Container/renderer/lighting/LightingManager.h"
    // ... 11 more
 
    // After (SceneManager.h)
@@ -605,7 +605,7 @@ optional reads. Vulkan layout transitions and resource barriers still live in th
 recorders because attachment lifetimes remain tied to physical Vulkan render pass boundaries.
 
 **New files:**
-- `include/Container/renderer/RenderGraph.h` — `RenderPassId`, pass name/dependency helpers,
+- `include/Container/renderer/core/RenderGraph.h` — `RenderPassId`, pass name/dependency helpers,
   `RenderResourceId`, resource name/access helpers, `RenderPassSkipReason`,
   `RenderPassExecutionStatus`, `RenderPassNode` (stable ID, name, schedule dependencies,
   required/optional reads, writes, enabled flag, `RecordFn` callback), and `RenderGraph`
@@ -616,7 +616,7 @@ recorders because attachment lifetimes remain tied to physical Vulkan render pas
   `findPass()` expose read-only inspection; mutation goes
   through invalidating setters. Forward-declares `VkCommandBuffer_T*` to avoid Vulkan header
   dependency.
-- `src/renderer/RenderGraph.cpp` — Stable pass metadata, required-enable dependencies for
+- `src/renderer/core/RenderGraph.cpp` — Stable pass metadata, required-enable dependencies for
   optional features, schedule dependencies for topological ordering, logical resource read/write
   metadata, cycle/missing-dependency validation, resource producer tracking, resource-derived
   scheduling dependencies, invalidating mutation APIs for pass toggles/recorders/dependencies/
@@ -630,14 +630,14 @@ recorders because attachment lifetimes remain tied to physical Vulkan render pas
   identity.
 
 **Modified files:**
-- `include/Container/renderer/FrameRecorder.h` — Added `RenderGraph graph_` member, `buildGraph()`
+- `include/Container/renderer/core/FrameRecorder.h` — Added `RenderGraph graph_` member, `buildGraph()`
   method, and `graph()` accessors.
-- `src/renderer/FrameRecorder.cpp` — Constructor calls `buildGraph()` which registers the full
+- `src/renderer/core/FrameRecorder.cpp` — Constructor calls `buildGraph()` which registers the full
   frame schedule by `RenderPassId` and compiles the graph. `record()` is now a thin wrapper:
   begin command buffer → `graph_.execute()` → end command buffer. All private helper methods
   preserved unchanged. Feature-dependent subpaths now query graph active state rather than raw
   toggle state, so they do not consume outputs from passes pruned by the active plan.
-- `src/renderer/RendererFrontend.cpp` — Render pass UI now consumes graph execution statuses to
+- `src/renderer/core/RendererFrontend.cpp` — Render pass UI now consumes graph execution statuses to
   show inactive-pass notes for missing required passes/resources or missing record callbacks while
   preserving the existing protected-pass and optional dependency toggle policy. Frame descriptor
   feature flags also use graph active state.
@@ -649,7 +649,7 @@ recorders because attachment lifetimes remain tied to physical Vulkan render pas
   invalidation, dependency/resource mutation invalidation, pass-ID execution views, ID-only
   registration validation, invalid schedule dependency rejection, invalid resource access
   rejection, duplicate metadata rejection, and the default frame-flow ordering.
-- `src/CMakeLists.txt` — Added `renderer/RenderGraph.cpp` to VulkanSceneRenderer_renderer.
+- `src/CMakeLists.txt` — Added `renderer/core/RenderGraph.cpp` to VulkanSceneRenderer_renderer.
 
 **Validation:** `render_graph_tests`, full configured CTest set, and `VulkanSceneRenderer` build
 passed after the render graph status update.
@@ -719,7 +719,7 @@ struct RenderableTag         {};  // marks entities for draw-call extraction
 - `forEachRenderable()` and `forEachPointLight()` provide cache-friendly EnTT view iteration
 - `renderableCount()`, `pointLightCount()`, `entityCount()`, `activeCamera()`, `clear()`, `registry()` accessors
 
-**SceneController integration** (`src/renderer/SceneController.cpp`):
+**SceneController integration** (`src/renderer/scene/SceneController.cpp`):
 - Owns the shared `std::unique_ptr<World> world_` constructed in constructor
 - `syncObjectDataFromSceneGraph()` rewritten: calls `world_->syncFromSceneGraph()` then
   uses `world_->forEachRenderable()` for ObjectData + DrawCommand generation
@@ -900,7 +900,7 @@ lightweight headers to reduce transitive include weight.
 - Deleted `cmake/FindSlang.cmake` (custom find module no longer needed).
 - Kept `shader-slang` in `vcpkg.json` (provides the `slangc` tool).
 
-**4. Extracted `PipelineTypes.h`** (`include/Container/renderer/PipelineTypes.h`):
+**4. Extracted `PipelineTypes.h`** (`include/Container/renderer/pipeline/PipelineTypes.h`):
 - Moved 5 POD structs (`PipelineLayouts`, `GraphicsPipelines`,
   `PipelineDescriptorLayouts`, `PipelineRenderPasses`, `PipelineBuildResult`)
   from `GraphicsPipelineBuilder.h` into a new lightweight header.

@@ -7,11 +7,11 @@
 #include "Container/utility/SwapChainManager.h"
 #include "Container/utility/WindowManager.h"
 
-#include "Container/renderer/CommandBufferManager.h"
-#include "Container/renderer/RendererFrontend.h"
-#include "Container/renderer/VulkanContext.h"
-#include "Container/renderer/VulkanContextInitializer.h"
-#include "Container/renderer/WindowInputBridge.h"
+#include "Container/renderer/resources/CommandBufferManager.h"
+#include "Container/renderer/core/RendererFrontend.h"
+#include "Container/renderer/platform/VulkanContext.h"
+#include "Container/renderer/platform/VulkanContextInitializer.h"
+#include "Container/renderer/platform/WindowInputBridge.h"
 
 #include <algorithm>
 #include <stdexcept>

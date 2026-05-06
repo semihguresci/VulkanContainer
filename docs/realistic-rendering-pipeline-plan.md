@@ -94,10 +94,10 @@ Frustum cull
 
 Important files:
 
-- `src/renderer/EnvironmentManager.cpp`
-- `src/renderer/LightingManager.cpp`
-- `src/renderer/ShadowManager.cpp`
-- `src/renderer/FrameRecorder.cpp`
+- `src/renderer/lighting/EnvironmentManager.cpp`
+- `src/renderer/lighting/LightingManager.cpp`
+- `src/renderer/shadow/ShadowManager.cpp`
+- `src/renderer/core/FrameRecorder.cpp`
 - `include/Container/utility/SceneData.h`
 - `shaders/brdf_common.slang`
 - `shaders/deferred_directional.slang`

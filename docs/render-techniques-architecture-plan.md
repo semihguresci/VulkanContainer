@@ -1,7 +1,8 @@
 # Multi-Technique Rendering Architecture Plan
 
-Status: proposed architecture plan
+Status: implementation in progress
 Date: 2026-05-02
+Last status update: 2026-05-06
 Scope: architectural changes needed to support deferred raster, forward raster,
 ray tracing, path tracing, Gaussian splatting, and NeRF/radiance-field style
 rendering in one renderer without turning the current frame recorder into a
@@ -34,17 +35,72 @@ The renderer already has useful foundations:
 - Slang shaders compiled to SPIR-V.
 - GPU-driven raster draws and indirect culling.
 - Deferred opaque rendering plus forward transparent/OIT rendering.
+- A `RenderTechnique`/`RenderTechniqueRegistry` layer selects the active
+  technique, with deferred raster as the only production technique registered by
+  default.
+- `RendererFrontend` owns scene-provider, frame-resource, and pipeline
+  registries and passes them through `RenderSystemContext`.
+- `DeferredRasterTechnique` owns deferred graph registration and publishes its
+  deferred resource/pipeline contract into the registries before graph setup.
+- Many deferred, BIM, shadow, scene, and shared pass planners/recorders now live
+  in grouped renderer helper files instead of in `FrameRecorder`.
+- The deferred lighting pass entry now lives in
+  `DeferredRasterLightingPassRecorder`, so lighting state assembly, transparent
+  OIT, debug overlays, BIM primitive/section/overlay commands, light gizmos, and
+  the lighting render-pass shell are no longer owned by `FrameRecorder`.
+- Shadow cascade frame-pass orchestration now lives in
+  `ShadowCascadeFramePassRecorder`, and transparent BIM surface plan construction
+  now routes through the BIM-owned `buildBimSurfaceFramePassPlan` facade.
+- Transform-gizmo pass/overlay recording and transparent-pick frame-pass
+  recording are now invoked from the deferred technique and owned by grouped
+  deferred/picking helpers instead of `FrameRecorder`.
+- Scene and BIM depth/G-buffer frame-pass delegation now lives in
+  `DeferredRasterScenePassRecorder` and
+  `DeferredRasterBimSurfacePassRecorder`; those helpers take narrow record
+  inputs instead of depending on `FrameRecorder` internals.
+- OIT clear and resolve-preparation command adapters now live in
+  `DeferredTransparentOitRecorder`, and OIT frame-level enable/readiness
+  delegation now lives in `DeferredTransparentOitFramePassRecorder`. The
+  deferred technique no longer asks `FrameRecorder` for raw OIT activation or
+  `OitManager` service access.
+- Deferred GUI command dispatch now lives in `DeferredRasterGuiPassRecorder`,
+  keeping the direct `GuiManager::render` call out of `FrameRecorder`.
+- Deferred frame-level service compatibility now lives in
+  `DeferredRasterFrameGraphContext`, so `FrameRecorder` owns only prepared graph
+  execution, command-buffer begin/end, telemetry/profiling hooks, and
+  technique-provided lifecycle hooks.
+- Backend-neutral scene provider contracts exist for mesh, BIM, splat, and
+  radiance-field representations; current production adapters populate mesh and
+  BIM snapshots.
 
 The main constraints are structural:
 
-- `FrameRecorder` owns the concrete pass registration and command recording for
-  one frame shape.
-- `FrameRecordParams` is a large fixed contract for the current deferred path.
-- `PipelineTypes` stores one fixed set of graphics pipeline handles.
-- `FrameResources` assumes G-buffer, scene color, OIT, and framebuffer resources.
+- `DeferredRasterFrameGraphContext` still carries deferred-specific service
+  compatibility for one frame shape. That is intentionally outside the generic
+  `FrameRecorder`, but it should shrink as Milestones 4-6 move resource,
+  provider, and UI state behind technique-neutral contracts.
+- `FrameRecordParams` is still a large compatibility contract for the current
+  deferred path, but it now carries registry-backed runtime lookup helpers for
+  resources, pipeline handles, and pipeline layouts instead of copied deferred
+  `FrameResources`/pipeline structs.
+- `PipelineTypes` still stores the deferred pipeline build outputs, but
+  `GraphicsPipelines::handleRegistry` and `PipelineLayouts::layoutRegistry`
+  are the per-frame access path for production pipeline handles and layouts.
+- `FrameResources` still acts as internal deferred storage for G-buffer, scene
+  color, OIT, descriptor, and framebuffer resources inside
+  `FrameResourceManager`, but it is no longer exposed through
+  `FrameRecordParams`. `FrameResourceManager::resourceRegistry()` publishes the
+  actual per-frame image, buffer, framebuffer, and frame-owned descriptor
+  bindings behind technique-scoped keys. Deferred framebuffer, image/view, OIT
+  clear/resolve, and frame-owned descriptor consumers resolve through
+  `DeferredRasterResourceBridge` without a fixed-struct fallback.
 - `RenderPassId` and `RenderResourceId` are fixed enums for the current frame
   graph.
 - Device setup does not yet negotiate Vulkan ray-tracing extensions/features.
+- The full CPU build/test profile still needs to be kept green while concurrent
+  renderer/UI split work lands; focused architecture objects currently compile,
+  and the remaining validation wrinkle observed during this slice is the
+  existing Windows `rendering_convention_tests.exe` linker-file lock.
 
 These are good implementation details for the current renderer, but poor
 extension points for path tracing, ray tracing, splatting, and radiance fields.
@@ -88,6 +144,13 @@ class RenderTechnique {
 };
 ```
 
+The current implementation is a deliberately smaller migration slice: the
+production `RenderTechnique` exposes availability checks, a
+`registerTechniqueContracts(RenderSystemContext&)` hook for resource/pipeline
+registries, and `buildFrameGraph(RenderSystemContext&)`. Resource creation and
+pipeline creation still use the deferred compatibility managers until a second
+production technique forces handle indirection.
+
 `RendererFrontend` should own a `RenderTechniqueRegistry`, choose the active
 technique, and keep shared subsystems outside any single technique:
 
@@ -107,7 +170,7 @@ and settings.
 Add:
 
 ```text
-include/Container/renderer/RenderTechnique.h
+include/Container/renderer/core/RenderTechnique.h
 include/Container/renderer/RenderTechniqueRegistry.h
 src/renderer/RenderTechniqueRegistry.cpp
 ```
@@ -139,19 +202,21 @@ directly on all of `RendererFrontend`:
 
 ```cpp
 struct RenderSystemContext {
-  VulkanContextResult& ctx;
-  container::gpu::PipelineManager& pipelineManager;
-  container::gpu::AllocationManager& allocationManager;
-  container::gpu::SwapChainManager& swapChainManager;
-  CommandBufferManager& commandBufferManager;
-  SceneGpuData& sceneGpuData;
-  FrameResourceRegistry& frameResources;
-  RendererTelemetry* telemetry{nullptr};
+  FrameRecorder* frameRecorder{nullptr};
+  DeferredRasterFrameGraphContext* deferredRaster{nullptr};
+  const RendererDeviceCapabilities* deviceCapabilities{nullptr};
+  const container::scene::SceneProviderRegistry* sceneProviders{nullptr};
+  FrameResourceRegistry* frameResources{nullptr};
+  PipelineRegistry* pipelines{nullptr};
 };
 ```
 
 This prevents every new algorithm from adding more fields to
-`RendererFrontend::OwnedSubsystems` and `FrameRecordParams`.
+`RendererFrontend::OwnedSubsystems` and `FrameRecordParams`. The current context
+is intentionally pointer-based because it is an interim compatibility surface:
+deferred raster still records through `FrameRecorder`, while new registries and
+providers are exposed without forcing immediate allocation or pipeline-handle
+migration.
 
 ### 3. Frame Resource Registry
 
@@ -312,6 +377,8 @@ Work:
   `DeferredRasterTechnique`.
 - Move depth, G-buffer, lighting, OIT, bloom, exposure, and post-process record
   helpers into deferred-specific files.
+- Keep deferred-only frame lifecycle work in `DeferredRasterFrameGraphContext`
+  instead of in the generic `FrameRecorder`.
 - Keep current frame flow and tests intact during migration.
 
 Acceptance:
@@ -319,6 +386,8 @@ Acceptance:
 - Visual output and render graph ordering match current behavior.
 - Existing render graph tests still pass.
 - `RendererFrontend` delegates graph construction to the active technique.
+- `FrameRecorder` does not include high-level deferred/BIM/shadow/GUI managers
+  and does not own technique pass recorders.
 
 ### Forward Raster / Forward+
 
@@ -447,10 +516,40 @@ Acceptance:
 
 ### Phase 2: Move Deferred Path Behind Technique
 
-- Move current graph registration out of `FrameRecorder`.
-- Keep `FrameRecorder` as graph execution and shared utility only.
-- Move deferred-specific record helpers into `DeferredRasterTechnique`.
-- Preserve current tests.
+Status: complete for the current migration slice.
+
+- Done: graph registration moved out of `FrameRecorder` and into
+  `DeferredRasterTechnique`.
+- Done: many deferred, scene, BIM, shadow, post-process, overlay, transition,
+  and command-buffer helpers now live in grouped renderer helper files.
+- Done: the deferred lighting pass entry moved into
+  `DeferredRasterLightingPassRecorder`, including debug overlay, transparent
+  OIT, BIM primitive/section/overlay, and light-gizmo orchestration for the
+  lighting pass.
+- Done: shadow cascade source upload, draw-plan cache ownership, pass-input
+  assembly, and cascade pass recording moved into
+  `ShadowCascadeFramePassRecorder`; transparent BIM surface plan construction
+  moved behind the BIM surface frame-pass facade.
+- Done: transform-gizmo pass/overlay recording and transparent-pick frame-pass
+  recording moved out of `FrameRecorder` into deferred/picking-owned helpers.
+- Done: scene and BIM depth/G-buffer pass entries moved out of `FrameRecorder`
+  into deferred-owned frame-pass helpers with narrow input structs.
+- Done: OIT clear and resolve-preparation command adapters moved out of
+  `FrameRecorder` into `DeferredTransparentOitRecorder`.
+- Done: OIT frame-level enable/readiness policy moved behind
+  `DeferredTransparentOitFramePassRecorder`, and GUI command dispatch moved into
+  `DeferredRasterGuiPassRecorder`.
+- Done: shadow pass raster shells, secondary command-buffer preparation,
+  screenshot copy, BIM GPU-visibility, debug-overlay ownership, and remaining
+  deferred frame lifecycle work moved behind domain or deferred compatibility
+  facades.
+- Done: `FrameRecorder` now owns graph execution, command-buffer lifecycle,
+  telemetry/profiling, and technique lifecycle hook dispatch only.
+- Remaining fixed-frame/resource compatibility belongs to the resource,
+  pipeline, scene-provider, and UI-debug milestones rather than to
+  `FrameRecorder`.
+- Preserve current tests, with source-shape guardrails preventing new broad
+  deferred/BIM/shadow command hubs in `FrameRecorder`.
 
 ### Phase 3: Resource And Pipeline Registries
 
@@ -536,6 +635,45 @@ The first successful architectural milestone is not a new algorithm. It is:
 - Current tests and screenshots remain stable.
 - Adding `ForwardRasterTechnique` does not require adding fields to the deferred
   pipeline structs.
+
+Current status:
+
+- The first three acceptance items are implemented for the deferred raster path.
+- Phase 2/Milestone 3 is complete for the current migration slice:
+  `FrameRecorder` now owns graph execution, command-buffer lifecycle,
+  telemetry/profiling, and lifecycle hook dispatch only. Deferred/BIM/shadow,
+  GUI, screenshot, debug-overlay, and compatibility service work now sits
+  behind deferred or domain-owned facades.
+- Milestone 4 production integration is active but not fully consumed:
+  `RendererFrontend` owns `FrameResourceRegistry` and `PipelineRegistry`,
+  carries them through `RenderSystemContext`, and the selected deferred raster
+  technique publishes its resource and pipeline contracts before graph setup.
+  Production `FrameResourceManager` image, buffer, framebuffer, and frame-owned
+  descriptor bindings and production pipeline handles/layouts are now exposed
+  through registry-backed `FrameRecordParams` helpers. Deferred raster and
+  shadow pipeline consumers now use registry-only bridge helpers with no fixed
+  `GraphicsPipelines`/`PipelineLayouts` fallback, and `FrameRecordParams` no
+  longer carries copied pipeline structs. Published deferred framebuffers now
+  have declared `FrameResourceRegistry` contracts, and published deferred
+  framebuffers, image/view inputs, OIT resources, and frame-owned descriptor
+  sets are resolved through registry-only `DeferredRasterResourceBridge`
+  helpers. `FrameRecordParams` no longer exposes the fixed `FrameResources`
+  struct, and frontend depth/pick readback plus OIT capacity telemetry consume
+  the published runtime bindings instead of fixed frame storage. Remaining
+  compatibility consumption is
+  concentrated in manager-owned descriptor service contracts such as scene,
+  light, shadow, tiled-lighting, and BIM descriptors. Shadow cascade framebuffer
+  arrays and swapchain presentation framebuffers remain explicit shadow and
+  swapchain service contracts for this milestone rather than
+  `FrameResourceRegistry` bindings.
+- Resource/pipeline and scene-provider guardrail tests now document the
+  registries and provider contracts that prevent the next technique from growing
+  the deferred compatibility structs, including forward-raster pipeline recipes
+  and path-tracing accumulation resources.
+- Screenshot and full CPU-test stability still need a clean shared build once
+  the Windows validation-executable linker lock is cleared.
+- Forward raster is still future work; the registry/contract path is in place,
+  but no production forward technique is registered yet.
 
 Only after this milestone should ray tracing, path tracing, splatting, or
 radiance fields be implemented.

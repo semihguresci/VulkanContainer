@@ -1,6 +1,6 @@
 #include "Container/renderer/bim/BimPrimitivePassPlanner.h"
 
-#include "Container/renderer/BimManager.h"
+#include "Container/renderer/bim/BimManager.h"
 
 #include <algorithm>
 

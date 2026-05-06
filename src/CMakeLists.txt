@@ -5,50 +5,122 @@ add_library(VulkanSceneRenderer_Core
 
 # Renderer subsystem
 add_library(VulkanSceneRenderer_renderer
-    renderer/BimManager.cpp
+    renderer/core/RenderPassManager.cpp
+    renderer/core/CommandBufferScopeRecorder.cpp
+    renderer/core/FrameRecorder.cpp
+    renderer/core/RendererFrontend.cpp
+    renderer/core/RendererTelemetry.cpp
+    renderer/core/RenderGraph.cpp
+    renderer/core/RenderPassGpuProfiler.cpp
+    renderer/core/RenderPassScopeRecorder.cpp
+    renderer/core/RenderTechnique.cpp
+    renderer/core/ScreenshotCaptureRecorder.cpp
+
+    renderer/resources/CommandBufferManager.cpp
+    renderer/resources/FrameResourceManager.cpp
+    renderer/resources/FrameResourceRegistry.cpp
+
+    renderer/platform/VulkanContext.cpp
+    renderer/platform/VulkanContextInitializer.cpp
+    renderer/platform/WindowInputBridge.cpp
+
+    renderer/pipeline/GraphicsPipelineBuilder.cpp
+    renderer/pipeline/PipelineRegistry.cpp
+
+    renderer/lighting/EnvironmentManager.cpp
+    renderer/lighting/LightingManager.cpp
+    renderer/lighting/TinyExrImpl.cpp
+
+    renderer/effects/BloomManager.cpp
+    renderer/effects/ExposureManager.cpp
+    renderer/effects/OitManager.cpp
+
+    renderer/culling/GpuCullManager.cpp
+
+    renderer/debug/DebugOverlayRenderer.cpp
+    renderer/debug/DebugUiPresenter.cpp
+
+    renderer/scene/CameraController.cpp
+    renderer/scene/SceneController.cpp
+    renderer/scene/SceneDiagnosticCubeRecorder.cpp
+    renderer/scene/SceneViewport.cpp
+    renderer/scene/SceneOpaqueDrawPlanner.cpp
+    renderer/scene/SceneOpaqueDrawRecorder.cpp
+    renderer/scene/SceneRasterPassPlanner.cpp
+    renderer/scene/SceneRasterPassRecorder.cpp
+    renderer/scene/SceneTransparentDrawPlanner.cpp
+    renderer/scene/SceneTransparentDrawRecorder.cpp
+
+    renderer/picking/RenderSurfaceInteractionController.cpp
+    renderer/picking/TransparentPickDepthCopyRecorder.cpp
+    renderer/picking/TransparentPickPassRecorder.cpp
+    renderer/picking/TransparentPickRasterPassRecorder.cpp
+
+    renderer/deferred/DeferredDirectionalLightingRecorder.cpp
+    renderer/deferred/DeferredLightGizmoPlanner.cpp
+    renderer/deferred/DeferredLightGizmoRecorder.cpp
+    renderer/deferred/DeferredLightingDescriptorPlanner.cpp
+    renderer/deferred/DeferredLightingPassPlanner.cpp
+    renderer/deferred/DeferredPointLightingDrawPlanner.cpp
+    renderer/deferred/DeferredPointLightingRecorder.cpp
+    renderer/deferred/DeferredRasterDebugOverlayPlanner.cpp
+    renderer/deferred/DeferredRasterDebugOverlayRecorder.cpp
+    renderer/deferred/DeferredRasterBimSurfacePassRecorder.cpp
+    renderer/deferred/DeferredRasterDepthReadOnlyTransitionRecorder.cpp
+    renderer/deferred/DeferredRasterFrameGraphContext.cpp
+    renderer/deferred/DeferredRasterFrameState.cpp
+    renderer/deferred/DeferredRasterFrustumCullPassPlanner.cpp
+    renderer/deferred/DeferredRasterFrustumCullPassRecorder.cpp
+    renderer/deferred/DeferredRasterGuiPassRecorder.cpp
+    renderer/deferred/DeferredRasterHiZDepthTransitionRecorder.cpp
+    renderer/deferred/DeferredRasterHiZPassPlanner.cpp
+    renderer/deferred/DeferredRasterImageBarrier.cpp
+    renderer/deferred/DeferredRasterLighting.cpp
+    renderer/deferred/DeferredRasterLightingPassRecorder.cpp
+    renderer/deferred/DeferredRasterPostProcess.cpp
+    renderer/deferred/DeferredRasterSceneColorReadBarrierRecorder.cpp
+    renderer/deferred/DeferredRasterScenePassRecorder.cpp
+    renderer/deferred/DeferredRasterTechnique.cpp
+    renderer/deferred/DeferredRasterTileCullPlanner.cpp
+    renderer/deferred/DeferredRasterTileCullRecorder.cpp
+    renderer/deferred/DeferredRasterTransformGizmo.cpp
+    renderer/deferred/DeferredTransparentOitFramePassRecorder.cpp
+    renderer/deferred/DeferredTransparentOitRecorder.cpp
+
+    renderer/bim/BimDrawFilterState.cpp
     renderer/bim/BimDrawCompactionPlanner.cpp
     renderer/bim/BimFrameDrawRoutingPlanner.cpp
+    renderer/bim/BimFrameGpuVisibilityRecorder.cpp
     renderer/bim/BimLightingOverlayPlanner.cpp
+    renderer/bim/BimLightingOverlayRecorder.cpp
+    renderer/bim/BimManager.cpp
+    renderer/bim/BimMetadataCatalog.cpp
+    renderer/bim/BimMetadataIndex.cpp
     renderer/bim/BimPrimitivePassPlanner.cpp
+    renderer/bim/BimPrimitivePassRecorder.cpp
     renderer/bim/BimSectionCapBuilder.cpp
+    renderer/bim/BimSectionClipCapPassPlanner.cpp
+    renderer/bim/BimSectionClipCapPassRecorder.cpp
     renderer/bim/BimSurfaceDrawRoutingPlanner.cpp
-    renderer/DeferredRasterFrameState.cpp
-    renderer/DeferredRasterLighting.cpp
-    renderer/DeferredRasterPostProcess.cpp
-    renderer/DeferredRasterTransformGizmo.cpp
-    renderer/DeferredRasterTechnique.cpp
-    renderer/RenderPassManager.cpp
-    renderer/OitManager.cpp
-    renderer/DebugOverlayRenderer.cpp
-    renderer/DebugUiPresenter.cpp
-    renderer/FrameResourceManager.cpp
-    renderer/FrameResourceRegistry.cpp
-    renderer/SceneController.cpp
-    renderer/CameraController.cpp
-    renderer/LightingManager.cpp
-    renderer/EnvironmentManager.cpp
-    renderer/TinyExrImpl.cpp
-    renderer/GraphicsPipelineBuilder.cpp
-    renderer/FrameRecorder.cpp
-    renderer/RenderGraph.cpp
-    renderer/RenderTechnique.cpp
-    renderer/ScreenshotCaptureRecorder.cpp
-    renderer/PipelineRegistry.cpp
-    renderer/RenderPassGpuProfiler.cpp
-    renderer/RenderSurfaceInteractionController.cpp
-    renderer/RendererTelemetry.cpp
-    renderer/SceneViewport.cpp
-    renderer/VulkanContextInitializer.cpp
-    renderer/WindowInputBridge.cpp
-    renderer/CommandBufferManager.cpp
-    renderer/RendererFrontend.cpp
-    renderer/ShadowManager.cpp
+    renderer/bim/BimSurfacePassPlanner.cpp
+    renderer/bim/BimSurfacePassRecorder.cpp
+    renderer/bim/BimSurfaceRasterPassRecorder.cpp
+
     renderer/shadow/ShadowCascadeDrawPlanner.cpp
-    renderer/ShadowCullManager.cpp
-    renderer/GpuCullManager.cpp
-    renderer/BloomManager.cpp
-    renderer/ExposureManager.cpp
-    renderer/VulkanContext.cpp
+    renderer/shadow/ShadowCascadeFramePassRecorder.cpp
+    renderer/shadow/ShadowCascadeGpuCullPlanner.cpp
+    renderer/shadow/ShadowCascadePreparationPlanner.cpp
+    renderer/shadow/ShadowCascadeSecondaryCommandBufferRecorder.cpp
+    renderer/shadow/ShadowCullPassPlanner.cpp
+    renderer/shadow/ShadowCullPassRecorder.cpp
+    renderer/shadow/ShadowPassDrawPlanner.cpp
+    renderer/shadow/ShadowPassRasterPlanner.cpp
+    renderer/shadow/ShadowPassRasterRecorder.cpp
+    renderer/shadow/ShadowPassScopePlanner.cpp
+    renderer/shadow/ShadowSecondaryCommandBufferPlanner.cpp
+    renderer/shadow/ShadowPassRecorder.cpp
+    renderer/shadow/ShadowCullManager.cpp
+    renderer/shadow/ShadowManager.cpp
 )
 
 target_compile_features(VulkanSceneRenderer_renderer PUBLIC cxx_std_23)

@@ -1,6 +1,6 @@
 #include "Container/renderer/bim/BimFrameDrawRoutingPlanner.h"
 
-#include "Container/renderer/BimManager.h"
+#include "Container/renderer/bim/BimManager.h"
 
 namespace container::renderer {
 

@@ -1,6 +1,6 @@
 #include "Container/renderer/bim/BimDrawCompactionPlanner.h"
 
-#include "Container/renderer/BimManager.h"
+#include "Container/renderer/bim/BimManager.h"
 
 namespace container::renderer {
 

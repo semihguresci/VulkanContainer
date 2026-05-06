@@ -1,6 +1,8 @@
 #include "Container/utility/GuiManager.h"
 
-#include "Container/renderer/BimManager.h"
+#include "Container/renderer/bim/BimManager.h"
+#include "Container/renderer/bim/BimSemanticColorMode.h"
+#include "Container/renderer/core/RendererTelemetry.h"
 #include "Container/utility/BcfViewpoint.h"
 
 #include <imgui.h>
@@ -479,18 +481,152 @@ void CheckVkResult(VkResult result) {
   }
 }
 
-constexpr size_t
-TelemetryPhaseIndex(container::renderer::RendererTelemetryPhase phase) {
+constexpr size_t TelemetryPhaseIndex(GuiRendererTelemetryPhase phase) {
   return static_cast<size_t>(phase);
 }
 
-float TelemetryPhaseMs(
-    const container::renderer::RendererTelemetrySnapshot &snapshot,
-    container::renderer::RendererTelemetryPhase phase) {
-  if (phase == container::renderer::RendererTelemetryPhase::Count) {
+float TelemetryPhaseMs(const GuiRendererTelemetrySnapshot &snapshot,
+                       GuiRendererTelemetryPhase phase) {
+  if (phase == GuiRendererTelemetryPhase::Count) {
     return 0.0f;
   }
   return snapshot.timing.cpuMs[TelemetryPhaseIndex(phase)];
+}
+
+constexpr GuiRendererTelemetryPhase GuiTelemetryPhase(
+    container::renderer::RendererTelemetryPhase phase) {
+  switch (phase) {
+  case container::renderer::RendererTelemetryPhase::Frame:
+    return GuiRendererTelemetryPhase::Frame;
+  case container::renderer::RendererTelemetryPhase::WaitForFrame:
+    return GuiRendererTelemetryPhase::WaitForFrame;
+  case container::renderer::RendererTelemetryPhase::Readbacks:
+    return GuiRendererTelemetryPhase::Readbacks;
+  case container::renderer::RendererTelemetryPhase::AcquireImage:
+    return GuiRendererTelemetryPhase::AcquireImage;
+  case container::renderer::RendererTelemetryPhase::ImageFenceWait:
+    return GuiRendererTelemetryPhase::ImageFenceWait;
+  case container::renderer::RendererTelemetryPhase::ResourceGrowth:
+    return GuiRendererTelemetryPhase::ResourceGrowth;
+  case container::renderer::RendererTelemetryPhase::Gui:
+    return GuiRendererTelemetryPhase::Gui;
+  case container::renderer::RendererTelemetryPhase::SceneUpdate:
+    return GuiRendererTelemetryPhase::SceneUpdate;
+  case container::renderer::RendererTelemetryPhase::DescriptorUpdate:
+    return GuiRendererTelemetryPhase::DescriptorUpdate;
+  case container::renderer::RendererTelemetryPhase::CommandRecord:
+    return GuiRendererTelemetryPhase::CommandRecord;
+  case container::renderer::RendererTelemetryPhase::QueueSubmit:
+    return GuiRendererTelemetryPhase::QueueSubmit;
+  case container::renderer::RendererTelemetryPhase::Screenshot:
+    return GuiRendererTelemetryPhase::Screenshot;
+  case container::renderer::RendererTelemetryPhase::Present:
+    return GuiRendererTelemetryPhase::Present;
+  case container::renderer::RendererTelemetryPhase::Count:
+    return GuiRendererTelemetryPhase::Count;
+  }
+  return GuiRendererTelemetryPhase::Count;
+}
+
+GuiRendererTelemetryView GuiRendererTelemetry(
+    const container::renderer::RendererTelemetryView &telemetry) {
+  GuiRendererTelemetryView uiTelemetry{};
+  uiTelemetry.summary = {.frameCount = telemetry.summary.frameCount,
+                         .averageCpuFrameMs =
+                             telemetry.summary.averageCpuFrameMs,
+                         .p95CpuFrameMs = telemetry.summary.p95CpuFrameMs,
+                         .maxCpuFrameMs = telemetry.summary.maxCpuFrameMs,
+                         .averageGpuKnownMs =
+                             telemetry.summary.averageGpuKnownMs,
+                         .maxGpuKnownMs =
+                             telemetry.summary.maxGpuKnownMs};
+  uiTelemetry.history.reserve(telemetry.history.size());
+  for (const auto &sample : telemetry.history) {
+    uiTelemetry.history.push_back(
+        {.frameIndex = sample.frameIndex,
+         .cpuFrameMs = sample.cpuFrameMs,
+         .gpuKnownMs = sample.gpuKnownMs,
+         .waitForFrameMs = sample.waitForFrameMs,
+         .presentMs = sample.presentMs});
+  }
+
+  const auto &source = telemetry.latest;
+  auto &latest = uiTelemetry.latest;
+  latest.valid = source.valid;
+  latest.frameIndex = source.frameIndex;
+  latest.imageIndex = source.imageIndex;
+  for (size_t i = 0; i < container::renderer::kRendererTelemetryPhaseCount;
+       ++i) {
+    const auto phase =
+        static_cast<container::renderer::RendererTelemetryPhase>(i);
+    latest.timing.cpuMs[TelemetryPhaseIndex(GuiTelemetryPhase(phase))] =
+        source.timing.cpuMs[i];
+  }
+  latest.timing.gpuKnownMs = source.timing.gpuKnownMs;
+  latest.timing.gpuSource =
+      std::string(container::renderer::rendererGpuTimingSourceName(
+          source.timing.gpuSource));
+  latest.culling = {.inputCount = source.culling.inputCount,
+                    .frustumPassedCount =
+                        source.culling.frustumPassedCount,
+                    .occlusionPassedCount =
+                        source.culling.occlusionPassedCount};
+  latest.lightCulling = {
+      .submittedLights = source.lightCulling.submittedLights,
+      .activeClusters = source.lightCulling.activeClusters,
+      .totalClusters = source.lightCulling.totalClusters,
+      .maxLightsPerCluster = source.lightCulling.maxLightsPerCluster,
+      .droppedLightReferences = source.lightCulling.droppedLightReferences,
+      .clusterCullMs = source.lightCulling.clusterCullMs,
+      .clusteredLightingMs = source.lightCulling.clusteredLightingMs};
+  latest.workload = {.objectCount = source.workload.objectCount,
+                     .opaqueDrawCount = source.workload.opaqueDrawCount,
+                     .transparentDrawCount =
+                         source.workload.transparentDrawCount,
+                     .totalDrawCount = source.workload.totalDrawCount,
+                     .submittedLights = source.workload.submittedLights};
+  latest.resources = {.swapchainWidth = source.resources.swapchainWidth,
+                      .swapchainHeight = source.resources.swapchainHeight,
+                      .swapchainImageCount =
+                          source.resources.swapchainImageCount,
+                      .cameraBufferCount =
+                          source.resources.cameraBufferCount,
+                      .objectBufferCapacity =
+                          source.resources.objectBufferCapacity,
+                      .oitNodeCapacity = source.resources.oitNodeCapacity};
+  latest.sync = {.frameSlot = source.sync.frameSlot,
+                 .maxFramesInFlight = source.sync.maxFramesInFlight,
+                 .serializedConcurrency =
+                     source.sync.serializedConcurrency,
+                 .concurrencyReason = source.sync.concurrencyReason,
+                 .swapchainRecreateCount =
+                     source.sync.swapchainRecreateCount,
+                 .deviceWaitIdleCount = source.sync.deviceWaitIdleCount};
+  latest.graph = {.totalPasses = source.graph.totalPasses,
+                  .enabledPasses = source.graph.enabledPasses,
+                  .activePasses = source.graph.activePasses,
+                  .skippedPasses = source.graph.skippedPasses,
+                  .cpuTimedPasses = source.graph.cpuTimedPasses,
+                  .gpuTimedPasses = source.graph.gpuTimedPasses};
+  latest.gpuProfiler = {
+      .source = std::string(container::renderer::rendererGpuTimingSourceName(
+          source.gpuProfiler.source)),
+      .available = source.gpuProfiler.available,
+      .resultLatencyFrames = source.gpuProfiler.resultLatencyFrames,
+      .status = source.gpuProfiler.status};
+  latest.passes.reserve(source.passes.size());
+  for (const auto &pass : source.passes) {
+    latest.passes.push_back({.name = pass.name,
+                             .enabled = pass.enabled,
+                             .active = pass.active,
+                             .cpuTimed = pass.cpuTimed,
+                             .gpuTimed = pass.gpuTimed,
+                             .cpuRecordMs = pass.cpuRecordMs,
+                             .gpuKnownMs = pass.gpuKnownMs,
+                             .status = pass.status,
+                             .blocker = pass.blocker});
+  }
+  return uiTelemetry;
 }
 
 float PercentOf(float value, float total) {
@@ -4378,8 +4514,8 @@ void GuiManager::drawRendererTelemetryWindow() {
     return;
   }
 
-  const float frameMs = TelemetryPhaseMs(
-      latest, container::renderer::RendererTelemetryPhase::Frame);
+  const float frameMs =
+      TelemetryPhaseMs(latest, GuiRendererTelemetryPhase::Frame);
   const float fps = frameMs > 0.0f ? 1000.0f / frameMs : 0.0f;
   const float gpuKnownMs = latest.timing.gpuKnownMs;
 
@@ -4405,9 +4541,7 @@ void GuiManager::drawRendererTelemetryWindow() {
               static_cast<unsigned long long>(latest.frameIndex),
               latest.imageIndex, latest.sync.frameSlot,
               latest.sync.maxFramesInFlight);
-  ImGuiTextStringView("GPU timing source",
-                      container::renderer::rendererGpuTimingSourceName(
-                          latest.timing.gpuSource));
+  ImGuiTextStringView("GPU timing source", latest.timing.gpuSource);
   ImGui::Text("GPU profiler: %s",
               latest.gpuProfiler.available ? "available" : "unavailable");
   if (latest.gpuProfiler.resultLatencyFrames > 0u) {
@@ -4453,21 +4587,20 @@ void GuiManager::drawRendererTelemetryWindow() {
   }
 
   if (ImGui::CollapsingHeader("CPU phases", ImGuiTreeNodeFlags_DefaultOpen)) {
-    static constexpr std::array<container::renderer::RendererTelemetryPhase, 12>
-        kPhases{{
-            container::renderer::RendererTelemetryPhase::WaitForFrame,
-            container::renderer::RendererTelemetryPhase::Readbacks,
-            container::renderer::RendererTelemetryPhase::AcquireImage,
-            container::renderer::RendererTelemetryPhase::ImageFenceWait,
-            container::renderer::RendererTelemetryPhase::ResourceGrowth,
-            container::renderer::RendererTelemetryPhase::Gui,
-            container::renderer::RendererTelemetryPhase::SceneUpdate,
-            container::renderer::RendererTelemetryPhase::DescriptorUpdate,
-            container::renderer::RendererTelemetryPhase::CommandRecord,
-            container::renderer::RendererTelemetryPhase::QueueSubmit,
-            container::renderer::RendererTelemetryPhase::Screenshot,
-            container::renderer::RendererTelemetryPhase::Present,
-        }};
+    static constexpr std::array<GuiRendererTelemetryPhase, 12> kPhases{{
+        GuiRendererTelemetryPhase::WaitForFrame,
+        GuiRendererTelemetryPhase::Readbacks,
+        GuiRendererTelemetryPhase::AcquireImage,
+        GuiRendererTelemetryPhase::ImageFenceWait,
+        GuiRendererTelemetryPhase::ResourceGrowth,
+        GuiRendererTelemetryPhase::Gui,
+        GuiRendererTelemetryPhase::SceneUpdate,
+        GuiRendererTelemetryPhase::DescriptorUpdate,
+        GuiRendererTelemetryPhase::CommandRecord,
+        GuiRendererTelemetryPhase::QueueSubmit,
+        GuiRendererTelemetryPhase::Screenshot,
+        GuiRendererTelemetryPhase::Present,
+    }};
     static constexpr std::array<const char *, kPhases.size()> kLabels{{
         "Frame wait",
         "Readbacks",
@@ -4592,21 +4725,16 @@ void GuiManager::drawRendererTelemetryWindow() {
   if (ImGui::CollapsingHeader("Synchronization")) {
     ImGui::Text(
         "Wait for frame: %.3f ms",
-        TelemetryPhaseMs(
-            latest, container::renderer::RendererTelemetryPhase::WaitForFrame));
+        TelemetryPhaseMs(latest, GuiRendererTelemetryPhase::WaitForFrame));
     ImGui::Text(
         "Image fence wait: %.3f ms",
-        TelemetryPhaseMs(
-            latest,
-            container::renderer::RendererTelemetryPhase::ImageFenceWait));
+        TelemetryPhaseMs(latest, GuiRendererTelemetryPhase::ImageFenceWait));
     ImGui::Text(
         "Acquire image: %.3f ms",
-        TelemetryPhaseMs(
-            latest, container::renderer::RendererTelemetryPhase::AcquireImage));
+        TelemetryPhaseMs(latest, GuiRendererTelemetryPhase::AcquireImage));
     ImGui::Text(
         "Present: %.3f ms",
-        TelemetryPhaseMs(latest,
-                         container::renderer::RendererTelemetryPhase::Present));
+        TelemetryPhaseMs(latest, GuiRendererTelemetryPhase::Present));
     ImGui::Text(
         "Swapchain recreates: %llu",
         static_cast<unsigned long long>(latest.sync.swapchainRecreateCount));
@@ -4664,7 +4792,7 @@ void GuiManager::setLightCullingStats(
 
 void GuiManager::setRendererTelemetry(
     const container::renderer::RendererTelemetryView &telemetry) {
-  rendererTelemetry_ = telemetry;
+  rendererTelemetry_ = GuiRendererTelemetry(telemetry);
 }
 
 void GuiManager::setLightingSettings(

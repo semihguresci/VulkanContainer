@@ -6,6 +6,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <glm/vec3.hpp>
@@ -39,18 +40,35 @@ struct SceneProviderBounds {
   bool valid{false};
 };
 
+struct SceneProviderTriangleBatch {
+  uint32_t firstIndex{0};
+  uint32_t indexCount{0};
+  int32_t materialIndex{-1};
+  bool doubleSided{false};
+  bool transparent{false};
+  uint32_t instanceCount{1};
+};
+
 struct MeshSceneAsset {
   std::size_t primitiveCount{0};
   std::size_t materialCount{0};
   std::size_t instanceCount{0};
+  std::vector<SceneProviderTriangleBatch> triangleBatches{};
   SceneProviderBounds bounds{};
 };
 
 struct BimSceneAsset {
   std::size_t elementCount{0};
   std::size_t meshPrimitiveCount{0};
+  std::size_t meshOpaqueBatchCount{0};
+  std::size_t meshTransparentBatchCount{0};
   std::size_t nativePointRangeCount{0};
   std::size_t nativeCurveRangeCount{0};
+  std::size_t nativePointOpaqueRangeCount{0};
+  std::size_t nativePointTransparentRangeCount{0};
+  std::size_t nativeCurveOpaqueRangeCount{0};
+  std::size_t nativeCurveTransparentRangeCount{0};
+  std::vector<SceneProviderTriangleBatch> triangleBatches{};
   SceneProviderBounds bounds{};
 };
 
@@ -73,6 +91,22 @@ struct SceneProviderSnapshot {
   SceneProviderRevision revision{};
   SceneProviderBounds bounds{};
   std::size_t elementCount{0};
+  std::size_t primitiveCount{0};
+  std::size_t materialCount{0};
+  std::size_t instanceCount{0};
+  std::size_t opaqueBatchCount{0};
+  std::size_t transparentBatchCount{0};
+  std::vector<SceneProviderTriangleBatch> triangleBatches{};
+  std::size_t nativePointRangeCount{0};
+  std::size_t nativeCurveRangeCount{0};
+  std::size_t nativePointOpaqueRangeCount{0};
+  std::size_t nativePointTransparentRangeCount{0};
+  std::size_t nativeCurveOpaqueRangeCount{0};
+  std::size_t nativeCurveTransparentRangeCount{0};
+  std::size_t splatCount{0};
+  uint32_t sphericalHarmonicCoefficientCount{0};
+  uint32_t fieldCount{0};
+  bool hasOccupancyData{false};
 };
 
 class IRenderSceneProvider {
@@ -80,6 +114,180 @@ class IRenderSceneProvider {
   virtual ~IRenderSceneProvider() = default;
 
   [[nodiscard]] virtual SceneProviderSnapshot snapshot() const = 0;
+};
+
+class MeshSceneProvider final : public IRenderSceneProvider {
+ public:
+  explicit MeshSceneProvider(SceneProviderId id,
+                             std::string displayName = "Mesh scene")
+      : id_(std::move(id)), displayName_(std::move(displayName)) {}
+
+  void update(MeshSceneAsset asset,
+              SceneProviderRevision revision,
+              std::string displayName = {}) {
+    asset_ = asset;
+    revision_ = revision;
+    if (!displayName.empty()) {
+      displayName_ = std::move(displayName);
+    }
+  }
+
+  [[nodiscard]] SceneProviderSnapshot snapshot() const override {
+    return {
+        .kind = SceneProviderKind::Mesh,
+        .id = id_,
+        .displayName = displayName_,
+        .revision = revision_,
+        .bounds = asset_.bounds,
+        .elementCount = asset_.primitiveCount,
+        .primitiveCount = asset_.primitiveCount,
+        .materialCount = asset_.materialCount,
+        .instanceCount = asset_.instanceCount,
+        .opaqueBatchCount = asset_.primitiveCount,
+        .transparentBatchCount = 0,
+        .triangleBatches = asset_.triangleBatches,
+    };
+  }
+
+  [[nodiscard]] const MeshSceneAsset& asset() const { return asset_; }
+
+ private:
+  SceneProviderId id_{};
+  std::string displayName_{};
+  MeshSceneAsset asset_{};
+  SceneProviderRevision revision_{};
+};
+
+class BimSceneProvider final : public IRenderSceneProvider {
+ public:
+  explicit BimSceneProvider(SceneProviderId id,
+                            std::string displayName = "BIM scene")
+      : id_(std::move(id)), displayName_(std::move(displayName)) {}
+
+  void update(BimSceneAsset asset,
+              SceneProviderRevision revision,
+              std::string displayName = {}) {
+    asset_ = asset;
+    revision_ = revision;
+    if (!displayName.empty()) {
+      displayName_ = std::move(displayName);
+    }
+  }
+
+  [[nodiscard]] SceneProviderSnapshot snapshot() const override {
+    return {
+        .kind = SceneProviderKind::Bim,
+        .id = id_,
+        .displayName = displayName_,
+        .revision = revision_,
+        .bounds = asset_.bounds,
+        .elementCount = asset_.elementCount,
+        .primitiveCount = asset_.meshPrimitiveCount,
+        .instanceCount = asset_.elementCount,
+        .opaqueBatchCount = asset_.meshOpaqueBatchCount,
+        .transparentBatchCount = asset_.meshTransparentBatchCount,
+        .triangleBatches = asset_.triangleBatches,
+        .nativePointRangeCount = asset_.nativePointRangeCount,
+        .nativeCurveRangeCount = asset_.nativeCurveRangeCount,
+        .nativePointOpaqueRangeCount = asset_.nativePointOpaqueRangeCount,
+        .nativePointTransparentRangeCount =
+            asset_.nativePointTransparentRangeCount,
+        .nativeCurveOpaqueRangeCount = asset_.nativeCurveOpaqueRangeCount,
+        .nativeCurveTransparentRangeCount =
+            asset_.nativeCurveTransparentRangeCount,
+    };
+  }
+
+  [[nodiscard]] const BimSceneAsset& asset() const { return asset_; }
+
+ private:
+  SceneProviderId id_{};
+  std::string displayName_{};
+  BimSceneAsset asset_{};
+  SceneProviderRevision revision_{};
+};
+
+class GaussianSplatSceneProvider final : public IRenderSceneProvider {
+ public:
+  explicit GaussianSplatSceneProvider(
+      SceneProviderId id,
+      std::string displayName = "Gaussian splat scene")
+      : id_(std::move(id)), displayName_(std::move(displayName)) {}
+
+  void update(GaussianSplatSceneAsset asset,
+              SceneProviderRevision revision,
+              std::string displayName = {}) {
+    asset_ = asset;
+    revision_ = revision;
+    if (!displayName.empty()) {
+      displayName_ = std::move(displayName);
+    }
+  }
+
+  [[nodiscard]] SceneProviderSnapshot snapshot() const override {
+    return {
+        .kind = SceneProviderKind::GaussianSplatting,
+        .id = id_,
+        .displayName = displayName_,
+        .revision = revision_,
+        .bounds = asset_.bounds,
+        .elementCount = asset_.splatCount,
+        .splatCount = asset_.splatCount,
+        .sphericalHarmonicCoefficientCount =
+            asset_.sphericalHarmonicCoefficientCount,
+    };
+  }
+
+  [[nodiscard]] const GaussianSplatSceneAsset& asset() const {
+    return asset_;
+  }
+
+ private:
+  SceneProviderId id_{};
+  std::string displayName_{};
+  GaussianSplatSceneAsset asset_{};
+  SceneProviderRevision revision_{};
+};
+
+class RadianceFieldSceneProvider final : public IRenderSceneProvider {
+ public:
+  explicit RadianceFieldSceneProvider(
+      SceneProviderId id,
+      std::string displayName = "Radiance field scene")
+      : id_(std::move(id)), displayName_(std::move(displayName)) {}
+
+  void update(RadianceFieldSceneAsset asset,
+              SceneProviderRevision revision,
+              std::string displayName = {}) {
+    asset_ = asset;
+    revision_ = revision;
+    if (!displayName.empty()) {
+      displayName_ = std::move(displayName);
+    }
+  }
+
+  [[nodiscard]] SceneProviderSnapshot snapshot() const override {
+    return {
+        .kind = SceneProviderKind::RadianceField,
+        .id = id_,
+        .displayName = displayName_,
+        .revision = revision_,
+        .bounds = asset_.bounds,
+        .elementCount = asset_.fieldCount,
+        .fieldCount = asset_.fieldCount,
+        .hasOccupancyData = asset_.hasOccupancyData,
+    };
+  }
+
+  [[nodiscard]] const RadianceFieldSceneAsset& asset() const {
+    return asset_;
+  }
+
+ private:
+  SceneProviderId id_{};
+  std::string displayName_{};
+  RadianceFieldSceneAsset asset_{};
+  SceneProviderRevision revision_{};
 };
 
 class SceneProviderRegistry {

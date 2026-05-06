@@ -22,8 +22,8 @@ Most past bugs came from mixing the last three.
 Use these files as the concrete implementation points for the conventions below:
 
 - `include/Container/common/CommonMath.h` defines projection helpers.
-- `src/renderer/FrameRecorder.cpp` sets scene and shadow viewports.
-- `src/renderer/GraphicsPipelineBuilder.cpp` defines front-face and cull state.
+- `src/renderer/core/FrameRecorder.cpp` sets scene and shadow viewports.
+- `src/renderer/pipeline/GraphicsPipelineBuilder.cpp` defines front-face and cull state.
 - `shaders/brdf_common.slang` reconstructs world positions from scene depth.
 - `shaders/shadow_common.slang` converts shadow NDC to atlas UV.
 - `shaders/lighting_structs.slang` holds shared reverse-Z depth helpers.

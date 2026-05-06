@@ -17,25 +17,83 @@ Implementation progress:
 - Milestone 2 complete: deferred raster graph registration moved out of
   `FrameRecorder` and into `DeferredRasterTechnique`; `FrameRecorder` now
   executes the graph prepared by the active technique.
-- Milestone 3 started: shared deferred frame-state predicates and policy helpers
-  live in `DeferredRasterFrameState` instead of being duplicated across graph
+- Milestone 3 complete for the current migration slice: deferred graph
+  registration is technique-owned and many deferred, scene, BIM, shadow,
+  post-process, overlay, transition, and command-buffer helpers have moved into
+  grouped renderer helpers. Shared
+  deferred frame-state predicates and policy helpers live in
+  `DeferredRasterFrameState` instead of being duplicated across graph
   registration and command recording. Post-process frame-state policy,
   push-constant assembly, fallback exposure resolution, and the fullscreen
   post-process pass scope now live in `DeferredRasterPostProcess`.
-  Transform-gizmo state and deferred gizmo pass recording now live in
-  `TransformGizmoState` and `DeferredRasterTransformGizmo`;
+  Deferred lighting pass orchestration, scene and BIM depth/G-buffer frame-pass
+  delegation, transform-gizmo pass/overlay recording, transparent-pick
+  frame-pass recording, and shadow cascade frame-pass cache/prep are no longer
+  owned by `FrameRecorder`.
+  Deferred frustum-cull pass readiness, draw-count policy, object-descriptor
+  update policy, and freeze/unfreeze action selection now live in
+  `DeferredRasterFrustumCullPassPlanner`; the public `GpuCullManager` upload and
+  dispatch sequence now lives in `DeferredRasterFrustumCullPassRecorder`.
+  Deferred tile-cull pass readiness, screen/depth/camera dispatch inputs, and
+  tiled-lighting availability policy now live in `DeferredRasterTileCullPlanner`;
+  the `LightingManager` timer/dispatch command sequence now lives in
+  `DeferredRasterTileCullRecorder`.
+  Transform-gizmo state and deferred gizmo pass/overlay recording now live in
+  `TransformGizmoState`, `DeferredRasterTransformGizmo`, and the deferred
+  technique graph callbacks instead of `FrameRecorder`;
   screenshot copy recording now lives in `ScreenshotCaptureRecorder`.
   Shared negative-height viewport/scissor setup now lives in `SceneViewport`
   and is consumed by `FrameRecorder`, post-process, and gizmo helpers.
+  Deferred depth-to-read-only transition planning and command recording now
+  lives in `DeferredRasterDepthReadOnlyTransitionRecorder`, keeping the
+  depth/stencil and hidden-shadow-atlas image barrier contracts out of
+  `DeferredRasterTechnique`.
+  Shared image-barrier step emission now lives in `DeferredRasterImageBarrier`
+  so deferred pass-specific recorders can own policy while reusing the same
+  Vulkan barrier command path.
+  Hi-Z depth round-trip transition planning and command recording now lives in
+  `DeferredRasterHiZDepthTransitionRecorder`, keeping the attachment-to-sampling
+  and sampling-to-attachment barrier contracts out of the Hi-Z graph lambda.
+  Hi-Z graph readiness now lives in `DeferredRasterHiZPassPlanner`, keeping
+  manager, frame, depth-view, sampler, and depth-image gates in one reusable
+  pass policy.
+  Deferred scene-color read barrier planning and command recording now lives in
+  `DeferredRasterSceneColorReadBarrierRecorder`, keeping the shared
+  color-attachment-to-compute-read barrier contract out of exposure adaptation
+  and bloom graph lambdas.
   BIM draw-compaction slot/source planning now lives in
   `renderer/bim/BimDrawCompactionPlanner`, keeping `FrameRecorder` on the
   command-recording side of the boundary.
   BIM native point/curve primitive pass planning now lives in
   `renderer/bim/BimPrimitivePassPlanner`, including native-vs-placeholder
   routing, GPU-compaction slot selection, and opacity/width sanitization.
+  BIM native point/curve primitive pass command recording now lives in
+  `renderer/bim/BimPrimitivePassRecorder`, keeping shared wireframe pass
+  binding, GPU-compaction draw submission, and CPU wireframe emission out of
+  `FrameRecorder`.
   BIM surface draw routing now lives in
   `renderer/bim/BimSurfaceDrawRoutingPlanner`, including aggregate-vs-split
   CPU fallback selection and GPU-visibility fallback suppression.
+  BIM opaque surface pass planning now lives in
+  `renderer/bim/BimSurfacePassPlanner`, including depth/G-buffer and BIM
+  transparent pass readiness, stable mesh/point-placeholder/curve-placeholder
+  source ordering, mesh-only GPU compaction eligibility, GPU-visibility CPU
+  fallback ownership, and semantic-color push-constant policy.
+  BIM surface pass command recording now lives in
+  `renderer/bim/BimSurfacePassRecorder`, including descriptor/geometry binding,
+  shared GPU-compacted draw submission, and CPU fallback draw emission for BIM
+  depth, G-buffer, transparent-pick, and transparent-lighting routes.
+  BIM surface depth/G-buffer render-pass shells now live in
+  `renderer/bim/BimSurfaceRasterPassRecorder`, keeping render-pass begin/end,
+  viewport/scissor setup, semantic-color push-constant adjustment, and
+  delegation to the shared BIM surface recorder out of `FrameRecorder`.
+  Deferred BIM depth/G-buffer frame-pass delegation now lives in
+  `DeferredRasterBimSurfacePassRecorder` behind narrow record inputs, with
+  `DeferredRasterTechnique` translating the current frame contract into the BIM
+  frame binding.
+  BIM transparent surface plan construction for transparent pick and deferred
+  OIT now routes through `buildBimSurfaceFramePassPlan`, so those frame sites no
+  longer build `BimSurfacePassInputs` directly.
   BIM frame draw routing now lives in
   `renderer/bim/BimFrameDrawRoutingPlanner`, including GPU-visibility
   eligibility, CPU-filtered draw-list handoff, native point/curve source
@@ -44,27 +102,244 @@ Implementation progress:
   `renderer/shadow/ShadowCascadeDrawPlanner`, including cascade activity,
   visible-run splitting, GPU-shadow-cull CPU bypasses, BIM CPU fallback
   suppression, and draw-plan cache signatures.
+  Shadow pass draw routing now lives in
+  `renderer/shadow/ShadowPassDrawPlanner`, including scene GPU-cull handoff,
+  scene CPU route ordering, BIM GPU-filtered slot ordering, and BIM CPU route
+  ordering.
+  Shadow pass command recording now lives in
+  `renderer/shadow/ShadowPassRecorder`, including shadow viewport/depth-bias
+  setup, scene/BIM descriptor and geometry binding, route pipeline selection,
+  GPU indirect scene submission, BIM compacted draw submission, and CPU shadow
+  draw emission.
+  Shadow cascade preparation policy now lives in
+  `renderer/shadow/ShadowCascadePreparationPlanner`, keeping shadow-atlas
+  visibility, active cascade, GPU-cull fallback, and BIM-shadow geometry gates
+  out of `FrameRecorder`.
+  Shadow cascade GPU-cull readiness now lives in
+  `renderer/shadow/ShadowCascadeGpuCullPlanner`, keeping shadow-cull pass
+  activity, manager readiness, indirect buffer availability, and draw-capacity
+  policy out of `FrameRecorder`.
+  Shadow GPU-cull source upload policy also lives in
+  `renderer/shadow/ShadowCascadeGpuCullPlanner`, keeping shadow-atlas
+  visibility, source draw-list presence, manager readiness, and required
+  upload capacity out of `FrameRecorder`.
+  Shadow-cull graph pass policy now lives in
+  `renderer/shadow/ShadowCullPassPlanner`, and the thin dispatch adapter lives
+  in `renderer/shadow/ShadowCullPassRecorder`, keeping cascade cull readiness
+  and dispatch gating out of `DeferredRasterTechnique`.
   Deferred lighting frame policy now lives in `DeferredRasterLighting`,
   including wireframe/object-normal primary path selection, tiled-vs-stencil
   point-light routing, transparent OIT gating, and debug overlay enablement.
+  Deferred directional-light command recording now lives in
+  `DeferredDirectionalLightingRecorder`, keeping fullscreen pipeline binding,
+  lighting/light/scene descriptor binding, and fullscreen triangle submission
+  out of `FrameRecorder`.
+  Deferred lighting descriptor routing now lives in
+  `DeferredLightingDescriptorPlanner`, keeping directional, point, tiled, and
+  light-gizmo descriptor-set ordering out of `FrameRecorder`.
+  Deferred transparent OIT command recording now lives in
+  `DeferredTransparentOitRecorder`, keeping scene/BIM transparent descriptor
+  replacement, geometry binding, semantic-color push-constant selection, and
+  transparent scene/BIM recorder delegation out of `FrameRecorder`.
+  OIT clear and resolve-preparation command adapters also live in
+  `DeferredTransparentOitRecorder`, so `FrameRecorder` no longer calls
+  `OitManager::clearResources` or `OitManager::prepareResolve`.
+  OIT frame-level enable/readiness policy and clear/resolve delegation now live
+  behind `DeferredTransparentOitFramePassRecorder`, so `DeferredRasterTechnique`
+  no longer asks `FrameRecorder` for raw OIT activation or `OitManager` service
+  access.
+  Deferred GUI command dispatch now lives in `DeferredRasterGuiPassRecorder`,
+  keeping the direct `GuiManager::render` call out of `FrameRecorder`.
+  Deferred frame-level service compatibility now lives in
+  `DeferredRasterFrameGraphContext`, keeping GUI dispatch, display-mode reads,
+  shadow cascade orchestration, BIM GPU-visibility setup/recording, OIT
+  frame-policy access, debug-overlay ownership, and screenshot-copy scheduling
+  out of the generic recorder.
+  Transparent pick draw recording now lives in `TransparentPickPassRecorder`,
+  keeping scene/BIM transparent-pick descriptor binding, geometry binding,
+  transparent scene draw delegation, and BIM surface pass delegation out of
+  `FrameRecorder`.
+  Transparent pick frame-pass recording now lives in
+  `TransparentPickRasterPassRecorder`, keeping pick render-pass begin/end,
+  viewport/scissor setup, depth-copy sequencing, scene transparent planning, and
+  BIM transparent-pick planning out of `FrameRecorder`.
+  Transparent pick depth-copy planning and command recording now lives in
+  `TransparentPickDepthCopyRecorder`, keeping depth/stencil barriers and
+  depth-image copy sequencing out of `FrameRecorder`.
+  Deferred point-light draw planning now lives in
+  `DeferredPointLightingDrawPlanner`, including tiled push-constant assembly,
+  stencil pipeline selection, per-light route copying, and light-count
+  clamping.
+  Deferred point-light command recording now lives in
+  `DeferredPointLightingRecorder`, including tiled accumulation dispatch,
+  clustered-light timing, stencil-volume clears, light push constants, and
+  fullscreen point-light accumulation.
+  Deferred light-gizmo command recording now lives in
+  `DeferredLightGizmoRecorder`, with the shared `LightPushConstants` shader
+  contract split out of `LightingManager` so gizmo placement policy can stay in
+  the manager while Vulkan bind/push/draw sequencing lives in a recorder.
+  Deferred light-gizmo push-constant planning now lives in
+  `DeferredLightGizmoPlanner`, keeping directional/point gizmo placement,
+  color normalization, extent clamping, and point-count limits out of
+  `LightingManager`.
   BIM lighting overlay planning now lives in
   `renderer/bim/BimLightingOverlayPlanner`, including point/curve style route
   selection, floor-plan overlay gating, hover/selection styling, native
   point/curve highlight sizing, selection outline readiness, and overlay
   opacity/line-width sanitization.
-  Additional Vulkan pass-recorder extraction remains.
-- Milestone 4 started: `FrameResourceRegistry` and `PipelineRegistry` provide
-  technique-scoped registration points, with guardrails keeping future
-  algorithm resources out of the deferred compatibility structs.
-  `RenderGraphBuilder` now gives techniques a graph registration facade instead
-  of requiring direct `FrameRecorder::graph_` access. `RenderGraph` also
-  publishes a UI-neutral `RenderGraphDebugModel` for pass state.
-- Milestone 5 started: backend-neutral `SceneProvider` contracts now define
-  mesh, BIM, gaussian-splatting, and radiance-field provider slots. Renderer-side
-  extraction interfaces define raster batches, ray-tracing build inputs,
-  splatting dispatch inputs, and radiance-field dispatch inputs without
-  depending on deferred draw lists. `RendererFrontend` now carries a
-  `SceneProviderRegistry` through `RenderSystemContext`.
+  BIM lighting overlay command recording now lives in
+  `renderer/bim/BimLightingOverlayRecorder`, including overlay pipeline
+  fallback selection, scene/BIM geometry binding, wireframe draw submission,
+  and selection mask/outline stencil recording.
+  Scene opaque draw planning now lives in `SceneOpaqueDrawPlanner`, including
+  depth/G-buffer GPU-indirect handoff and stable CPU route ordering for
+  single-sided, winding-flipped, and double-sided opaque scene draws.
+  Scene opaque draw command recording now lives in `SceneOpaqueDrawRecorder`,
+  keeping depth/G-buffer descriptor and geometry binding, route pipeline
+  selection, GPU-indirect submission, and CPU scene draw emission out of
+  `FrameRecorder`.
+  Scene diagnostic cube command recording now lives in
+  `SceneDiagnosticCubeRecorder`, keeping diagnostic cube pipeline/descriptor
+  binding, geometry binding, object-index push constants, and indexed draw
+  emission out of `FrameRecorder`.
+  Scene depth/G-buffer pass planning now lives in `SceneRasterPassPlanner`,
+  keeping pass-kind clear-value selection, opaque draw-plan assembly, and
+  primary/front-cull/no-cull pipeline fallback policy out of `FrameRecorder`.
+  Scene depth/G-buffer render-pass shells now live in
+  `SceneRasterPassRecorder`, keeping scene clear-value contracts,
+  render-pass begin/end, viewport/scissor setup, scene opaque draw delegation,
+  and diagnostic cube delegation out of `FrameRecorder`.
+  Deferred scene depth/G-buffer frame-pass delegation now lives in
+  `DeferredRasterScenePassRecorder` behind narrow record inputs, with
+  `DeferredRasterTechnique` translating the current frame contract into scene
+  draw, geometry, pipeline, and diagnostic-cube bindings.
+  Scene transparent draw planning now lives in
+  `SceneTransparentDrawPlanner`, including aggregate-vs-split transparent
+  draw-list selection and stable primary/front-cull/no-cull route ordering.
+  Scene transparent draw command recording now lives in
+  `SceneTransparentDrawRecorder`, keeping transparent-pick and transparent
+  lighting descriptor binding, geometry binding, route pipeline selection, and
+  draw submission out of `FrameRecorder`.
+  Deferred debug overlay route planning now lives in
+  `DeferredRasterDebugOverlayPlanner`, including full/overlay wireframe source
+  routing, object-normal cull-family routing, aggregate geometry/surface-normal
+  routes, and normal-validation face-classification routes.
+  Deferred debug overlay command recording now lives in
+  `DeferredRasterDebugOverlayRecorder`, including debug source geometry binding,
+  debug pipeline selection, diagnostic cube emission, wireframe/scene overlay
+  draws, normal validation, and surface-normal recording.
+  BIM section clip-cap pass planning now lives in
+  `renderer/bim/BimSectionClipCapPassPlanner`, including fill/hatch route
+  gating, style transfer, and hatch line-width fallback policy.
+  BIM section clip-cap command recording now lives in
+  `renderer/bim/BimSectionClipCapPassRecorder`, including descriptor and cap
+  geometry binding, section-plane push-constant override, fill/hatch pipeline
+  selection, and hatch line-width set/reset.
+  Shared Vulkan render-pass scope recording now lives in
+  `RenderPassScopeRecorder`, keeping render-pass begin/end and secondary
+  command-buffer execution out of `FrameRecorder` for the remaining shadow pass
+  shell and the deferred lighting pass recorder.
+  Shared command-buffer lifecycle recording now lives in
+  `CommandBufferScopeRecorder`, keeping primary command-buffer begin/end and
+  shadow secondary reset/begin/end inheritance setup out of `FrameRecorder`.
+  Deferred lighting pass attachment policy now lives in
+  `DeferredLightingPassPlanner`, keeping lighting render-area, clear-value, and
+  selection-stencil clear contracts out of `FrameRecorder`.
+  Deferred lighting pass command entry now lives in
+  `DeferredRasterLightingPassRecorder`, keeping deferred lighting state
+  assembly, debug overlay routing, transparent OIT, BIM primitive/section/overlay
+  commands, light gizmos, and lighting render-pass scope out of
+  `FrameRecorder`.
+  BIM frame GPU-visibility preparation and update recording now lives in
+  `renderer/bim/BimFrameGpuVisibilityRecorder`, keeping draw-compaction
+  preparation and meshlet/visibility/compaction update sequencing out of
+  `FrameRecorder`.
+  Shadow pass scope policy now lives in
+  `renderer/shadow/ShadowPassScopePlanner`, keeping the fixed shadow render
+  area, reverse-Z depth clear, and inline-vs-secondary subpass contents out of
+  `FrameRecorder`.
+  Shadow pass raster shell planning and command recording now live in
+  `renderer/shadow/ShadowPassRasterPlanner` and
+  `renderer/shadow/ShadowPassRasterRecorder`, keeping shadow render-pass
+  begin/secondary execution/end sequencing out of `FrameRecorder`.
+  Shadow secondary command-buffer eligibility now lives in
+  `renderer/shadow/ShadowSecondaryCommandBufferPlanner`, keeping the
+  GPU-filtered BIM suppression and CPU-command threshold policy out of
+  `FrameRecorder`.
+  Shadow secondary cascade scheduling and command-buffer lifecycle recording
+  now live in `renderer/shadow/ShadowCascadeSecondaryCommandBufferRecorder`,
+  keeping parallel worker dispatch and secondary reset/begin/end error handling
+  out of `FrameRecorder`.
+  Shadow cascade frame-pass orchestration now lives in
+  `renderer/shadow/ShadowCascadeFramePassRecorder`, keeping GPU-cull source
+  upload, draw-plan cache ownership, cascade pass input assembly, secondary
+  command-buffer preparation, and cascade pass recording out of `FrameRecorder`.
+  `FrameRecorder` no longer owns the remaining shadow delegate,
+  scene/display-mode access, debug-overlay instance, screenshot copy, BIM
+  GPU-visibility, or deferred manager-service compatibility adapters. It now
+  owns render-graph execution, command-buffer begin/end, telemetry/profiling
+  hooks, and technique-provided lifecycle hooks.
+- Milestone 4 complete: `FrameResourceRegistry` and `PipelineRegistry` provide
+  technique-scoped contracts and runtime binding views, with guardrails keeping
+  future algorithm resources out of deferred compatibility structs.
+  `RendererFrontend` owns the contract and runtime registries, exposes them
+  through `RenderSystemContext`, publishes production `FrameResourceManager`
+  image, buffer, framebuffer, descriptor, and sampler bindings into
+  `FrameRecordParams`, and carries production Vulkan pipeline handles/layouts
+  through registry views on `GraphicsPipelines` and `PipelineLayouts` instead
+  of copying those structs into the per-frame contract. Deferred raster
+  registers its resource and pipeline contracts before graph setup. Deferred
+  raster and shadow consumers now use registry-only bridge helpers for
+  framebuffers, images/views, buffers, descriptor sets, samplers, pipelines, and
+  layouts with no fixed `GraphicsPipelines`/`PipelineLayouts` fallback. Scene,
+  BIM-scene, light, tiled-lighting, shadow, frame-owned lighting, post-process,
+  and OIT descriptors are published as runtime descriptor bindings. The
+  g-buffer sampler is published as a runtime sampler binding. Frontend
+  depth/pick readback plus OIT telemetry consume the published registry
+  bindings instead of `FrameResources`. `FrameRecordParams` no longer carries
+  fixed `FrameDescriptorSets`, `FrameRenderPassHandles`, or direct
+  `gBufferSampler` handles; shadow and post-process render passes live on their
+  service state. Shadow cascade framebuffer arrays and swapchain presentation
+  framebuffers remain explicit shadow and swapchain service contracts for this
+  milestone. The fixed `FrameResources` struct remains internal
+  `FrameResourceManager` storage; `PipelineBuildResult` remains a production
+  pipeline build output and should shrink or be renamed when a second
+  production technique is added. `RenderGraphBuilder` gives techniques a graph
+  registration facade instead of requiring direct `FrameRecorder::graph_`
+  access, and `RenderGraph` publishes a UI-neutral `RenderGraphDebugModel` for
+  pass state.
+- Milestone 5 complete for the provider/extraction integration slice:
+  backend-neutral `SceneProvider` contracts now
+  define mesh, BIM, gaussian-splatting, and radiance-field provider slots, with
+  concrete provider adapters for all four representation kinds.
+  Mesh and BIM snapshots carry neutral `SceneProviderTriangleBatch` metadata for
+  index ranges, material IDs, sidedness, transparency, and instance counts.
+  Renderer-side extraction interfaces and provider-backed implementations define
+  raster batches, ray-tracing build inputs, splatting dispatch inputs, and
+  radiance-field dispatch inputs without depending on deferred draw lists.
+  Technique-facing extraction outputs preserve provider bounds and relevant
+  revision metadata so future techniques can track geometry, material,
+  instance, culling, and volume updates without reaching back into frontend
+  managers.
+  `MeshSceneProviderBuilder` builds mesh provider assets from CPU primitive and
+  material facts without Vulkan, draw-command, or frame-recording state.
+  `RendererFrontend` owns a `SceneProviderRegistry`, carries it through
+  `RenderSystemContext`, registers/synchronizes production mesh and BIM provider
+  adapters through `SceneProviderSynchronizer` on initialization, reload, and
+  frame parameter assembly, populates mesh provider assets through
+  `buildMeshSceneAsset`, populates BIM triangle batches from `BimManager`, and
+  publishes
+  provider-derived extraction snapshots
+  into `FrameRecordParams`. Deferred BIM pass readiness consumes the provider
+  raster view as a sidecar while keeping current-frame draw routing
+  authoritative. `SceneProviderSynchronizer` also exposes neutral
+  gaussian-splatting and radiance-field sync inputs, so matching runtime scene
+  state can be registered without changing the registry/extraction contract.
+  BIM mesh-surface raster counts remain separate from native point/curve range
+  counts; native-only BIM providers do not produce raster surface batches.
+  Concrete splat and radiance-field providers are CPU-only and
+  non-triangle-backed; their runtime inputs remain empty until matching loaders
+  or scene owners exist.
 - Milestone 6 started: `TechniqueDebugModel`, `RenderGraphDebugModel`, and
   `SceneDebugModel` provide UI-neutral debug/settings surfaces. Techniques can
   publish debug controls without adding concrete state to `GuiManager`, and
@@ -99,9 +374,10 @@ renderer itself:
 - `RendererFrontend` is the composition root, frame loop, resize coordinator,
   descriptor updater, GUI bridge, screenshot coordinator, telemetry coordinator,
   and builder of per-frame render parameters.
-- `FrameRecorder` is effectively the current deferred raster technique. It
-  builds the graph, owns concrete pass recording, reads GUI state, prepares
-  culling and shadow draw data, and records post-process/debug work.
+- `FrameRecorder` is no longer the deferred graph owner or deferred-frame
+  compatibility facade. It executes the prepared graph and common
+  command-buffer/profiling lifecycle; `DeferredRasterFrameGraphContext` owns the
+  current deferred compatibility services needed by `DeferredRasterTechnique`.
 - `FrameResources`, `PipelineTypes`, and `RenderGraph` encode a fixed deferred
   frame shape.
 - `SceneManager`, `SceneController`, and `BimManager` mix asset import,
@@ -135,7 +411,8 @@ Concern:
 Current owners:
 
 - `RendererFrontend`: renderer composition root and frame submission owner.
-- `FrameRecorder`: graph construction and concrete Vulkan command recording.
+- `FrameRecorder`: prepared graph execution, command-buffer lifecycle, lifecycle
+  hooks, telemetry, and GPU profiling.
 - `RenderGraph`: scheduling, pass/resource dependency validation, execution
   status, telemetry-facing pass data.
 - `FrameResourceManager`: deferred attachments, framebuffers, descriptor layouts
@@ -146,8 +423,9 @@ Current owners:
 
 Primary concerns:
 
-- `FrameRecorder` has technique-specific knowledge and should not receive new
-  algorithm branches.
+- `FrameRecorder` now has a narrow execution role; remaining renderer-core
+  coupling risk is the static pass/resource identity model and explicit service
+  contracts, not fixed per-frame resource ownership.
 - `RenderGraph` is generic in execution but closed in identity because
   `RenderPassId` and `RenderResourceId` are static enums.
 - `FrameResourceManager` and `FrameResources` are deferred-resource bundles, not
@@ -224,18 +502,33 @@ Current strengths:
 - Telemetry, rendering conventions, scene graph, ECS, loaders, material, BIM,
   and visual regression tests exist.
 
+Implemented guardrails:
+
+- Technique registry and fallback behavior are covered by
+  `render_technique_registry_tests.cpp`.
+- Source-scan tests prevent ray/path/splat/radiance-field graph registration
+  from being added directly to `FrameRecorder.cpp`.
+- Source-scan tests prevent new broad deferred/BIM/shadow command hub methods
+  from being added to `FrameRecorder`.
+- `resource_pipeline_registry_tests.cpp` covers technique-scoped resource and
+  pipeline registries, deferred raster contract registration, and
+  `RendererFrontend` wiring through `RenderSystemContext`.
+- `scene_provider_extraction_tests.cpp` covers backend-neutral scene provider
+  contracts, mesh/BIM provider adapters, renderer registry wiring, and planned
+  non-triangle provider slots.
+
 Missing guardrails:
 
-- No implemented `RenderTechnique`, `RenderTechniqueRegistry`,
-  `RenderSystemContext`, or `FrameResourceRegistry`.
-- No test prevents new algorithms from being added directly to
-  `FrameRecorder`.
 - No dependency-direction test prevents renderer-core from gaining UI/window
   coupling.
 - No CMake/CI target currently enforces clang-tidy, include budget,
   dependency direction, or coverage thresholds.
 - GPU visual regression is opt-in and should remain opt-in by default, but it
   needs a named required local profile before major renderer changes.
+- The full CPU build/test profile must be green before marking the
+  multi-technique migration complete; current focused object builds verify the
+  latest slices, with the known Windows `rendering_convention_tests.exe`
+  linker-file lock handled through a manual validation executable when needed.
 
 ## SOLID Findings
 
@@ -245,8 +538,9 @@ High-risk classes:
 
 - `RendererFrontend`: orchestration, lifecycle, frame loop, descriptor update,
   render parameter assembly, GUI sync, telemetry, screenshots.
-- `FrameRecorder`: graph construction, pass recording, deferred raster
-  technique, GUI-mode gates, debug overlay, screenshot copy.
+- `FrameRecorder`: graph execution, command-buffer begin/end, lifecycle hooks,
+  and common telemetry/profiling dispatch. Residual risk is the fixed
+  `FrameRecordParams` contract, not deferred command ownership.
 - `SceneManager`: asset loading, material import, texture loading, descriptors,
   GPU buffers, lights, bounds, scene graph population.
 - `SceneController`: scene graph sync, ECS sync, geometry upload, object buffer
@@ -643,6 +937,26 @@ Acceptance:
   environment, bloom, exposure, scene, BIM, and GUI.
 - Deferred raster behavior remains unchanged.
 
+Current status:
+
+- Deferred graph construction has moved to `DeferredRasterTechnique`.
+- Many pass planners and command recorders now live in grouped deferred, BIM,
+  shadow, scene, and shared recorder helpers.
+- `FrameRecorder` no longer owns deferred lighting, scene depth/G-buffer, BIM
+  depth/G-buffer, transparent-pick frame pass, transform-gizmo pass/overlay, or
+  shadow cascade cache/prep/input assembly. It also no longer owns OIT
+  clear/resolve command adapters, OIT frame-level activation/readiness
+  delegation, direct GUI render dispatch, shadow cascade recording, BIM
+  GPU-visibility recording, screenshot copy, debug-overlay ownership, or
+  high-level manager/helper headers. Deferred raster compatibility services are
+  isolated in `DeferredRasterFrameGraphContext`.
+- Milestone 3 is complete for the current migration slice: `FrameRecorder`
+  keeps only graph execution, command-buffer lifecycle, telemetry/profiling, and
+  lifecycle hook dispatch. The fixed deferred resource/frame contract cleanup is
+  covered by the completed Milestone 4 registry migration.
+- Guardrail tests now block reintroducing broad deferred/BIM/shadow command
+  hubs after the split.
+
 ### Milestone 4: Resource And Pipeline Registries
 
 Tasks:
@@ -659,6 +973,54 @@ Acceptance:
 - Adding a path-tracing accumulation image does not require fields in
   `FrameResources`.
 
+Current status:
+
+- `FrameResourceRegistry` and `PipelineRegistry` exist and are carried through
+  `RenderSystemContext`.
+- `RendererFrontend` creates the production registries and the selected
+  technique publishes its contracts through the registry context.
+- `DeferredRasterTechnique` registers its current deferred resource and
+  pipeline recipes before graph construction.
+- `FrameResourceManager` now owns a runtime `FrameResourceRegistry` view and
+  publishes actual per-frame attachments, OIT images, OIT buffers, and
+  framebuffer handles after creation and clears those bindings on destruction.
+  `FrameResources` remains internal manager storage rather than a
+  `FrameRecordParams` dependency.
+- `GraphicsPipelines` now carries a `PipelineRegistry` handle view,
+  `PipelineLayouts` carries a layout view, and `GraphicsPipelineBuilder`
+  publishes actual Vulkan pipeline handles and layouts into those registries
+  after production pipeline creation.
+- `FrameRecordParams` now exposes registry-backed `resourceBinding(...)`,
+  `imageBinding(...)`, `bufferBinding(...)`, `framebufferBinding(...)`,
+  `framebuffer(...)`, `descriptorBinding(...)`, `descriptorSet(...)`,
+  `samplerBinding(...)`, `sampler(...)`, `pipelineHandle(...)`, and
+  `pipelineLayout(...)` helpers plus separate
+  contract/binding/recipe/handle/layout registry pointers. New techniques can
+  resolve runtime resources and handles without adding fields to
+  `FrameResources` or `GraphicsPipelines`; `FrameRecordParams` no longer
+  exposes a `FrameResources` pointer.
+- Tests cover technique-scoped forward-raster pipeline recipes and
+  path-tracing accumulation resources without adding fields to the fixed
+  deferred compatibility structs.
+- Consumption migration is complete for this milestone: the registry-backed
+  production view is active, deferred raster and shadow pipeline consumers use
+  registry-only bridge helpers for handles and layouts, and `FrameRecordParams`
+  no longer carries fixed `GraphicsPipelines` or `PipelineLayouts` copies.
+  Published deferred framebuffers are declared in the resource contract
+  registry, and published deferred framebuffers, image/view inputs, OIT
+  resources, frame-owned descriptor sets, manager-owned scene/BIM/light/tiled
+  lighting/shadow descriptors, and the g-buffer sampler now resolve through
+  registry-only resource bridge helpers. Frontend depth/pick readback and OIT
+  capacity telemetry use the same published runtime bindings instead of the
+  fixed frame storage. `FrameRecordParams` no longer carries fixed
+  `FrameDescriptorSets`, `FrameRenderPassHandles`, or direct `gBufferSampler`
+  fields; shadow and post-process render passes live on their service state.
+  Shadow cascade framebuffer arrays and swapchain presentation framebuffers
+  remain explicit shadow and swapchain service contracts for this milestone
+  rather than registry bindings. The remaining fixed structs are compatibility
+  storage at manager/builder boundaries and should shrink further when a second
+  production technique is added.
+
 ### Milestone 5: Scene Provider And Extraction Split
 
 Tasks:
@@ -666,8 +1028,8 @@ Tasks:
 - Introduce backend-neutral provider outputs:
   - `MeshSceneAsset`
   - `BimSceneAsset`
-  - future `SplatSceneAsset`
-  - future `RadianceFieldAsset`
+  - `GaussianSplatSceneAsset`
+  - `RadianceFieldSceneAsset`
 - Add renderer-side extractors:
   - mesh/BIM raster extraction
   - ray-tracing build input extraction
@@ -679,6 +1041,52 @@ Acceptance:
 - Ray tracing can consume mesh/BIM geometry without depending on deferred draw
   lists.
 - Splats/radiance fields have a planned provider slot that is not triangle-only.
+
+Current status:
+
+- `SceneProviderSnapshot` carries backend-neutral representation counts,
+  revisions, bounds, and neutral triangle-batch metadata so renderer
+  extraction does not need Vulkan, draw commands, frame params, or primitive
+  ranges.
+- Concrete mesh, BIM, gaussian-splatting, and radiance-field providers expose
+  snapshots through the same `IRenderSceneProvider` interface. Splat and
+  radiance-field snapshots intentionally keep `triangleBatches` empty and use
+  splat/field metadata consumed by their extractors.
+- Production mesh and BIM providers are owned by `RendererFrontend`,
+  synchronized from `SceneManager`, `SceneController`, and `BimManager` through
+  a pure `SceneProviderSynchronizer`, and registered in the production
+  `SceneProviderRegistry`. Mesh snapshots preserve material counts, and BIM
+  snapshots preserve opaque/transparent mesh-surface counts separately from
+  native point/curve range splits instead of folding all counts into one
+  deferred-shaped draw count.
+  Mesh provider assets are built by the CPU-only `MeshSceneProviderBuilder`
+  from neutral primitive/material facts translated from `SceneManager`; BIM
+  triangle batches are translated by `BimManager::sceneProviderTriangleBatches()`.
+- The same synchronizer now has neutral gaussian-splatting and radiance-field
+  inputs. They publish non-triangle providers into the same registry and clear
+  them when unavailable, so future loaders can connect runtime state without
+  touching renderer graph code or forcing volumetric/splat data through mesh
+  draw-list contracts.
+- Provider-backed mesh/BIM raster extractors, ray-tracing build-input
+  extraction, splatting dispatch extraction, and radiance-field dispatch
+  extraction now consume provider snapshots. Mesh and BIM ray-tracing inputs use
+  provider triangle batches when available, fall back to primitive/instance
+  counts when older providers omit batches, carry geometry/material/instance
+  revisions plus bounds, and never depend on deferred draw lists. Splatting and
+  radiance-field dispatch inputs carry provider bounds and representation
+  metadata such as SH coefficient count or occupancy presence.
+- `FrameRecordParams` now carries `ProviderSceneExtraction`, populated each
+  frame by `RendererFrontend::buildFrameRecordParams()` from the current
+  registry. This gives techniques a per-frame provider-derived extraction view
+  without capturing frontend managers.
+- `DeferredRasterTechnique` consumes `ProviderSceneExtraction::rasterBatches`
+  for BIM surface readiness as a provider/extraction bridge. The pass still
+  requires current-frame opaque BIM draw commands, so filters, layer routing,
+  and draw-budget decisions remain authoritative.
+- Splat and radiance-field provider slots remain planned-only because the app
+  does not yet own production splat/radiance-field scene state; the concrete
+  provider adapters and extraction paths are ready for that state when loaders
+  are introduced.
 
 ### Milestone 6: UI Debug Model Split
 
@@ -720,7 +1128,7 @@ Input:
 Provider output:
 
 - backend-neutral `MeshSceneAsset`
-- primitive ranges
+- neutral triangle batches
 - instances
 - material references
 - bounds
@@ -740,7 +1148,8 @@ Input:
 Provider output:
 
 - backend-neutral BIM asset with geometry, native points/curves, meshlets,
-  metadata, element IDs, bounds, georeferencing, materials.
+  neutral triangle batches, metadata, element IDs, bounds, georeferencing,
+  materials.
 
 Extractor outputs:
 
@@ -825,6 +1234,8 @@ Rule:
 
 - Do not add ray tracing, path tracing, splatting, or radiance-field passes to
   `FrameRecorder::buildGraph()`.
+- Do not add new deferred, BIM, or shadow command hubs to `FrameRecorder`; keep
+  grouped pass policy and command recording in renderer helper files.
 - Do not add new algorithm-specific fields to the current `GraphicsPipelines`
   or `FrameResources` structs.
 - Do not make `GuiManager` own new technique-specific state directly.

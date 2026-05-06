@@ -1,6 +1,6 @@
 #pragma once
 
-#include "Container/renderer/DebugOverlayRenderer.h"
+#include "Container/renderer/debug/DebugOverlayRenderer.h"
 #include "Container/utility/SceneData.h"
 
 #include <array>

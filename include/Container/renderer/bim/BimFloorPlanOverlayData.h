@@ -1,7 +1,7 @@
 #pragma once
 
 #include "Container/common/CommonMath.h"
-#include "Container/renderer/DebugOverlayRenderer.h"
+#include "Container/renderer/debug/DebugOverlayRenderer.h"
 
 #include <cstdint>
 #include <limits>

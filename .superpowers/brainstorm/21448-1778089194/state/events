@@ -1,0 +1,1 @@
+{"type":"click","text":"PBR Environment\n      HDR map drives diffuse irradiance and prefiltered specular. Use this when checking material response, reflections, final screenshots, and realistic exposure.\n      \n        HDR IBL active\n        Reflections matter\n        Material validation","choice":"pbr_environment","id":null,"timestamp":1778089392681}

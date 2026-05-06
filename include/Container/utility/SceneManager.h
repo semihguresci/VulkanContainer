@@ -105,6 +105,9 @@ class SceneManager {
   const container::geometry::Model& model() const { return model_; }
   VkIndexType indexType() const { return indexType_; }
   uint32_t defaultMaterialIndex() const { return defaultMaterialIndex_; }
+  [[nodiscard]] size_t materialCount() const {
+    return materialManager_.materialCount();
+  }
   uint32_t diagnosticMaterialIndex() const;
   uint32_t resolveGpuMaterialIndex(uint32_t materialIndex) const;
   uint32_t createSolidMaterial(const glm::vec4& baseColor,

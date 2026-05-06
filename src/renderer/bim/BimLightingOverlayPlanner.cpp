@@ -1,6 +1,6 @@
 #include "Container/renderer/bim/BimLightingOverlayPlanner.h"
 
-#include "Container/renderer/DrawCommand.h"
+#include "Container/renderer/scene/DrawCommand.h"
 
 #include <algorithm>
 

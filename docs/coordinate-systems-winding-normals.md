@@ -140,33 +140,33 @@ This section records the current status after the coordinate audit.
 | --- | --- | --- |
 | `include/Container/common/CommonMath.h` | Corrected | Projection helpers are RH reverse-Z with no Y flip |
 | `include/Container/utility/Camera.h` | OK | View matrix stays RH; view-projection is `proj * view` |
-| `src/renderer/CameraController.cpp` | OK | Uploads `viewProj` and `inverseViewProj` directly |
+| `src/renderer/scene/CameraController.cpp` | OK | Uploads `viewProj` and `inverseViewProj` directly |
 
 ### 5.2 Viewports and render passes
 
 | File | Status | Notes |
 | --- | --- | --- |
-| `src/renderer/FrameRecorder.cpp` scene viewport | OK | Negative height for scene-facing passes |
-| `src/renderer/FrameRecorder.cpp` shadow viewport | OK | Positive height for shadow cascades |
-| `src/renderer/RenderPassManager.cpp` | OK | Reverse-Z clear values and read/write transitions are coherent |
+| `src/renderer/core/FrameRecorder.cpp` scene viewport | OK | Negative height for scene-facing passes |
+| `src/renderer/core/FrameRecorder.cpp` shadow viewport | OK | Positive height for shadow cascades |
+| `src/renderer/core/RenderPassManager.cpp` | OK | Reverse-Z clear values and read/write transitions are coherent |
 
 ### 5.3 Raster state
 
 | File | Status | Notes |
 | --- | --- | --- |
-| `src/renderer/GraphicsPipelineBuilder.cpp` front face | Fixed | Scene and shadow passes both keep glTF-native `VK_FRONT_FACE_COUNTER_CLOCKWISE`; the negative-height scene viewport is handled by UV/NDC conversion, not by inverting front-face state |
+| `src/renderer/pipeline/GraphicsPipelineBuilder.cpp` front face | Fixed | Scene and shadow passes both keep glTF-native `VK_FRONT_FACE_COUNTER_CLOCKWISE`; the negative-height scene viewport is handled by UV/NDC conversion, not by inverting front-face state |
 | `src/geometry/GltfModelLoader.cpp` triangle winding | Fixed | Imported normals repair triangles whose geometric face normal is opposite to the authored vertex normals before renderer buffers are built |
-| `src/renderer/GraphicsPipelineBuilder.cpp` scene cull | Fixed | Repaired single-sided meshes use back-face culling; mirrored transforms route through front-cull variants |
-| `src/renderer/GraphicsPipelineBuilder.cpp` shadow cull | Fixed | Shadow casters use the same repaired-winding cull policy as scene passes, with reverse-Z bias retained |
+| `src/renderer/pipeline/GraphicsPipelineBuilder.cpp` scene cull | Fixed | Repaired single-sided meshes use back-face culling; mirrored transforms route through front-cull variants |
+| `src/renderer/pipeline/GraphicsPipelineBuilder.cpp` shadow cull | Fixed | Shadow casters use the same repaired-winding cull policy as scene passes, with reverse-Z bias retained |
 
 ### 5.4 Deferred path shader wiring
 
 | File | Status | Notes |
 | --- | --- | --- |
-| `src/renderer/GraphicsPipelineBuilder.cpp` G-buffer vertex layout | Fixed | G-buffer now uses the full vertex layout so normal and tangent attributes reach the shader |
+| `src/renderer/pipeline/GraphicsPipelineBuilder.cpp` G-buffer vertex layout | Fixed | G-buffer now uses the full vertex layout so normal and tangent attributes reach the shader |
 | `shaders/gbuffer.slang` normal/tangent usage | Fixed | Deferred shading now receives valid normal/tangent data |
 | `shaders/gbuffer.slang` double-sided normal flip | Fixed | Back-face normals are reversed before storing the lighting normal, and `SV_IsFrontFace` now matches the CCW scene front-face convention |
-| `src/renderer/FrameRecorder.cpp` material routing | Fixed | Single-sided opaque draws stay on the indirect GPU-cull path; double-sided draws use explicit no-cull passes |
+| `src/renderer/core/FrameRecorder.cpp` material routing | Fixed | Single-sided opaque draws stay on the indirect GPU-cull path; double-sided draws use explicit no-cull passes |
 | `shaders/brdf_common.slang` | OK | Scene UV to NDC reconstruction uses the required Y flip |
 | `shaders/deferred_directional.slang` | OK | Uses scene UV from `SV_Position`, reconstructs world position consistently |
 | `shaders/point_light.slang` | OK | Same reconstruction path as directional |
@@ -180,7 +180,7 @@ This section records the current status after the coordinate audit.
 
 | File | Status | Notes |
 | --- | --- | --- |
-| `src/renderer/ShadowManager.cpp` | Fixed earlier | Light-space signed Z bounds are converted to positive reverse-Z ortho distances |
+| `src/renderer/shadow/ShadowManager.cpp` | Fixed earlier | Light-space signed Z bounds are converted to positive reverse-Z ortho distances |
 | `shaders/shadow_common.slang` | OK | Positive-height shadow viewport means `shadowUV = shadowNdc * 0.5 + 0.5` |
 | `shaders/shadow_depth.slang` | Fixed | Shadow depth now mirrors the depth prepass alpha-mask discard so cutout materials cast cutout shadows |
 

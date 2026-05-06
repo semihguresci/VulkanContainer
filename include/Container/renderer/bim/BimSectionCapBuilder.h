@@ -3,7 +3,7 @@
 #include "Container/common/CommonMath.h"
 #include "Container/common/CommonVulkan.h"
 #include "Container/geometry/Vertex.h"
-#include "Container/renderer/DebugOverlayRenderer.h"
+#include "Container/renderer/debug/DebugOverlayRenderer.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
 #include <array>
