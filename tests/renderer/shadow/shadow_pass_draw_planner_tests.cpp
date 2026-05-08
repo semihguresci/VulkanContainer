@@ -33,15 +33,15 @@ TEST(ShadowPassDrawPlannerTests,
                       .doubleSided = &doubleSided}});
 
   EXPECT_TRUE(plan.sceneGpuRoute.active);
-  EXPECT_EQ(plan.sceneGpuRoute.pipeline, ShadowPassPipeline::Primary);
+  EXPECT_EQ(plan.sceneGpuRoute.pipeline, ShadowPassPipeline::NoCull);
   ASSERT_EQ(plan.sceneCpuRouteCount, 2u);
-  EXPECT_EQ(plan.sceneCpuRoutes[0].pipeline, ShadowPassPipeline::FrontCull);
+  EXPECT_EQ(plan.sceneCpuRoutes[0].pipeline, ShadowPassPipeline::NoCull);
   EXPECT_EQ(plan.sceneCpuRoutes[0].commands, &windingFlipped);
   EXPECT_EQ(plan.sceneCpuRoutes[1].pipeline, ShadowPassPipeline::NoCull);
   EXPECT_EQ(plan.sceneCpuRoutes[1].commands, &doubleSided);
 }
 
-TEST(ShadowPassDrawPlannerTests, SceneCpuRoutesKeepStableOrder) {
+TEST(ShadowPassDrawPlannerTests, SceneCpuRoutesUseTwoSidedCasterDepth) {
   const auto singleSided = drawCommands(4u);
   const auto windingFlipped = drawCommands(5u);
   const auto doubleSided = drawCommands(6u);
@@ -54,8 +54,8 @@ TEST(ShadowPassDrawPlannerTests, SceneCpuRoutesKeepStableOrder) {
 
   EXPECT_FALSE(plan.sceneGpuRoute.active);
   ASSERT_EQ(plan.sceneCpuRouteCount, 3u);
-  EXPECT_EQ(plan.sceneCpuRoutes[0].pipeline, ShadowPassPipeline::Primary);
-  EXPECT_EQ(plan.sceneCpuRoutes[1].pipeline, ShadowPassPipeline::FrontCull);
+  EXPECT_EQ(plan.sceneCpuRoutes[0].pipeline, ShadowPassPipeline::NoCull);
+  EXPECT_EQ(plan.sceneCpuRoutes[1].pipeline, ShadowPassPipeline::NoCull);
   EXPECT_EQ(plan.sceneCpuRoutes[2].pipeline, ShadowPassPipeline::NoCull);
 }
 
@@ -71,10 +71,10 @@ TEST(ShadowPassDrawPlannerTests,
   ASSERT_EQ(plan.bimGpuRouteCount, 3u);
   EXPECT_EQ(plan.bimGpuRoutes[0].slot,
             ShadowPassBimGpuSlot::OpaqueSingleSided);
-  EXPECT_EQ(plan.bimGpuRoutes[0].pipeline, ShadowPassPipeline::Primary);
+  EXPECT_EQ(plan.bimGpuRoutes[0].pipeline, ShadowPassPipeline::NoCull);
   EXPECT_EQ(plan.bimGpuRoutes[1].slot,
             ShadowPassBimGpuSlot::OpaqueWindingFlipped);
-  EXPECT_EQ(plan.bimGpuRoutes[1].pipeline, ShadowPassPipeline::FrontCull);
+  EXPECT_EQ(plan.bimGpuRoutes[1].pipeline, ShadowPassPipeline::NoCull);
   EXPECT_EQ(plan.bimGpuRoutes[2].slot,
             ShadowPassBimGpuSlot::OpaqueDoubleSided);
   EXPECT_EQ(plan.bimGpuRoutes[2].pipeline, ShadowPassPipeline::NoCull);
@@ -94,9 +94,55 @@ TEST(ShadowPassDrawPlannerTests, BimCpuRoutesKeepStableOrder) {
                     .doubleSided = &doubleSided}});
 
   ASSERT_EQ(plan.bimCpuRouteCount, 3u);
-  EXPECT_EQ(plan.bimCpuRoutes[0].pipeline, ShadowPassPipeline::Primary);
-  EXPECT_EQ(plan.bimCpuRoutes[1].pipeline, ShadowPassPipeline::FrontCull);
+  EXPECT_EQ(plan.bimCpuRoutes[0].pipeline, ShadowPassPipeline::NoCull);
+  EXPECT_EQ(plan.bimCpuRoutes[1].pipeline, ShadowPassPipeline::NoCull);
   EXPECT_EQ(plan.bimCpuRoutes[2].pipeline, ShadowPassPipeline::NoCull);
+}
+
+TEST(ShadowPassDrawPlannerTests,
+     EveryVisibleCasterRouteUsesNoCullSoNormalsAndWindingDoNotSuppressShadows) {
+  const auto sceneSingleSided = drawCommands(21u);
+  const auto sceneWindingFlipped = drawCommands(22u);
+  const auto sceneDoubleSided = drawCommands(23u);
+  const auto bimSingleSided = drawCommands(24u);
+  const auto bimWindingFlipped = drawCommands(25u);
+  const auto bimDoubleSided = drawCommands(26u);
+
+  const auto plan = buildShadowPassDrawPlan(
+      {.sceneGeometryReady = true,
+       .bimGeometryReady = true,
+       .sceneGpuCullActive = true,
+       .bimGpuFilteredMeshActive = true,
+       .sceneDraws = {.singleSided = &sceneSingleSided,
+                      .windingFlipped = &sceneWindingFlipped,
+                      .doubleSided = &sceneDoubleSided},
+       .bimDraws = {.singleSided = &bimSingleSided,
+                    .windingFlipped = &bimWindingFlipped,
+                    .doubleSided = &bimDoubleSided}});
+
+  ASSERT_TRUE(plan.sceneGpuRoute.active);
+  EXPECT_EQ(plan.sceneGpuRoute.pipeline, ShadowPassPipeline::NoCull);
+
+  ASSERT_EQ(plan.sceneCpuRouteCount, 2u);
+  for (uint32_t routeIndex = 0u; routeIndex < plan.sceneCpuRouteCount;
+       ++routeIndex) {
+    EXPECT_EQ(plan.sceneCpuRoutes[routeIndex].pipeline,
+              ShadowPassPipeline::NoCull);
+  }
+
+  ASSERT_EQ(plan.bimGpuRouteCount, 3u);
+  for (uint32_t routeIndex = 0u; routeIndex < plan.bimGpuRouteCount;
+       ++routeIndex) {
+    EXPECT_EQ(plan.bimGpuRoutes[routeIndex].pipeline,
+              ShadowPassPipeline::NoCull);
+  }
+
+  ASSERT_EQ(plan.bimCpuRouteCount, 3u);
+  for (uint32_t routeIndex = 0u; routeIndex < plan.bimCpuRouteCount;
+       ++routeIndex) {
+    EXPECT_EQ(plan.bimCpuRoutes[routeIndex].pipeline,
+              ShadowPassPipeline::NoCull);
+  }
 }
 
 TEST(ShadowPassDrawPlannerTests, MissingGeometrySuppressesAllRoutes) {

@@ -6,6 +6,10 @@ namespace container::renderer {
 
 namespace {
 
+// Shadow-map casters are visibility geometry; winding/normal direction must
+// not decide whether a surface blocks light.
+constexpr ShadowPassPipeline kShadowCasterPipeline = ShadowPassPipeline::NoCull;
+
 [[nodiscard]] bool hasDrawCommands(const std::vector<DrawCommand> *commands) {
   return commands != nullptr && !commands->empty();
 }
@@ -50,31 +54,31 @@ ShadowPassDrawPlan ShadowPassDrawPlanner::build() const {
 
   if (inputs_.sceneGeometryReady) {
     plan.sceneGpuRoute = {.active = inputs_.sceneGpuCullActive,
-                          .pipeline = ShadowPassPipeline::Primary};
+                          .pipeline = kShadowCasterPipeline};
     if (!plan.sceneGpuRoute.active) {
-      appendCpuRoute(plan, true, ShadowPassPipeline::Primary,
+      appendCpuRoute(plan, true, kShadowCasterPipeline,
                      inputs_.sceneDraws.singleSided);
     }
-    appendCpuRoute(plan, true, ShadowPassPipeline::FrontCull,
+    appendCpuRoute(plan, true, kShadowCasterPipeline,
                    inputs_.sceneDraws.windingFlipped);
-    appendCpuRoute(plan, true, ShadowPassPipeline::NoCull,
+    appendCpuRoute(plan, true, kShadowCasterPipeline,
                    inputs_.sceneDraws.doubleSided);
   }
 
   if (inputs_.bimGeometryReady) {
     if (inputs_.bimGpuFilteredMeshActive) {
       appendBimGpuRoute(plan, ShadowPassBimGpuSlot::OpaqueSingleSided,
-                        ShadowPassPipeline::Primary);
+                        kShadowCasterPipeline);
       appendBimGpuRoute(plan, ShadowPassBimGpuSlot::OpaqueWindingFlipped,
-                        ShadowPassPipeline::FrontCull);
+                        kShadowCasterPipeline);
       appendBimGpuRoute(plan, ShadowPassBimGpuSlot::OpaqueDoubleSided,
-                        ShadowPassPipeline::NoCull);
+                        kShadowCasterPipeline);
     }
-    appendCpuRoute(plan, false, ShadowPassPipeline::Primary,
+    appendCpuRoute(plan, false, kShadowCasterPipeline,
                    inputs_.bimDraws.singleSided);
-    appendCpuRoute(plan, false, ShadowPassPipeline::FrontCull,
+    appendCpuRoute(plan, false, kShadowCasterPipeline,
                    inputs_.bimDraws.windingFlipped);
-    appendCpuRoute(plan, false, ShadowPassPipeline::NoCull,
+    appendCpuRoute(plan, false, kShadowCasterPipeline,
                    inputs_.bimDraws.doubleSided);
   }
 
