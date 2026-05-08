@@ -44,6 +44,8 @@ set(SLANG_INCLUDE_SOURCES
     "${SHADERS_DIR}/area_light_common.slang"
     "${SHADERS_DIR}/lighting_structs.slang"
     "${SHADERS_DIR}/shadow_common.slang"
+    "${SHADERS_DIR}/local_shadow_common.slang"
+    "${SHADERS_DIR}/screen_space_light_shadow_common.slang"
     "${SHADERS_DIR}/oit_common.slang"
     "${SHADERS_DIR}/push_constants_common.slang"
     "${SHADERS_DIR}/scene_clip_common.slang"
@@ -59,6 +61,8 @@ list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/brdf_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/area_light_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/lighting_structs\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/shadow_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/local_shadow_common\\.slang$")
+list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/screen_space_light_shadow_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/oit_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/push_constants_common\\.slang$")
 list(FILTER SLANG_SOURCES EXCLUDE REGEX ".*/scene_clip_common\\.slang$")

@@ -3,6 +3,8 @@
 #include "Container/common/CommonVulkan.h"
 
 #include <array>
+#include <cstdint>
+#include <optional>
 
 namespace container::scene {
 class BaseCamera;
@@ -10,6 +12,7 @@ class BaseCamera;
 
 namespace container::ui {
 class GuiManager;
+enum class GBufferViewMode : uint32_t;
 } // namespace container::ui
 
 namespace container::renderer {
@@ -25,6 +28,7 @@ struct DeferredRasterLightingPassServices {
   const SceneController *sceneController{nullptr};
   const container::scene::BaseCamera *camera{nullptr};
   const container::ui::GuiManager *guiManager{nullptr};
+  std::optional<container::ui::GBufferViewMode> fallbackDisplayMode{};
   const DebugOverlayRenderer *debugOverlay{nullptr};
   bool tileCullPassActive{false};
 };

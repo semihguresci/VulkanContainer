@@ -1,7 +1,7 @@
 #include "Container/renderer/scene/SceneController.h"
 #include "Container/app/AppConfig.h"
 #include "Container/ecs/World.h"
-#include "Container/geometry/Model.h"
+#include "Container/renderer/scene/ScenePrimitives.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/GuiManager.h"
 #include "Container/utility/PipelineManager.h"
@@ -336,7 +336,7 @@ bool SceneController::ensureObjectBufferCapacity(
 void SceneController::createGeometryBuffers() {
   const auto& sceneVertices = sceneManager_.vertices();
   const auto& sceneIndices  = sceneManager_.indices();
-  const container::geometry::Model cube = container::geometry::Model::MakeCube();
+  const container::geometry::Mesh cube = makeScenePrimitiveCube();
 
   std::vector<container::geometry::Vertex> mergedVertices;
   mergedVertices.reserve(sceneVertices.size() + cube.vertices().size());
@@ -893,6 +893,50 @@ void SceneController::addSceneObject(
   if (guiManager_) {
     guiManager_->setStatusMessage("Added object to scene");
   }
+}
+
+uint32_t SceneController::addScenePrimitive(ScenePrimitiveKind kind,
+                                            const glm::mat4& transform,
+                                            uint32_t& rootNode) {
+  if (sceneGraph_.renderableNodes().size() >= config_.maxSceneObjects) {
+    if (guiManager_) {
+      guiManager_->setStatusMessage("Reached maximum scene object capacity");
+    }
+    return container::scene::SceneGraph::kInvalidNode;
+  }
+
+  const int32_t materialIndex =
+      sceneManager_.defaultMaterialIndex() ==
+              std::numeric_limits<uint32_t>::max()
+          ? -1
+          : static_cast<int32_t>(sceneManager_.defaultMaterialIndex());
+  const uint32_t primitiveIndex =
+      sceneManager_.appendRuntimeMesh(makeScenePrimitive(kind, materialIndex));
+  if (primitiveIndex == std::numeric_limits<uint32_t>::max()) {
+    if (guiManager_) {
+      guiManager_->setStatusMessage("Failed to add primitive");
+    }
+    return container::scene::SceneGraph::kInvalidNode;
+  }
+
+  if (rootNode == container::scene::SceneGraph::kInvalidNode) {
+    rootNode = sceneGraph_.createNode(glm::mat4(1.0f),
+                                      sceneManager_.defaultMaterialIndex(),
+                                      false);
+  }
+
+  createGeometryBuffers();
+  const uint32_t node = sceneGraph_.createNode(
+      transform, sceneManager_.defaultMaterialIndex(), true, primitiveIndex);
+  sceneGraph_.setParent(node, rootNode);
+  sceneGraph_.updateWorldTransforms();
+  invalidateObjectDataCache();
+
+  if (guiManager_) {
+    guiManager_->setStatusMessage("Added " +
+                                  std::string(scenePrimitiveKindLabel(kind)));
+  }
+  return node;
 }
 
 bool SceneController::reloadSceneModel(

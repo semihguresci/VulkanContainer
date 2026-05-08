@@ -14,6 +14,7 @@ struct ShadowPassScopePlan {
 };
 
 [[nodiscard]] ShadowPassScopePlan
-buildShadowPassScopePlan(bool useSecondaryCommandBuffer);
+buildShadowPassScopePlan(bool useSecondaryCommandBuffer,
+                         VkExtent2D extent = {});
 
 } // namespace container::renderer

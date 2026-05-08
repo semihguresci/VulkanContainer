@@ -898,12 +898,13 @@ TEST(ShadowResourceBridgeTests, ResolvesDescriptorBindingsFromRegistryOnly) {
   EXPECT_EQ(shadowDescriptorSet(params, ShadowDescriptorSetId::Scene),
             VK_NULL_HANDLE);
 
-  const std::array<std::pair<ShadowDescriptorSetId, const char*>, 3>
+  const std::array<std::pair<ShadowDescriptorSetId, const char*>, 4>
       descriptors = {{{ShadowDescriptorSetId::Scene, "scene-descriptor-set"},
                       {ShadowDescriptorSetId::BimScene,
                        "bim-scene-descriptor-set"},
-                      {ShadowDescriptorSetId::Shadow,
-                       "shadow-descriptor-set"}}};
+                      {ShadowDescriptorSetId::Shadow, "shadow-descriptor-set"},
+                      {ShadowDescriptorSetId::LocalShadow,
+                       "local-shadow-descriptor-set"}}};
   uintptr_t nextHandle = 0x870;
   for (const auto& [id, key] : descriptors) {
     resources.bindDescriptorSet(
@@ -929,6 +930,10 @@ TEST(ShadowPipelineBridgeTests, ResolvesProductionHandleRegistryOnly) {
   registryPipelines.shadowDepth = fakeHandle<VkPipeline>(0x911);
   registryPipelines.shadowDepthFrontCull = fakeHandle<VkPipeline>(0x912);
   registryPipelines.shadowDepthNoCull = fakeHandle<VkPipeline>(0x913);
+  registryPipelines.localShadowDepth = fakeHandle<VkPipeline>(0x914);
+  registryPipelines.localShadowDepthFrontCull =
+      fakeHandle<VkPipeline>(0x915);
+  registryPipelines.localShadowDepthNoCull = fakeHandle<VkPipeline>(0x916);
   registryPipelines.handleRegistry =
       buildGraphicsPipelineHandleRegistry(registryPipelines);
   params.registries.pipelineHandles = registryPipelines.handleRegistry.get();
@@ -939,7 +944,14 @@ TEST(ShadowPipelineBridgeTests, ResolvesProductionHandleRegistryOnly) {
             registryPipelines.shadowDepthFrontCull);
   EXPECT_EQ(shadowPipelineHandle(params, ShadowPipelineId::DepthNoCull),
             registryPipelines.shadowDepthNoCull);
+  EXPECT_EQ(shadowPipelineHandle(params, ShadowPipelineId::LocalDepth),
+            registryPipelines.localShadowDepth);
+  EXPECT_EQ(shadowPipelineHandle(params, ShadowPipelineId::LocalDepthFrontCull),
+            registryPipelines.localShadowDepthFrontCull);
+  EXPECT_EQ(shadowPipelineHandle(params, ShadowPipelineId::LocalDepthNoCull),
+            registryPipelines.localShadowDepthNoCull);
   EXPECT_TRUE(shadowPipelineReady(params, ShadowPipelineId::Depth));
+  EXPECT_TRUE(shadowPipelineReady(params, ShadowPipelineId::LocalDepth));
 }
 
 TEST(ShadowPipelineBridgeTests, ResolvesProductionLayoutRegistryOnly) {
@@ -1055,6 +1067,11 @@ TEST(DeferredRasterTechniqueRegistryTests,
   EXPECT_EQ(sceneColor->kind, FrameResourceKind::Image);
   EXPECT_EQ(sceneColor->image.format, VK_FORMAT_R16G16B16A16_SFLOAT);
 
+  const auto* localShadowAtlas = resources.find(TechniqueResourceKey{
+      RenderTechniqueId::DeferredRaster, "local-shadow-atlas"});
+  ASSERT_NE(localShadowAtlas, nullptr);
+  EXPECT_EQ(localShadowAtlas->kind, FrameResourceKind::External);
+
   const auto* oitNodes = resources.find(TechniqueResourceKey{
       RenderTechniqueId::DeferredRaster, "oit-node-buffer"});
   ASSERT_NE(oitNodes, nullptr);
@@ -1090,6 +1107,13 @@ TEST(DeferredRasterTechniqueRegistryTests,
       TechniquePipelineKey{RenderTechniqueId::DeferredRaster, "tile-cull"});
   ASSERT_NE(tileCull, nullptr);
   EXPECT_EQ(tileCull->kind, PipelineRecipeKind::Compute);
+
+  const auto* localShadowDepth = pipelines.find(
+      TechniquePipelineKey{RenderTechniqueId::DeferredRaster,
+                           "local-shadow-depth"});
+  ASSERT_NE(localShadowDepth, nullptr);
+  EXPECT_EQ(localShadowDepth->kind, PipelineRecipeKind::Graphics);
+  EXPECT_EQ(localShadowDepth->layoutName, "shadow");
 
   technique.registerTechniqueContracts(context);
   EXPECT_EQ(resources.resourcesForTechnique(RenderTechniqueId::DeferredRaster)
@@ -1129,7 +1153,7 @@ TEST(DeferredRasterTechniqueRegistryTests,
   for (const char* descriptorName :
        {"scene-descriptor-set", "bim-scene-descriptor-set",
         "light-descriptor-set", "tiled-lighting-descriptor-set",
-        "shadow-descriptor-set"}) {
+        "shadow-descriptor-set", "local-shadow-descriptor-set"}) {
     const auto* descriptor = resources.find(TechniqueResourceKey{
         RenderTechniqueId::DeferredRaster, descriptorName});
     ASSERT_NE(descriptor, nullptr) << descriptorName;
@@ -1328,6 +1352,8 @@ TEST(TechniqueRegistryGuardrails,
                        "\"tiled-lighting-descriptor-set\""));
   EXPECT_TRUE(contains(rendererFrontend,
                        "\"shadow-descriptor-set\""));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "\"local-shadow-descriptor-set\""));
   EXPECT_TRUE(contains(rendererFrontend,
                        "\"camera-buffer\""));
   EXPECT_TRUE(contains(rendererFrontend,
@@ -1550,6 +1576,8 @@ TEST(TechniqueRegistryGuardrails,
       "include/Container/renderer/shadow/ShadowResourceBridge.h");
   const std::string shadowFramePassRecorder = readRepoTextFile(
       "src/renderer/shadow/ShadowCascadeFramePassRecorder.cpp");
+  const std::string deferredTechnique = readRepoTextFile(
+      "src/renderer/deferred/DeferredRasterTechnique.cpp");
   const std::string frameRecorderHeader =
       readRepoTextFile("include/Container/renderer/core/FrameRecorder.h");
 
@@ -1564,6 +1592,10 @@ TEST(TechniqueRegistryGuardrails,
                        "ShadowDescriptorSetId::BimScene"));
   EXPECT_TRUE(contains(shadowFramePassRecorder,
                        "ShadowDescriptorSetId::Shadow"));
+  EXPECT_TRUE(contains(bridgeHeader, "ShadowDescriptorSetId::LocalShadow"));
+  EXPECT_TRUE(contains(bridgeHeader, "\"local-shadow-descriptor-set\""));
+  EXPECT_TRUE(contains(deferredTechnique,
+                       "ShadowDescriptorSetId::LocalShadow"));
   EXPECT_FALSE(contains(shadowFramePassRecorder,
                         "params.descriptors.sceneDescriptorSet"));
   EXPECT_FALSE(contains(shadowFramePassRecorder,
@@ -1574,6 +1606,7 @@ TEST(TechniqueRegistryGuardrails,
   EXPECT_FALSE(contains(frameRecorderHeader, "FrameDescriptorSets"));
   EXPECT_FALSE(contains(frameRecorderHeader, "sceneDescriptorSet"));
   EXPECT_FALSE(contains(frameRecorderHeader, "shadowDescriptorSet"));
+  EXPECT_FALSE(contains(frameRecorderHeader, "localShadowDescriptorSet"));
 }
 
 TEST(TechniqueRegistryGuardrails,

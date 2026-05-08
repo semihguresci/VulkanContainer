@@ -84,11 +84,13 @@ DeferredLightingWireframeSettings deferredLightingWireframeSettings(
 DeferredLightingFrameInputs
 deferredLightingFrameInputs(const FrameRecordParams &p,
                             const container::ui::GuiManager *guiManager,
+                            container::ui::GBufferViewMode fallbackDisplayMode,
                             bool tileCullPassActive, bool tiledLightingReady,
                             uint32_t pointLightCount) {
   DeferredLightingFrameInputs inputs{};
   inputs.displayMode =
-      deferredLightingDisplayMode(currentDisplayMode(guiManager));
+      deferredLightingDisplayMode(
+          currentDisplayMode(guiManager, fallbackDisplayMode));
   inputs.guiAvailable = guiManager != nullptr;
   inputs.wireframeSupported =
       guiManager != nullptr && guiManager->wireframeSupported();
@@ -100,6 +102,13 @@ deferredLightingFrameInputs(const FrameRecordParams &p,
     inputs.geometryOverlayRequested = guiManager->showGeometryOverlay();
     inputs.lightGizmosRequested = guiManager->showLightGizmos();
   }
+  inputs.bimTechnicalElevation = {
+      .enabled = p.bim.technicalElevation.enabled,
+      .hiddenLineOverlay = p.bim.technicalElevation.hiddenLineOverlay,
+      .depthTestLines = p.bim.technicalElevation.depthTestLines,
+      .lineColor = p.bim.technicalElevation.lineColor,
+      .lineWidth = p.bim.technicalElevation.lineWidth,
+      .overlayIntensity = p.bim.technicalElevation.overlayIntensity};
   inputs.debugDirectionalOnly = p.debug.debugDirectionalOnly;
   inputs.debugVisualizePointLightStencil =
       p.debug.debugVisualizePointLightStencil;
@@ -244,13 +253,28 @@ bimCurvePrimitivePassStyle(const FrameRecordParams &p) {
 BimSectionClipCapFramePassStyle
 bimSectionClipCapFramePassStyle(const FrameRecordParams &p) {
   const auto &style = p.bim.sectionClipCaps;
-  return {.enabled = style.enabled,
-          .fillEnabled = style.fillEnabled,
-          .hatchEnabled = style.hatchEnabled,
+  const auto &technicalElevation = p.bim.technicalElevation;
+  const bool technicalCapsEnabled =
+      technicalElevation.enabled && technicalElevation.sectionCapsEnabled;
+  // Technical elevation views reuse the section-cap renderer instead of
+  // creating a drawing-specific cap pass. When the base cap preview is off,
+  // the technical style can still request fill/hatch for clipped elevations.
+  const bool sectionCapEnabled = style.enabled || technicalCapsEnabled;
+  return {.enabled = sectionCapEnabled,
+          .fillEnabled = technicalCapsEnabled
+                             ? technicalElevation.capFillEnabled
+                             : style.fillEnabled,
+          .hatchEnabled = technicalCapsEnabled
+                              ? technicalElevation.capHatchingEnabled
+                              : style.hatchEnabled,
           .wideLinesSupported = p.debug.wireframeWideLinesSupported,
           .fillColor = style.fillColor,
           .hatchColor = style.hatchColor,
-          .hatchLineWidth = style.hatchLineWidth,
+          .hatchLineWidth =
+              technicalCapsEnabled
+                  ? std::max(style.hatchLineWidth,
+                             technicalElevation.lineWidth)
+                  : style.hatchLineWidth,
           .fillDrawCommands = p.bim.sectionClipCapGeometry.fillDrawCommands,
           .hatchDrawCommands = p.bim.sectionClipCapGeometry.hatchDrawCommands};
 }
@@ -552,9 +576,12 @@ void DeferredRasterLightingPassRecorder::record(
       lightingManager
           ? static_cast<uint32_t>(lightingManager->pointLightsSsbo().size())
           : 0u;
+  const auto fallbackDisplayMode = services_.fallbackDisplayMode.value_or(
+      container::ui::GBufferViewMode::Overview);
   const DeferredLightingFrameState lightingState =
       buildDeferredLightingFrameState(deferredLightingFrameInputs(
-          p, services_.guiManager, services_.tileCullPassActive,
+          p, services_.guiManager, fallbackDisplayMode,
+          services_.tileCullPassActive,
           lightingManager && lightingManager->isTiledLightingReady(),
           pointLightCount));
   const auto &wireframeSettings = lightingState.wireframeSettings;
@@ -634,6 +661,17 @@ void DeferredRasterLightingPassRecorder::record(
 
   const std::vector<container::gpu::PointLightData> *pointLights =
       lightingManager ? &lightingManager->pointLightsSsbo() : nullptr;
+  const uint32_t contactVisibilityEnabled =
+      p.shadows.shadowSettings.localContactVisibility ? 1u : 0u;
+  const uint32_t localShadowEnabled =
+      (lightingManager != nullptr &&
+       lightingManager->lightingData().shadowEnabled != 0u &&
+       lightingManager->lightingData().localShadowEnabled != 0u &&
+       p.shadows.localShadowData != nullptr &&
+       p.shadows.localShadowData->counts.w != 0u &&
+       p.shadows.localShadowLayerCount != 0u)
+          ? 1u
+          : 0u;
   const DeferredPointLightingDrawPlan pointLightingPlan =
       buildDeferredPointLightingDrawPlan(
           {.state = lightingState.pointLighting,
@@ -643,6 +681,11 @@ void DeferredRasterLightingPassRecorder::record(
            .framebufferHeight = lightingExtent.height,
            .cameraNear = p.camera.nearPlane,
            .cameraFar = p.camera.farPlane,
+           .contactVisibilityEnabled = contactVisibilityEnabled,
+           .localShadowEnabled = localShadowEnabled,
+           .bounceIntensity =
+               lightingManager ? lightingManager->lightingData().bounceIntensity
+                               : 0.0f,
            .pointLights =
                pointLights != nullptr
                    ? std::span<const container::gpu::PointLightData>(

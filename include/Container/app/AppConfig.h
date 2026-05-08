@@ -1,6 +1,8 @@
 #pragma once
 
 #include <array>
+#include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -25,7 +27,10 @@ inline constexpr std::string_view kDefaultEnvironmentHdrRelativePath =
 // Runtime default for normal application startup. Tests can still exercise the
 // diagnostic scene through kDefaultSceneModelToken without changing this path.
 inline constexpr std::string_view kDefaultModelRelativePath =
-    "models/glTF-Sample-Models/2.0/Sponza/glTF/Sponza.gltf";
+    "models/validation/cornell_box_local_light.gltf";
+inline constexpr float kDefaultAuthoredLocalLightEnvironmentIntensity = 0.0f;
+inline constexpr float kDefaultAuthoredLocalLightDirectionalIntensity = 0.0f;
+inline constexpr bool kDefaultAuthoredLocalLightBloomEnabled = false;
 
 struct AppConfig {
   uint32_t windowWidth{800};
@@ -37,6 +42,7 @@ struct AppConfig {
   bool enableGui{true};
   bool windowVisible{true};
   std::string renderTechnique{"deferred-raster"};
+  std::string displayModeOverride{};
   std::string modelPath{std::string(kDefaultModelRelativePath)};
   float importScale{1.0f};
   std::string bimModelPath{};
@@ -55,6 +61,8 @@ struct AppConfig {
   float environmentIntensity{1.0f};
   bool hasDirectionalIntensityOverride{false};
   float directionalIntensity{2.0f};
+  bool hasBloomEnabledOverride{false};
+  bool bloomEnabled{true};
   std::vector<const char*> validationLayers{"VK_LAYER_KHRONOS_validation"};
   std::vector<const char*> deviceExtensions{
       VK_KHR_SWAPCHAIN_EXTENSION_NAME,
@@ -65,5 +73,30 @@ struct AppConfig {
 };
 
 [[nodiscard]] inline AppConfig DefaultAppConfig() { return AppConfig{}; }
+
+[[nodiscard]] inline bool IsDefaultAuthoredLocalLightScene(
+    std::string_view modelPath) {
+  std::string normalized(modelPath);
+  for (char &ch : normalized) {
+    if (ch == '\\') {
+      ch = '/';
+      continue;
+    }
+    ch = static_cast<char>(
+        std::tolower(static_cast<unsigned char>(ch)));
+  }
+
+  constexpr std::string_view target = kDefaultModelRelativePath;
+  if (normalized == target) {
+    return true;
+  }
+  if (normalized.size() <= target.size()) {
+    return false;
+  }
+
+  const size_t targetOffset = normalized.size() - target.size();
+  return normalized[targetOffset - 1] == '/' &&
+         normalized.compare(targetOffset, target.size(), target) == 0;
+}
 
 }  // namespace container::app

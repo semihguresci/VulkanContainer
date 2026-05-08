@@ -50,12 +50,22 @@ struct DeferredLightingWireframeSettings {
   float overlayIntensity{0.85f};
 };
 
+struct DeferredLightingBimTechnicalElevationSettings {
+  bool enabled{false};
+  bool hiddenLineOverlay{true};
+  bool depthTestLines{true};
+  glm::vec3 lineColor{0.02f, 0.025f, 0.03f};
+  float lineWidth{1.25f};
+  float overlayIntensity{0.95f};
+};
+
 struct DeferredLightingFrameInputs {
   DeferredLightingDisplayMode displayMode{DeferredLightingDisplayMode::Other};
   bool guiAvailable{false};
   bool wireframeSupported{false};
   bool wireframeWideLinesSupported{false};
   DeferredLightingWireframeSettings wireframeSettings{};
+  DeferredLightingBimTechnicalElevationSettings bimTechnicalElevation{};
   container::gpu::NormalValidationSettings normalValidationSettings{};
   bool geometryOverlayRequested{false};
   bool lightGizmosRequested{false};
@@ -82,6 +92,7 @@ struct DeferredLightingFrameState {
   bool wireframeEnabled{false};
   bool wireframeFullMode{false};
   bool wireframeOverlayMode{false};
+  bool bimTechnicalElevationEnabled{false};
   bool objectSpaceNormalsEnabled{false};
   bool directionalLightingEnabled{false};
   bool normalValidationEnabled{false};

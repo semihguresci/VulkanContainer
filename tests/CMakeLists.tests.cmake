@@ -251,6 +251,11 @@ add_custom_test(deferred_light_gizmo_recorder_tests
     VulkanSceneRenderer_renderer
 )
 
+add_custom_test(editable_light_tests
+    ${TEST_RENDERER_DEFERRED_DIR}/editable_light_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
 add_custom_test(deferred_transparent_oit_recorder_tests
     ${TEST_RENDERER_DEFERRED_DIR}/deferred_transparent_oit_recorder_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer
@@ -303,6 +308,11 @@ add_custom_test(scene_raster_pass_recorder_tests
 
 add_custom_test(scene_diagnostic_cube_recorder_tests
     ${TEST_RENDERER_SCENE_DIR}/scene_diagnostic_cube_recorder_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
+add_custom_test(scene_primitives_tests
+    ${TEST_RENDERER_SCENE_DIR}/scene_primitives_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer
 )
 

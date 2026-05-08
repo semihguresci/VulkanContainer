@@ -234,6 +234,12 @@ std::shared_ptr<const PipelineRegistry> buildGraphicsPipelineHandleRegistry(
                     pipelines.shadowDepthFrontCull);
   registerIfPresent(*registry, "shadow-depth-no-cull",
                     pipelines.shadowDepthNoCull);
+  registerIfPresent(*registry, "local-shadow-depth",
+                    pipelines.localShadowDepth);
+  registerIfPresent(*registry, "local-shadow-depth-front-cull",
+                    pipelines.localShadowDepthFrontCull);
+  registerIfPresent(*registry, "local-shadow-depth-no-cull",
+                    pipelines.localShadowDepthNoCull);
   registerIfPresent(*registry, "lighting", pipelines.directionalLight);
   registerIfPresent(*registry, "stencil-volume", pipelines.stencilVolume);
   registerIfPresent(*registry, "point-light", pipelines.pointLight);

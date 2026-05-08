@@ -10,6 +10,7 @@ struct ShadowPassRasterPlanInputs {
   bool shadowPassRecordable{false};
   bool useSecondaryCommandBuffer{false};
   VkCommandBuffer secondaryCommandBuffer{VK_NULL_HANDLE};
+  VkExtent2D extent{};
 };
 
 struct ShadowPassRasterPlan {

@@ -185,7 +185,12 @@ uint32_t resolveObjectIndex(uint32_t pushedObjectIndex, uint32_t instanceID,
 }
 
 float smoothRangeAttenuation(float distanceSq, float radius) {
-  if (!std::isfinite(radius) || radius <= 0.0f) {
+  if (!std::isfinite(distanceSq) || distanceSq < 0.0f ||
+      !std::isfinite(radius)) {
+    return 0.0f;
+  }
+
+  if (radius <= 0.0f) {
     return 1.0f;
   }
 
@@ -197,6 +202,10 @@ float smoothRangeAttenuation(float distanceSq, float radius) {
 }
 
 float pointLightAttenuation(float distanceSq, float radius) {
+  if (!std::isfinite(distanceSq) || distanceSq < 0.0f) {
+    return 0.0f;
+  }
+
   return smoothRangeAttenuation(distanceSq, radius) /
          std::max(distanceSq, 0.01f);
 }
@@ -513,6 +522,7 @@ TEST(RenderingConventionTests,
                        "localSdNoCullPCI.pRasterizationState = &shadowNoCullRaster"));
   EXPECT_TRUE(contains(pipelineBuilder, "local_shadow_depth_no_cull_pipeline"));
 }
+
 TEST(RenderingConventionTests,
      ReverseZShadowCompareKeepsClearDepthLitAndCloserBlockersShadowed) {
   constexpr float kClearDepth = 0.0f;
@@ -601,6 +611,8 @@ TEST(RenderingConventionTests, SceneViewportRecordingUsesSharedHelper) {
       readRepoTextFile("src/renderer/core/FrameRecorder.cpp");
   const std::string lightingPassRecorder = readRepoTextFile(
       "src/renderer/deferred/DeferredRasterLightingPassRecorder.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
   const std::string shadowFramePassRecorder = readRepoTextFile(
       "src/renderer/shadow/ShadowCascadeFramePassRecorder.cpp");
   const std::string frameRecorderHeader =
@@ -1179,6 +1191,16 @@ TEST(RenderingConventionTests,
           pointLightAttenuation(16.0f,
                                 container::gpu::kUnboundedPointLightRange),
       4.0f, 1e-3f);
+  EXPECT_FLOAT_EQ(
+      pointLightAttenuation(4.0f, std::numeric_limits<float>::quiet_NaN()),
+      0.0f);
+  EXPECT_FLOAT_EQ(
+      pointLightAttenuation(4.0f, std::numeric_limits<float>::infinity()),
+      0.0f);
+  EXPECT_FLOAT_EQ(
+      pointLightAttenuation(std::numeric_limits<float>::quiet_NaN(),
+                            kLargeRadius),
+      0.0f);
   EXPECT_FLOAT_EQ(pointLightAttenuation(64.0f, 8.0f), 0.0f);
   EXPECT_FLOAT_EQ(pointLightAttenuation(65.0f, 8.0f), 0.0f);
 }
@@ -1193,6 +1215,7 @@ TEST(RenderingConventionTests,
             std::string::npos);
   EXPECT_NE(brdfCommon.find("SmoothRangeAttenuation(distanceSq, radius)"),
             std::string::npos);
+  EXPECT_NE(brdfCommon.find("if (!isfinite(radius))"), std::string::npos);
   EXPECT_NE(brdfCommon.find("radius <= 0.0"), std::string::npos);
   EXPECT_NE(brdfCommon.find("MIN_POINT_LIGHT_DISTANCE_SQ"), std::string::npos);
   EXPECT_NE(brdfCommon.find(
@@ -1205,6 +1228,346 @@ TEST(RenderingConventionTests,
   EXPECT_NE(pointLight.find(
                 "pc.colorIntensity.rgb * pc.colorIntensity.a * attenuation"),
             std::string::npos);
+}
+
+TEST(RenderingConventionTests,
+     PointAndTiledLightsUseScreenSpaceContactVisibilityOnlyAsFallback) {
+  const std::string pointLight = readRepoTextFile("shaders/point_light.slang");
+  const std::string tiledLighting =
+      readRepoTextFile("shaders/tiled_lighting.slang");
+  const std::string screenSpaceShadow =
+      readRepoTextFile("shaders/screen_space_light_shadow_common.slang");
+  const std::string localShadow =
+      readRepoTextFile("shaders/local_shadow_common.slang");
+  const std::string areaLightCommon =
+      readRepoTextFile("shaders/area_light_common.slang");
+  const std::string transparent =
+      readRepoTextFile("shaders/forward_transparent.slang");
+  const std::string pushConstantsCommon =
+      readRepoTextFile("shaders/push_constants_common.slang");
+  const std::string lightPushConstants = readRepoTextFile(
+      "include/Container/renderer/lighting/LightPushConstants.h");
+  const std::string sceneData =
+      readRepoTextFile("include/Container/utility/SceneData.h");
+  const std::string guiManager = readRepoTextFile("src/utility/GuiManager.cpp");
+  const std::string plannerHeader = readRepoTextFile(
+      "include/Container/renderer/deferred/DeferredPointLightingDrawPlanner.h");
+  const std::string planner = readRepoTextFile(
+      "src/renderer/deferred/DeferredPointLightingDrawPlanner.cpp");
+  const std::string recorder =
+      readRepoTextFile("src/renderer/deferred/DeferredPointLightingRecorder.cpp");
+  const std::string lightingPassRecorder = readRepoTextFile(
+      "src/renderer/deferred/DeferredRasterLightingPassRecorder.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+  const std::string lightingManager =
+      readRepoTextFile("src/renderer/lighting/LightingManager.cpp");
+  const std::string shadowManager =
+      readRepoTextFile("src/renderer/shadow/ShadowManager.cpp");
+
+  EXPECT_TRUE(
+      contains(screenSpaceShadow, "ScreenSpacePointLightContactVisibility"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "contact visibility"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "not a local shadow map"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "TryReconstructWorldPosition"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "mul(viewProj"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "depthTexture.Load"));
+  EXPECT_TRUE(
+      contains(screenSpaceShadow,
+               "static const uint SCREEN_SPACE_LIGHT_SHADOW_STEPS = 24u"));
+  EXPECT_TRUE(contains(screenSpaceShadow,
+                       "SCREEN_SPACE_LIGHT_SHADOW_MIN_RAY_RADIUS"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "all(isfinite(worldPosition))"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "all(isfinite(lightPosition))"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "TryProjectWorldToScenePixel"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "return false"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "return 1.0"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "return saturate(visibility)"));
+  EXPECT_TRUE(contains(localShadow, "LocalPointLightShadowVisibility"));
+  EXPECT_TRUE(contains(localShadow, "PointLightHasLocalShadowLayers"));
+  EXPECT_TRUE(contains(localShadow, "LocalAreaLightShadowVisibility"));
+  EXPECT_TRUE(contains(localShadow, "Texture2DArray<float> localShadowAtlas"));
+  EXPECT_TRUE(contains(localShadow, "SamplerComparisonState"));
+  EXPECT_TRUE(contains(localShadow, "SampleCmpLevelZero"));
+  EXPECT_TRUE(contains(localShadow,
+                       "bool LocalShadowMapsEnabled(LightingBuffer lighting"));
+  EXPECT_TRUE(contains(localShadow, "lighting.shadowEnabled != 0u"));
+  EXPECT_TRUE(contains(localShadow, "LocalShadowSoftFilterRadiusTexels"));
+  EXPECT_TRUE(contains(localShadow, "localShadow.filterSettings.y"));
+  EXPECT_TRUE(contains(localShadow, "layer.params.w"));
+  EXPECT_TRUE(contains(localShadow, "sourceRadiusWorld / texelSizeWorld"));
+  EXPECT_FALSE(contains(localShadow, "ddx("));
+  EXPECT_FALSE(contains(localShadow, "ddy("));
+  EXPECT_TRUE(contains(lightingManager, "hasFiniteLocalShadowRange"));
+  EXPECT_TRUE(contains(shadowManager, "hasFiniteLocalShadowRange"));
+  EXPECT_TRUE(contains(shadowManager,
+                       "kLocalShadowSoftFilterRadiusMultiplier"));
+  EXPECT_TRUE(contains(shadowManager,
+                       "kLocalShadowPointSourceRadiusFraction"));
+  EXPECT_TRUE(contains(shadowManager, "maxSoftFilterRadiusTexels"));
+  EXPECT_TRUE(contains(shadowManager, "sourceRadius"));
+  EXPECT_FALSE(contains(shadowManager, "kLocalShadowFallbackRange"));
+
+  EXPECT_TRUE(contains(pushConstantsCommon, "uint contactVisibilityEnabled"));
+  EXPECT_TRUE(contains(pushConstantsCommon, "uint localShadowEnabled"));
+  EXPECT_TRUE(
+      contains(lightPushConstants, "uint32_t contactVisibilityEnabled"));
+  EXPECT_TRUE(contains(lightPushConstants, "uint32_t localShadowEnabled"));
+  EXPECT_TRUE(contains(
+      lightPushConstants,
+      "offsetof(LightPushConstants, contactVisibilityEnabled) == 64"));
+  EXPECT_TRUE(contains(lightPushConstants,
+                       "offsetof(LightPushConstants, localShadowEnabled) == 68"));
+  EXPECT_TRUE(contains(sceneData, "uint32_t contactVisibilityEnabled"));
+  EXPECT_TRUE(contains(sceneData, "uint32_t localShadowEnabled"));
+  EXPECT_TRUE(contains(
+      sceneData,
+      "offsetof(TiledLightingPushConstants, contactVisibilityEnabled) == 20"));
+  EXPECT_TRUE(contains(
+      sceneData,
+      "offsetof(TiledLightingPushConstants, localShadowEnabled) == 24"));
+  EXPECT_TRUE(
+      contains(plannerHeader, "uint32_t contactVisibilityEnabled{0}"));
+  EXPECT_TRUE(contains(plannerHeader, "uint32_t localShadowEnabled{0}"));
+  EXPECT_TRUE(contains(
+      planner, "inputs.contactVisibilityEnabled != 0u ? 1u : 0u"));
+  EXPECT_TRUE(
+      contains(planner, "inputs.localShadowEnabled != 0u ? 1u : 0u"));
+  EXPECT_TRUE(contains(
+      planner,
+      "plan.tiledPushConstants.contactVisibilityEnabled"));
+  EXPECT_TRUE(contains(planner,
+                       "plan.tiledPushConstants.localShadowEnabled"));
+  EXPECT_TRUE(
+      contains(lightingPassRecorder, ".contactVisibilityEnabled ="));
+  EXPECT_TRUE(contains(lightingPassRecorder, ".localShadowEnabled ="));
+  EXPECT_TRUE(contains(lightingPassRecorder,
+                       "shadowSettings.localContactVisibility"));
+  EXPECT_TRUE(contains(lightingPassRecorder,
+                       "lightingManager->lightingData().shadowEnabled != 0u"));
+  EXPECT_TRUE(contains(sceneData, "bool localContactVisibility{true}"));
+  EXPECT_TRUE(contains(guiManager, "Local contact visibility"));
+  EXPECT_TRUE(contains(recorder, "pushConstants.contactVisibilityEnabled"));
+  EXPECT_TRUE(contains(recorder, "pushConstants.localShadowEnabled"));
+  EXPECT_TRUE(contains(rendererFrontend, "bool localShadowAtlas"));
+  EXPECT_TRUE(
+      contains(rendererFrontend, "lightingData.localShadowEnabled"));
+  EXPECT_TRUE(
+      contains(rendererFrontend, "hasLocalShadowAtlasResources"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "localShadowDescriptorSet(imageIndex)"));
+  EXPECT_TRUE(contains(rendererFrontend, "localShadowUbo(imageIndex)"));
+  EXPECT_TRUE(contains(rendererFrontend, "localShadowFramebuffer(layerIndex)"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "RenderPassId::LocalShadowDepth"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "featureReadiness.localShadowAtlas"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "p.shadows.localShadowLayerCount"));
+  EXPECT_FALSE(contains(rendererFrontend,
+                        "p.shadows.localShadowDescriptorSet"));
+
+  EXPECT_TRUE(contains(pointLight,
+                       "#include \"screen_space_light_shadow_common.slang\""));
+  EXPECT_TRUE(contains(pointLight, "#include \"local_shadow_common.slang\""));
+  EXPECT_TRUE(contains(pointLight,
+                       "[[vk::binding(18, 0)]] ConstantBuffer<LocalShadowBuffer>"));
+  EXPECT_TRUE(contains(pointLight,
+                       "[[vk::binding(19, 0)]] Texture2DArray<float>"));
+  EXPECT_TRUE(contains(pointLight,
+                       "[[vk::binding(20, 0)]] SamplerComparisonState"));
+  EXPECT_TRUE(contains(pointLight, "!isfinite(depth)"));
+  EXPECT_TRUE(contains(pointLight, "TryReconstructWorldPosition"));
+  EXPECT_TRUE(contains(pointLight, "bool useLocalShadowMap"));
+  EXPECT_TRUE(
+      contains(pointLight, "if (pc.contactVisibilityEnabled != 0u)"));
+  EXPECT_FALSE(
+      contains(pointLight, "else if (pc.contactVisibilityEnabled != 0u)"));
+  EXPECT_TRUE(contains(pointLight,
+                       "LocalShadowMapsEnabled(pc.localShadowEnabled, "
+                       "uLocalShadow)"));
+  EXPECT_TRUE(contains(pointLight, "LocalPointLightShadowVisibility("));
+  EXPECT_TRUE(
+      contains(pointLight, "ScreenSpacePointLightContactVisibility("));
+  EXPECT_TRUE(contains(pointLight, "radiance *= lightVisibility"));
+
+  EXPECT_TRUE(contains(tiledLighting,
+                       "#include \"screen_space_light_shadow_common.slang\""));
+  EXPECT_TRUE(
+      contains(tiledLighting, "#include \"local_shadow_common.slang\""));
+  EXPECT_TRUE(contains(tiledLighting,
+                       "[[vk::binding(18, 0)]] ConstantBuffer<LocalShadowBuffer>"));
+  EXPECT_TRUE(contains(tiledLighting,
+                       "[[vk::binding(19, 0)]] Texture2DArray<float>"));
+  EXPECT_TRUE(contains(tiledLighting,
+                       "[[vk::binding(20, 0)]] SamplerComparisonState"));
+  EXPECT_TRUE(contains(tiledLighting, "!isfinite(depth)"));
+  EXPECT_TRUE(contains(tiledLighting, "TryReconstructWorldPosition"));
+  EXPECT_TRUE(contains(tiledLighting, "bool useLocalShadowMap"));
+  EXPECT_TRUE(
+      contains(tiledLighting, "if (pc.contactVisibilityEnabled != 0u)"));
+  EXPECT_FALSE(
+      contains(tiledLighting, "else if (pc.contactVisibilityEnabled != 0u)"));
+  EXPECT_TRUE(contains(tiledLighting,
+                       "LocalShadowMapsEnabled(pc.localShadowEnabled, "
+                       "uLocalShadow)"));
+  EXPECT_TRUE(contains(tiledLighting, "LocalPointLightShadowVisibility("));
+  EXPECT_TRUE(
+      contains(tiledLighting, "ScreenSpacePointLightContactVisibility("));
+  EXPECT_TRUE(contains(tiledLighting, "radiance *= lightVisibility"));
+
+  EXPECT_TRUE(contains(areaLightCommon, "raw direct radiance"));
+  EXPECT_TRUE(contains(areaLightCommon, "local light-space"));
+  EXPECT_TRUE(contains(localShadow, "transparent paths stay atlas-only"));
+  EXPECT_FALSE(
+      contains(transparent, "ScreenSpacePointLightContactVisibility"));
+  EXPECT_TRUE(contains(transparent, "gSceneDepthTexture"));
+  EXPECT_TRUE(
+      contains(transparent, "#include \"local_shadow_common.slang\""));
+  EXPECT_TRUE(contains(transparent,
+                       "[[vk::binding(18, 3)]] ConstantBuffer<LocalShadowBuffer>"));
+  EXPECT_TRUE(contains(transparent,
+                       "[[vk::binding(19, 3)]] Texture2DArray<float>"));
+  EXPECT_TRUE(contains(transparent,
+                       "[[vk::binding(20, 3)]] SamplerComparisonState"));
+  EXPECT_TRUE(contains(transparent, "LocalPointLightShadowVisibility("));
+  EXPECT_TRUE(contains(transparent, "LocalAreaLightShadowVisibility("));
+}
+
+TEST(RenderingConventionTests,
+     ScreenSpaceLocalLightContactVisibilityRejectsCoplanarReceiverSelfOcclusion) {
+  const std::string pointLight = readRepoTextFile("shaders/point_light.slang");
+  const std::string tiledLighting =
+      readRepoTextFile("shaders/tiled_lighting.slang");
+  const std::string screenSpaceShadow =
+      readRepoTextFile("shaders/screen_space_light_shadow_common.slang");
+
+  EXPECT_TRUE(contains(screenSpaceShadow, "float3 receiverNormal"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "Texture2D<float4> normalTexture"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "normalTexture.Load"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "receiverPlaneDistance"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "coplanarReceiverSurface"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "continue"));
+
+  EXPECT_TRUE(contains(pointLight, "geometricNormal, pc.positionRadius.xyz"));
+  EXPECT_TRUE(contains(pointLight, "gDepthTexture"));
+  EXPECT_TRUE(contains(pointLight, "gNormalTexture"));
+  EXPECT_TRUE(contains(tiledLighting,
+                       "geometricNormal, light.positionRadius.xyz"));
+  EXPECT_TRUE(contains(tiledLighting, "gDepthTexture"));
+  EXPECT_TRUE(contains(tiledLighting, "gNormalTexture"));
+}
+
+TEST(RenderingConventionTests,
+     ShadowVisibilityUsesGeometricReceiverNormalsForBias) {
+  const std::string deferredDirectional =
+      readRepoTextFile("shaders/deferred_directional.slang");
+  const std::string pointLight = readRepoTextFile("shaders/point_light.slang");
+  const std::string tiledLighting =
+      readRepoTextFile("shaders/tiled_lighting.slang");
+  const std::string transparent =
+      readRepoTextFile("shaders/forward_transparent.slang");
+
+  EXPECT_TRUE(contains(deferredDirectional, "float3 geometricNormal"));
+  EXPECT_TRUE(contains(deferredDirectional,
+                       "worldPosition, geometricNormal, "
+                       "uLighting.directionalDirection.xyz"));
+  EXPECT_TRUE(contains(deferredDirectional,
+                       "geometricNormal, normal, V"));
+
+  EXPECT_TRUE(contains(pointLight, "float3 geometricNormal"));
+  EXPECT_TRUE(contains(pointLight,
+                       "lightData, worldPosition, geometricNormal"));
+  EXPECT_TRUE(contains(pointLight,
+                       "worldPosition, geometricNormal, "
+                       "pc.positionRadius.xyz"));
+
+  EXPECT_TRUE(contains(tiledLighting, "float3 geometricNormal"));
+  EXPECT_TRUE(contains(tiledLighting,
+                       "light, worldPosition, geometricNormal"));
+  EXPECT_TRUE(contains(tiledLighting,
+                       "worldPosition, geometricNormal, "
+                       "light.positionRadius.xyz"));
+
+  EXPECT_TRUE(contains(transparent, "surfaceNormal.geometricNormal"));
+  EXPECT_TRUE(contains(transparent,
+                       "vertIn.worldPos, surfaceNormal.geometricNormal"));
+  EXPECT_TRUE(contains(transparent,
+                       "i, vertIn.worldPos, surfaceNormal.geometricNormal"));
+}
+
+TEST(RenderingConventionTests,
+     ShadowedDiffuseLightingKeepsNaturalIndirectFloor) {
+  const std::string deferredDirectional =
+      readRepoTextFile("shaders/deferred_directional.slang");
+  const std::string forwardTransparent =
+      readRepoTextFile("shaders/forward_transparent.slang");
+  const std::string localShadow =
+      readRepoTextFile("shaders/local_shadow_common.slang");
+  const std::string shadowCommon = readRepoTextFile("shaders/shadow_common.slang");
+
+  EXPECT_TRUE(contains(deferredDirectional, "ComputeDiffuseAmbientFloor"));
+  EXPECT_TRUE(contains(deferredDirectional, "kDiffuseAmbientFloor"));
+  EXPECT_TRUE(contains(deferredDirectional,
+                       "ambientLighting += ComputeDiffuseAmbientFloor"));
+  EXPECT_TRUE(contains(forwardTransparent, "ComputeTransparentAmbientFloor"));
+  EXPECT_TRUE(contains(forwardTransparent, "kTransparentAmbientFloor"));
+  EXPECT_FALSE(contains(localShadow, "LOCAL_SHADOW_MIN_VISIBILITY"));
+  EXPECT_FALSE(contains(localShadow, "ApplyLocalShadowVisibilityFloor"));
+  EXPECT_FALSE(contains(shadowCommon, "SHADOW_MIN_VISIBILITY"));
+  EXPECT_FALSE(contains(shadowCommon, "ApplyShadowVisibilityFloor"));
+}
+
+TEST(RenderingConventionTests,
+     DiffuseBounceLightingIsSharedByAllLitRenderingPaths) {
+  const std::string sceneData =
+      readRepoTextFile("include/Container/utility/SceneData.h");
+  const std::string lightPushConstants =
+      readRepoTextFile("include/Container/renderer/lighting/LightPushConstants.h");
+  const std::string lightingStructs =
+      readRepoTextFile("shaders/lighting_structs.slang");
+  const std::string pushConstantsCommon =
+      readRepoTextFile("shaders/push_constants_common.slang");
+  const std::string brdfCommon = readRepoTextFile("shaders/brdf_common.slang");
+  const std::string deferredDirectional =
+      readRepoTextFile("shaders/deferred_directional.slang");
+  const std::string pointLight = readRepoTextFile("shaders/point_light.slang");
+  const std::string tiledLighting =
+      readRepoTextFile("shaders/tiled_lighting.slang");
+  const std::string forwardTransparent =
+      readRepoTextFile("shaders/forward_transparent.slang");
+  const std::string guiManager = readRepoTextFile("src/utility/GuiManager.cpp");
+  const std::string lightingManager =
+      readRepoTextFile("src/renderer/lighting/LightingManager.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+  const std::string pointLightingRecorder =
+      readRepoTextFile("src/renderer/deferred/DeferredPointLightingRecorder.cpp");
+  const std::string pointLightingPlanner =
+      readRepoTextFile("src/renderer/deferred/DeferredPointLightingDrawPlanner.cpp");
+
+  EXPECT_TRUE(contains(sceneData, "float bounceIntensity"));
+  EXPECT_TRUE(contains(sceneData,
+                       "offsetof(LightingData, bounceIntensity) == 64"));
+  EXPECT_TRUE(contains(lightingStructs, "float bounceIntensity"));
+  EXPECT_TRUE(contains(pushConstantsCommon, "float bounceIntensity"));
+  EXPECT_TRUE(contains(lightPushConstants, "float bounceIntensity"));
+  EXPECT_TRUE(contains(brdfCommon, "EvaluateDiffuseBounceLight"));
+
+  EXPECT_TRUE(contains(deferredDirectional, "EvaluateDiffuseBounceLight"));
+  EXPECT_TRUE(contains(deferredDirectional, "uLighting.bounceIntensity"));
+  EXPECT_TRUE(contains(pointLight, "EvaluateDiffuseBounceLight"));
+  EXPECT_TRUE(contains(pointLight, "pc.bounceIntensity"));
+  EXPECT_TRUE(contains(tiledLighting, "EvaluateDiffuseBounceLight"));
+  EXPECT_TRUE(contains(tiledLighting, "pc.bounceIntensity"));
+  EXPECT_TRUE(contains(forwardTransparent, "EvaluateDiffuseBounceLight"));
+  EXPECT_TRUE(contains(forwardTransparent, "uLighting.bounceIntensity"));
+
+  EXPECT_TRUE(contains(guiManager, "Bounce Intensity"));
+  EXPECT_TRUE(contains(lightingManager, "lightingData_.bounceIntensity"));
+  EXPECT_TRUE(contains(rendererFrontend, "bounceIntensity"));
+  EXPECT_TRUE(contains(pointLightingRecorder, "pushConstants.bounceIntensity ="));
+  EXPECT_TRUE(contains(pointLightingPlanner, "bounceIntensity"));
 }
 
 TEST(RenderingConventionTests, PointLightShadersSupportUnboundedRangeSentinel) {
@@ -1226,11 +1589,49 @@ TEST(RenderingConventionTests, PointLightShadersSupportUnboundedRangeSentinel) {
       contains(lightingStructs, "bool PointLightHasFiniteRange(float radius)"));
   EXPECT_TRUE(
       contains(lightingStructs, "radius > UNBOUNDED_POINT_LIGHT_RANGE"));
-  EXPECT_TRUE(contains(tileCull, "!PointLightHasFiniteRange(lightRange)"));
+  EXPECT_TRUE(contains(tileCull, "bool unboundedLight"));
+  EXPECT_TRUE(contains(tileCull, "lightRange == UNBOUNDED_POINT_LIGHT_RANGE"));
   EXPECT_TRUE(contains(tiledLighting, "PointLightHasFiniteRange(lightRadius)"));
   EXPECT_TRUE(contains(transparent, "PointLightHasFiniteRange(lightRadius)"));
   EXPECT_TRUE(
       contains(stencil, "PointLightHasFiniteRange(pc.positionRadius.w)"));
+}
+
+TEST(RenderingConventionTests, TileLightCullRejectsInvalidPointLightMetadata) {
+  const std::string tileCull =
+      readRepoTextFile("shaders/tile_light_cull.slang");
+
+  const size_t metadataGuard =
+      tileCull.find("!all(isfinite(lightPos)) || !isfinite(lightRange)");
+  const size_t radiusInflation =
+      tileCull.find("float lightRadius = lightRange * 1.03");
+  const size_t appendLight =
+      tileCull.find("InterlockedAdd(sharedLightCount, 1u, idx)");
+
+  ASSERT_NE(metadataGuard, std::string::npos);
+  ASSERT_NE(radiusInflation, std::string::npos);
+  ASSERT_NE(appendLight, std::string::npos);
+  EXPECT_LT(metadataGuard, radiusInflation);
+  EXPECT_LT(radiusInflation, appendLight);
+  EXPECT_TRUE(contains(tileCull, "lightRange < UNBOUNDED_POINT_LIGHT_RANGE"));
+  EXPECT_TRUE(contains(tileCull,
+                       "lightRange == UNBOUNDED_POINT_LIGHT_RANGE"));
+}
+
+TEST(RenderingConventionTests,
+     GtaoUsesPointLoadsFiniteProjectionGuardsAndClampedSamples) {
+  const std::string gtao = readRepoTextFile("shaders/gtao.slang");
+
+  EXPECT_TRUE(contains(gtao, "static const uint GTAO_MAX_SAMPLE_COUNT"));
+  EXPECT_TRUE(contains(
+      gtao, "min(max(pc.sampleCount, 1u), GTAO_MAX_SAMPLE_COUNT)"));
+  EXPECT_TRUE(contains(gtao, "gDepthTexture.Load"));
+  EXPECT_TRUE(contains(gtao, "gNormalTexture.Load"));
+  EXPECT_FALSE(contains(gtao, "gDepthTexture.Sample"));
+  EXPECT_FALSE(contains(gtao, "gNormalTexture.Sample"));
+  EXPECT_TRUE(contains(gtao, "TryReconstructWorldPosition"));
+  EXPECT_TRUE(contains(gtao, "!all(isfinite(projected))"));
+  EXPECT_TRUE(contains(gtao, "projected.w <= 1e-6"));
 }
 
 TEST(RenderingConventionTests, SpotLightsSharePointLightDataWithConeFields) {
@@ -1266,6 +1667,8 @@ TEST(RenderingConventionTests, SpotLightsSharePointLightDataWithConeFields) {
 
 TEST(RenderingConventionTests, AreaLightDataLayoutMatchesShaderContract) {
   using container::gpu::AreaLightData;
+  using container::gpu::LocalShadowData;
+  using container::gpu::LocalShadowLayerData;
   using container::gpu::LightingData;
 
   EXPECT_EQ(container::gpu::kMaxAreaLights, 256u);
@@ -1280,8 +1683,41 @@ TEST(RenderingConventionTests, AreaLightDataLayoutMatchesShaderContract) {
   EXPECT_EQ(offsetof(AreaLightData, tangentHalfSize), 48u);
   EXPECT_EQ(offsetof(AreaLightData, bitangentHalfSize), 64u);
 
-  EXPECT_EQ(sizeof(LightingData), 64u);
+  EXPECT_EQ(sizeof(LightingData), 80u);
   EXPECT_EQ(offsetof(LightingData, areaLightCount), 56u);
+  EXPECT_EQ(offsetof(LightingData, localShadowEnabled), 60u);
+  EXPECT_EQ(offsetof(LightingData, bounceIntensity), 64u);
+  EXPECT_EQ(container::gpu::kShadowMapResolution, 4096u);
+  EXPECT_EQ(container::gpu::kLocalShadowMapResolution, 2048u);
+  EXPECT_EQ(container::gpu::kMaxShadowedLocalLightLayers, 24u);
+  EXPECT_EQ(container::gpu::kLocalShadowAreaRefPackedCount, 64u);
+  EXPECT_EQ(sizeof(LocalShadowLayerData), 128u);
+  EXPECT_EQ(alignof(LocalShadowLayerData), 16u);
+  EXPECT_EQ(offsetof(LocalShadowLayerData, viewProj), 0u);
+  EXPECT_EQ(offsetof(LocalShadowLayerData, positionRange), 64u);
+  EXPECT_EQ(offsetof(LocalShadowLayerData, directionType), 80u);
+  EXPECT_EQ(offsetof(LocalShadowLayerData, meta), 96u);
+  EXPECT_EQ(offsetof(LocalShadowLayerData, params), 112u);
+  EXPECT_EQ(sizeof(LocalShadowData),
+            sizeof(LocalShadowLayerData) *
+                    container::gpu::kMaxShadowedLocalLightLayers +
+                sizeof(glm::uvec4) *
+                    container::gpu::kLocalShadowAreaRefPackedCount +
+                sizeof(glm::uvec4) + sizeof(glm::vec4) * 2);
+  EXPECT_EQ(alignof(LocalShadowData), 16u);
+  EXPECT_EQ(offsetof(LocalShadowData, layers), 0u);
+  EXPECT_EQ(offsetof(LocalShadowData, areaLightRefs),
+            sizeof(LocalShadowLayerData) *
+                container::gpu::kMaxShadowedLocalLightLayers);
+  EXPECT_EQ(offsetof(LocalShadowData, counts),
+            sizeof(LocalShadowLayerData) *
+                    container::gpu::kMaxShadowedLocalLightLayers +
+                sizeof(glm::uvec4) *
+                    container::gpu::kLocalShadowAreaRefPackedCount);
+  EXPECT_EQ(offsetof(LocalShadowData, biasSettings),
+            offsetof(LocalShadowData, counts) + sizeof(glm::uvec4));
+  EXPECT_EQ(offsetof(LocalShadowData, filterSettings),
+            offsetof(LocalShadowData, biasSettings) + sizeof(glm::vec4));
 
   const std::string lightingStructs =
       readRepoTextFile("shaders/lighting_structs.slang");
@@ -1293,6 +1729,18 @@ TEST(RenderingConventionTests, AreaLightDataLayoutMatchesShaderContract) {
   EXPECT_TRUE(contains(lightingStructs, "float4 tangentHalfSize"));
   EXPECT_TRUE(contains(lightingStructs, "float4 bitangentHalfSize"));
   EXPECT_TRUE(contains(lightingStructs, "uint areaLightCount"));
+  EXPECT_TRUE(contains(lightingStructs, "uint localShadowEnabled"));
+  EXPECT_TRUE(contains(lightingStructs,
+                       "MAX_SHADOWED_LOCAL_LIGHT_LAYERS = 24u"));
+  EXPECT_TRUE(contains(lightingStructs,
+                       "LOCAL_SHADOW_AREA_REF_PACKED_COUNT = 64u"));
+  EXPECT_TRUE(contains(lightingStructs, "struct LocalShadowLayerData"));
+  EXPECT_TRUE(contains(lightingStructs, "struct LocalShadowBuffer"));
+  EXPECT_TRUE(contains(lightingStructs, "LocalShadowLayerData layers"));
+  EXPECT_TRUE(contains(lightingStructs, "uint4 areaLightRefs"));
+  EXPECT_TRUE(contains(lightingStructs, "uint4 counts"));
+  EXPECT_TRUE(contains(lightingStructs, "float4 biasSettings"));
+  EXPECT_TRUE(contains(lightingStructs, "float4 filterSettings"));
 }
 
 TEST(RenderingConventionTests, RectangularAndDiskAreaLightsImportToCpuBuffers) {
@@ -1338,12 +1786,15 @@ TEST(RenderingConventionTests, AreaLightShadersUseSampledIntegration) {
   const std::string shaderCmake = readRepoTextFile("cmake/Shaders.cmake");
   const std::string areaLightCommon =
       readRepoTextFile("shaders/area_light_common.slang");
+  const std::string localShadow =
+      readRepoTextFile("shaders/local_shadow_common.slang");
   const std::string directional =
       readRepoTextFile("shaders/deferred_directional.slang");
   const std::string transparent =
       readRepoTextFile("shaders/forward_transparent.slang");
 
   EXPECT_TRUE(contains(shaderCmake, "area_light_common.slang"));
+  EXPECT_TRUE(contains(shaderCmake, "local_shadow_common.slang"));
   EXPECT_TRUE(
       contains(areaLightCommon, "AREA_LIGHT_INTEGRATION_SAMPLE_COUNT = 4u"));
   EXPECT_TRUE(contains(areaLightCommon, "struct AreaLightFrame"));
@@ -1354,17 +1805,27 @@ TEST(RenderingConventionTests, AreaLightShadersUseSampledIntegration) {
   EXPECT_TRUE(
       contains(areaLightCommon,
                "frame.area / (float(AREA_LIGHT_INTEGRATION_SAMPLE_COUNT)"));
+  EXPECT_TRUE(contains(localShadow, "LocalAreaLightShadowVisibility"));
+  EXPECT_TRUE(contains(localShadow, "PackedLocalShadowAreaRef"));
 
   EXPECT_TRUE(contains(directional, "#include \"area_light_common.slang\""));
+  EXPECT_TRUE(contains(directional, "#include \"local_shadow_common.slang\""));
   EXPECT_TRUE(contains(directional,
                        "sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT"));
   EXPECT_TRUE(contains(directional, "EvaluateAreaLightSampleRadiance"));
+  EXPECT_TRUE(contains(directional,
+                       "LocalShadowMapsEnabled(uLighting, uLocalShadow)"));
+  EXPECT_TRUE(contains(directional, "LocalAreaLightShadowVisibility("));
   EXPECT_FALSE(contains(directional, "ClosestPointOnAreaLight"));
 
   EXPECT_TRUE(contains(transparent, "#include \"area_light_common.slang\""));
+  EXPECT_TRUE(contains(transparent, "#include \"local_shadow_common.slang\""));
   EXPECT_TRUE(contains(transparent,
                        "sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT"));
   EXPECT_TRUE(contains(transparent, "EvaluateAreaLightSampleRadiance"));
+  EXPECT_TRUE(contains(transparent,
+                       "LocalShadowMapsEnabled(uLighting, uLocalShadow)"));
+  EXPECT_TRUE(contains(transparent, "LocalAreaLightShadowVisibility("));
   EXPECT_FALSE(contains(transparent, "ClosestPointOnAreaLight"));
 }
 
@@ -1880,6 +2341,56 @@ TEST(RenderingConventionTests, BimFloorPlanOverlayCanBeEnabledInViewer) {
       contains(bimLightingOverlayPlanner, "BimLightingOverlayKind::FloorPlan"));
 }
 
+TEST(RenderingConventionTests, BimElevationViewsComposeExistingTechnicalPasses) {
+  const std::string guiManagerHeader =
+      readRepoTextFile("include/Container/utility/GuiManager.h");
+  const std::string guiManager = readRepoTextFile("src/utility/GuiManager.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+  const std::string cameraController =
+      readRepoTextFile("src/renderer/scene/CameraController.cpp");
+  const std::string bimLightingOverlayRecorder =
+      readRepoTextFile("src/renderer/bim/BimLightingOverlayRecorder.cpp");
+  const std::string sectionClipCapRecorder =
+      readRepoTextFile("src/renderer/bim/BimSectionClipCapPassRecorder.cpp");
+
+  EXPECT_TRUE(contains(guiManagerHeader, "BimElevationTechnicalStyle"));
+  EXPECT_TRUE(contains(guiManagerHeader, "BimElevationViewState"));
+  EXPECT_TRUE(contains(guiManagerHeader, "BimElevationViewRequest"));
+  EXPECT_TRUE(contains(guiManagerHeader, "consumeBimElevationViewRequest"));
+
+  EXPECT_TRUE(contains(guiManager, "BIM Elevation View"));
+  EXPECT_TRUE(contains(guiManager, "Apply elevation view"));
+  EXPECT_TRUE(contains(guiManager, "Hidden line"));
+  EXPECT_TRUE(contains(guiManager, "Technical"));
+  EXPECT_TRUE(contains(guiManager, "Depth-tested lines"));
+  EXPECT_TRUE(contains(guiManager, "Align section plane to elevation"));
+  EXPECT_TRUE(contains(guiManager, "requestElevationView"));
+  EXPECT_TRUE(
+      contains(guiManager, "gBufferViewMode_ = GBufferViewMode::Albedo"));
+  EXPECT_TRUE(contains(guiManager, "wireframeSettings_.depthTest = true"));
+  EXPECT_TRUE(
+      contains(guiManager, "wireframeSettings_.mode = WireframeMode::Full"));
+  EXPECT_TRUE(contains(guiManager, "sectionPlaneAxis_ = -1"));
+  EXPECT_TRUE(contains(guiManager, "Section normal"));
+
+  EXPECT_TRUE(contains(rendererFrontend, "consumeBimElevationViewRequest"));
+  EXPECT_TRUE(contains(rendererFrontend, "setBimElevationView"));
+  EXPECT_FALSE(contains(rendererFrontend,
+                        "setOrthographic(sceneState_.selectedMeshNode"));
+  EXPECT_TRUE(contains(cameraController, "CameraViewPreset::Front"));
+  EXPECT_TRUE(contains(cameraController, "CameraViewPreset::Back"));
+  EXPECT_TRUE(contains(cameraController, "CameraViewPreset::Right"));
+  EXPECT_TRUE(contains(cameraController, "CameraViewPreset::Left"));
+  EXPECT_TRUE(contains(cameraController, "setOrthographic(nodeIndex, true)"));
+  EXPECT_TRUE(contains(cameraController, "setViewPreset(nodeIndex, preset)"));
+
+  EXPECT_TRUE(
+      contains(bimLightingOverlayRecorder, "debugOverlay->drawWireframe"));
+  EXPECT_TRUE(contains(sectionClipCapRecorder,
+                       "recordBimSectionClipCapFramePassCommands"));
+}
+
 TEST(RenderingConventionTests, GltfPunctualPointLightsImportAsAuthoredLights) {
   const std::string sceneManagerHeader =
       readRepoTextFile("include/Container/utility/SceneManager.h");
@@ -1942,6 +2453,149 @@ TEST(RenderingConventionTests, GltfPunctualPointLightsImportAsAuthoredLights) {
                        "!sceneManager_->authoredPointLights().empty()"));
   EXPECT_TRUE(
       contains(lightingManager, "world_.replacePointLights(pointLightsSsbo_)"));
+}
+
+TEST(RenderingConventionTests, LightingManagerOwnsEditableLightState) {
+  const std::string header =
+      readRepoTextFile("include/Container/renderer/lighting/LightingManager.h");
+  const std::string source =
+      readRepoTextFile("src/renderer/lighting/LightingManager.cpp");
+
+  EXPECT_TRUE(contains(header, "EditableLightEntity"));
+  EXPECT_TRUE(contains(header, "editableLights() const"));
+  EXPECT_TRUE(contains(header, "selectedEditableLight() const"));
+  EXPECT_TRUE(contains(header, "selectEditableLight"));
+  EXPECT_TRUE(contains(header, "updateEditableLight"));
+  EXPECT_TRUE(contains(header, "addManualEditableLight"));
+  EXPECT_TRUE(contains(header, "translateSelectedEditableLight"));
+  EXPECT_TRUE(contains(header, "rotateSelectedEditableLight"));
+  EXPECT_TRUE(contains(header, "scaleSelectedEditableLight"));
+  EXPECT_TRUE(contains(source, "applyEditableLightOverrides"));
+  EXPECT_TRUE(contains(source, "appendManualEditableLights"));
+  EXPECT_EQ(source.find("GuiManager"), std::string::npos);
+}
+
+TEST(RenderingConventionTests, SceneControlsExposeEditableLightInspector) {
+  const std::string header =
+      readRepoTextFile("include/Container/utility/GuiManager.h");
+  const std::string gui = readRepoTextFile("src/utility/GuiManager.cpp");
+  const std::string frontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(header, "EditableLightEntity"));
+  EXPECT_TRUE(contains(header, "addManualEditableLight"));
+  EXPECT_TRUE(contains(gui, "Editable lights"));
+  EXPECT_TRUE(contains(gui, "Directional direction"));
+  EXPECT_TRUE(contains(gui, "Light Runtime Stats"));
+  EXPECT_EQ(gui.find("Lighting Preset"), std::string::npos);
+  EXPECT_EQ(gui.find("LightingPreset("), std::string::npos);
+  EXPECT_LT(gui.find("Editable lights"), gui.find("Light Runtime Stats"));
+  EXPECT_TRUE(contains(gui, "Add point"));
+  EXPECT_TRUE(contains(gui, "Add spot"));
+  EXPECT_TRUE(contains(gui, "Add area"));
+  EXPECT_TRUE(contains(frontend, "editableLights()"));
+  EXPECT_TRUE(contains(frontend, "updateEditableLight"));
+}
+
+TEST(RenderingConventionTests, SceneControlsExposePrimitiveAddMenu) {
+  const std::string primitivesHeader =
+      readRepoTextFile("include/Container/renderer/scene/ScenePrimitives.h");
+  const std::string sceneManagerHeader =
+      readRepoTextFile("include/Container/utility/SceneManager.h");
+  const std::string sceneControllerHeader =
+      readRepoTextFile("include/Container/renderer/scene/SceneController.h");
+  const std::string guiHeader =
+      readRepoTextFile("include/Container/utility/GuiManager.h");
+  const std::string gui = readRepoTextFile("src/utility/GuiManager.cpp");
+  const std::string frontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(primitivesHeader, "enum class ScenePrimitiveKind"));
+  EXPECT_TRUE(contains(primitivesHeader, "TriangularPrism"));
+  EXPECT_TRUE(contains(sceneManagerHeader, "appendRuntimeMesh"));
+  EXPECT_TRUE(contains(sceneControllerHeader, "addScenePrimitive"));
+  EXPECT_TRUE(contains(guiHeader, "addScenePrimitive"));
+  EXPECT_TRUE(contains(gui, "Add Primitive"));
+  EXPECT_TRUE(contains(gui, "Plane (double-sided wall)"));
+  EXPECT_TRUE(contains(gui, "Triangular Prism"));
+  EXPECT_TRUE(contains(gui, "Pyramid"));
+  EXPECT_TRUE(contains(gui, "Torus"));
+  EXPECT_TRUE(contains(frontend, "addScenePrimitive"));
+  EXPECT_TRUE(contains(frontend, "ScenePrimitiveKind"));
+
+  const size_t addPrimitiveStart =
+      frontend.find("addScenePrimitive =");
+  ASSERT_NE(addPrimitiveStart, std::string::npos);
+  const size_t addPrimitiveEnd =
+      frontend.find("subs_.guiManager->drawSceneControls", addPrimitiveStart);
+  ASSERT_NE(addPrimitiveEnd, std::string::npos);
+  const std::string addPrimitiveBlock =
+      frontend.substr(addPrimitiveStart, addPrimitiveEnd - addPrimitiveStart);
+  EXPECT_TRUE(contains(addPrimitiveBlock, "syncSceneStateFromController()"));
+  EXPECT_TRUE(contains(addPrimitiveBlock, "updateObjectBuffer()"));
+  EXPECT_TRUE(contains(addPrimitiveBlock, "syncSceneProviders()"));
+}
+
+TEST(RenderingConventionTests, TransformGizmoCanOperateOnSelectedEditableLights) {
+  const std::string frontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(frontend, "selectedEditableLight()"));
+  EXPECT_TRUE(contains(frontend, "translateSelectedEditableLight"));
+  EXPECT_TRUE(contains(frontend, "rotateSelectedEditableLight"));
+  EXPECT_TRUE(contains(frontend, "scaleSelectedEditableLight"));
+  EXPECT_TRUE(contains(frontend, "Selected editable light"));
+}
+
+TEST(RenderingConventionTests, ViewportSelectionChecksEditableLightGizmos) {
+  const std::string header =
+      readRepoTextFile("include/Container/renderer/core/RendererFrontend.h");
+  const std::string frontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(header, "pickEditableLightAtCursor"));
+  EXPECT_TRUE(contains(frontend, "pickDeferredLightGizmoAtCursor"));
+  EXPECT_TRUE(contains(frontend, "buildDeferredLightGizmoPlan"));
+  EXPECT_TRUE(contains(frontend, "editableLights()"));
+  EXPECT_TRUE(contains(frontend, "selectEditableLight(id)"));
+
+  const size_t pickStart =
+      frontend.find("RendererFrontend::pickEditableLightAtCursor");
+  ASSERT_NE(pickStart, std::string::npos);
+  const size_t pickEnd =
+      frontend.find("void RendererFrontend::hoverMeshNodeAtCursor", pickStart);
+  ASSERT_NE(pickEnd, std::string::npos);
+  const std::string pickBlock = frontend.substr(pickStart, pickEnd - pickStart);
+  EXPECT_TRUE(contains(pickBlock, "showLightGizmos()"));
+
+  const size_t selectStart =
+      frontend.find("void RendererFrontend::selectMeshNodeAtCursor");
+  ASSERT_NE(selectStart, std::string::npos);
+  const size_t selectEnd =
+      frontend.find("void RendererFrontend::hoverMeshNodeAtCursor", selectStart);
+  ASSERT_NE(selectEnd, std::string::npos);
+  const std::string selectBlock =
+      frontend.substr(selectStart, selectEnd - selectStart);
+
+  const size_t gpuPick = selectBlock.find("samplePickIdAtCursor");
+  const size_t lightPick = selectBlock.find("pickEditableLightAtCursor");
+  const size_t clearSelection = selectBlock.find("clearSelectedMeshNode");
+  ASSERT_NE(gpuPick, std::string::npos);
+  ASSERT_NE(lightPick, std::string::npos);
+  ASSERT_NE(clearSelection, std::string::npos);
+  EXPECT_LT(lightPick, gpuPick);
+  EXPECT_LT(lightPick, clearSelection);
+
+  const size_t clearStart =
+      frontend.find("void RendererFrontend::clearSelectedMeshNode");
+  ASSERT_NE(clearStart, std::string::npos);
+  const size_t clearEnd =
+      frontend.find("void RendererFrontend::transformSelectedNodeByDrag",
+                    clearStart);
+  ASSERT_NE(clearEnd, std::string::npos);
+  const std::string clearBlock =
+      frontend.substr(clearStart, clearEnd - clearStart);
+  EXPECT_TRUE(contains(clearBlock, "selectEditableLight({})"));
 }
 
 TEST(RenderingConventionTests,
@@ -2050,7 +2704,8 @@ TEST(RenderingConventionTests, PostProcessShaderUsesExposurePushConstant) {
   EXPECT_NE(postProcess.find("pc.exposureMode"), std::string::npos);
   EXPECT_NE(postProcess.find("pc.minExposure"), std::string::npos);
   EXPECT_NE(postProcess.find("pc.maxExposure"), std::string::npos);
-  EXPECT_NE(postProcess.find("finalHdr * resolvedExposure"), std::string::npos);
+  EXPECT_NE(postProcess.find("FiniteColorOr(finalHdr, 0.0.xxx) *"),
+            std::string::npos);
   EXPECT_NE(postProcess.find("compositedColor * resolvedExposure"),
             std::string::npos);
   EXPECT_NE(postProcess.find("overviewCompositedColor * resolvedExposure"),
@@ -2200,6 +2855,9 @@ TEST(RenderingConventionTests, DeferredDepthReadOnlyTransitionUsesRecorder) {
   EXPECT_TRUE(contains(transitionBlock, ".shadowAtlasImage"));
   EXPECT_TRUE(contains(transitionBlock, ".shadowAtlasVisible"));
   EXPECT_TRUE(contains(transitionBlock, ".shadowCascadeCount"));
+  EXPECT_TRUE(contains(transitionBlock, ".localShadowAtlasImage"));
+  EXPECT_TRUE(contains(transitionBlock, ".localShadowAtlasVisible"));
+  EXPECT_TRUE(contains(transitionBlock, ".localShadowLayerCount"));
   EXPECT_FALSE(contains(transitionBlock, "VkImageMemoryBarrier"));
   EXPECT_FALSE(contains(transitionBlock, "vkCmdPipelineBarrier"));
   EXPECT_FALSE(contains(transitionBlock,
@@ -2214,6 +2872,9 @@ TEST(RenderingConventionTests, DeferredDepthReadOnlyTransitionUsesRecorder) {
                        "DeferredRasterDepthReadOnlyTransitionInputs"));
   EXPECT_TRUE(
       contains(transitionHeader, "DeferredRasterDepthReadOnlyTransitionPlan"));
+  EXPECT_TRUE(contains(transitionHeader, "localShadowAtlasImage"));
+  EXPECT_TRUE(contains(transitionHeader, "localShadowAtlasVisible"));
+  EXPECT_TRUE(contains(transitionHeader, "localShadowLayerCount"));
   EXPECT_TRUE(contains(transitionRecorder,
                        "buildDeferredRasterDepthReadOnlyTransitionPlan"));
   EXPECT_TRUE(contains(transitionRecorder,
@@ -2784,6 +3445,8 @@ TEST(RenderingConventionTests, DeferredLightingDescriptorsUsePlanner) {
   const std::string srcCmake = readRepoTextFile("src/CMakeLists.txt");
   const std::string testsCmake =
       readRepoTextFile("tests/CMakeLists.tests.cmake");
+  const std::string frameResourceManager =
+      readRepoTextFile("src/renderer/resources/FrameResourceManager.cpp");
 
   const size_t lightingPass =
       lightingPassRecorder.find(
@@ -2824,6 +3487,27 @@ TEST(RenderingConventionTests, DeferredLightingDescriptorsUsePlanner) {
   EXPECT_FALSE(contains(planner, "GuiManager"));
   EXPECT_FALSE(contains(planner, "BimManager"));
   EXPECT_FALSE(contains(planner, "vkCmd"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "{18, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "{19, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "{20, VK_DESCRIPTOR_TYPE_SAMPLER"));
+  EXPECT_TRUE(
+      contains(frameResourceManager, "sizeof(container::gpu::LocalShadowData)"));
+  EXPECT_TRUE(contains(frameResourceManager, "fallbackLocalShadowDataBuffer_"));
+  EXPECT_TRUE(contains(frameResourceManager, "fallbackLocalShadowAtlas_"));
+  EXPECT_TRUE(contains(frameResourceManager, "fallbackLocalShadowSampler_"));
+  EXPECT_TRUE(contains(frameResourceManager, "VK_IMAGE_VIEW_TYPE_2D_ARRAY"));
+  EXPECT_TRUE(contains(frameResourceManager, "VK_COMPARE_OP_GREATER"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "ensureFallbackLocalShadowDataBuffer"));
+  EXPECT_TRUE(contains(frameResourceManager,
+                       "ensureFallbackLocalShadowResources"));
+  EXPECT_FALSE(contains(frameResourceManager,
+                        "localShadowAtlasInfo = shadowAtlasInfo"));
+  EXPECT_FALSE(contains(frameResourceManager,
+                        "localShadowSamplerInfo = shadowSamplerInfo"));
   EXPECT_TRUE(contains(
       srcCmake, "renderer/deferred/DeferredLightingDescriptorPlanner.cpp"));
   EXPECT_TRUE(
@@ -2920,6 +3604,8 @@ TEST(RenderingConventionTests, DeferredLightGizmosUseRecorder) {
   EXPECT_TRUE(contains(lightingManager, "DeferredLightGizmoPlanner.h"));
   EXPECT_TRUE(contains(lightingManager, "DeferredLightGizmoRecorder.h"));
   EXPECT_TRUE(contains(drawGizmosBlock, "buildDeferredLightGizmoPlan"));
+  EXPECT_TRUE(contains(drawGizmosBlock, "editableLights_"));
+  EXPECT_FALSE(contains(drawGizmosBlock, "pointLightsSsbo_.data()"));
   EXPECT_TRUE(contains(drawGizmosBlock, "recordDeferredLightGizmoCommands"));
   EXPECT_FALSE(contains(drawGizmosBlock, "gizmoPushConstants"));
   EXPECT_FALSE(contains(drawGizmosBlock, "kMaxVisibleLightGizmos + 1u"));
@@ -2942,6 +3628,8 @@ TEST(RenderingConventionTests, DeferredLightGizmosUseRecorder) {
 
   EXPECT_TRUE(contains(plannerHeader, "DeferredLightGizmoPlanInputs"));
   EXPECT_TRUE(contains(plannerHeader, "DeferredLightGizmoPlan"));
+  EXPECT_TRUE(contains(plannerHeader, "DeferredLightGizmoVisual"));
+  EXPECT_TRUE(contains(plannerHeader, "pickDeferredLightGizmoAtCursor"));
   EXPECT_TRUE(contains(plannerHeader, "kMaxDeferredLightGizmos"));
   EXPECT_TRUE(contains(planner, "buildDeferredLightGizmoPlan"));
   EXPECT_TRUE(contains(planner, "normalizedDisplayColor"));
@@ -3996,7 +4684,7 @@ TEST(RenderingConventionTests, ShadowSettingsMapToShadowBufferVectors) {
   using container::gpu::ShadowData;
   using container::gpu::ShadowSettings;
 
-  EXPECT_EQ(sizeof(ShadowSettings), 40u);
+  EXPECT_EQ(sizeof(ShadowSettings), 44u);
   EXPECT_EQ(offsetof(ShadowSettings, normalBiasMinTexels), 0u);
   EXPECT_EQ(offsetof(ShadowSettings, normalBiasMaxTexels), 4u);
   EXPECT_EQ(offsetof(ShadowSettings, slopeBiasScale), 8u);
@@ -4007,6 +4695,7 @@ TEST(RenderingConventionTests, ShadowSettingsMapToShadowBufferVectors) {
   EXPECT_EQ(offsetof(ShadowSettings, maxDepthBias), 28u);
   EXPECT_EQ(offsetof(ShadowSettings, rasterConstantBias), 32u);
   EXPECT_EQ(offsetof(ShadowSettings, rasterSlopeBias), 36u);
+  EXPECT_EQ(offsetof(ShadowSettings, localContactVisibility), 40u);
 
   const ShadowSettings settings{};
   const ShadowData shadowData{};
@@ -4020,6 +4709,7 @@ TEST(RenderingConventionTests, ShadowSettingsMapToShadowBufferVectors) {
   EXPECT_FLOAT_EQ(shadowData.filterSettings.w, settings.maxDepthBias);
   EXPECT_FLOAT_EQ(settings.rasterConstantBias, -4.0f);
   EXPECT_FLOAT_EQ(settings.rasterSlopeBias, -1.5f);
+  EXPECT_TRUE(settings.localContactVisibility);
 }
 
 TEST(RenderingConventionTests, ShadowSettingsFlowFromUiThroughShadowUpload) {
@@ -4050,6 +4740,8 @@ TEST(RenderingConventionTests, ShadowSettingsFlowFromUiThroughShadowUpload) {
   EXPECT_TRUE(contains(guiManager, "&shadowSettings_.maxDepthBias"));
   EXPECT_TRUE(contains(guiManager, "&shadowSettings_.rasterConstantBias"));
   EXPECT_TRUE(contains(guiManager, "&shadowSettings_.rasterSlopeBias"));
+  EXPECT_TRUE(
+      contains(guiManager, "&shadowSettings_.localContactVisibility"));
 
   EXPECT_TRUE(contains(shadowManager, "shadowData_.biasSettings = glm::vec4("));
   EXPECT_TRUE(contains(shadowManager, "shadowSettings.normalBiasMinTexels"));
@@ -4087,6 +4779,7 @@ TEST(RenderingConventionTests, ShadowRasterDepthBiasIsDynamicFrameSetting) {
 
   EXPECT_TRUE(contains(sceneData, "float rasterConstantBias{-4.0f}"));
   EXPECT_TRUE(contains(sceneData, "float rasterSlopeBias{-1.5f}"));
+  EXPECT_TRUE(contains(sceneData, "bool localContactVisibility{true}"));
   EXPECT_TRUE(contains(frameRecorderHeader, "container::gpu::ShadowSettings"));
   EXPECT_TRUE(contains(rendererFrontend, "p.shadows.shadowSettings"));
   EXPECT_TRUE(
@@ -4139,6 +4832,10 @@ TEST(RenderingConventionTests, ShadowUploadSanitizesBiasAndFilterSettings) {
                        "std::max(shadowSettings.constantDepthBias, 0.0f)"));
   EXPECT_TRUE(
       contains(shadowManager, "std::max(shadowSettings.maxDepthBias, 0.0f)"));
+  EXPECT_TRUE(contains(shadowManager, "kLocalShadowNormalBiasMinTexels"));
+  EXPECT_TRUE(contains(shadowManager, "kLocalShadowNormalBiasMaxTexels"));
+  EXPECT_TRUE(contains(shadowManager, "localNormalBiasMinTexels"));
+  EXPECT_TRUE(contains(shadowManager, "localNormalBiasMaxTexels"));
 }
 
 TEST(RenderingConventionTests, ShadowCascadeSelectionUsesOrderedSplitDepths) {
@@ -4201,22 +4898,28 @@ TEST(RenderingConventionTests, ShadowDebugViewsUseDataDrivenCascadeMetadata) {
   EXPECT_TRUE(contains(guiManager, "\"Shadow Cascades\""));
   EXPECT_TRUE(contains(guiManager, "\"Shadow Texel Density\""));
 
-  EXPECT_TRUE(contains(postProcess, "if (outputMode == 11u)"));
+  EXPECT_TRUE(contains(postProcess, "DebugTextureViewColor(outputMode"));
+  EXPECT_TRUE(contains(postProcess, "ValidSceneDepth(depthSample)"));
+  EXPECT_TRUE(contains(postProcess, "outputMode >= 1u && outputMode <= 7u"));
+  EXPECT_FALSE(contains(postProcess, "if (outputMode == 1u)"));
+  EXPECT_FALSE(contains(postProcess, "if (outputMode == 6u || outputMode == 7u)"));
+  EXPECT_TRUE(contains(postProcess, "if (mode == 11u)"));
   EXPECT_TRUE(contains(postProcess, "pc.cascadeSplits[cascadeIndex]"));
   EXPECT_TRUE(contains(
       postProcess,
-      "float blendFraction = clamp(uShadow.filterSettings.y, 0.0, 0.45)"));
+      "clamp(FiniteOr(uShadow.filterSettings.y, 0.0), 0.0, 0.45)"));
+  EXPECT_TRUE(contains(postProcess, "isfinite(cascadeRange)"));
   EXPECT_TRUE(
       contains(postProcess,
-               "lerp(color, cascadeColors[cascadeIndex + 1], blendIndicator)"));
+               "lerp(color, cascadeColors[cascadeIndex + 1u], blendIndicator)"));
   EXPECT_FALSE(contains(postProcess, "float blendFraction = 0.1"));
   EXPECT_FALSE(contains(postProcess, "cascadeRange * 0.1"));
   EXPECT_FALSE(contains(postProcess, "cascadeRange * 0.10"));
 
-  EXPECT_TRUE(contains(postProcess, "if (outputMode == 13u)"));
+  EXPECT_TRUE(contains(postProcess, "if (mode == 13u)"));
   EXPECT_TRUE(contains(
       postProcess,
-      "float texelSize = max(uShadow.cascades[cascadeIndex].texelSize"));
+      "FiniteOr(uShadow.cascades[cascadeIndex].texelSize"));
   EXPECT_TRUE(contains(postProcess, "float texelsPerMeter = 1.0 / texelSize"));
   EXPECT_TRUE(contains(postProcess,
                        "float density = saturate(log2(max(texelsPerMeter"));
@@ -4324,12 +5027,124 @@ TEST(RenderingConventionTests, OcclusionCullKeepsLargeProjectedBoundsVisible) {
   EXPECT_FALSE(occlusionCullMayRejectProjectedBounds(256.0f));
 }
 
-TEST(RenderingConventionTests, DefaultConfigUsesRuntimeSponzaScene) {
+TEST(RenderingConventionTests,
+     ShadowAndOcclusionCullTreatInvalidProjectionDataAsVisible) {
+  const std::string shadowCull = readRepoTextFile("shaders/shadow_cull.slang");
+  const std::string occlusionCull =
+      readRepoTextFile("shaders/occlusion_cull.slang");
+
+  EXPECT_TRUE(contains(shadowCull, "!all(isfinite(boundingSphere))"));
+  EXPECT_TRUE(contains(shadowCull, "!all(isfinite(sphere))"));
+  EXPECT_TRUE(contains(shadowCull, "!all(isfinite(center))"));
+  EXPECT_TRUE(contains(shadowCull, "!all(isfinite(cascade.casterMinBounds))"));
+  EXPECT_TRUE(contains(occlusionCull, "!all(isfinite(worldPoint))"));
+  EXPECT_TRUE(contains(occlusionCull, "!all(isfinite(clip))"));
+  EXPECT_TRUE(contains(occlusionCull, "!all(isfinite(clipCenter))"));
+  EXPECT_TRUE(contains(occlusionCull, "!all(isfinite(ndc))"));
+}
+
+TEST(RenderingConventionTests, DefaultConfigUsesCornellBoxScene) {
   const auto config = container::app::DefaultAppConfig();
+  constexpr std::string_view kCornellBoxScene =
+      "models/validation/cornell_box_local_light.gltf";
 
   EXPECT_EQ(config.modelPath, container::app::kDefaultModelRelativePath);
+  EXPECT_EQ(container::app::kDefaultModelRelativePath, kCornellBoxScene);
   EXPECT_NE(config.modelPath, container::app::kDefaultSceneModelToken);
   EXPECT_FALSE(config.enableValidationLayers);
+}
+
+TEST(RenderingConventionTests, DefaultCornellSceneIsCopiedToBuildModels) {
+  const std::string assetsCmake = readRepoTextFile("cmake/Assets.cmake");
+
+  EXPECT_TRUE(contains(assetsCmake, "copy_validation_models"));
+  EXPECT_TRUE(contains(assetsCmake, "${MODELS_DIR}/validation"));
+  EXPECT_TRUE(contains(assetsCmake, "${MODELS_OUTPUT_DIR}/validation"));
+  EXPECT_TRUE(contains(assetsCmake,
+                       "add_dependencies(generate_models copy_validation_models)"));
+}
+
+TEST(RenderingConventionTests,
+     VisualRegressionHarnessPassesFixtureRenderModeToHeadlessApp) {
+  const std::string visualRegression =
+      readRepoTextFile("tests/validation/visual_regression_gpu_tests.cpp");
+
+  EXPECT_TRUE(contains(visualRegression, "scene.at(\"renderMode\")"));
+  EXPECT_TRUE(contains(visualRegression, "args.emplace_back(\"--display-mode\")"));
+  EXPECT_TRUE(
+      contains(visualRegression, "CONTAINER_VISUAL_REGRESSION_SCENE"));
+  EXPECT_TRUE(contains(visualRegression, "\"skipReason\", \"scene filter\""));
+}
+
+TEST(RenderingConventionTests,
+     VisualRegressionHarnessDisablesBloomForLightingShadowCaptures) {
+  const std::string appConfig =
+      readRepoTextFile("include/Container/app/AppConfig.h");
+  const std::string main = readRepoTextFile("main.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+  const std::string visualRegression =
+      readRepoTextFile("tests/validation/visual_regression_gpu_tests.cpp");
+
+  EXPECT_TRUE(contains(appConfig, "hasBloomEnabledOverride"));
+  EXPECT_TRUE(contains(appConfig, "bool bloomEnabled"));
+  EXPECT_TRUE(contains(main, "arg == \"--no-bloom\""));
+  EXPECT_TRUE(contains(rendererFrontend, "svc_.config.hasBloomEnabledOverride"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "subs_.bloomManager->enabled() = svc_.config.bloomEnabled"));
+  EXPECT_TRUE(contains(visualRegression, "args.emplace_back(\"--no-bloom\")"));
+}
+
+TEST(RenderingConventionTests,
+     VisualRegressionHarnessBlocksPlannedFixtureGoldenPromotion) {
+  const std::string visualRegression =
+      readRepoTextFile("tests/validation/visual_regression_gpu_tests.cpp");
+
+  EXPECT_TRUE(contains(visualRegression, "status != \"active\""));
+  EXPECT_TRUE(contains(visualRegression, "goldenPromotionBlocked"));
+  EXPECT_TRUE(contains(
+      visualRegression,
+      "refusing to promote golden for non-active fixture"));
+  EXPECT_TRUE(contains(
+      visualRegression,
+      "copyCandidateToGolden(candidatePath, goldenPath, overwriteGoldens)"));
+}
+
+TEST(RenderingConventionTests,
+     DefaultCornellStartupDisablesBloomUnlessExplicitlyOverridden) {
+  const std::string appConfig =
+      readRepoTextFile("include/Container/app/AppConfig.h");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(appConfig, "kDefaultAuthoredLocalLightBloomEnabled"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "kDefaultAuthoredLocalLightBloomEnabled"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "svc_.config.hasBloomEnabledOverride"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "IsDefaultAuthoredLocalLightScene(svc_.config.modelPath)"));
+}
+
+TEST(RenderingConventionTests, HeadlessDisplayModeOverrideIsConfigDriven) {
+  const std::string appConfig =
+      readRepoTextFile("include/Container/app/AppConfig.h");
+  const std::string main = readRepoTextFile("main.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+  const std::string frameGraphContextHeader = readRepoTextFile(
+      "include/Container/renderer/deferred/DeferredRasterFrameGraphContext.h");
+  const std::string lightingPassHeader = readRepoTextFile(
+      "include/Container/renderer/deferred/DeferredRasterLightingPassRecorder.h");
+  const std::string lightingPass = readRepoTextFile(
+      "src/renderer/deferred/DeferredRasterLightingPassRecorder.cpp");
+
+  EXPECT_TRUE(contains(appConfig, "std::string displayModeOverride"));
+  EXPECT_TRUE(contains(main, "arg == \"--display-mode\""));
+  EXPECT_TRUE(contains(rendererFrontend, "configuredDisplayMode(svc_.config)"));
+  EXPECT_TRUE(contains(frameGraphContextHeader, "fallbackDisplayMode"));
+  EXPECT_TRUE(contains(lightingPassHeader, "fallbackDisplayMode"));
+  EXPECT_TRUE(contains(lightingPass, "currentDisplayMode(guiManager,"));
 }
 
 TEST(RenderingConventionTests,
@@ -7050,6 +7865,97 @@ TEST(RenderingConventionTests, BimSectionClipCapsExposeShaderStyleContract) {
   EXPECT_TRUE(
       contains(srcCmake, "renderer/bim/BimSectionClipCapPassPlanner.cpp"));
   EXPECT_TRUE(contains(testsCmake, "bim_section_clip_cap_pass_planner_tests"));
+}
+
+TEST(RenderingConventionTests, BimElevationViewUiReusesCameraAndRenderState) {
+  const std::string guiManagerHeader =
+      readRepoTextFile("include/Container/utility/GuiManager.h");
+  const std::string guiManager = readRepoTextFile("src/utility/GuiManager.cpp");
+  const std::string cameraControllerHeader = readRepoTextFile(
+      "include/Container/renderer/scene/CameraController.h");
+  const std::string cameraController =
+      readRepoTextFile("src/renderer/scene/CameraController.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(
+      contains(guiManagerHeader, "enum class BimElevationTechnicalStyle"));
+  EXPECT_TRUE(contains(guiManagerHeader, "struct BimElevationViewState"));
+  EXPECT_TRUE(contains(guiManagerHeader, "bimElevationViewState()"));
+  EXPECT_TRUE(contains(guiManagerHeader, "consumeBimElevationViewRequest()"));
+
+  EXPECT_TRUE(contains(guiManager, "BIM Elevation View"));
+  EXPECT_TRUE(contains(guiManager, "Front elevation"));
+  EXPECT_TRUE(contains(guiManager, "Back elevation"));
+  EXPECT_TRUE(contains(guiManager, "Left elevation"));
+  EXPECT_TRUE(contains(guiManager, "Right elevation"));
+  EXPECT_TRUE(contains(guiManager, "Shaded"));
+  EXPECT_TRUE(contains(guiManager, "Technical"));
+  EXPECT_TRUE(contains(guiManager, "Hidden line"));
+  EXPECT_TRUE(contains(guiManager, "applyBimElevationDisplayIntent"));
+  EXPECT_TRUE(
+      contains(guiManager, "wireframeSettings_.mode = WireframeMode::Full"));
+  EXPECT_TRUE(contains(guiManager,
+                       "wireframeSettings_.mode = WireframeMode::Overlay"));
+
+  EXPECT_TRUE(contains(cameraControllerHeader, "setBimElevationView"));
+  EXPECT_TRUE(contains(cameraController,
+                       "CameraController::setBimElevationView"));
+  EXPECT_TRUE(contains(cameraController, "setOrthographic(nodeIndex, true)"));
+  EXPECT_TRUE(contains(cameraController, "setViewPreset(nodeIndex, preset)"));
+
+  EXPECT_TRUE(contains(rendererFrontend, "consumeBimElevationViewRequest"));
+  EXPECT_TRUE(contains(rendererFrontend, "setBimElevationView"));
+  EXPECT_TRUE(contains(rendererFrontend, "uploadCameraBuffers()"));
+}
+
+TEST(RenderingConventionTests, BimTechnicalElevationRendererComposesPasses) {
+  const std::string frameRecorderHeader =
+      readRepoTextFile("include/Container/renderer/core/FrameRecorder.h");
+  const std::string deferredLightingHeader =
+      readRepoTextFile("include/Container/renderer/deferred/DeferredRasterLighting.h");
+  const std::string deferredLighting =
+      readRepoTextFile("src/renderer/deferred/DeferredRasterLighting.cpp");
+  const std::string lightingPassRecorder = readRepoTextFile(
+      "src/renderer/deferred/DeferredRasterLightingPassRecorder.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(
+      contains(frameRecorderHeader, "FrameBimTechnicalElevationState"));
+  EXPECT_TRUE(contains(frameRecorderHeader, "technicalElevation"));
+  EXPECT_TRUE(contains(frameRecorderHeader, "hiddenLineOverlay"));
+  EXPECT_TRUE(contains(frameRecorderHeader, "sectionCapsEnabled"));
+
+  EXPECT_TRUE(contains(deferredLightingHeader,
+                       "DeferredLightingBimTechnicalElevationSettings"));
+  EXPECT_TRUE(contains(deferredLightingHeader,
+                       "bimTechnicalElevationEnabled"));
+  EXPECT_TRUE(contains(deferredLighting,
+                       "applyBimTechnicalElevationHiddenLineStyle"));
+  EXPECT_TRUE(contains(deferredLighting,
+                       "state.wireframeSettings.depthTest = true"));
+  EXPECT_TRUE(contains(deferredLighting,
+                       "DeferredLightingWireframeMode::Overlay"));
+
+  EXPECT_TRUE(contains(lightingPassRecorder,
+                       "p.bim.technicalElevation"));
+  EXPECT_TRUE(contains(lightingPassRecorder,
+                       "technicalElevation.sectionCapsEnabled"));
+  EXPECT_TRUE(contains(lightingPassRecorder,
+                       "technicalElevation.capHatchingEnabled"));
+  EXPECT_TRUE(contains(lightingPassRecorder,
+                       "recordDeferredDebugOverlayWireframeOverlayCommands"));
+  EXPECT_TRUE(contains(lightingPassRecorder,
+                       "recordBimSectionClipCapFramePassCommands"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "BimElevationTechnicalStyle::HiddenLine"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "p.bim.technicalElevation.depthTestLines"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "technicalCapsEnabled"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "capUi.capPreview || capUi.hatchingPreview || technicalCapsEnabled"));
 }
 
 TEST(RenderingConventionTests, BimMetadataCatalogOwnsSemanticCatalogState) {

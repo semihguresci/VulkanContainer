@@ -16,7 +16,7 @@ using container::renderer::DebugOverlayRenderer;
 using container::renderer::DeferredTransparentOitFrameResourceInputs;
 using container::renderer::DeferredTransparentOitRecordInputs;
 using container::renderer::DrawCommand;
-using container::renderer::FrameResources;
+using container::renderer::OitManager;
 using container::renderer::SceneTransparentDrawPipeline;
 using container::renderer::SceneTransparentDrawPlan;
 using container::renderer::recordDeferredTransparentOitClearCommands;
@@ -151,21 +151,23 @@ TEST(DeferredTransparentOitRecorderTests,
 }
 
 TEST(DeferredTransparentOitRecorderTests,
-     OitClearRejectsMissingCommandBufferManagerAndFrame) {
-  const auto frame = reinterpret_cast<const FrameResources *>(0x1);
+     OitClearRejectsMissingCommandBufferManagerAndResources) {
+  const auto *oitManager = reinterpret_cast<const OitManager *>(0x1);
 
   EXPECT_FALSE(recordDeferredTransparentOitClearCommands(
-      VK_NULL_HANDLE, DeferredTransparentOitFrameResourceInputs{.frame = frame}));
+      VK_NULL_HANDLE,
+      DeferredTransparentOitFrameResourceInputs{.oitManager = oitManager}));
   EXPECT_FALSE(recordDeferredTransparentOitClearCommands(
       fakeHandle<VkCommandBuffer>(0x2), {}));
 }
 
 TEST(DeferredTransparentOitRecorderTests,
-     OitResolvePreparationRejectsMissingCommandBufferManagerAndFrame) {
-  const auto frame = reinterpret_cast<const FrameResources *>(0x1);
+     OitResolvePreparationRejectsMissingCommandBufferManagerAndResources) {
+  const auto *oitManager = reinterpret_cast<const OitManager *>(0x1);
 
   EXPECT_FALSE(recordDeferredTransparentOitResolvePreparationCommands(
-      VK_NULL_HANDLE, DeferredTransparentOitFrameResourceInputs{.frame = frame}));
+      VK_NULL_HANDLE,
+      DeferredTransparentOitFrameResourceInputs{.oitManager = oitManager}));
   EXPECT_FALSE(recordDeferredTransparentOitResolvePreparationCommands(
       fakeHandle<VkCommandBuffer>(0x3), {}));
 }

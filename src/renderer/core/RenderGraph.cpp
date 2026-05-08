@@ -39,6 +39,7 @@ constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "ShadowCascade1",
     "ShadowCascade2",
     "ShadowCascade3",
+    "LocalShadowDepth",
     "DepthToReadOnly",
     "TileCull",
     "GTAO",
@@ -80,6 +81,8 @@ constexpr std::array<std::string_view, kRenderResourceIdCount>
         "ShadowCullCascade2",
         "ShadowCullCascade3",
         "ShadowAtlas",
+        "LocalShadowData",
+        "LocalShadowAtlas",
         "TileLightGrid",
         "AmbientOcclusion",
         "SceneColor",
@@ -153,6 +156,7 @@ constexpr std::array kGBufferOptionalScheduleDependencies{
 };
 constexpr std::array kDepthToReadOnlyOptionalScheduleDependencies{
     RenderPassId::BimGBuffer,
+    RenderPassId::LocalShadowDepth,
 };
 constexpr std::array kTransparentPickOptionalScheduleDependencies{
     RenderPassId::BimGBuffer,
@@ -170,6 +174,7 @@ constexpr std::array kShadowCascade2ScheduleDependencies{
 constexpr std::array kShadowCascade3ScheduleDependencies{
     RenderPassId::ShadowCullCascade3,
 };
+constexpr std::array<RenderPassId, 0> kLocalShadowDepthScheduleDependencies{};
 constexpr std::array kDepthToReadOnlyScheduleDependencies{
     RenderPassId::GBuffer,
     RenderPassId::TransparentPick,
@@ -350,6 +355,17 @@ constexpr std::array kShadowCascade3OptionalReads{
 constexpr std::array kShadowCascadeWrites{
     RenderResourceId::ShadowAtlas,
 };
+constexpr std::array kLocalShadowDepthReads{
+    RenderResourceId::SceneGeometry,
+    RenderResourceId::BimGeometry,
+    RenderResourceId::CameraBuffer,
+    RenderResourceId::ObjectBuffer,
+    RenderResourceId::BimObjectBuffer,
+    RenderResourceId::LocalShadowData,
+};
+constexpr std::array kLocalShadowDepthWrites{
+    RenderResourceId::LocalShadowAtlas,
+};
 constexpr std::array kDepthToReadOnlyReads{
     RenderResourceId::SceneDepth,
 };
@@ -384,6 +400,7 @@ constexpr std::array kLightingReads{
 };
 constexpr std::array kLightingOptionalReads{
     RenderResourceId::ShadowAtlas,
+    RenderResourceId::LocalShadowAtlas,
     RenderResourceId::TileLightGrid,
     RenderResourceId::AmbientOcclusion,
     RenderResourceId::OitStorage,
@@ -644,6 +661,8 @@ std::span<const RenderPassId> renderPassScheduleDependencies(RenderPassId id) {
       return kShadowCascade2ScheduleDependencies;
     case RenderPassId::ShadowCascade3:
       return kShadowCascade3ScheduleDependencies;
+    case RenderPassId::LocalShadowDepth:
+      return kLocalShadowDepthScheduleDependencies;
     case RenderPassId::DepthToReadOnly:
       return kDepthToReadOnlyScheduleDependencies;
     case RenderPassId::TileCull:
@@ -681,6 +700,7 @@ bool isExternalRenderResource(RenderResourceId id) {
     case RenderResourceId::BimObjectBuffer:
     case RenderResourceId::LightingData:
     case RenderResourceId::ShadowData:
+    case RenderResourceId::LocalShadowData:
     case RenderResourceId::EnvironmentMaps:
       return true;
     default:
@@ -718,6 +738,8 @@ std::span<const RenderResourceId> renderPassResourceReads(RenderPassId id) {
     case RenderPassId::ShadowCascade2:
     case RenderPassId::ShadowCascade3:
       return kShadowCascadeReads;
+    case RenderPassId::LocalShadowDepth:
+      return kLocalShadowDepthReads;
     case RenderPassId::DepthToReadOnly:
       return kDepthToReadOnlyReads;
     case RenderPassId::TileCull:
@@ -798,6 +820,8 @@ std::span<const RenderResourceId> renderPassResourceWrites(RenderPassId id) {
     case RenderPassId::ShadowCascade2:
     case RenderPassId::ShadowCascade3:
       return kShadowCascadeWrites;
+    case RenderPassId::LocalShadowDepth:
+      return kLocalShadowDepthWrites;
     case RenderPassId::DepthToReadOnly:
       return kDepthToReadOnlyWrites;
     case RenderPassId::TileCull:

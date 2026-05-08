@@ -28,6 +28,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/pipeline/PipelineRegistry.cpp
 
     renderer/lighting/EnvironmentManager.cpp
+    renderer/lighting/EditableLight.cpp
     renderer/lighting/LightingManager.cpp
     renderer/lighting/TinyExrImpl.cpp
 
@@ -43,6 +44,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/scene/CameraController.cpp
     renderer/scene/SceneController.cpp
     renderer/scene/SceneDiagnosticCubeRecorder.cpp
+    renderer/scene/ScenePrimitives.cpp
     renderer/scene/SceneViewport.cpp
     renderer/scene/SceneOpaqueDrawPlanner.cpp
     renderer/scene/SceneOpaqueDrawRecorder.cpp

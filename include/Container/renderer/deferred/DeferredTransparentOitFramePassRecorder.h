@@ -3,8 +3,12 @@
 #include "Container/common/CommonVulkan.h"
 #include "Container/renderer/core/RenderGraph.h"
 
+#include <cstdint>
+#include <optional>
+
 namespace container::ui {
 class GuiManager;
+enum class GBufferViewMode : uint32_t;
 } // namespace container::ui
 
 namespace container::renderer {
@@ -15,6 +19,7 @@ struct FrameRecordParams;
 struct DeferredTransparentOitFramePassServices {
   const OitManager *oitManager{nullptr};
   const container::ui::GuiManager *guiManager{nullptr};
+  std::optional<container::ui::GBufferViewMode> fallbackDisplayMode{};
 };
 
 class DeferredTransparentOitFramePassRecorder {

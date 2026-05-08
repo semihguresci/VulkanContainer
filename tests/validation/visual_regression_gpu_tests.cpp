@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -508,6 +509,74 @@ Json evaluateImageProbes(std::string_view sceneId, const Json& probes,
       continue;
     }
 
+    if (kind == "relative_region_luminance") {
+      const PixelRegion litRegion = probeRegion(probe, image, "litRegion");
+      const PixelRegion shadowRegion =
+          probeRegion(probe, image, "shadowRegion");
+      const RegionStats litStats = luminanceStats(image, litRegion);
+      const RegionStats shadowStats = luminanceStats(image, shadowRegion);
+      const double maximumRatio =
+          probe.at("maximumShadowToLitRatio").get<double>();
+      const double ratio =
+          litStats.meanLinearLuminance > 1.0e-9
+              ? shadowStats.meanLinearLuminance /
+                    litStats.meanLinearLuminance
+              : std::numeric_limits<double>::infinity();
+      const bool passed = ratio <= maximumRatio;
+      result["actualLitMeanLinearLuminance"] = litStats.meanLinearLuminance;
+      result["actualShadowMeanLinearLuminance"] =
+          shadowStats.meanLinearLuminance;
+      result["actualShadowToLitRatio"] = ratio;
+      result["maximumShadowToLitRatio"] = maximumRatio;
+      result["passed"] = passed;
+      EXPECT_TRUE(passed) << sceneId << "/" << id
+                          << " expected shadow/lit luminance ratio <= "
+                          << maximumRatio << ", got " << ratio;
+      results.push_back(std::move(result));
+      continue;
+    }
+
+    if (kind == "shadow_softness_gradient") {
+      const PixelRegion umbraRegion = probeRegion(probe, image, "umbraRegion");
+      const PixelRegion penumbraRegion =
+          probeRegion(probe, image, "penumbraRegion");
+      const PixelRegion litRegion = probeRegion(probe, image, "litRegion");
+      const RegionStats umbraStats = luminanceStats(image, umbraRegion);
+      const RegionStats penumbraStats = luminanceStats(image, penumbraRegion);
+      const RegionStats litStats = luminanceStats(image, litRegion);
+      const double minimumUmbraToPenumbraDelta =
+          probe.at("minimumUmbraToPenumbraDelta").get<double>();
+      const double minimumPenumbraToLitDelta =
+          probe.at("minimumPenumbraToLitDelta").get<double>();
+      const double umbraToPenumbraDelta =
+          penumbraStats.meanLinearLuminance - umbraStats.meanLinearLuminance;
+      const double penumbraToLitDelta =
+          litStats.meanLinearLuminance - penumbraStats.meanLinearLuminance;
+      const bool passed =
+          umbraToPenumbraDelta >= minimumUmbraToPenumbraDelta &&
+          penumbraToLitDelta >= minimumPenumbraToLitDelta;
+      result["actualUmbraMeanLinearLuminance"] =
+          umbraStats.meanLinearLuminance;
+      result["actualPenumbraMeanLinearLuminance"] =
+          penumbraStats.meanLinearLuminance;
+      result["actualLitMeanLinearLuminance"] = litStats.meanLinearLuminance;
+      result["actualUmbraToPenumbraDelta"] = umbraToPenumbraDelta;
+      result["actualPenumbraToLitDelta"] = penumbraToLitDelta;
+      result["minimumUmbraToPenumbraDelta"] = minimumUmbraToPenumbraDelta;
+      result["minimumPenumbraToLitDelta"] = minimumPenumbraToLitDelta;
+      result["passed"] = passed;
+      EXPECT_TRUE(passed) << sceneId << "/" << id
+                          << " expected soft shadow luminance ordering with "
+                          << "umbra->penumbra delta >= "
+                          << minimumUmbraToPenumbraDelta
+                          << " and penumbra->lit delta >= "
+                          << minimumPenumbraToLitDelta << ", got "
+                          << umbraToPenumbraDelta << " and "
+                          << penumbraToLitDelta;
+      results.push_back(std::move(result));
+      continue;
+    }
+
     if (kind == "dominant_color_fraction") {
       const PixelRegion region = probeRegion(probe, image, "region");
       const double fraction = dominantColorFraction(
@@ -584,6 +653,91 @@ TEST(VisualRegressionGpu, WritesHeatmapDiffImages) {
   EXPECT_LT(pixel(3, 2), 40);
 }
 
+TEST(VisualRegressionGpu, EvaluatesRelativeRegionLuminanceProbes) {
+  Image image;
+  image.width = 4;
+  image.height = 2;
+  image.rgba.assign(4u * 2u * 4u, 255);
+
+  auto setPixel = [&](int x, int y, unsigned char value) {
+    const size_t offset =
+        (static_cast<size_t>(y) * static_cast<size_t>(image.width) +
+         static_cast<size_t>(x)) *
+        4u;
+    image.rgba[offset] = value;
+    image.rgba[offset + 1u] = value;
+    image.rgba[offset + 2u] = value;
+  };
+
+  for (int y = 0; y < image.height; ++y) {
+    for (int x = 0; x < image.width; ++x) {
+      setPixel(x, y, x < 2 ? 220 : 80);
+    }
+  }
+
+  const Json probes = Json::array({
+      {
+          {"id", "cornell_blocker_shadow_ratio"},
+          {"kind", "relative_region_luminance"},
+          {"litRegion", Json::array({0, 0, 2, 2})},
+          {"shadowRegion", Json::array({2, 0, 2, 2})},
+          {"maximumShadowToLitRatio", 0.35},
+      },
+  });
+
+  const Json results =
+      evaluateImageProbes("synthetic_cornell_box", probes, image);
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_FALSE(results.at(0).value("skipped", false));
+  EXPECT_TRUE(results.at(0).at("passed").get<bool>());
+  EXPECT_LT(results.at(0).at("actualShadowToLitRatio").get<double>(), 0.35);
+}
+
+TEST(VisualRegressionGpu, EvaluatesShadowSoftnessGradientProbes) {
+  Image image;
+  image.width = 6;
+  image.height = 2;
+  image.rgba.assign(6u * 2u * 4u, 255);
+
+  auto setPixel = [&](int x, int y, unsigned char value) {
+    const size_t offset =
+        (static_cast<size_t>(y) * static_cast<size_t>(image.width) +
+         static_cast<size_t>(x)) *
+        4u;
+    image.rgba[offset] = value;
+    image.rgba[offset + 1u] = value;
+    image.rgba[offset + 2u] = value;
+  };
+
+  for (int y = 0; y < image.height; ++y) {
+    for (int x = 0; x < image.width; ++x) {
+      const unsigned char value = x < 2 ? 50 : (x < 4 ? 135 : 225);
+      setPixel(x, y, value);
+    }
+  }
+
+  const Json probes = Json::array({
+      {
+          {"id", "cornell_blocker_shadow_has_penumbra"},
+          {"kind", "shadow_softness_gradient"},
+          {"umbraRegion", Json::array({0, 0, 2, 2})},
+          {"penumbraRegion", Json::array({2, 0, 2, 2})},
+          {"litRegion", Json::array({4, 0, 2, 2})},
+          {"minimumUmbraToPenumbraDelta", 0.10},
+          {"minimumPenumbraToLitDelta", 0.20},
+      },
+  });
+
+  const Json results =
+      evaluateImageProbes("synthetic_cornell_box", probes, image);
+  ASSERT_EQ(results.size(), 1u);
+  EXPECT_FALSE(results.at(0).value("skipped", false));
+  EXPECT_TRUE(results.at(0).at("passed").get<bool>());
+  EXPECT_GT(results.at(0).at("actualUmbraToPenumbraDelta").get<double>(),
+            0.10);
+  EXPECT_GT(results.at(0).at("actualPenumbraToLitDelta").get<double>(), 0.20);
+}
+
 TEST(VisualRegressionGpu, CapturesAndComparesFixtureScenes) {
   if (!envFlag("CONTAINER_RUN_GPU_VISUAL_REGRESSION")) {
     GTEST_SKIP() << "set CONTAINER_RUN_GPU_VISUAL_REGRESSION=1 to run GPU "
@@ -617,6 +771,7 @@ TEST(VisualRegressionGpu, CapturesAndComparesFixtureScenes) {
       envFlag("CONTAINER_VISUAL_REGRESSION_PROMOTE_GOLDENS");
   const bool overwriteGoldens =
       envFlag("CONTAINER_VISUAL_REGRESSION_OVERWRITE_GOLDENS");
+  const auto sceneFilter = envString("CONTAINER_VISUAL_REGRESSION_SCENE");
   const Json& capture = fixtures.at("capture");
   const auto resolution = capture.at("resolution");
   const uint32_t captureFrame = capture.at("captureFrame").get<uint32_t>();
@@ -638,16 +793,28 @@ TEST(VisualRegressionGpu, CapturesAndComparesFixtureScenes) {
            {"allowMissingGoldens", allowMissingGoldens},
            {"promoteMissingGoldens", promoteMissingGoldens},
            {"overwriteGoldens", overwriteGoldens},
+           {"sceneFilter", sceneFilter.value_or("")},
        }},
       {"scenes", Json::array()},
   };
 
   size_t capturedScenes = 0;
   for (const Json& scene : fixtures.at("scenes")) {
+    const std::string sceneId = scene.at("id").get<std::string>();
     const std::string status = scene.at("status").get<std::string>();
+    if (sceneFilter && sceneId != *sceneFilter) {
+      manifest["scenes"].push_back({
+          {"id", sceneId},
+          {"status", status},
+          {"skipped", true},
+          {"skipReason", "scene filter"},
+      });
+      continue;
+    }
+
     if (status != "active" && !includePlanned) {
       manifest["scenes"].push_back({
-          {"id", scene.at("id").get<std::string>()},
+          {"id", sceneId},
           {"status", status},
           {"skipped", true},
           {"skipReason", "planned scene excluded"},
@@ -655,7 +822,6 @@ TEST(VisualRegressionGpu, CapturesAndComparesFixtureScenes) {
       continue;
     }
 
-    const std::string sceneId = scene.at("id").get<std::string>();
     const std::string asset = scene.at("asset").get<std::string>();
     const std::filesystem::path modelPath = sceneAssetPath(asset, appExecutable);
 
@@ -712,6 +878,9 @@ TEST(VisualRegressionGpu, CapturesAndComparesFixtureScenes) {
     args.emplace_back(std::to_string(fixedDt));
     args.emplace_back("--no-ui");
     args.emplace_back("--hidden");
+    args.emplace_back("--no-bloom");
+    args.emplace_back("--display-mode");
+    args.emplace_back(scene.at("renderMode").get<std::string>());
     appendVec3(args, "--camera-position", scene.at("camera").at("position"));
     appendVec3(args, "--camera-target", scene.at("camera").at("target"));
     args.emplace_back("--camera-fov");
@@ -762,7 +931,14 @@ TEST(VisualRegressionGpu, CapturesAndComparesFixtureScenes) {
       continue;
     }
 
-    if (promoteMissingGoldens || overwriteGoldens) {
+    if ((promoteMissingGoldens || overwriteGoldens) && status != "active") {
+      sceneResult["goldenPromotionBlocked"] = true;
+      ADD_FAILURE() << "refusing to promote golden for non-active fixture "
+                    << sceneId
+                    << "; planned validation captures are diagnostic-only "
+                       "until they are made active with a reference-backed "
+                       "golden";
+    } else if (promoteMissingGoldens || overwriteGoldens) {
       sceneResult["promotedGolden"] =
           copyCandidateToGolden(candidatePath, goldenPath, overwriteGoldens);
     }

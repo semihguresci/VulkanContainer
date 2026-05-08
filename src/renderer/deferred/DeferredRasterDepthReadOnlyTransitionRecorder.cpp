@@ -77,6 +77,19 @@ buildDeferredRasterDepthReadOnlyTransitionPlan(
                     VK_ACCESS_SHADER_READ_BIT)});
   }
 
+  if (!inputs.localShadowAtlasVisible &&
+      inputs.localShadowAtlasImage != VK_NULL_HANDLE &&
+      inputs.localShadowLayerCount > 0u) {
+    appendStep(plan,
+               {.srcStageMask = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                .dstStageMask = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                .barrier = makeDepthToReadOnlyBarrier(
+                    inputs.localShadowAtlasImage, inputs.localShadowLayerCount,
+                    VK_IMAGE_LAYOUT_UNDEFINED,
+                    VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, 0,
+                    VK_ACCESS_SHADER_READ_BIT)});
+  }
+
   return plan;
 }
 

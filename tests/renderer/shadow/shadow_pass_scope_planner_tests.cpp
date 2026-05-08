@@ -17,6 +17,22 @@ TEST(ShadowPassScopePlannerTests,
   EXPECT_EQ(plan.renderArea.extent.height, container::gpu::kShadowMapResolution);
 }
 
+TEST(ShadowPassScopePlannerTests, RenderAreaUsesProvidedLocalShadowExtent) {
+  const auto plan = buildShadowPassScopePlan(false, VkExtent2D{512u, 768u});
+
+  EXPECT_EQ(plan.renderArea.offset.x, 0);
+  EXPECT_EQ(plan.renderArea.offset.y, 0);
+  EXPECT_EQ(plan.renderArea.extent.width, 512u);
+  EXPECT_EQ(plan.renderArea.extent.height, 768u);
+}
+
+TEST(ShadowPassScopePlannerTests, ZeroExtentFallsBackToShadowMapExtent) {
+  const auto plan = buildShadowPassScopePlan(false, VkExtent2D{0u, 768u});
+
+  EXPECT_EQ(plan.renderArea.extent.width, container::gpu::kShadowMapResolution);
+  EXPECT_EQ(plan.renderArea.extent.height, container::gpu::kShadowMapResolution);
+}
+
 TEST(ShadowPassScopePlannerTests,
      ClearValuePreservesReverseZDepthContract) {
   const auto plan = buildShadowPassScopePlan(false);

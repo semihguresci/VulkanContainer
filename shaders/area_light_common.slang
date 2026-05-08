@@ -101,6 +101,8 @@ float3 EvaluateAreaLightSampleRadiance(AreaLightData light,
                                        uint sampleIndex,
                                        out float3 surfaceToLight)
 {
+    // This computes raw direct radiance. Callers apply local light-space
+    // visibility separately.
     float3 samplePosition = AreaLightSamplePosition(frame, sampleIndex);
     float3 lightVector = samplePosition - worldPosition;
     float distanceSq = dot(lightVector, lightVector);

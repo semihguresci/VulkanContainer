@@ -117,6 +117,9 @@ class FrameResourceManager {
                             VkImageView shadowAtlasView = VK_NULL_HANDLE,
                             VkSampler   shadowSampler   = VK_NULL_HANDLE,
                             std::span<const container::gpu::AllocatedBuffer> shadowUbos = {},
+                            VkImageView localShadowAtlasView = VK_NULL_HANDLE,
+                            VkSampler   localShadowSampler = VK_NULL_HANDLE,
+                            std::span<const container::gpu::AllocatedBuffer> localShadowUbos = {},
                             VkImageView irradianceView    = VK_NULL_HANDLE,
                             VkImageView prefilteredView   = VK_NULL_HANDLE,
                             VkImageView brdfLutView       = VK_NULL_HANDLE,
@@ -158,18 +161,26 @@ class FrameResourceManager {
   void            transitionToGeneral(VkImage image, VkImageAspectFlags mask) const;
   void            transitionToDepthAttachment(VkImage image,
                                               VkImageAspectFlags mask) const;
+  void            transitionToShaderReadOnly(VkImage image,
+                                             VkImageAspectFlags mask,
+                                             uint32_t layerCount) const;
   void            writeOitMetadata(FrameResources& frame) const;
   void            publishFrameResourceBindings();
   void            ensureFallbackTileGridBuffer();
   void            ensureFallbackExposureStateBuffer();
+  void            ensureFallbackLocalShadowDataBuffer();
+  void            ensureFallbackLocalShadowResources();
   VkCommandBuffer beginImmediate() const;
   void            endImmediate(VkCommandBuffer cmd) const;
 
   struct DescriptorUpdateKey {
     std::vector<VkBuffer> cameraBuffers{};
     std::vector<VkBuffer> shadowUboBuffers{};
+    std::vector<VkBuffer> localShadowUboBuffers{};
     VkImageView shadowAtlasView{VK_NULL_HANDLE};
     VkSampler   shadowSampler{VK_NULL_HANDLE};
+    VkImageView localShadowAtlasView{VK_NULL_HANDLE};
+    VkSampler   localShadowSampler{VK_NULL_HANDLE};
     VkImageView irradianceView{VK_NULL_HANDLE};
     VkImageView prefilteredView{VK_NULL_HANDLE};
     VkImageView brdfLutView{VK_NULL_HANDLE};
@@ -203,6 +214,9 @@ class FrameResourceManager {
   VkDescriptorPool oitPool_{VK_NULL_HANDLE};
   container::gpu::AllocatedBuffer fallbackTileGridBuffer_{};
   container::gpu::AllocatedBuffer fallbackExposureStateBuffer_{};
+  container::gpu::AllocatedBuffer fallbackLocalShadowDataBuffer_{};
+  AttachmentImage                 fallbackLocalShadowAtlas_{};
+  VkSampler                       fallbackLocalShadowSampler_{VK_NULL_HANDLE};
 
   GBufferFormats formats_{};
   VkRenderPass   depthPrepassPass_{VK_NULL_HANDLE};

@@ -74,29 +74,40 @@ bool hasBimTransparentGeometry(const FrameRecordParams& p) {
 
 container::ui::GBufferViewMode currentDisplayMode(
     const container::ui::GuiManager* guiManager) {
-  return guiManager ? guiManager->gBufferViewMode()
-                    : container::ui::GBufferViewMode::Overview;
+  return currentDisplayMode(guiManager,
+                            container::ui::GBufferViewMode::Overview);
+}
+
+container::ui::GBufferViewMode currentDisplayMode(
+    const container::ui::GuiManager* guiManager,
+    container::ui::GBufferViewMode fallbackDisplayMode) {
+  return guiManager ? guiManager->gBufferViewMode() : fallbackDisplayMode;
 }
 
 bool displayModeRecordsShadowAtlas(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::Lit;
+  return mode == container::ui::GBufferViewMode::Lit ||
+         mode == container::ui::GBufferViewMode::Overview;
 }
 
 bool displayModeRecordsTileCull(container::ui::GBufferViewMode mode) {
   return mode == container::ui::GBufferViewMode::Lit ||
+         mode == container::ui::GBufferViewMode::Overview ||
          mode == container::ui::GBufferViewMode::TileLightHeatMap;
 }
 
 bool displayModeRecordsGtao(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::Lit;
+  return mode == container::ui::GBufferViewMode::Lit ||
+         mode == container::ui::GBufferViewMode::Overview;
 }
 
 bool displayModeRecordsExposureAdaptation(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::Lit;
+  return mode == container::ui::GBufferViewMode::Lit ||
+         mode == container::ui::GBufferViewMode::Overview;
 }
 
 bool displayModeRecordsBloom(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::Lit;
+  return mode == container::ui::GBufferViewMode::Lit ||
+         mode == container::ui::GBufferViewMode::Overview;
 }
 
 namespace {
@@ -134,12 +145,21 @@ container::gpu::ExposureSettings sanitizeExposureSettings(
 bool shouldRecordTransparentOit(
     const FrameRecordParams& p,
     const container::ui::GuiManager* guiManager) {
+  return shouldRecordTransparentOit(
+      p, guiManager, container::ui::GBufferViewMode::Overview);
+}
+
+bool shouldRecordTransparentOit(
+    const FrameRecordParams& p,
+    const container::ui::GuiManager* guiManager,
+    container::ui::GBufferViewMode fallbackDisplayMode) {
   if (!hasTransparentDrawCommands(p)) {
     return false;
   }
 
-  const auto displayMode = currentDisplayMode(guiManager);
+  const auto displayMode = currentDisplayMode(guiManager, fallbackDisplayMode);
   if (displayMode != container::ui::GBufferViewMode::Lit &&
+      displayMode != container::ui::GBufferViewMode::Overview &&
       displayMode != container::ui::GBufferViewMode::Transparency &&
       displayMode != container::ui::GBufferViewMode::Revealage) {
     return false;

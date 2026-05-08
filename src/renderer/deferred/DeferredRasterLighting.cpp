@@ -33,6 +33,31 @@ namespace {
              : inputs.pipelines.pointLight;
 }
 
+[[nodiscard]] bool bimTechnicalElevationHiddenLineReady(
+    const DeferredLightingFrameInputs &inputs) {
+  return inputs.bimTechnicalElevation.enabled &&
+         inputs.bimTechnicalElevation.hiddenLineOverlay &&
+         inputs.bimTechnicalElevation.depthTestLines &&
+         inputs.wireframeSupported && inputs.pipelines.wireframeDepth;
+}
+
+void applyBimTechnicalElevationHiddenLineStyle(
+    DeferredLightingFrameState &state,
+    const DeferredLightingBimTechnicalElevationSettings &style) {
+  state.wireframeEnabled = true;
+  state.wireframeFullMode = false;
+  state.wireframeOverlayMode = true;
+  state.wireframeSettings.enabled = true;
+  state.wireframeSettings.mode = DeferredLightingWireframeMode::Overlay;
+  // Technical elevations use the filled prepass as the hidden-line mask.
+  state.wireframeSettings.depthTest = true;
+  state.wireframeSettings.color = style.lineColor;
+  state.wireframeSettings.lineWidth = sanitizeLineWidth(style.lineWidth);
+  state.wireframeSettings.overlayIntensity =
+      clampUnit(style.overlayIntensity, 0.95f);
+  state.wireframeIntensity = state.wireframeSettings.overlayIntensity;
+}
+
 } // namespace
 
 DeferredLightingFrameState buildDeferredLightingFrameState(
@@ -47,20 +72,29 @@ DeferredLightingFrameState buildDeferredLightingFrameState(
   state.normalValidationSettings = inputs.normalValidationSettings;
   state.normalValidationSettings.lineWidth =
       sanitizeLineWidth(state.normalValidationSettings.lineWidth);
+  state.bimTechnicalElevationEnabled =
+      bimTechnicalElevationHiddenLineReady(inputs);
 
-  state.wireframeEnabled =
+  const bool guiWireframeEnabled =
       inputs.guiAvailable && inputs.wireframeSupported &&
       state.wireframeSettings.enabled && inputs.pipelines.wireframeDepth &&
       inputs.pipelines.wireframeNoDepth;
-  state.wireframeFullMode =
-      state.wireframeEnabled &&
-      state.wireframeSettings.mode == DeferredLightingWireframeMode::Full;
-  state.wireframeOverlayMode =
-      state.wireframeEnabled &&
-      state.wireframeSettings.mode == DeferredLightingWireframeMode::Overlay;
-  state.wireframeIntensity =
-      state.wireframeFullMode ? 1.0f
-                              : state.wireframeSettings.overlayIntensity;
+  state.wireframeEnabled =
+      guiWireframeEnabled || state.bimTechnicalElevationEnabled;
+  if (state.bimTechnicalElevationEnabled) {
+    applyBimTechnicalElevationHiddenLineStyle(
+        state, inputs.bimTechnicalElevation);
+  } else {
+    state.wireframeFullMode =
+        state.wireframeEnabled &&
+        state.wireframeSettings.mode == DeferredLightingWireframeMode::Full;
+    state.wireframeOverlayMode =
+        state.wireframeEnabled &&
+        state.wireframeSettings.mode == DeferredLightingWireframeMode::Overlay;
+    state.wireframeIntensity =
+        state.wireframeFullMode ? 1.0f
+                                : state.wireframeSettings.overlayIntensity;
+  }
 
   state.objectSpaceNormalsEnabled =
       inputs.displayMode == DeferredLightingDisplayMode::ObjectSpaceNormals &&

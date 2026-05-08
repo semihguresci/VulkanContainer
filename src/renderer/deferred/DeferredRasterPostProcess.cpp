@@ -13,7 +13,8 @@ namespace {
 
 [[nodiscard]] bool
 displayModeUsesShadowCascadeSplits(container::ui::GBufferViewMode mode) {
-  return mode == container::ui::GBufferViewMode::ShadowCascades ||
+  return mode == container::ui::GBufferViewMode::Overview ||
+         mode == container::ui::GBufferViewMode::ShadowCascades ||
          mode == container::ui::GBufferViewMode::ShadowTexelDensity;
 }
 

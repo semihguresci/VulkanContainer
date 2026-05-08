@@ -80,6 +80,9 @@ public:
   void toggleProjectionMode(uint32_t nodeIndex);
   void setViewPreset(uint32_t nodeIndex,
                      container::ui::CameraViewPreset preset);
+  void setBimElevationView(
+      uint32_t nodeIndex,
+      const container::ui::BimElevationViewRequest &request);
   void updateViewAnimation(float deltaTime);
   void setSelectionPivotOverride(NavigationPivot pivot);
   void clearSelectionPivotOverride();

@@ -26,6 +26,9 @@ namespace container::renderer {
 
 [[nodiscard]] container::ui::GBufferViewMode currentDisplayMode(
     const container::ui::GuiManager* guiManager);
+[[nodiscard]] container::ui::GBufferViewMode currentDisplayMode(
+    const container::ui::GuiManager* guiManager,
+    container::ui::GBufferViewMode fallbackDisplayMode);
 [[nodiscard]] bool displayModeRecordsShadowAtlas(
     container::ui::GBufferViewMode mode);
 [[nodiscard]] bool displayModeRecordsTileCull(
@@ -41,6 +44,10 @@ namespace container::renderer {
 [[nodiscard]] bool shouldRecordTransparentOit(
     const FrameRecordParams& p,
     const container::ui::GuiManager* guiManager);
+[[nodiscard]] bool shouldRecordTransparentOit(
+    const FrameRecordParams& p,
+    const container::ui::GuiManager* guiManager,
+    container::ui::GBufferViewMode fallbackDisplayMode);
 
 [[nodiscard]] RenderPassReadiness renderPassReady();
 [[nodiscard]] RenderPassReadiness renderPassNotNeeded();

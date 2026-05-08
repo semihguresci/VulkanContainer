@@ -15,6 +15,10 @@ struct LightPushConstants
     float4 colorIntensity;
     float4 directionInnerCos;
     float4 coneOuterCosType;
+    uint contactVisibilityEnabled;
+    uint localShadowEnabled;
+    float bounceIntensity;
+    uint padding2;
 };
 
 struct ShadowPushConstants
@@ -142,6 +146,9 @@ struct TiledLightingPushConstants
     uint depthSliceCount;
     float cameraNear;
     float cameraFar;
+    uint contactVisibilityEnabled;
+    uint localShadowEnabled;
+    float bounceIntensity;
 };
 
 struct CullPushConstants

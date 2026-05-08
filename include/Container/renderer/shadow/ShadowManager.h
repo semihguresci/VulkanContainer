@@ -6,6 +6,7 @@
 #include "Container/utility/SceneData.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -61,6 +62,11 @@ class ShadowManager {
               const glm::vec3& lightDirection,
               const container::gpu::ShadowSettings& shadowSettings,
               uint32_t imageIndex);
+  void updateLocalShadows(
+      std::span<const container::gpu::PointLightData> pointLights,
+      std::span<const container::gpu::AreaLightData> areaLights,
+      const container::gpu::ShadowSettings& shadowSettings,
+      uint32_t imageIndex);
 
   // ---- Accessors -----------------------------------------------------------
 
@@ -86,6 +92,9 @@ class ShadowManager {
   [[nodiscard]] const container::gpu::ShadowData& shadowData() const {
     return shadowData_;
   }
+  [[nodiscard]] const container::gpu::LocalShadowData& localShadowData() const {
+    return localShadowData_;
+  }
   [[nodiscard]] const container::gpu::ShadowCullData& shadowCullData() const {
     return shadowCullData_;
   }
@@ -103,9 +112,53 @@ class ShadowManager {
   [[nodiscard]] VkSampler shadowSampler() const { return shadowSampler_; }
   [[nodiscard]] VkFormat  depthFormat()   const { return depthFormat_; }
   [[nodiscard]] VkImage   shadowAtlasImage() const { return shadowAtlasImage_; }
+  [[nodiscard]] VkImage localShadowAtlasImage() const {
+    return localShadowAtlasImage_;
+  }
+  [[nodiscard]] VkImageView localShadowAtlasArrayView() const {
+    return localShadowAtlasArrayView_;
+  }
+  [[nodiscard]] VkImageView localShadowLayerView(uint32_t layerIndex) const {
+    return layerIndex < localShadowLayerViews_.size()
+               ? localShadowLayerViews_[layerIndex]
+               : VK_NULL_HANDLE;
+  }
+  [[nodiscard]] VkFramebuffer localShadowFramebuffer(uint32_t layerIndex) const {
+    return layerIndex < localShadowFramebuffers_.size()
+               ? localShadowFramebuffers_[layerIndex]
+               : VK_NULL_HANDLE;
+  }
+  [[nodiscard]] const container::gpu::AllocatedBuffer& localShadowUbo(
+      uint32_t imageIndex) const {
+    static const container::gpu::AllocatedBuffer kEmptyBuffer{};
+    return imageIndex < localShadowUbos_.size() ? localShadowUbos_[imageIndex]
+                                                : kEmptyBuffer;
+  }
+  [[nodiscard]] std::span<const container::gpu::AllocatedBuffer>
+      localShadowUbos() const {
+    return localShadowUbos_;
+  }
+  [[nodiscard]] VkDescriptorSet localShadowDescriptorSet(
+      uint32_t imageIndex) const {
+    return imageIndex < localDescriptorSets_.size()
+               ? localDescriptorSets_[imageIndex]
+               : VK_NULL_HANDLE;
+  }
+  [[nodiscard]] uint32_t localShadowLayerCount() const {
+    return std::min(localShadowData_.counts.x,
+                    container::gpu::kMaxShadowedLocalLightLayers);
+  }
+  [[nodiscard]] bool hasLocalShadowLayers() const {
+    return localShadowLayerCount() > 0u;
+  }
 
   [[nodiscard]] const std::array<VkFramebuffer, container::gpu::kShadowCascadeCount>&
       framebuffers() const { return framebuffers_; }
+  [[nodiscard]] const std::array<VkFramebuffer,
+                                 container::gpu::kMaxShadowedLocalLightLayers>&
+      localShadowFramebuffers() const {
+    return localShadowFramebuffers_;
+  }
 
   void createFramebuffers(VkRenderPass shadowRenderPass);
   void destroyFramebuffers();
@@ -131,6 +184,9 @@ class ShadowManager {
       const glm::mat4& cameraProj,
       float cameraNear,
       float cameraFar) const;
+  void uploadMappedBuffer(const container::gpu::AllocatedBuffer& buffer,
+                          const void* data,
+                          VkDeviceSize size) const;
 
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager&            allocationManager_;
@@ -146,9 +202,19 @@ class ShadowManager {
       framebuffers_{};
   VkSampler     shadowSampler_{VK_NULL_HANDLE};
 
+  VkImage       localShadowAtlasImage_{VK_NULL_HANDLE};
+  VmaAllocation localShadowAtlasAllocation_{nullptr};
+  VkImageView   localShadowAtlasArrayView_{VK_NULL_HANDLE};
+  std::array<VkImageView, container::gpu::kMaxShadowedLocalLightLayers>
+      localShadowLayerViews_{};
+  std::array<VkFramebuffer, container::gpu::kMaxShadowedLocalLightLayers>
+      localShadowFramebuffers_{};
+
   std::vector<container::gpu::AllocatedBuffer> shadowUbos_{};
   std::vector<container::gpu::AllocatedBuffer> shadowCullUbos_{};
+  std::vector<container::gpu::AllocatedBuffer> localShadowUbos_{};
   container::gpu::ShadowData      shadowData_{};
+  container::gpu::LocalShadowData localShadowData_{};
   container::gpu::ShadowCullData  shadowCullData_{};
   std::array<float, container::gpu::kShadowCascadeCount> cascadeSplits_{};
   std::array<ShadowCascadeCullBounds, container::gpu::kShadowCascadeCount>
@@ -157,6 +223,7 @@ class ShadowManager {
   VkDescriptorSetLayout descriptorSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool      descriptorPool_{VK_NULL_HANDLE};
   std::vector<VkDescriptorSet> descriptorSets_{};
+  std::vector<VkDescriptorSet> localDescriptorSets_{};
 
   static constexpr float kCascadeLambda = 0.75f;
 };

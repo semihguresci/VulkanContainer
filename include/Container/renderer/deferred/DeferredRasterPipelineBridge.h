@@ -19,6 +19,9 @@ enum class DeferredRasterPipelineId {
   BimGBuffer,
   BimGBufferFrontCull,
   BimGBufferNoCull,
+  LocalShadowDepth,
+  LocalShadowDepthFrontCull,
+  LocalShadowDepthNoCull,
   DirectionalLight,
   StencilVolume,
   PointLight,
@@ -87,6 +90,12 @@ enum class DeferredRasterPipelineId {
     return "bim-gbuffer-front-cull";
   case DeferredRasterPipelineId::BimGBufferNoCull:
     return "bim-gbuffer-no-cull";
+  case DeferredRasterPipelineId::LocalShadowDepth:
+    return "local-shadow-depth";
+  case DeferredRasterPipelineId::LocalShadowDepthFrontCull:
+    return "local-shadow-depth-front-cull";
+  case DeferredRasterPipelineId::LocalShadowDepthNoCull:
+    return "local-shadow-depth-no-cull";
   case DeferredRasterPipelineId::DirectionalLight:
     return "lighting";
   case DeferredRasterPipelineId::StencilVolume:

@@ -33,6 +33,7 @@ struct ShadowPassGpuIndirectBuffers {
 
 struct ShadowPassRecordInputs {
   const ShadowPassDrawPlan *plan{nullptr};
+  VkExtent2D extent{};
   ShadowPassGeometryBinding scene{};
   ShadowPassGeometryBinding bim{};
   VkDescriptorSet shadowDescriptorSet{VK_NULL_HANDLE};
@@ -50,6 +51,7 @@ struct ShadowCascadePassRecordInputs {
   ShadowPassRasterPlanInputs raster{};
   VkRenderPass renderPass{VK_NULL_HANDLE};
   VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  VkExtent2D extent{};
   ShadowPassGeometryBinding scene{};
   ShadowPassGeometryBinding bim{};
   VkDescriptorSet shadowDescriptorSet{VK_NULL_HANDLE};

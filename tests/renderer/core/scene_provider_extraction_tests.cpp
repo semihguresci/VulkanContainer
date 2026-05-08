@@ -1,6 +1,7 @@
 #include "Container/renderer/core/RenderExtraction.h"
 #include "Container/renderer/debug/RendererDebugModels.h"
 #include "Container/renderer/scene/SceneProviderSynchronizer.h"
+#include "Container/scene/MeshSceneProviderAssetAdapter.h"
 #include "Container/scene/MeshSceneProviderBuilder.h"
 #include "Container/scene/SceneProvider.h"
 
@@ -38,6 +39,7 @@ using container::scene::GaussianSplatSceneProvider;
 using container::scene::IRenderSceneProvider;
 using container::scene::MeshSceneAsset;
 using container::scene::MeshSceneMaterialProperties;
+using container::scene::MeshSceneProviderMaterialFacts;
 using container::scene::MeshSceneProvider;
 using container::scene::MeshSceneProviderPrimitive;
 using container::scene::RadianceFieldSceneAsset;
@@ -48,6 +50,7 @@ using container::scene::SceneProviderRegistry;
 using container::scene::SceneProviderRevision;
 using container::scene::SceneProviderSnapshot;
 using container::scene::SceneProviderTriangleBatch;
+using container::scene::buildMeshSceneProviderAsset;
 using container::scene::buildMeshSceneAsset;
 
 class TestProvider final : public IRenderSceneProvider {
@@ -306,6 +309,57 @@ TEST(SceneProviderAssetBuilderTests,
   EXPECT_EQ(asset.triangleBatches[1].firstIndex, 36u);
   EXPECT_TRUE(asset.triangleBatches[1].doubleSided);
   EXPECT_TRUE(asset.triangleBatches[1].transparent);
+}
+
+TEST(SceneProviderAssetBuilderTests,
+     AdaptsImportedMeshFactsWithoutRendererFrontendState) {
+  const std::vector<container::geometry::PrimitiveRange> primitiveRanges{
+      {.firstIndex = 4,
+       .indexCount = 24,
+       .materialIndex = 0,
+       .disableBackfaceCulling = false},
+      {.firstIndex = 28,
+       .indexCount = 18,
+       .materialIndex = 1,
+       .disableBackfaceCulling = false},
+      {.firstIndex = 46,
+       .indexCount = 6,
+       .materialIndex = 2,
+       .disableBackfaceCulling = true},
+  };
+  const std::vector<MeshSceneProviderMaterialFacts> materialFacts{
+      {.transparent = false, .doubleSided = false},
+      {.transparent = true, .doubleSided = false},
+      {.transparent = false, .doubleSided = false},
+  };
+
+  const MeshSceneAsset asset = buildMeshSceneProviderAsset({
+      .primitiveRanges = primitiveRanges,
+      .materialCount = materialFacts.size(),
+      .instanceCount = 9,
+      .bounds = {.min = {-3.0f, -2.0f, -1.0f},
+                 .max = {3.0f, 2.0f, 1.0f},
+                 .valid = true},
+      .materialFactsAt =
+          [&materialFacts](uint32_t materialIndex) {
+            return materialIndex < materialFacts.size()
+                       ? materialFacts[materialIndex]
+                       : MeshSceneProviderMaterialFacts{};
+          },
+  });
+
+  EXPECT_EQ(asset.primitiveCount, 3u);
+  EXPECT_EQ(asset.materialCount, 3u);
+  EXPECT_EQ(asset.instanceCount, 9u);
+  EXPECT_TRUE(asset.bounds.valid);
+  ASSERT_EQ(asset.triangleBatches.size(), 3u);
+  EXPECT_EQ(asset.triangleBatches[0].firstIndex, 4u);
+  EXPECT_FALSE(asset.triangleBatches[0].transparent);
+  EXPECT_FALSE(asset.triangleBatches[0].doubleSided);
+  EXPECT_TRUE(asset.triangleBatches[1].transparent);
+  EXPECT_FALSE(asset.triangleBatches[1].doubleSided);
+  EXPECT_FALSE(asset.triangleBatches[2].transparent);
+  EXPECT_TRUE(asset.triangleBatches[2].doubleSided);
 }
 
 TEST(SceneProviderAdapterTests,
@@ -751,6 +805,8 @@ TEST(RenderExtractionGuardrails, ProviderContractsStayBackendNeutral) {
       readRepoTextFile("include/Container/scene/SceneProvider.h");
   const std::string meshBuilderHeader =
       readRepoTextFile("include/Container/scene/MeshSceneProviderBuilder.h");
+  const std::string meshAssetAdapterHeader = readRepoTextFile(
+      "include/Container/scene/MeshSceneProviderAssetAdapter.h");
   const std::string extractionHeader =
       readRepoTextFile("include/Container/renderer/core/RenderExtraction.h");
   const std::string debugModelHeader =
@@ -771,6 +827,12 @@ TEST(RenderExtractionGuardrails, ProviderContractsStayBackendNeutral) {
     EXPECT_FALSE(contains(meshBuilderHeader, forbidden))
         << "Mesh scene provider builder must stay renderer-independent.";
   }
+  for (const std::string& forbidden :
+       {"Vk", "DrawCommand", "FrameRecordParams", "RendererFrontend",
+        "SceneManager"}) {
+    EXPECT_FALSE(contains(meshAssetAdapterHeader, forbidden))
+        << "Mesh scene provider asset adapter must stay import/frontend-neutral.";
+  }
   EXPECT_FALSE(contains(extractionHeader, "FrameRecordParams"));
   EXPECT_FALSE(contains(extractionHeader, "GBuffer"));
   EXPECT_FALSE(contains(debugModelHeader, "GuiManager"));
@@ -787,8 +849,11 @@ TEST(RenderExtractionGuardrails, ProviderContractsStayBackendNeutral) {
   EXPECT_TRUE(contains(providerHeader, "class GaussianSplatSceneProvider"));
   EXPECT_TRUE(contains(providerHeader, "class RadianceFieldSceneProvider"));
   EXPECT_TRUE(contains(meshBuilderHeader, "buildMeshSceneAsset"));
+  EXPECT_TRUE(contains(meshAssetAdapterHeader, "buildMeshSceneProviderAsset"));
+  EXPECT_TRUE(contains(meshAssetAdapterHeader,
+                       "MeshSceneProviderMaterialResolver"));
   EXPECT_TRUE(contains(extractionHeader, "triangleBatches"));
-  EXPECT_TRUE(contains(rendererFrontend, "buildMeshSceneAsset"));
+  EXPECT_FALSE(contains(rendererFrontend, "buildMeshSceneAsset"));
   EXPECT_TRUE(contains(readRepoTextFile(
                            "include/Container/renderer/scene/SceneProviderSynchronizer.h"),
                        "class SceneProviderSynchronizer"));
@@ -799,7 +864,11 @@ TEST(RenderExtractionGuardrails, ProviderContractsStayBackendNeutral) {
                            "include/Container/renderer/bim/BimManager.h"),
                        "sceneProviderTriangleBatches() const"));
   EXPECT_TRUE(contains(sceneManagerHeader, "materialCount() const"));
-  EXPECT_TRUE(contains(rendererFrontend, "meshSceneMaterialPropertiesFromSceneManager"));
+  EXPECT_FALSE(contains(rendererFrontend,
+                        "meshSceneProviderPrimitivesFromSceneManager"));
+  EXPECT_FALSE(contains(rendererFrontend,
+                        "meshSceneMaterialPropertiesFromSceneManager"));
+  EXPECT_FALSE(contains(rendererFrontend, "meshSceneAssetFromSceneManager"));
   EXPECT_TRUE(contains(rendererFrontend, ".materialCount = meshAsset.materialCount"));
   EXPECT_TRUE(contains(rendererFrontend,
                        "p.sceneExtraction = extractProviderSceneFrameInputs"));

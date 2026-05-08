@@ -6,6 +6,8 @@
 #include "Container/renderer/deferred/DeferredTransparentOitFramePassRecorder.h"
 #include "Container/renderer/shadow/ShadowCascadeFramePassRecorder.h"
 
+#include <optional>
+
 namespace container::gpu {
 class SwapChainManager;
 } // namespace container::gpu
@@ -41,6 +43,7 @@ struct DeferredRasterFrameGraphServices {
   ExposureManager *exposureManager{nullptr};
   const container::scene::BaseCamera *camera{nullptr};
   container::ui::GuiManager *guiManager{nullptr};
+  std::optional<container::ui::GBufferViewMode> fallbackDisplayMode{};
 };
 
 // Deferred-raster compatibility facade. The generic FrameRecorder owns only

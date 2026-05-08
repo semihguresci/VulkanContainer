@@ -1,0 +1,99 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "Container closed shadow correctness fixture"
+  },
+  "buffers": [
+    {
+      "byteLength": 540,
+      "uri": "data:application/octet-stream;base64,AAAAwAAAAAAAAADAAAAAQAAAAAAAAADAAAAAQAAAAAAAAABAAAAAwAAAAAAAAABACtejvgAAAAAAAIC+CtejPgAAAAAAAIC+CtejPpqZuT8AAIC+CtejvpqZuT8AAIC+AAAAwAAAAAAAAOC/AAAAQAAAAAAAAOC/AAAAQM3MDEAAAOC/AAAAwM3MDEAAAOC/AAAAwAAAAAAAAABAAAAAwAAAAAAAAOC/AAAAwM3MDEAAAOC/AAAAwM3MDEAAAABAAAAAQAAAAAAAAOC/AAAAQAAAAAAAAABAAAAAQM3MDEAAAABAAAAAQM3MDEAAAOC/AAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAAABAAIAAAACAAMABAAFAAYABAAGAAcACAAJAAoACAAKAAsADAANAA4ADAAOAA8AEAARABIAEAASABMA"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 240,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 240,
+      "byteLength": 240,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 480,
+      "byteLength": 60,
+      "target": 34963
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 20,
+      "type": "VEC3",
+      "min": [-2, 0, -2],
+      "max": [2, 2.2, 2]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 20,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5123,
+      "count": 30,
+      "type": "SCALAR"
+    }
+  ],
+  "materials": [
+    {
+      "name": "matte_shadow_gray",
+      "doubleSided": false,
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [0.62, 0.62, 0.6, 1],
+        "metallicFactor": 0,
+        "roughnessFactor": 0.9
+      }
+    }
+  ],
+  "meshes": [
+    {
+      "name": "Closed room shadow blocker",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1
+          },
+          "indices": 2,
+          "material": 0,
+          "mode": 4
+        }
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "closed_shadow_room_blocker_geometry",
+      "mesh": 0
+    },
+    {
+      "name": "mirrored_winding_probe",
+      "mesh": 0,
+      "scale": [-0.35, 0.35, 0.35],
+      "translation": [0, 0.02, 1.15]
+    }
+  ],
+  "scenes": [
+    {
+      "nodes": [0, 1]
+    }
+  ],
+  "scene": 0
+}

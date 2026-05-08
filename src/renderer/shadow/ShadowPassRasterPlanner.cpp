@@ -11,7 +11,7 @@ buildShadowPassRasterPlan(const ShadowPassRasterPlanInputs &inputs) {
   const bool executeSecondary = inputs.useSecondaryCommandBuffer &&
                                 inputs.secondaryCommandBuffer != VK_NULL_HANDLE;
   return {.active = true,
-          .scope = buildShadowPassScopePlan(executeSecondary),
+          .scope = buildShadowPassScopePlan(executeSecondary, inputs.extent),
           .secondaryCommandBuffer = executeSecondary
                                         ? inputs.secondaryCommandBuffer
                                         : VK_NULL_HANDLE};

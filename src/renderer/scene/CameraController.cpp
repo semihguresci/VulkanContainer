@@ -526,6 +526,29 @@ void CameraController::setViewPreset(uint32_t nodeIndex,
   inputManager_.setMoveSpeed(std::max(kDefaultMoveSpeed, pivot.radius * 0.5f));
 }
 
+void CameraController::setBimElevationView(
+    uint32_t nodeIndex, const container::ui::BimElevationViewRequest &request) {
+  container::ui::CameraViewPreset preset = request.preset;
+  switch (preset) {
+  case container::ui::CameraViewPreset::Front:
+  case container::ui::CameraViewPreset::Back:
+  case container::ui::CameraViewPreset::Right:
+  case container::ui::CameraViewPreset::Left:
+    break;
+  case container::ui::CameraViewPreset::Top:
+  case container::ui::CameraViewPreset::Bottom:
+    preset = container::ui::CameraViewPreset::Front;
+    break;
+  }
+
+  // BIM elevation drawings use orthographic side cameras, while the existing
+  // preset path keeps orbit pivot, animation, and near/far behavior shared.
+  if (request.forceOrthographic) {
+    setOrthographic(nodeIndex, true);
+  }
+  setViewPreset(nodeIndex, preset);
+}
+
 void CameraController::updateViewAnimation(float deltaTime) {
   if (!camera_ || !viewAnimation_.active) {
     return;

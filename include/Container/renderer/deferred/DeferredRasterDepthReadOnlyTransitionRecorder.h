@@ -12,10 +12,13 @@ struct DeferredRasterDepthReadOnlyTransitionInputs {
   VkImage shadowAtlasImage{VK_NULL_HANDLE};
   bool shadowAtlasVisible{false};
   uint32_t shadowCascadeCount{0u};
+  VkImage localShadowAtlasImage{VK_NULL_HANDLE};
+  bool localShadowAtlasVisible{false};
+  uint32_t localShadowLayerCount{0u};
 };
 
 struct DeferredRasterDepthReadOnlyTransitionPlan {
-  std::array<DeferredRasterImageBarrierStep, 2> steps{};
+  std::array<DeferredRasterImageBarrierStep, 3> steps{};
   uint32_t stepCount{0u};
 };
 

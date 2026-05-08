@@ -10,6 +10,7 @@ enum class ShadowDescriptorSetId {
   Scene,
   BimScene,
   Shadow,
+  LocalShadow,
 };
 
 [[nodiscard]] inline std::string_view shadowDescriptorSetKey(
@@ -21,6 +22,8 @@ enum class ShadowDescriptorSetId {
     return "bim-scene-descriptor-set";
   case ShadowDescriptorSetId::Shadow:
     return "shadow-descriptor-set";
+  case ShadowDescriptorSetId::LocalShadow:
+    return "local-shadow-descriptor-set";
   }
   return {};
 }

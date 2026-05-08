@@ -7,6 +7,7 @@
 #include "Container/renderer/deferred/DeferredRasterGuiPassRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterResourceBridge.h"
 #include "Container/renderer/lighting/LightingManager.h"
+#include "Container/utility/GuiManager.h"
 #include "Container/utility/SwapChainManager.h"
 
 #include <stdexcept>
@@ -33,7 +34,9 @@ VkExtent2D DeferredRasterFrameGraphContext::swapchainExtent() const {
 
 container::ui::GBufferViewMode
 DeferredRasterFrameGraphContext::displayMode() const {
-  return currentDisplayMode(services_.guiManager);
+  const auto fallbackDisplayMode = services_.fallbackDisplayMode.value_or(
+      container::ui::GBufferViewMode::Overview);
+  return currentDisplayMode(services_.guiManager, fallbackDisplayMode);
 }
 
 bool DeferredRasterFrameGraphContext::isPassActive(RenderPassId id) const {
@@ -76,7 +79,9 @@ GpuCullManager *DeferredRasterFrameGraphContext::gpuCullManager() const {
 DeferredTransparentOitFramePassRecorder
 DeferredRasterFrameGraphContext::transparentOitFramePassRecorder() const {
   return DeferredTransparentOitFramePassRecorder(
-      {.oitManager = services_.oitManager, .guiManager = services_.guiManager});
+      {.oitManager = services_.oitManager,
+       .guiManager = services_.guiManager,
+       .fallbackDisplayMode = displayMode()});
 }
 
 BloomManager *DeferredRasterFrameGraphContext::bloomManager() const {
@@ -115,6 +120,7 @@ DeferredRasterFrameGraphContext::lightingPassRecorder() const {
        .sceneController = services_.sceneController,
        .camera = services_.camera,
        .guiManager = services_.guiManager,
+       .fallbackDisplayMode = displayMode(),
        .debugOverlay = &debugOverlay_,
        .tileCullPassActive = isPassActive(RenderPassId::TileCull)});
 }

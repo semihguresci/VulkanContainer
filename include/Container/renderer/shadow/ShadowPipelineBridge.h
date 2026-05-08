@@ -10,6 +10,9 @@ enum class ShadowPipelineId {
   Depth,
   DepthFrontCull,
   DepthNoCull,
+  LocalDepth,
+  LocalDepthFrontCull,
+  LocalDepthNoCull,
 };
 
 [[nodiscard]] inline std::string_view shadowPipelineName(
@@ -21,6 +24,12 @@ enum class ShadowPipelineId {
     return "shadow-depth-front-cull";
   case ShadowPipelineId::DepthNoCull:
     return "shadow-depth-no-cull";
+  case ShadowPipelineId::LocalDepth:
+    return "local-shadow-depth";
+  case ShadowPipelineId::LocalDepthFrontCull:
+    return "local-shadow-depth-front-cull";
+  case ShadowPipelineId::LocalDepthNoCull:
+    return "local-shadow-depth-no-cull";
   }
   return {};
 }

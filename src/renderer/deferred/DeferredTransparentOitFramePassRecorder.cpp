@@ -4,6 +4,7 @@
 #include "Container/renderer/deferred/DeferredRasterFrameState.h"
 #include "Container/renderer/deferred/DeferredRasterResourceBridge.h"
 #include "Container/renderer/deferred/DeferredTransparentOitRecorder.h"
+#include "Container/utility/GuiManager.h"
 
 namespace container::renderer {
 
@@ -31,7 +32,10 @@ DeferredTransparentOitFramePassRecorder::
 
 bool DeferredTransparentOitFramePassRecorder::enabled(
     const FrameRecordParams &p) const {
-  return shouldRecordTransparentOit(p, services_.guiManager);
+  const auto fallbackDisplayMode = services_.fallbackDisplayMode.value_or(
+      container::ui::GBufferViewMode::Overview);
+  return shouldRecordTransparentOit(p, services_.guiManager,
+                                    fallbackDisplayMode);
 }
 
 RenderPassReadiness DeferredTransparentOitFramePassRecorder::readiness(

@@ -1047,6 +1047,22 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
   sceneGraph.updateWorldTransforms();
 }
 
+uint32_t SceneManager::appendRuntimeMesh(container::geometry::Mesh mesh) {
+  if (mesh.empty()) {
+    return std::numeric_limits<uint32_t>::max();
+  }
+
+  std::vector<container::geometry::Mesh> meshes = model_.meshes();
+  const uint32_t primitiveIndex = static_cast<uint32_t>(meshes.size());
+  meshes.push_back(std::move(mesh));
+  model_ = container::geometry::Model::FromMeshes(std::move(meshes));
+  vertices_ = model_.vertices();
+  indices_ = model_.indices();
+  updateModelBounds();
+  indexType_ = VK_INDEX_TYPE_UINT32;
+  return primitiveIndex;
+}
+
 bool SceneManager::reloadModel(
     const std::string& path,
     float importScale,

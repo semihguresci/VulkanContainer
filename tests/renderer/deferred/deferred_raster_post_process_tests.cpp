@@ -1,5 +1,6 @@
 #include "Container/renderer/deferred/DeferredRasterPostProcess.h"
 
+#include "Container/renderer/deferred/DeferredRasterFrameState.h"
 #include "Container/utility/GuiManager.h"
 
 #include <gtest/gtest.h>
@@ -10,7 +11,15 @@ using container::renderer::buildDeferredPostProcessFrameState;
 using container::renderer::buildDeferredPostProcessPushConstants;
 using container::renderer::DeferredPostProcessFrameInputs;
 using container::renderer::DeferredPostProcessPushConstantInputs;
+using container::renderer::displayModeRecordsBloom;
+using container::renderer::displayModeRecordsExposureAdaptation;
+using container::renderer::displayModeRecordsGtao;
+using container::renderer::displayModeRecordsShadowAtlas;
+using container::renderer::displayModeRecordsTileCull;
+using container::renderer::FrameRecordParams;
+using container::renderer::currentDisplayMode;
 using container::renderer::resolvePostProcessExposure;
+using container::renderer::shouldRecordTransparentOit;
 
 TEST(DeferredRasterPostProcessTests, MapsExposureCameraBloomAndOitState) {
   container::gpu::ExposureSettings exposure{};
@@ -124,11 +133,13 @@ TEST(DeferredRasterPostProcessTests, FrameStateAppliesDisplayModePolicy) {
   inputs.pointLightCount = 7u;
 
   const auto overviewState = buildDeferredPostProcessFrameState(inputs);
-  EXPECT_FALSE(overviewState.bloomActive);
-  EXPECT_FALSE(overviewState.tileCullActive);
-  EXPECT_EQ(overviewState.pushConstants.bloomEnabled, 0u);
-  EXPECT_EQ(overviewState.pushConstants.tileCountX, 1u);
-  EXPECT_EQ(overviewState.pushConstants.totalLights, 0u);
+  EXPECT_TRUE(overviewState.bloomActive);
+  EXPECT_TRUE(overviewState.tileCullActive);
+  EXPECT_EQ(overviewState.pushConstants.bloomEnabled, 1u);
+  EXPECT_EQ(overviewState.pushConstants.tileCountX, 5u);
+  EXPECT_EQ(overviewState.pushConstants.totalLights, 7u);
+  EXPECT_EQ(overviewState.pushConstants.depthSliceCount,
+            container::gpu::kClusterDepthSlices);
 
   inputs.displayMode = container::ui::GBufferViewMode::Lit;
   const auto litState = buildDeferredPostProcessFrameState(inputs);
@@ -152,14 +163,52 @@ TEST(DeferredRasterPostProcessTests, FrameStateUsesShadowDebugModesForSplits) {
   inputs.shadowData = &shadowData;
   const auto litState = buildDeferredPostProcessFrameState(inputs);
 
+  inputs.displayMode = container::ui::GBufferViewMode::Overview;
+  const auto overviewState = buildDeferredPostProcessFrameState(inputs);
+
   inputs.displayMode = container::ui::GBufferViewMode::ShadowTexelDensity;
   const auto shadowDebugState = buildDeferredPostProcessFrameState(inputs);
 
   for (uint32_t i = 0; i < container::gpu::kShadowCascadeCount; ++i) {
     EXPECT_FLOAT_EQ(litState.pushConstants.cascadeSplits[i], 0.0f);
+    EXPECT_FLOAT_EQ(overviewState.pushConstants.cascadeSplits[i],
+                    20.0f + static_cast<float>(i));
     EXPECT_FLOAT_EQ(shadowDebugState.pushConstants.cascadeSplits[i],
                     20.0f + static_cast<float>(i));
   }
+}
+
+TEST(DeferredRasterPostProcessTests,
+     OverviewModeRequestsInputsForEmbeddedDebugPanels) {
+  const auto overview = container::ui::GBufferViewMode::Overview;
+
+  EXPECT_TRUE(displayModeRecordsShadowAtlas(overview));
+  EXPECT_TRUE(displayModeRecordsTileCull(overview));
+  EXPECT_TRUE(displayModeRecordsGtao(overview));
+  EXPECT_TRUE(displayModeRecordsExposureAdaptation(overview));
+  EXPECT_TRUE(displayModeRecordsBloom(overview));
+}
+
+TEST(DeferredRasterPostProcessTests,
+     OverviewModeRecordsTransparentOitForEmbeddedTransparencyPanels) {
+  std::vector<container::renderer::DrawCommand> transparentDraws(1);
+  FrameRecordParams params{};
+  params.draws.transparentDrawCommands = &transparentDraws;
+
+  EXPECT_TRUE(shouldRecordTransparentOit(params, nullptr));
+}
+
+TEST(DeferredRasterPostProcessTests,
+     HeadlessDisplayModeUsesExplicitFallbackWhenGuiIsUnavailable) {
+  EXPECT_EQ(currentDisplayMode(nullptr, container::ui::GBufferViewMode::Lit),
+            container::ui::GBufferViewMode::Lit);
+
+  std::vector<container::renderer::DrawCommand> transparentDraws(1);
+  FrameRecordParams params{};
+  params.draws.transparentDrawCommands = &transparentDraws;
+
+  EXPECT_FALSE(shouldRecordTransparentOit(
+      params, nullptr, container::ui::GBufferViewMode::ShadowTexelDensity));
 }
 
 } // namespace

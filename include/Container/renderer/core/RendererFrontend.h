@@ -13,6 +13,7 @@
 #include "Container/renderer/debug/DebugRenderState.h"
 #include "Container/renderer/core/PushConstantBlock.h"
 #include "Container/renderer/core/RendererDeviceCapabilities.h"
+#include "Container/renderer/lighting/EditableLight.h"
 #include "Container/renderer/picking/RenderSurfaceInteractionController.h"
 #include "Container/renderer/resources/RenderResources.h"
 #include "Container/renderer/scene/DrawCommand.h"
@@ -37,6 +38,7 @@ class ExposureManager;
 class DeferredRasterFrameGraphContext;
 class FrameResourceRegistry;
 class FrameRecorder;
+struct FrameRecordParams;
 class FrameResourceManager;
 class GraphicsPipelineBuilder;
 class GpuCullManager;
@@ -358,7 +360,9 @@ class RendererFrontend {
   void updateCameraBuffer(uint32_t imageIndex);
   void updateObjectBuffer();
   void applyBimSemanticColorMode();
-  void updateFrameDescriptorSets(uint32_t imageIndex = UINT32_MAX);
+  void updateFrameDescriptorSets(
+      uint32_t imageIndex = UINT32_MAX,
+      const FrameRecordParams* preparedParams = nullptr);
   void destroyGBufferResources();
   bool growExactOitNodePoolIfNeeded(uint32_t imageIndex);
   void ensureScreenshotReadbackBuffer(VkExtent2D extent, VkFormat format);
@@ -386,6 +390,8 @@ class RendererFrontend {
   bool restoreViewpointSnapshot(
       const container::ui::ViewpointSnapshotState& snapshot);
   void presentSceneControls();
+  [[nodiscard]] std::optional<EditableLightId>
+  pickEditableLightAtCursor(double cursorX, double cursorY) const;
   void selectMeshNodeAtCursor(double cursorX, double cursorY);
   void hoverMeshNodeAtCursor(double cursorX, double cursorY);
   void clearHoveredMeshNode();
@@ -397,7 +403,8 @@ class RendererFrontend {
                                    double deltaX, double deltaY);
   [[nodiscard]] std::optional<container::ui::TransformAxis>
   pickTransformGizmoAxisAtCursor(double cursorX, double cursorY) const;
-  void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex);
+  void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex,
+                           const FrameRecordParams* preparedParams = nullptr);
   [[nodiscard]] FrameRecordParams buildFrameRecordParams(uint32_t imageIndex);
   void publishFrameRuntimeResourceBindings(uint32_t imageIndex);
   [[nodiscard]] FrameTransformGizmoState buildTransformGizmoState() const;

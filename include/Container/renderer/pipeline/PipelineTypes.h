@@ -49,6 +49,9 @@ struct GraphicsPipelines {
   VkPipeline shadowDepth{VK_NULL_HANDLE};
   VkPipeline shadowDepthFrontCull{VK_NULL_HANDLE};
   VkPipeline shadowDepthNoCull{VK_NULL_HANDLE};
+  VkPipeline localShadowDepth{VK_NULL_HANDLE};
+  VkPipeline localShadowDepthFrontCull{VK_NULL_HANDLE};
+  VkPipeline localShadowDepthNoCull{VK_NULL_HANDLE};
   VkPipeline directionalLight{VK_NULL_HANDLE};
   VkPipeline stencilVolume{VK_NULL_HANDLE};
   VkPipeline pointLight{VK_NULL_HANDLE};

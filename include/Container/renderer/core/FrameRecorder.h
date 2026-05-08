@@ -180,6 +180,20 @@ struct FrameSectionClipCapGeometry {
   }
 };
 
+struct FrameBimTechnicalElevationState {
+  bool enabled{false};
+  // Hidden-line elevation is a depth-tested wire overlay on the normal shaded
+  // pass, so occluded BIM edges stay hidden by the filled depth buffer.
+  bool hiddenLineOverlay{true};
+  bool depthTestLines{true};
+  bool sectionCapsEnabled{true};
+  bool capFillEnabled{true};
+  bool capHatchingEnabled{true};
+  glm::vec3 lineColor{0.02f, 0.025f, 0.03f};
+  float lineWidth{1.25f};
+  float overlayIntensity{0.95f};
+};
+
 struct FrameBimResources {
   // BIM models use a separate render path so semantic overlays, selection, and
   // future IFC metadata can evolve without perturbing regular glTF draws.
@@ -195,6 +209,7 @@ struct FrameBimResources {
   FrameBimPrimitivePassState primitivePasses{};
   FrameSectionClipCapStyleState sectionClipCaps{};
   FrameSectionClipCapGeometry sectionClipCapGeometry{};
+  FrameBimTechnicalElevationState technicalElevation{};
   uint32_t semanticColorMode{0};
   bool opaqueMeshDrawsUseGpuVisibility{false};
   bool transparentMeshDrawsUseGpuVisibility{false};
@@ -242,8 +257,11 @@ struct FrameShadowResources {
   // pass services.
   VkRenderPass renderPass{VK_NULL_HANDLE};
   const VkFramebuffer *shadowFramebuffers{nullptr};
+  const VkFramebuffer *localShadowFramebuffers{nullptr};
   const container::gpu::ShadowData *shadowData{nullptr};
+  const container::gpu::LocalShadowData *localShadowData{nullptr};
   container::gpu::ShadowSettings shadowSettings{};
+  uint32_t localShadowLayerCount{0};
   bool useGpuShadowCull{false};
   ShadowCullManager *shadowCullManager{nullptr};
   const ShadowManager *shadowManager{nullptr};

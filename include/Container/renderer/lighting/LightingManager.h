@@ -2,6 +2,7 @@
 
 #include "Container/common/CommonMath.h"
 #include "Container/common/CommonVulkan.h"
+#include "Container/renderer/lighting/EditableLight.h"
 #include "Container/renderer/lighting/LightPushConstants.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/SceneGraph.h"
@@ -11,6 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -160,6 +162,21 @@ public:
   const std::vector<container::gpu::AreaLightData> &areaLightsSsbo() const {
     return areaLightsSsbo_;
   }
+  const std::vector<EditableLightEntity> &editableLights() const {
+    return editableLights_;
+  }
+  EditableLightId selectedEditableLightId() const {
+    return selectedEditableLight_;
+  }
+  [[nodiscard]] std::optional<EditableLightEntity>
+  selectedEditableLight() const;
+  void selectEditableLight(EditableLightId id);
+  [[nodiscard]] bool updateEditableLight(const EditableLightEntity &entity);
+  [[nodiscard]] EditableLightId addManualEditableLight(EditableLightType type);
+  [[nodiscard]] bool translateSelectedEditableLight(const glm::vec3 &delta);
+  [[nodiscard]] bool rotateSelectedEditableLight(const glm::vec3 &axis,
+                                                 float degrees);
+  [[nodiscard]] bool scaleSelectedEditableLight(float factor);
 
   // Tile grid SSBO accessors for debug visualization (heat map).
   VkBuffer tileGridBuffer() const { return tileGridSsbo_.buffer; }
@@ -171,6 +188,18 @@ private:
   bool applyAuthoredDirectionalLight(const SceneLightingAnchor &anchor);
   void appendAuthoredPointLights(const SceneLightingAnchor &anchor);
   void appendAuthoredAreaLights(const SceneLightingAnchor &anchor);
+  void applyEditableLightOverrides(EditableLightSource directionalSource,
+                                   EditableLightSource pointSource,
+                                   size_t sourcePointCount,
+                                   EditableLightSource areaSource,
+                                   size_t sourceAreaCount);
+  void appendManualEditableLights(const SceneLightingAnchor &anchor);
+  void rebuildEditableLights(EditableLightSource directionalSource,
+                             EditableLightSource pointSource,
+                             size_t sourcePointCount,
+                             EditableLightSource areaSource,
+                             size_t sourceAreaCount);
+  void assignLocalShadowLayerMetadata();
   void publishPointLights();
   void publishAreaLights();
   void rebuildPointLightSsboFromEcs();
@@ -199,6 +228,19 @@ private:
   // ---- Tiled light culling ------------------------------------------------
   std::vector<container::gpu::PointLightData> pointLightsSsbo_{};
   std::vector<container::gpu::AreaLightData> areaLightsSsbo_{};
+  std::vector<EditableLightEntity> editableLights_{};
+  EditableLightId selectedEditableLight_{};
+  std::optional<EditableLightEntity> directionalOverride_{};
+  std::vector<std::optional<container::gpu::PointLightData>>
+      generatedPointOverrides_{};
+  std::vector<std::optional<container::gpu::PointLightData>>
+      importedPointOverrides_{};
+  std::vector<std::optional<container::gpu::AreaLightData>>
+      generatedAreaOverrides_{};
+  std::vector<std::optional<container::gpu::AreaLightData>>
+      importedAreaOverrides_{};
+  std::vector<container::gpu::PointLightData> manualPointLights_{};
+  std::vector<container::gpu::AreaLightData> manualAreaLights_{};
 
   // SSBOs
   container::gpu::AllocatedBuffer lightSsbo_{};

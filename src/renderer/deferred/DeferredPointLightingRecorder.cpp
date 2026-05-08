@@ -22,11 +22,27 @@ VkPipeline pipelineForDeferredPointLighting(
 }
 
 void copyLightPushConstants(LightPushConstants &pushConstants,
-                            const container::gpu::PointLightData &light) {
+                            const container::gpu::PointLightData &light,
+                            uint32_t contactVisibilityEnabled,
+                            uint32_t localShadowEnabled,
+                            float bounceIntensity) {
   pushConstants.positionRadius = light.positionRadius;
   pushConstants.colorIntensity = light.colorIntensity;
   pushConstants.directionInnerCos = light.directionInnerCos;
   pushConstants.coneOuterCosType = light.coneOuterCosType;
+  pushConstants.contactVisibilityEnabled = contactVisibilityEnabled;
+  pushConstants.localShadowEnabled = localShadowEnabled;
+  pushConstants.bounceIntensity = bounceIntensity;
+}
+
+[[nodiscard]] bool hasReadyDescriptorSets(
+    const std::array<VkDescriptorSet, 3u> &descriptorSets) noexcept {
+  for (const VkDescriptorSet descriptorSet : descriptorSets) {
+    if (descriptorSet == VK_NULL_HANDLE) {
+      return false;
+    }
+  }
+  return true;
 }
 
 } // namespace
@@ -42,6 +58,7 @@ bool recordDeferredPointLightingCommands(
   if (plan.path == DeferredPointLightingPath::Tiled) {
     if (inputs.tiledPointLightPipeline == VK_NULL_HANDLE ||
         inputs.tiledLightingLayout == VK_NULL_HANDLE ||
+        !hasReadyDescriptorSets(inputs.tiledLightingDescriptorSets) ||
         inputs.lightingManager == nullptr) {
       return false;
     }
@@ -64,6 +81,7 @@ bool recordDeferredPointLightingCommands(
 
   if (inputs.lightingLayout == VK_NULL_HANDLE ||
       inputs.stencilVolumePipeline == VK_NULL_HANDLE ||
+      !hasReadyDescriptorSets(inputs.pointLightingDescriptorSets) ||
       inputs.lightPushConstants == nullptr ||
       plan.stencilRouteCount == 0u) {
     return false;
@@ -95,7 +113,9 @@ bool recordDeferredPointLightingCommands(
         plan.stencilRoutes[routeIndex].light;
     vkCmdClearAttachments(cmd, 1, &stencilClearAttachment, 1,
                           &stencilClearRect);
-    copyLightPushConstants(*inputs.lightPushConstants, light);
+    copyLightPushConstants(*inputs.lightPushConstants, light,
+                           plan.contactVisibilityEnabled,
+                           plan.localShadowEnabled, plan.bounceIntensity);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
                       inputs.stencilVolumePipeline);

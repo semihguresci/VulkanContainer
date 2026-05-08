@@ -38,6 +38,8 @@ class GuiManager;
 
 namespace container::renderer {
 
+enum class ScenePrimitiveKind : uint32_t;
+
 struct SceneNodePickHit {
   uint32_t nodeIndex{std::numeric_limits<uint32_t>::max()};
   float distance{std::numeric_limits<float>::max()};
@@ -109,6 +111,9 @@ class SceneController {
                       container::gpu::AllocatedBuffer& objectBuffer,
                       size_t& objectBufferCapacity,
                       const container::gpu::AllocatedBuffer& cameraBuffer);
+  [[nodiscard]] uint32_t addScenePrimitive(ScenePrimitiveKind kind,
+                                           const glm::mat4& transform,
+                                           uint32_t& rootNode);
 
   bool reloadSceneModel(
       const std::string&                      path,

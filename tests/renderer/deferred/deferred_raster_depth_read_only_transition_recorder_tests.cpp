@@ -90,6 +90,31 @@ TEST(DeferredRasterDepthReadOnlyTransitionRecorderTests,
 }
 
 TEST(DeferredRasterDepthReadOnlyTransitionRecorderTests,
+     HiddenLocalShadowAtlasAddsShaderReadTransition) {
+  auto inputs = readyInputs();
+  inputs.shadowAtlasVisible = true;
+  inputs.localShadowAtlasImage = fakeHandle<VkImage>(0x4);
+  inputs.localShadowAtlasVisible = false;
+  inputs.localShadowLayerCount = 6u;
+
+  const auto plan = buildDeferredRasterDepthReadOnlyTransitionPlan(inputs);
+
+  ASSERT_EQ(plan.stepCount, 2u);
+  const auto &step = plan.steps[1];
+  EXPECT_EQ(step.srcStageMask, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT);
+  EXPECT_EQ(step.dstStageMask, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+  EXPECT_EQ(step.barrier.srcAccessMask, 0u);
+  EXPECT_EQ(step.barrier.dstAccessMask, VK_ACCESS_SHADER_READ_BIT);
+  EXPECT_EQ(step.barrier.oldLayout, VK_IMAGE_LAYOUT_UNDEFINED);
+  EXPECT_EQ(step.barrier.newLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  EXPECT_EQ(step.barrier.image, inputs.localShadowAtlasImage);
+  EXPECT_EQ(step.barrier.subresourceRange.aspectMask,
+            VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+  EXPECT_EQ(step.barrier.subresourceRange.layerCount,
+            inputs.localShadowLayerCount);
+}
+
+TEST(DeferredRasterDepthReadOnlyTransitionRecorderTests,
      VisibleShadowAtlasSkipsShadowTransition) {
   auto inputs = readyInputs();
   inputs.shadowAtlasVisible = true;
@@ -98,6 +123,24 @@ TEST(DeferredRasterDepthReadOnlyTransitionRecorderTests,
 
   ASSERT_EQ(plan.stepCount, 1u);
   EXPECT_EQ(plan.steps[0].barrier.image, inputs.depthStencilImage);
+}
+
+TEST(DeferredRasterDepthReadOnlyTransitionRecorderTests,
+     VisibleOrLayerlessLocalShadowAtlasSkipsLocalTransition) {
+  auto inputs = readyInputs();
+  inputs.shadowAtlasVisible = true;
+  inputs.localShadowAtlasImage = fakeHandle<VkImage>(0x4);
+  inputs.localShadowAtlasVisible = true;
+  inputs.localShadowLayerCount = 6u;
+  EXPECT_EQ(buildDeferredRasterDepthReadOnlyTransitionPlan(inputs).stepCount,
+            1u);
+
+  inputs = readyInputs();
+  inputs.shadowAtlasVisible = true;
+  inputs.localShadowAtlasImage = fakeHandle<VkImage>(0x4);
+  inputs.localShadowLayerCount = 0u;
+  EXPECT_EQ(buildDeferredRasterDepthReadOnlyTransitionPlan(inputs).stepCount,
+            1u);
 }
 
 TEST(DeferredRasterDepthReadOnlyTransitionRecorderTests,

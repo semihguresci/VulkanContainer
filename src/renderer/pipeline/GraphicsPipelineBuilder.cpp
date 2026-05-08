@@ -123,6 +123,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkShaderModule tgFrag           = loadModule("spv_shaders/transform_gizmo.frag.spv");
   VkShaderModule sdVert           = loadModule("spv_shaders/shadow_depth.vert.spv");
   VkShaderModule sdFrag           = loadModule("spv_shaders/shadow_depth.frag.spv");
+  VkShaderModule lsdVert          = loadModule("spv_shaders/local_shadow_depth.vert.spv");
+  VkShaderModule lsdFrag          = loadModule("spv_shaders/local_shadow_depth.frag.spv");
   VkShaderModule tlVert           = loadModule("spv_shaders/tiled_lighting.vert.spv");
   VkShaderModule tlFrag           = loadModule("spv_shaders/tiled_lighting.frag.spv");
 
@@ -187,6 +189,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   std::array<VkPipelineShaderStageCreateInfo, 2> sdStages = {
       makeStage(sdVert,  VK_SHADER_STAGE_VERTEX_BIT),
       makeStage(sdFrag,  VK_SHADER_STAGE_FRAGMENT_BIT)};
+  std::array<VkPipelineShaderStageCreateInfo, 2> lsdStages = {
+      makeStage(lsdVert, VK_SHADER_STAGE_VERTEX_BIT),
+      makeStage(lsdFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
   std::array<VkPipelineShaderStageCreateInfo, 2> tlStages = {
       makeStage(tlVert,  VK_SHADER_STAGE_VERTEX_BIT),
       makeStage(tlFrag,  VK_SHADER_STAGE_FRAGMENT_BIT)};
@@ -709,6 +714,24 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   sdNoCullPCI.pRasterizationState = &shadowNoCullRaster;
   pipelines.shadowDepthNoCull = pipelineManager_.createGraphicsPipeline(
       sdNoCullPCI, "shadow_depth_no_cull_pipeline");
+
+  VkGraphicsPipelineCreateInfo localSdPCI = sdPCI;
+  localSdPCI.stageCount = static_cast<uint32_t>(lsdStages.size());
+  localSdPCI.pStages = lsdStages.data();
+  pipelines.localShadowDepth = pipelineManager_.createGraphicsPipeline(
+      localSdPCI, "local_shadow_depth_pipeline");
+
+  VkGraphicsPipelineCreateInfo localSdFrontCullPCI = localSdPCI;
+  localSdFrontCullPCI.pRasterizationState = &shadowFrontCullRaster;
+  pipelines.localShadowDepthFrontCull =
+      pipelineManager_.createGraphicsPipeline(
+          localSdFrontCullPCI, "local_shadow_depth_front_cull_pipeline");
+
+  VkGraphicsPipelineCreateInfo localSdNoCullPCI = localSdPCI;
+  localSdNoCullPCI.pRasterizationState = &shadowNoCullRaster;
+  pipelines.localShadowDepthNoCull =
+      pipelineManager_.createGraphicsPipeline(
+          localSdNoCullPCI, "local_shadow_depth_no_cull_pipeline");
 
   // Directional light
   fsPCI.stageCount = static_cast<uint32_t>(dirStages.size());

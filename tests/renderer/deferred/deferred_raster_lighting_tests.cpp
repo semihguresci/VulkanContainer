@@ -158,4 +158,35 @@ TEST(DeferredRasterLightingTests, OverlayStyleValuesAreClamped) {
   EXPECT_FLOAT_EQ(state.surfaceNormalLineWidth, 1.0f);
 }
 
+TEST(DeferredRasterLightingTests,
+     BimTechnicalElevationForcesDepthTestedHiddenLineOverlay) {
+  auto inputs = litInputs();
+  inputs.guiAvailable = false;
+  inputs.wireframeSettings.enabled = false;
+  inputs.bimTechnicalElevation.enabled = true;
+  inputs.bimTechnicalElevation.hiddenLineOverlay = true;
+  inputs.bimTechnicalElevation.lineWidth = 2.25f;
+  inputs.bimTechnicalElevation.overlayIntensity = 0.9f;
+  inputs.bimTechnicalElevation.lineColor = {0.02f, 0.03f, 0.04f};
+
+  const auto state = buildDeferredLightingFrameState(inputs);
+
+  EXPECT_TRUE(state.bimTechnicalElevationEnabled);
+  EXPECT_TRUE(state.wireframeEnabled);
+  EXPECT_FALSE(state.wireframeFullMode);
+  EXPECT_TRUE(state.wireframeOverlayMode);
+  EXPECT_TRUE(state.wireframeSettings.depthTest);
+  EXPECT_EQ(state.wireframeSettings.mode, DeferredLightingWireframeMode::Overlay);
+  EXPECT_FLOAT_EQ(state.wireframeSettings.lineWidth, 2.25f);
+  EXPECT_FLOAT_EQ(state.wireframeSettings.overlayIntensity, 0.9f);
+  EXPECT_FLOAT_EQ(state.wireframeSettings.color.x, 0.02f);
+  EXPECT_FLOAT_EQ(state.wireframeSettings.color.y, 0.03f);
+  EXPECT_FLOAT_EQ(state.wireframeSettings.color.z, 0.04f);
+  EXPECT_FLOAT_EQ(state.wireframeIntensity, 0.9f);
+
+  inputs.bimTechnicalElevation.depthTestLines = false;
+  EXPECT_FALSE(buildDeferredLightingFrameState(inputs)
+                   .bimTechnicalElevationEnabled);
+}
+
 } // namespace

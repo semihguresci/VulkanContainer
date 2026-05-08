@@ -16,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <filesystem>
+#include <glm/gtc/matrix_transform.hpp>
 #include <span>
 #include <stdexcept>
 #include <vector>
@@ -26,6 +27,9 @@ using container::gpu::kClusterDepthSlices;
 using container::gpu::kMaxAreaLights;
 using container::gpu::kMaxClusteredLights;
 using container::gpu::kMaxLightsPerTile;
+using container::gpu::kMaxShadowedLocalLightLayers;
+using container::gpu::kLocalShadowPointFaceCount;
+using container::gpu::kLocalShadowSpotLayerCount;
 using container::gpu::kTileSize;
 using container::gpu::AreaLightData;
 using container::gpu::LightCullingStats;
@@ -43,6 +47,10 @@ constexpr uint32_t kClusterCullStartQuery = 0u;
 constexpr uint32_t kClusterCullEndQuery = 1u;
 constexpr uint32_t kClusteredLightingStartQuery = 2u;
 constexpr uint32_t kClusteredLightingEndQuery = 3u;
+
+[[nodiscard]] bool hasFiniteLocalShadowRange(float range) {
+  return std::isfinite(range) && range > 0.0f;
+}
 
 void syncLightingPointCount(LightingData &lightingData,
                             const std::vector<PointLightData> &allPointLights) {
@@ -71,6 +79,26 @@ glm::vec3 normalizeOr(const glm::vec3 &value, const glm::vec3 &fallback) {
     return fallback;
   }
   return value * (1.0f / std::sqrt(len2));
+}
+
+bool lightingSettingsDiffer(const LightingSettings &lhs,
+                            const LightingSettings &rhs) {
+  return lhs.preset != rhs.preset || lhs.density != rhs.density ||
+         lhs.radiusScale != rhs.radiusScale ||
+         lhs.intensityScale != rhs.intensityScale ||
+         lhs.directionalIntensity != rhs.directionalIntensity ||
+         lhs.environmentIntensity != rhs.environmentIntensity;
+}
+
+EditableLightId invalidEditableLightId() { return {}; }
+
+glm::vec3 rotateVector(const glm::vec3 &value, const glm::vec3 &axis,
+                       float degrees) {
+  const glm::vec3 rotationAxis = normalizeOr(axis, glm::vec3(0.0f, 1.0f, 0.0f));
+  const glm::mat4 rotation =
+      glm::rotate(glm::mat4(1.0f), glm::radians(degrees), rotationAxis);
+  return normalizeOr(glm::vec3(rotation * glm::vec4(value, 0.0f)),
+                     normalizeOr(value, glm::vec3(0.0f, -1.0f, 0.0f)));
 }
 
 } // namespace
@@ -269,6 +297,8 @@ void LightingManager::uploadLightingData(uint32_t imageIndex) const {
 }
 
 void LightingManager::setLightingSettings(const LightingSettings &settings) {
+  const bool generatorSettingsChanged =
+      lightingSettingsDiffer(lightingSettings_, settings);
   lightingSettings_.preset = std::min(settings.preset, 3u);
   lightingSettings_.density = std::clamp(settings.density, 0.1f, 16.0f);
   lightingSettings_.radiusScale = std::clamp(settings.radiusScale, 0.05f, 8.0f);
@@ -278,6 +308,16 @@ void LightingManager::setLightingSettings(const LightingSettings &settings) {
       std::clamp(settings.directionalIntensity, 0.0f, 16.0f);
   lightingSettings_.environmentIntensity =
       std::clamp(settings.environmentIntensity, 0.0f, 16.0f);
+  lightingSettings_.bounceIntensity =
+      std::clamp(settings.bounceIntensity, 0.0f, 2.0f);
+  if (generatorSettingsChanged) {
+    generatedPointOverrides_.clear();
+    generatedAreaOverrides_.clear();
+    if (directionalOverride_ &&
+        directionalOverride_->source == EditableLightSource::Generated) {
+      directionalOverride_.reset();
+    }
+  }
 }
 
 void LightingManager::collectStats() {
@@ -442,9 +482,39 @@ void LightingManager::appendAuthoredAreaLights(
   }
 }
 
+void LightingManager::assignLocalShadowLayerMetadata() {
+  uint32_t nextLayer = 0u;
+  for (PointLightData &light : pointLightsSsbo_) {
+    light.coneOuterCosType.z = 0.0f;
+    light.coneOuterCosType.w = 0.0f;
+
+    if (light.colorIntensity.a <= 0.0f) {
+      continue;
+    }
+    if (!hasFiniteLocalShadowRange(light.positionRadius.w)) {
+      continue;
+    }
+
+    const bool isSpot = light.coneOuterCosType.y >= 0.5f;
+    const uint32_t layerCount =
+        isSpot ? kLocalShadowSpotLayerCount : kLocalShadowPointFaceCount;
+    if (nextLayer + layerCount > kMaxShadowedLocalLightLayers) {
+      continue;
+    }
+
+    // z/w are intentionally reserved as local-shadow metadata while keeping
+    // PointLightData at 64 bytes for existing clustered-light paths.
+    light.coneOuterCosType.z = static_cast<float>(nextLayer + 1u);
+    light.coneOuterCosType.w = static_cast<float>(layerCount);
+    nextLayer += layerCount;
+  }
+}
+
 void LightingManager::publishPointLights() {
+  assignLocalShadowLayerMetadata();
   world_.replacePointLights(pointLightsSsbo_);
   rebuildPointLightSsboFromEcs();
+  assignLocalShadowLayerMetadata();
   syncLightingPointCount(lightingData_, pointLightsSsbo_);
 }
 
@@ -463,6 +533,290 @@ void LightingManager::rebuildPointLightSsboFromEcs() {
   });
 }
 
+std::optional<EditableLightEntity> LightingManager::selectedEditableLight()
+    const {
+  for (const EditableLightEntity &light : editableLights_) {
+    if (light.id == selectedEditableLight_) {
+      return light;
+    }
+  }
+  return std::nullopt;
+}
+
+void LightingManager::selectEditableLight(EditableLightId id) {
+  selectedEditableLight_ = id;
+  for (EditableLightEntity &light : editableLights_) {
+    light.selected = light.id == selectedEditableLight_;
+  }
+}
+
+bool LightingManager::updateEditableLight(const EditableLightEntity &entity) {
+  if (!isValidEditableLightId(entity.id)) {
+    return false;
+  }
+
+  EditableLightEntity edited = entity;
+  edited.type = entity.id.type;
+  edited.source = entity.id.source;
+  edited.selected = true;
+  selectedEditableLight_ = edited.id;
+
+  if (edited.type == EditableLightType::Directional) {
+    directionalOverride_ = edited;
+    return true;
+  }
+
+  if (edited.type == EditableLightType::Point ||
+      edited.type == EditableLightType::Spot) {
+    const PointLightData data = pointLightDataFromEditable(edited);
+    if (edited.source == EditableLightSource::Manual) {
+      if (edited.id.index >= manualPointLights_.size()) {
+        return false;
+      }
+      manualPointLights_[edited.id.index] = data;
+      return true;
+    }
+
+    auto &overrides = edited.source == EditableLightSource::Imported
+                          ? importedPointOverrides_
+                          : generatedPointOverrides_;
+    if (overrides.size() <= edited.id.index) {
+      overrides.resize(static_cast<size_t>(edited.id.index) + 1u);
+    }
+    overrides[edited.id.index] = data;
+    return true;
+  }
+
+  if (edited.type == EditableLightType::Area) {
+    const AreaLightData data = areaLightDataFromEditable(edited);
+    if (edited.source == EditableLightSource::Manual) {
+      if (edited.id.index >= manualAreaLights_.size()) {
+        return false;
+      }
+      manualAreaLights_[edited.id.index] = data;
+      return true;
+    }
+
+    auto &overrides = edited.source == EditableLightSource::Imported
+                          ? importedAreaOverrides_
+                          : generatedAreaOverrides_;
+    if (overrides.size() <= edited.id.index) {
+      overrides.resize(static_cast<size_t>(edited.id.index) + 1u);
+    }
+    overrides[edited.id.index] = data;
+    return true;
+  }
+
+  return false;
+}
+
+EditableLightId LightingManager::addManualEditableLight(
+    EditableLightType type) {
+  const SceneLightingAnchor anchor = computeSceneLightingAnchor();
+  const glm::vec3 center = anchor.center;
+  const float radius = std::max(anchor.worldRadius, 1.0f);
+
+  if (type == EditableLightType::Directional) {
+    EditableLightEntity manual = editableDirectionalLight(
+        EditableLightSource::Manual, directionalLightPosition(), lightingData_,
+        true);
+    manual.id = {.type = EditableLightType::Directional,
+                 .source = EditableLightSource::Manual,
+                 .index = 0u};
+    manual.source = EditableLightSource::Manual;
+    manual.label = "Manual Directional";
+    directionalOverride_ = manual;
+    selectedEditableLight_ = manual.id;
+    return manual.id;
+  }
+
+  if (type == EditableLightType::Area) {
+    AreaLightData light{};
+    light.positionRange =
+        glm::vec4(center + glm::vec3(0.0f, radius * 0.35f, 0.0f),
+                  radius * 1.5f);
+    light.colorIntensity = glm::vec4(1.0f, 0.92f, 0.82f, 8.0f);
+    light.directionType =
+        glm::vec4(0.0f, -1.0f, 0.0f, container::gpu::kAreaLightTypeRectangle);
+    light.tangentHalfSize = glm::vec4(1.0f, 0.0f, 0.0f, radius * 0.12f);
+    light.bitangentHalfSize = glm::vec4(0.0f, 0.0f, 1.0f, radius * 0.12f);
+    const uint32_t index = static_cast<uint32_t>(manualAreaLights_.size());
+    manualAreaLights_.push_back(light);
+    selectedEditableLight_ = {.type = EditableLightType::Area,
+                              .source = EditableLightSource::Manual,
+                              .index = index};
+    return selectedEditableLight_;
+  }
+
+  PointLightData light{};
+  light.positionRadius =
+      glm::vec4(center + glm::vec3(0.0f, radius * 0.25f, 0.0f),
+                radius * 1.25f);
+  light.colorIntensity = glm::vec4(1.0f, 0.9f, 0.78f, 6.0f);
+  light.directionInnerCos = glm::vec4(0.0f, -1.0f, 0.0f, 1.0f);
+  light.coneOuterCosType =
+      glm::vec4(0.0f, container::gpu::kLightTypePoint, 0.0f, 0.0f);
+  if (type == EditableLightType::Spot) {
+    light.directionInnerCos =
+        glm::vec4(0.0f, -1.0f, 0.0f, std::cos(glm::radians(18.0f)));
+    light.coneOuterCosType =
+        glm::vec4(std::cos(glm::radians(32.0f)),
+                  container::gpu::kLightTypeSpot, 0.0f, 0.0f);
+  }
+  const uint32_t index = static_cast<uint32_t>(manualPointLights_.size());
+  manualPointLights_.push_back(light);
+  selectedEditableLight_ = {.type = type,
+                            .source = EditableLightSource::Manual,
+                            .index = index};
+  return selectedEditableLight_;
+}
+
+bool LightingManager::translateSelectedEditableLight(const glm::vec3 &delta) {
+  auto selected = selectedEditableLight();
+  if (!selected || selected->type == EditableLightType::Directional) {
+    return false;
+  }
+  selected->position += delta;
+  return updateEditableLight(*selected);
+}
+
+bool LightingManager::rotateSelectedEditableLight(const glm::vec3 &axis,
+                                                  float degrees) {
+  auto selected = selectedEditableLight();
+  if (!selected || selected->type == EditableLightType::Point) {
+    return false;
+  }
+  selected->direction = rotateVector(selected->direction, axis, degrees);
+  if (selected->type == EditableLightType::Area) {
+    selected->tangent = rotateVector(selected->tangent, axis, degrees);
+    selected->bitangent = rotateVector(selected->bitangent, axis, degrees);
+  }
+  return updateEditableLight(*selected);
+}
+
+bool LightingManager::scaleSelectedEditableLight(float factor) {
+  auto selected = selectedEditableLight();
+  if (!selected || selected->type == EditableLightType::Directional ||
+      !std::isfinite(factor) || factor <= 0.0f) {
+    return false;
+  }
+  const float clampedFactor = std::clamp(factor, 0.05f, 20.0f);
+  selected->range = std::max(selected->range * clampedFactor, 0.001f);
+  if (selected->type == EditableLightType::Area) {
+    selected->areaHalfSize =
+        glm::max(selected->areaHalfSize * clampedFactor, glm::vec2(0.001f));
+  }
+  return updateEditableLight(*selected);
+}
+
+void LightingManager::applyEditableLightOverrides(
+    EditableLightSource directionalSource, EditableLightSource pointSource,
+    size_t sourcePointCount,
+    EditableLightSource areaSource, size_t sourceAreaCount) {
+  if (directionalOverride_ &&
+      (directionalOverride_->source == EditableLightSource::Manual ||
+       directionalOverride_->source == directionalSource)) {
+    lightingData_ =
+        directionalLightDataFromEditable(*directionalOverride_, lightingData_);
+  }
+
+  auto applyPointOverrides =
+      [&](const std::vector<std::optional<PointLightData>> &overrides) {
+        const size_t count =
+            std::min({sourcePointCount, pointLightsSsbo_.size(),
+                      overrides.size()});
+        for (size_t i = 0; i < count; ++i) {
+          if (overrides[i]) {
+            pointLightsSsbo_[i] = *overrides[i];
+          }
+        }
+      };
+  applyPointOverrides(pointSource == EditableLightSource::Imported
+                          ? importedPointOverrides_
+                          : generatedPointOverrides_);
+
+  auto applyAreaOverrides =
+      [&](const std::vector<std::optional<AreaLightData>> &overrides) {
+        const size_t count =
+            std::min({sourceAreaCount, areaLightsSsbo_.size(),
+                      overrides.size()});
+        for (size_t i = 0; i < count; ++i) {
+          if (overrides[i]) {
+            areaLightsSsbo_[i] = *overrides[i];
+          }
+        }
+      };
+  applyAreaOverrides(areaSource == EditableLightSource::Imported
+                         ? importedAreaOverrides_
+                         : generatedAreaOverrides_);
+}
+
+void LightingManager::appendManualEditableLights(
+    const SceneLightingAnchor &) {
+  for (const PointLightData &light : manualPointLights_) {
+    if (pointLightsSsbo_.size() >= kMaxClusteredLights) {
+      break;
+    }
+    pointLightsSsbo_.push_back(light);
+  }
+  for (const AreaLightData &light : manualAreaLights_) {
+    if (areaLightsSsbo_.size() >= kMaxAreaLights) {
+      break;
+    }
+    areaLightsSsbo_.push_back(light);
+  }
+}
+
+void LightingManager::rebuildEditableLights(
+    EditableLightSource directionalSource, EditableLightSource pointSource,
+    size_t sourcePointCount, EditableLightSource areaSource,
+    size_t sourceAreaCount) {
+  editableLights_.clear();
+  editableLights_.reserve(1u + sourcePointCount + sourceAreaCount +
+                          manualPointLights_.size() + manualAreaLights_.size());
+
+  auto appendEditable = [&](EditableLightEntity light) {
+    light.selected = light.id == selectedEditableLight_;
+    editableLights_.push_back(std::move(light));
+  };
+
+  appendEditable(editableDirectionalLight(
+      directionalOverride_ &&
+              directionalOverride_->source == EditableLightSource::Manual
+          ? EditableLightSource::Manual
+          : directionalSource,
+      directionalLightPosition(), lightingData_,
+      selectedEditableLight_.type == EditableLightType::Directional));
+
+  for (size_t i = 0; i < sourcePointCount && i < pointLightsSsbo_.size(); ++i) {
+    appendEditable(editablePointLight(pointSource, static_cast<uint32_t>(i),
+                                      pointLightsSsbo_[i], false));
+  }
+  for (size_t i = 0; i < sourceAreaCount && i < areaLightsSsbo_.size(); ++i) {
+    appendEditable(editableAreaLight(areaSource, static_cast<uint32_t>(i),
+                                     areaLightsSsbo_[i], false));
+  }
+  for (uint32_t i = 0u; i < manualPointLights_.size(); ++i) {
+    appendEditable(editablePointLight(EditableLightSource::Manual, i,
+                                      manualPointLights_[i], false));
+  }
+  for (uint32_t i = 0u; i < manualAreaLights_.size(); ++i) {
+    appendEditable(editableAreaLight(EditableLightSource::Manual, i,
+                                     manualAreaLights_[i], false));
+  }
+
+  const bool selectionStillExists =
+      std::ranges::any_of(editableLights_, [&](const EditableLightEntity &light) {
+        return light.id == selectedEditableLight_;
+      });
+  if (!selectionStillExists) {
+    selectedEditableLight_ = invalidEditableLightId();
+    for (EditableLightEntity &light : editableLights_) {
+      light.selected = false;
+    }
+  }
+}
+
 void LightingManager::updateLightingData() {
   const SceneLightingAnchor anchor = computeSceneLightingAnchor();
   const glm::mat4 &sceneTransform = anchor.sceneTransform;
@@ -470,6 +824,7 @@ void LightingManager::updateLightingData() {
 
   lightingData_ = {};
   lightingData_.environmentIntensity = lightingSettings_.environmentIntensity;
+  lightingData_.bounceIntensity = lightingSettings_.bounceIntensity;
   const glm::vec3 baseDir = glm::normalize(glm::vec3(-0.45f, -1.0f, -0.3f));
   lightingData_.directionalDirection = glm::vec4(
       glm::normalize(glm::vec3(sceneTransform * glm::vec4(baseDir, 0.0f))),
@@ -477,7 +832,10 @@ void LightingManager::updateLightingData() {
 
   lightingData_.directionalColorIntensity =
       glm::vec4(1.0f, 0.96f, 0.9f, lightingSettings_.directionalIntensity);
-  applyAuthoredDirectionalLight(anchor);
+  const bool authoredDirectionalApplied = applyAuthoredDirectionalLight(anchor);
+  const EditableLightSource directionalSource =
+      authoredDirectionalApplied ? EditableLightSource::Imported
+                                 : EditableLightSource::Generated;
 
   pointLightsSsbo_.clear();
   pointLightsSsbo_.reserve(std::min<uint32_t>(kMaxClusteredLights, 256u));
@@ -487,8 +845,18 @@ void LightingManager::updateLightingData() {
   appendAuthoredAreaLights(anchor);
   if (sceneManager_ && (!sceneManager_->authoredPointLights().empty() ||
                         !sceneManager_->authoredAreaLights().empty())) {
+    const size_t sourcePointCount = pointLightsSsbo_.size();
+    const size_t sourceAreaCount = areaLightsSsbo_.size();
+    applyEditableLightOverrides(directionalSource,
+                                EditableLightSource::Imported,
+                                sourcePointCount, EditableLightSource::Imported,
+                                sourceAreaCount);
+    appendManualEditableLights(anchor);
     publishPointLights();
     publishAreaLights();
+    rebuildEditableLights(directionalSource, EditableLightSource::Imported,
+                          sourcePointCount, EditableLightSource::Imported,
+                          sourceAreaCount);
     return;
   }
 
@@ -581,7 +949,19 @@ void LightingManager::updateLightingData() {
         }
       }
 
+      const size_t sourcePointCount = pointLightsSsbo_.size();
+      const size_t sourceAreaCount = areaLightsSsbo_.size();
+      applyEditableLightOverrides(directionalSource,
+                                  EditableLightSource::Generated,
+                                  sourcePointCount,
+                                  EditableLightSource::Generated,
+                                  sourceAreaCount);
+      appendManualEditableLights(anchor);
       publishPointLights();
+      publishAreaLights();
+      rebuildEditableLights(directionalSource, EditableLightSource::Generated,
+                            sourcePointCount, EditableLightSource::Generated,
+                            sourceAreaCount);
       return;
     }
   }
@@ -623,8 +1003,17 @@ void LightingManager::updateLightingData() {
     }
   }
 
+  const size_t sourcePointCount = pointLightsSsbo_.size();
+  const size_t sourceAreaCount = areaLightsSsbo_.size();
+  applyEditableLightOverrides(directionalSource, EditableLightSource::Generated,
+                              sourcePointCount, EditableLightSource::Generated,
+                              sourceAreaCount);
+  appendManualEditableLights(anchor);
   publishPointLights();
   publishAreaLights();
+  rebuildEditableLights(directionalSource, EditableLightSource::Generated,
+                        sourcePointCount, EditableLightSource::Generated,
+                        sourceAreaCount);
 }
 
 void LightingManager::updateLightingData(
@@ -684,6 +1073,9 @@ void LightingManager::updateLightingData(
       {0.82f, 1.0f, 0.80f},
   }};
 
+  areaLightsSsbo_.clear();
+  appendAuthoredAreaLights(anchor);
+
   pointLightsSsbo_.clear();
   pointLightsSsbo_.reserve(kCameraRingLightCount);
   appendAuthoredPointLights(anchor);
@@ -698,7 +1090,23 @@ void LightingManager::updateLightingData(
     pointLightsSsbo_.push_back(light);
   }
 
+  const bool authoredDirectional =
+      sceneManager_ && !sceneManager_->authoredDirectionalLights().empty();
+  const EditableLightSource directionalSource =
+      authoredDirectional ? EditableLightSource::Imported
+                          : EditableLightSource::Generated;
+  const size_t sourcePointCount = pointLightsSsbo_.size();
+  const EditableLightSource areaSource =
+      !areaLightsSsbo_.empty() ? EditableLightSource::Imported
+                               : EditableLightSource::Generated;
+  const size_t sourceAreaCount = areaLightsSsbo_.size();
+  applyEditableLightOverrides(directionalSource, EditableLightSource::Generated,
+                              sourcePointCount, areaSource, sourceAreaCount);
+  appendManualEditableLights(anchor);
   publishPointLights();
+  publishAreaLights();
+  rebuildEditableLights(directionalSource, EditableLightSource::Generated,
+                        sourcePointCount, areaSource, sourceAreaCount);
 }
 
 void LightingManager::updateLightingDataForActiveCamera() {
@@ -728,8 +1136,8 @@ void LightingManager::drawLightGizmos(
        .directionalDirection = glm::vec3(lightingData_.directionalDirection),
        .directionalColor =
            glm::vec3(lightingData_.directionalColorIntensity),
-       .pointLights = std::span<const PointLightData>(
-           pointLightsSsbo_.data(), pointLightsSsbo_.size())});
+       .editableLights = std::span<const EditableLightEntity>(
+           editableLights_.data(), editableLights_.size())});
 
   static_cast<void>(recordDeferredLightGizmoCommands(
       commandBuffer, {.pipeline = lightGizmoPipeline,

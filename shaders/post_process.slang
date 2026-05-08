@@ -27,6 +27,16 @@ ConstantBuffer<PostProcessPushConstants> pc;
 
 static const uint EXPOSURE_MODE_MANUAL = 0u;
 
+float FiniteOr(float value, float fallback)
+{
+    return isfinite(value) ? value : fallback;
+}
+
+float3 FiniteColorOr(float3 value, float3 fallback)
+{
+    return all(isfinite(value)) ? value : fallback;
+}
+
 struct VSOutput
 {
     float4 pos : SV_Position;
@@ -41,6 +51,10 @@ struct Rect
 
 float3 ToneMapACES(float3 color)
 {
+    if (!all(isfinite(color)))
+    {
+        color = 0.0.xxx;
+    }
     const float a = 2.51;
     const float b = 0.03;
     const float c = 2.43;
@@ -58,23 +72,25 @@ float3 ToSwapchainLinear(float3 color)
 
 float ResolveExposureForToneMapping()
 {
+    float fallbackExposure = max(FiniteOr(pc.exposure, 1.0), 0.0);
     if (pc.exposureMode == EXPOSURE_MODE_MANUAL)
     {
-        return max(pc.exposure, 0.0);
+        return fallbackExposure;
     }
 
     ExposureStateData exposureState = uExposureState[0];
     float exposure =
         exposureState.initialized > 0.5 && isfinite(exposureState.exposure)
             ? exposureState.exposure
-            : pc.exposure;
+            : fallbackExposure;
     if (!isfinite(exposure))
     {
-        exposure = pc.exposure;
+        exposure = fallbackExposure;
     }
 
-    float minExposure = max(pc.minExposure, 0.0);
-    float maxExposure = max(pc.maxExposure, minExposure);
+    float minExposure = max(FiniteOr(pc.minExposure, 0.0), 0.0);
+    float maxExposure = max(FiniteOr(pc.maxExposure, fallbackExposure),
+                            minExposure);
     return clamp(max(exposure, 0.0), minExposure, maxExposure);
 }
 
@@ -84,21 +100,25 @@ float4 CompositeFrontToBack(float3 sceneColor, uint sortedIndices[MAX_OIT_NODES_
     // Transparent nodes are already sorted nearest-to-farthest by the caller.
     // Front-to-back compositing lets revealage track how much opaque scene
     // color remains visible through the accumulated alpha.
+    float3 safeSceneColor = FiniteColorOr(sceneColor, 0.0.xxx);
     float3 accumColor = 0.0.xxx;
     float accumAlpha = 0.0;
 
     for (uint i = 0u; i < nodeCount; ++i)
     {
         TransparentNode node = transparentNodes[sortedIndices[i]];
-        float alpha = saturate(node.color.a);
-        float weight = (1.0 - accumAlpha) * alpha;
-        accumColor += node.color.rgb * weight;
-        accumAlpha += weight;
+        float alpha = saturate(FiniteOr(node.color.a, 0.0));
+        float weight =
+            saturate(FiniteOr((1.0 - accumAlpha) * alpha, 0.0));
+        accumColor += FiniteColorOr(node.color.rgb, 0.0.xxx) * weight;
+        accumAlpha = saturate(FiniteOr(accumAlpha + weight, accumAlpha));
     }
 
-    transparentColor = accumColor;
-    revealage = 1.0 - accumAlpha;
-    return float4(accumColor + sceneColor * revealage, 1.0);
+    transparentColor = FiniteColorOr(accumColor, 0.0.xxx);
+    revealage = saturate(FiniteOr(1.0 - accumAlpha, 1.0));
+    return float4(FiniteColorOr(accumColor + safeSceneColor * revealage,
+                                safeSceneColor),
+                  1.0);
 }
 
 struct OitResolveResult
@@ -111,7 +131,7 @@ struct OitResolveResult
 OitResolveResult ResolveOitPixel(uint2 pixelCoord, float3 sceneColor)
 {
     OitResolveResult result;
-    result.compositedColor = sceneColor;
+    result.compositedColor = FiniteColorOr(sceneColor, 0.0.xxx);
     result.transparentColor = 0.0.xxx;
     result.revealage = 1.0;
 
@@ -138,11 +158,12 @@ OitResolveResult ResolveOitPixel(uint2 pixelCoord, float3 sceneColor)
         }
 
         TransparentNode node = transparentNodes[current];
+        float nodeDepth = FiniteOr(node.depth, 0.0);
         uint insertAt = nodeCount;
         while (insertAt > 0u)
         {
             TransparentNode prevNode = transparentNodes[sortedIndices[insertAt - 1u]];
-            if (prevNode.depth >= node.depth)
+            if (FiniteOr(prevNode.depth, 0.0) >= nodeDepth)
             {
                 break;
             }
@@ -213,40 +234,40 @@ bool IsPanelBorder(float2 uv, Rect rect, float borderSize)
 
 float3 MaterialVisual(float4 material)
 {
-    return float3(saturate(material.x), saturate(material.y), 0.0);
+    return float3(saturate(FiniteOr(material.x, 0.0)),
+                  saturate(FiniteOr(material.y, 1.0)),
+                  0.0);
+}
+
+bool ValidSceneDepth(float depth)
+{
+    return isfinite(depth) && depth > 0.0 && depth <= 1.0;
 }
 
 float3 NormalVisual(float4 encodedNormal)
 {
-    float3 normal = normalize(encodedNormal.xyz * 2.0 - 1.0);
-    if (!all(isfinite(normal)))
+    float3 decoded =
+        FiniteColorOr(encodedNormal.xyz, 0.5.xxx) * 2.0 - 1.0;
+    float lengthSq = dot(decoded, decoded);
+    float3 normal = float3(0.0, 1.0, 0.0);
+    if (all(isfinite(decoded)) && lengthSq >= 1e-8)
     {
-        normal = float3(0.0, 1.0, 0.0);
+        normal = decoded * rsqrt(lengthSq);
     }
     return normal * 0.5 + 0.5;
 }
 
 float3 DepthVisual(float depth)
 {
-    if (depth == 0.0)
+    if (!ValidSceneDepth(depth))
     {
         return 0.0.xxx;
     }
-    float n = pc.cameraNear;
-    float f = pc.cameraFar;
+    float n = SanitizeClusterNear(pc.cameraNear);
+    float f = SanitizeClusterFar(n, pc.cameraFar);
     float linearDepth = (n * f) / (depth * (f - n) + n);
     float normalizedDepth = saturate((linearDepth - n) / max(f - n, 1e-6));
     return normalizedDepth.xxx;
-}
-
-float3 ReconstructWorldPosition(float2 texCoord, float depth,
-                                column_major float4x4 inverseViewProj)
-{
-    float2 ndcXY = texCoord * 2.0 - 1.0;
-    ndcXY.y = -ndcXY.y;
-    float4 clipPosition = float4(ndcXY, depth, 1.0);
-    float4 worldPosition = mul(inverseViewProj, clipPosition);
-    return worldPosition.xyz / max(worldPosition.w, 1e-6);
 }
 
 float EdgeDistance01(float2 uv)
@@ -271,17 +292,26 @@ uint2 OitPixelFromUV(float2 uv)
 
 float ViewDepthFromDeviceDepth(float depthSample)
 {
-    float n = pc.cameraNear;
-    float f = pc.cameraFar;
+    if (!ValidSceneDepth(depthSample))
+    {
+        return 0.0;
+    }
+    float n = SanitizeClusterNear(pc.cameraNear);
+    float f = SanitizeClusterFar(n, pc.cameraFar);
     return (n * f) / (depthSample * (f - n) + n);
 }
 
 uint CascadeIndexForViewDepth(float viewZ)
 {
+    if (!isfinite(viewZ) || viewZ <= 0.0)
+    {
+        return 3u;
+    }
     uint cascadeIndex = 3u;
     for (uint i = 0u; i < 3u; ++i)
     {
-        if (viewZ < pc.cascadeSplits[i])
+        float split = pc.cascadeSplits[i];
+        if (isfinite(split) && viewZ < split)
         {
             cascadeIndex = i;
             break;
@@ -293,7 +323,9 @@ uint CascadeIndexForViewDepth(float viewZ)
 float3 LitViewColor(float2 uv, uint2 pixelCoord, float resolvedExposure,
                     bool oitAvailable)
 {
-    float3 litColor = sceneColorTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb;
+    float3 litColor =
+        FiniteColorOr(sceneColorTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb,
+                      0.0.xxx);
     float3 compositedColor = litColor;
     if (oitAvailable)
     {
@@ -303,8 +335,9 @@ float3 LitViewColor(float2 uv, uint2 pixelCoord, float resolvedExposure,
 
     if (pc.bloomEnabled != 0u)
     {
-        float3 bloom = gBloomTexture.SampleLevel(bloomSampler, uv, 0.0).rgb;
-        compositedColor += bloom * pc.bloomIntensity;
+        float3 bloom = FiniteColorOr(
+            gBloomTexture.SampleLevel(bloomSampler, uv, 0.0).rgb, 0.0.xxx);
+        compositedColor += bloom * max(FiniteOr(pc.bloomIntensity, 0.0), 0.0);
     }
 
     return ToSwapchainLinear(ToneMapACES(compositedColor * resolvedExposure));
@@ -312,8 +345,9 @@ float3 LitViewColor(float2 uv, uint2 pixelCoord, float resolvedExposure,
 
 float3 ShadowCascadeViewColor(uint2 pixelCoord, float3 sceneRgb)
 {
+    sceneRgb = FiniteColorOr(sceneRgb, 0.0.xxx);
     float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
-    if (depthSample == 0.0)
+    if (!ValidSceneDepth(depthSample))
     {
         return 0.0.xxx;
     }
@@ -335,12 +369,17 @@ float3 ShadowCascadeViewColor(uint2 pixelCoord, float3 sceneRgb)
         float splitDepth = pc.cascadeSplits[cascadeIndex];
         float prevSplit = (cascadeIndex == 0u) ? 0.0 : pc.cascadeSplits[cascadeIndex - 1u];
         float cascadeRange = splitDepth - prevSplit;
-        float blendFraction = clamp(uShadow.filterSettings.y, 0.0, 0.45);
-        float blendZone = cascadeRange * blendFraction;
-        float blendStart = splitDepth - blendZone;
-        if (viewZ > blendStart)
+        if (isfinite(splitDepth) && isfinite(prevSplit) &&
+            isfinite(cascadeRange) && cascadeRange > 1e-6)
         {
-            blendIndicator = saturate((viewZ - blendStart) / max(blendZone, 1e-6));
+            float blendFraction =
+                clamp(FiniteOr(uShadow.filterSettings.y, 0.0), 0.0, 0.45);
+            float blendZone = cascadeRange * blendFraction;
+            float blendStart = splitDepth - blendZone;
+            if (blendZone > 1e-6 && viewZ > blendStart)
+            {
+                blendIndicator = saturate((viewZ - blendStart) / blendZone);
+            }
         }
     }
 
@@ -357,13 +396,14 @@ float3 ShadowCascadeViewColor(uint2 pixelCoord, float3 sceneRgb)
 float3 ShadowTexelDensityViewColor(uint2 pixelCoord)
 {
     float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
-    if (depthSample == 0.0)
+    if (!ValidSceneDepth(depthSample))
     {
         return 0.0.xxx;
     }
 
     uint cascadeIndex = CascadeIndexForViewDepth(ViewDepthFromDeviceDepth(depthSample));
-    float texelSize = max(uShadow.cascades[cascadeIndex].texelSize, 1e-6);
+    float texelSize = max(FiniteOr(uShadow.cascades[cascadeIndex].texelSize,
+                                   1.0), 1e-6);
     float texelsPerMeter = 1.0 / texelSize;
     float density = saturate(log2(max(texelsPerMeter, 1e-4)) / 8.0);
     return lerp(float3(0.05, 0.08, 0.14), float3(0.15, 0.8, 1.0), density);
@@ -372,6 +412,7 @@ float3 ShadowTexelDensityViewColor(uint2 pixelCoord)
 float3 TileLightHeatViewColor(uint2 pixelCoord, uint width, uint height,
                               float3 sceneRgb)
 {
+    sceneRgb = FiniteColorOr(sceneRgb, 0.0.xxx);
     if (pc.totalLights == 0u)
     {
         return 0.0.xxx;
@@ -379,10 +420,18 @@ float3 TileLightHeatViewColor(uint2 pixelCoord, uint width, uint height,
 
     static const uint TILE_SIZE = 16u;
     float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
+    if (!ValidSceneDepth(depthSample) || pc.tileCountX == 0u)
+    {
+        return 0.0.xxx;
+    }
 
     uint2 tileCoord = pixelCoord / TILE_SIZE;
-    uint safeDepthSliceCount = max(pc.depthSliceCount, 1u);
     uint tileCountY = (height + TILE_SIZE - 1u) / TILE_SIZE;
+    if (tileCoord.x >= pc.tileCountX || tileCoord.y >= tileCountY)
+    {
+        return 0.0.xxx;
+    }
+    uint safeDepthSliceCount = max(pc.depthSliceCount, 1u);
     uint sliceZ = DepthToClusterSlice(depthSample, pc.cameraNear, pc.cameraFar,
                                       safeDepthSliceCount);
     uint clusterIndex =
@@ -430,7 +479,10 @@ float3 DebugTextureViewColor(uint mode, float2 uv, uint2 pixelCoord,
     }
     if (mode == 1u)
     {
-        return gAlbedoTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb;
+        return max(FiniteColorOr(
+                       gAlbedoTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb,
+                       0.0.xxx),
+                   0.0.xxx);
     }
     if (mode == 2u)
     {
@@ -442,11 +494,15 @@ float3 DebugTextureViewColor(uint mode, float2 uv, uint2 pixelCoord,
     }
     if (mode == 4u)
     {
-        return DepthVisual(gDepthTexture.SampleLevel(gBufferSampler, uv, 0.0));
+        return DepthVisual(gDepthTexture.Load(int3(pixelCoord, 0)));
     }
     if (mode == 5u)
     {
-        float3 emissive = gEmissiveTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb;
+        float3 emissive =
+            max(FiniteColorOr(
+                    gEmissiveTexture.SampleLevel(gBufferSampler, uv, 0.0).rgb,
+                    0.0.xxx),
+                0.0.xxx);
         return ToSwapchainLinear(ToneMapACES(emissive * 2.0));
     }
     if (mode == 6u || mode == 7u)
@@ -460,7 +516,7 @@ float3 DebugTextureViewColor(uint mode, float2 uv, uint2 pixelCoord,
     }
     if (mode == 11u)
     {
-        if (pc.cascadeSplits[0] <= 0.0)
+        if (!isfinite(pc.cascadeSplits[0]) || pc.cascadeSplits[0] <= 0.0)
         {
             return 0.0.xxx;
         }
@@ -474,7 +530,7 @@ float3 DebugTextureViewColor(uint mode, float2 uv, uint2 pixelCoord,
     }
     if (mode == 13u)
     {
-        if (pc.cascadeSplits[0] <= 0.0)
+        if (!isfinite(pc.cascadeSplits[0]) || pc.cascadeSplits[0] <= 0.0)
         {
             return 0.0.xxx;
         }
@@ -486,8 +542,11 @@ float3 DebugTextureViewColor(uint mode, float2 uv, uint2 pixelCoord,
         {
             return 0.0.xxx;
         }
+        float3 bloom =
+            FiniteColorOr(gBloomTexture.SampleLevel(bloomSampler, uv, 0.0).rgb,
+                          0.0.xxx);
         return ToSwapchainLinear(ToneMapACES(
-            gBloomTexture.SampleLevel(bloomSampler, uv, 0.0).rgb * max(pc.bloomIntensity, 1.0)));
+            bloom * max(FiniteOr(pc.bloomIntensity, 1.0), 1.0)));
     }
     return 0.0.xxx;
 }
@@ -523,50 +582,11 @@ float4 fragMain(VSOutput input) : SV_Target0
     pixelCoord = min(pixelCoord, uint2(max(width, 1u) - 1u, max(height, 1u) - 1u));
     float2 screenUV = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
 
-    uint outputMode = pc.outputMode;
-    if (outputMode == 1u)
-    {
-        return float4(gAlbedoTexture.Load(int3(pixelCoord, 0)).rgb, 1.0);
-    }
-
-    if (outputMode == 2u)
-    {
-        return float4(NormalVisual(gNormalTexture.Load(int3(pixelCoord, 0))), 1.0);
-    }
-
-    if (outputMode == 3u)
-    {
-        return float4(MaterialVisual(gMaterialTexture.Load(int3(pixelCoord, 0))), 1.0);
-    }
-
-    if (outputMode == 4u)
-    {
-        float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
-        return float4(DepthVisual(depthSample), 1.0);
-    }
-
-    if (outputMode == 5u)
-    {
-        float3 emissive = gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb;
-        return float4(ToSwapchainLinear(ToneMapACES(emissive * 2.0)), 1.0);
-    }
-
-    if (outputMode == 6u || outputMode == 7u)
-    {
-        if (pc.oitEnabled == 0u)
-        {
-            return float4(0.0, 0.0, 0.0, 1.0);
-        }
-        OitResolveResult oit = ResolveOitPixel(pixelCoord, 0.0.xxx);
-        if (outputMode == 6u)
-        {
-            return float4(oit.transparentColor, 1.0);
-        }
-        return float4(oit.revealage.xxx, 1.0);
-    }
-
     float4 sceneColor = sceneColorTexture.Load(int3(pixelCoord, 0));
+    sceneColor.rgb = FiniteColorOr(sceneColor.rgb, 0.0.xxx);
+    sceneColor.a = FiniteOr(sceneColor.a, 1.0);
 
+    uint outputMode = pc.outputMode;
     float3 compositedColor = sceneColor.rgb;
     float resolvedExposure = ResolveExposureForToneMapping();
 
@@ -578,6 +598,16 @@ float4 fragMain(VSOutput input) : SV_Target0
     {
         OitResolveResult oit = ResolveOitPixel(pixelCoord, sceneColor.rgb);
         compositedColor = oit.compositedColor;
+    }
+
+    if ((outputMode >= 1u && outputMode <= 7u) ||
+        outputMode == 11u || outputMode == 12u ||
+        outputMode == 13u || outputMode == 14u)
+    {
+        return float4(DebugTextureViewColor(outputMode, screenUV, pixelCoord,
+                                            width, height, resolvedExposure,
+                                            oitAvailable),
+                      1.0);
     }
 
     if (outputMode == 8u)
@@ -657,176 +687,17 @@ float4 fragMain(VSOutput input) : SV_Target0
         return float4(sceneColor.rgb, 1.0);
     }
 
-    // Shadow cascade debug view: color-code pixels by cascade index.
-    if (outputMode == 11u)
-    {
-        float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
-        if (depthSample == 0.0)
-        {
-            return float4(0.0, 0.0, 0.0, 1.0);
-        }
-
-        // Linearize reverse-Z depth to positive view-space distance.
-        // With perspectiveRH_ReverseZ: near maps to depth=1, far maps to depth=0.
-        //   viewZ = (near * far) / (depth * (far - near) + near)
-        float n = pc.cameraNear;
-        float f = pc.cameraFar;
-        float viewZ = (n * f) / (depthSample * (f - n) + n);
-
-        static const float3 cascadeColors[4] = {
-            float3(0.2, 0.8, 0.2),   // green  — cascade 0 (nearest)
-            float3(0.2, 0.5, 0.9),   // blue   — cascade 1
-            float3(0.9, 0.7, 0.1),   // yellow — cascade 2
-            float3(0.9, 0.2, 0.2),   // red    — cascade 3 (farthest)
-        };
-
-        uint cascadeIndex = 3;
-        for (uint i = 0; i < 3; ++i)
-        {
-            if (viewZ < pc.cascadeSplits[i])
-            {
-                cascadeIndex = i;
-                break;
-            }
-        }
-
-        // Blend zone visualization: brighten pixels in the transition overlap.
-        float blendIndicator = 0.0;
-        if (cascadeIndex < 3)
-        {
-            float splitDepth = pc.cascadeSplits[cascadeIndex];
-            float prevSplit = (cascadeIndex == 0) ? 0.0 : pc.cascadeSplits[cascadeIndex - 1];
-            float cascadeRange = splitDepth - prevSplit;
-            float blendFraction = clamp(uShadow.filterSettings.y, 0.0, 0.45);
-            float blendZone = cascadeRange * blendFraction;
-            float blendStart = splitDepth - blendZone;
-            if (viewZ > blendStart)
-            {
-                blendIndicator = saturate((viewZ - blendStart) / max(blendZone, 1e-6));
-            }
-        }
-
-        float3 color = cascadeColors[cascadeIndex];
-        // Mix with next cascade color in blend zone for visual verification.
-        if (blendIndicator > 0.0 && cascadeIndex < 3)
-        {
-            color = lerp(color, cascadeColors[cascadeIndex + 1], blendIndicator);
-        }
-
-        // Overlay on dimmed scene for context.
-        float3 sceneGray = dot(sceneColor.rgb, float3(0.299, 0.587, 0.114)).xxx;
-        float3 dimScene = sceneGray * 0.15;
-        float3 result = dimScene + color * 0.5;
-        return float4(result, 1.0);
-    }
-
-    // Shadow texel density debug view: brighter means finer world-space shadow
-    // resolution in the selected cascade.
-    if (outputMode == 13u)
-    {
-        float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
-        if (depthSample == 0.0)
-        {
-            return float4(0.0, 0.0, 0.0, 1.0);
-        }
-
-        float n = pc.cameraNear;
-        float f = pc.cameraFar;
-        float viewZ = (n * f) / (depthSample * (f - n) + n);
-
-        uint cascadeIndex = 3;
-        for (uint i = 0; i < 3; ++i)
-        {
-            if (viewZ < pc.cascadeSplits[i])
-            {
-                cascadeIndex = i;
-                break;
-            }
-        }
-
-        float texelSize = max(uShadow.cascades[cascadeIndex].texelSize, 1e-6);
-        float texelsPerMeter = 1.0 / texelSize;
-        float density = saturate(log2(max(texelsPerMeter, 1e-4)) / 8.0);
-        float3 color = lerp(float3(0.05, 0.08, 0.14),
-                            float3(0.15, 0.8, 1.0), density);
-        return float4(color, 1.0);
-    }
-
-    // Tile light heat map: color-code pixels by per-tile light count.
-    if (outputMode == 12u)
-    {
-        if (pc.totalLights == 0u)
-        {
-            return float4(0.0, 0.0, 0.0, 1.0);
-        }
-
-        static const uint TILE_SIZE = 16u;
-        float depthSample = gDepthTexture.Load(int3(pixelCoord, 0));
-
-        uint2 tileCoord = pixelCoord / TILE_SIZE;
-        uint safeDepthSliceCount = max(pc.depthSliceCount, 1u);
-        uint tileCountY = (height + TILE_SIZE - 1u) / TILE_SIZE;
-        uint sliceZ = DepthToClusterSlice(depthSample, pc.cameraNear, pc.cameraFar,
-                                          safeDepthSliceCount);
-        uint clusterIndex =
-            (sliceZ * tileCountY + tileCoord.y) * pc.tileCountX + tileCoord.x;
-        uint lightCount = uTileGrid[clusterIndex].count;
-
-        // Heat map: black (0) → blue → cyan → green → yellow → red → white.
-        float maxLights = max(float(pc.totalLights), 1.0);
-        float t = saturate(float(lightCount) / maxLights);
-
-        float3 heatColor;
-        if (t < 0.2)
-        {
-            float s = t / 0.2;
-            heatColor = lerp(float3(0.0, 0.0, 0.0), float3(0.0, 0.0, 1.0), s);
-        }
-        else if (t < 0.4)
-        {
-            float s = (t - 0.2) / 0.2;
-            heatColor = lerp(float3(0.0, 0.0, 1.0), float3(0.0, 1.0, 1.0), s);
-        }
-        else if (t < 0.6)
-        {
-            float s = (t - 0.4) / 0.2;
-            heatColor = lerp(float3(0.0, 1.0, 1.0), float3(0.0, 1.0, 0.0), s);
-        }
-        else if (t < 0.8)
-        {
-            float s = (t - 0.6) / 0.2;
-            heatColor = lerp(float3(0.0, 1.0, 0.0), float3(1.0, 1.0, 0.0), s);
-        }
-        else
-        {
-            float s = (t - 0.8) / 0.2;
-            heatColor = lerp(float3(1.0, 1.0, 0.0), float3(1.0, 0.0, 0.0), s);
-        }
-
-        // Show tile grid lines for visual clarity.
-        bool onTileBorder = (pixelCoord.x % TILE_SIZE == 0) || (pixelCoord.y % TILE_SIZE == 0);
-
-        // Overlay on dimmed scene.
-        float3 sceneGray = dot(sceneColor.rgb, float3(0.299, 0.587, 0.114)).xxx;
-        float3 dimScene = sceneGray * 0.15;
-        float3 result = dimScene + heatColor * 0.65;
-
-        if (onTileBorder)
-        {
-            result = lerp(result, float3(0.3, 0.3, 0.3), 0.5);
-        }
-
-        return float4(result, 1.0);
-    }
-
     // Add bloom contribution before tone mapping.
     float3 finalHdr = compositedColor;
     if (pc.bloomEnabled != 0)
     {
-        float3 bloom = gBloomTexture.Sample(bloomSampler, screenUV).rgb;
-        finalHdr += bloom * pc.bloomIntensity;
+        float3 bloom =
+            FiniteColorOr(gBloomTexture.Sample(bloomSampler, screenUV).rgb,
+                          0.0.xxx);
+        finalHdr += bloom * max(FiniteOr(pc.bloomIntensity, 0.0), 0.0);
     }
 
-    float3 mapped = ToneMapACES(finalHdr * resolvedExposure);
+    float3 mapped = ToneMapACES(FiniteColorOr(finalHdr, 0.0.xxx) *
+                                resolvedExposure);
     return float4(ToSwapchainLinear(mapped), 1.0);
 }

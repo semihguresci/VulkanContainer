@@ -47,6 +47,17 @@ TEST(ShadowPassRasterPlannerTests, InlinePlanWhenSecondaryDisabled) {
   EXPECT_EQ(plan.secondaryCommandBuffer, VK_NULL_HANDLE);
 }
 
+TEST(ShadowPassRasterPlannerTests, PropagatesCustomLocalShadowExtentToScope) {
+  auto inputs = readyInputs();
+  inputs.extent = {384u, 640u};
+
+  const auto plan = buildShadowPassRasterPlan(inputs);
+
+  ASSERT_TRUE(plan.active);
+  EXPECT_EQ(plan.scope.renderArea.extent.width, 384u);
+  EXPECT_EQ(plan.scope.renderArea.extent.height, 640u);
+}
+
 TEST(ShadowPassRasterPlannerTests,
      SecondaryPlanWhenSecondaryEnabledAndAvailable) {
   auto inputs = readyInputs();

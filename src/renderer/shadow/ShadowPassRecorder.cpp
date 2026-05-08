@@ -253,6 +253,7 @@ bool recordShadowCascadePassBodyCommands(
 
   return recordShadowPassCommands(
       cmd, {.plan = &shadowPassPlan,
+            .extent = inputs.extent,
             .scene = inputs.scene,
             .bim = inputs.bim,
             .shadowDescriptorSet = inputs.shadowDescriptorSet,
@@ -279,15 +280,19 @@ bool recordShadowPassCommands(VkCommandBuffer cmd,
   VkViewport viewport{};
   // Shadow maps intentionally use a positive-height viewport. Their atlas UV
   // mapping therefore differs from scene-buffer UV mapping and does not flip Y.
-  viewport.width = static_cast<float>(container::gpu::kShadowMapResolution);
-  viewport.height = static_cast<float>(container::gpu::kShadowMapResolution);
+  VkExtent2D extent = inputs.extent;
+  if (extent.width == 0u || extent.height == 0u) {
+    extent = {container::gpu::kShadowMapResolution,
+              container::gpu::kShadowMapResolution};
+  }
+  viewport.width = static_cast<float>(extent.width);
+  viewport.height = static_cast<float>(extent.height);
   viewport.minDepth = 0.0f;
   viewport.maxDepth = 1.0f;
   vkCmdSetViewport(cmd, 0, 1, &viewport);
 
   VkRect2D scissor{};
-  scissor.extent = {container::gpu::kShadowMapResolution,
-                    container::gpu::kShadowMapResolution};
+  scissor.extent = extent;
   vkCmdSetScissor(cmd, 0, 1, &scissor);
 
   // Reverse-Z shadow maps need negative caster bias to push written depth

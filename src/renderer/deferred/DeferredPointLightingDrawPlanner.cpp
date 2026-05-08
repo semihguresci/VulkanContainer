@@ -1,6 +1,7 @@
 #include "Container/renderer/deferred/DeferredPointLightingDrawPlanner.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace container::renderer {
 
@@ -20,6 +21,13 @@ DeferredPointLightingDrawPlan buildDeferredPointLightingDrawPlan(
     const DeferredPointLightingDrawInputs &inputs) {
   DeferredPointLightingDrawPlan plan{};
   plan.path = inputs.state.path;
+  plan.contactVisibilityEnabled =
+      inputs.contactVisibilityEnabled != 0u ? 1u : 0u;
+  plan.localShadowEnabled = inputs.localShadowEnabled != 0u ? 1u : 0u;
+  plan.bounceIntensity =
+      std::clamp(std::isfinite(inputs.bounceIntensity) ? inputs.bounceIntensity
+                                                       : 0.0f,
+                 0.0f, 2.0f);
   plan.stencilPipeline =
       inputs.debugVisualizePointLightStencil
           ? DeferredPointLightingStencilPipeline::PointLightStencilDebug
@@ -32,6 +40,10 @@ DeferredPointLightingDrawPlan buildDeferredPointLightingDrawPlan(
         container::gpu::kClusterDepthSlices;
     plan.tiledPushConstants.cameraNear = inputs.cameraNear;
     plan.tiledPushConstants.cameraFar = inputs.cameraFar;
+    plan.tiledPushConstants.contactVisibilityEnabled =
+        plan.contactVisibilityEnabled;
+    plan.tiledPushConstants.localShadowEnabled = plan.localShadowEnabled;
+    plan.tiledPushConstants.bounceIntensity = plan.bounceIntensity;
     return plan;
   }
 

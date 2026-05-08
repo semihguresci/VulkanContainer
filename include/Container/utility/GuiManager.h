@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -11,6 +12,7 @@
 
 #include "Container/common/CommonMath.h"
 #include "Container/common/CommonVulkan.h"
+#include "Container/renderer/lighting/EditableLight.h"
 #include "Container/utility/GuiDebugState.h"
 #include "Container/utility/SceneData.h"
 
@@ -22,6 +24,7 @@ class SceneGraph;
 
 namespace container::renderer {
 enum class BimSemanticColorMode : uint32_t;
+enum class ScenePrimitiveKind : uint32_t;
 struct BimElementProperty;
 struct BimStoreyRange;
 struct CullStats;
@@ -166,6 +169,28 @@ struct BimFloorPlanOverlayState {
   glm::vec3 color{0.02f, 0.02f, 0.02f};
   float opacity{0.85f};
   float lineWidth{1.0f};
+};
+
+enum class BimElevationTechnicalStyle : uint32_t {
+  Shaded = 0,
+  ShadedWithLines = 1,
+  HiddenLine = 2,
+};
+
+struct BimElevationViewState {
+  CameraViewPreset preset{CameraViewPreset::Front};
+  // Display intent is mapped onto the existing G-buffer and wireframe controls.
+  BimElevationTechnicalStyle style{BimElevationTechnicalStyle::ShadedWithLines};
+  bool forceOrthographic{true};
+  bool useDepthTestedLines{true};
+  bool syncSectionPlaneToView{false};
+};
+
+struct BimElevationViewRequest {
+  CameraViewPreset preset{CameraViewPreset::Front};
+  BimElevationTechnicalStyle style{BimElevationTechnicalStyle::ShadedWithLines};
+  bool forceOrthographic{true};
+  bool syncSectionPlaneToView{false};
 };
 
 struct BimLayerVisibilityState {
@@ -368,6 +393,8 @@ public:
       const container::scene::SceneGraph &sceneGraph,
       const std::function<bool(const std::string &, float)> &reloadModel,
       const std::function<bool(float)> &reloadDefault,
+      const std::function<void(container::renderer::ScenePrimitiveKind)>
+          &addScenePrimitive,
       const TransformControls &cameraTransform,
       const std::function<void(const TransformControls &)>
           &applyCameraTransform,
@@ -376,6 +403,16 @@ public:
       const glm::vec3 &directionalLightPosition,
       const container::gpu::LightingData &lightingData,
       const std::vector<container::gpu::PointLightData> &pointLights,
+      const std::vector<container::renderer::EditableLightEntity>
+          &editableLights,
+      container::renderer::EditableLightId selectedEditableLight,
+      const std::function<void(container::renderer::EditableLightId)>
+          &selectEditableLight,
+      const std::function<void(
+          const container::renderer::EditableLightEntity &)>
+          &updateEditableLight,
+      const std::function<void(container::renderer::EditableLightType)>
+          &addManualEditableLight,
       uint32_t selectedMeshNode, const BimInspectionState &bimInspection,
       const ViewpointSnapshotState &currentViewpoint,
       const std::function<bool(const ViewpointSnapshotState &)>
@@ -412,6 +449,15 @@ public:
   [[nodiscard]] const BimFloorPlanOverlayState &bimFloorPlanOverlayState()
       const {
     return bimFloorPlanOverlayState_;
+  }
+  [[nodiscard]] const BimElevationViewState &bimElevationViewState() const {
+    return bimElevationViewState_;
+  }
+  [[nodiscard]] std::optional<BimElevationViewRequest>
+  consumeBimElevationViewRequest() {
+    auto request = bimElevationViewRequest_;
+    bimElevationViewRequest_.reset();
+    return request;
   }
   [[nodiscard]] const BimLayerVisibilityState &bimLayerVisibilityState()
       const {
@@ -545,6 +591,8 @@ private:
     ViewpointSnapshotState snapshot{};
   };
 
+  void applyBimElevationDisplayIntent();
+
   VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};
   bool initialized_{false};
   bool showGeometryOverlay_{false};
@@ -581,6 +629,8 @@ private:
   std::vector<RenderPassToggle> renderPassToggles_;
   BimFilterState bimFilterState_{};
   BimFloorPlanOverlayState bimFloorPlanOverlayState_{};
+  BimElevationViewState bimElevationViewState_{};
+  std::optional<BimElevationViewRequest> bimElevationViewRequest_{};
   BimLayerVisibilityState bimLayerVisibilityState_{};
   std::string bimQuickFilterSearch_{};
   std::string bimPropertySearch_{};

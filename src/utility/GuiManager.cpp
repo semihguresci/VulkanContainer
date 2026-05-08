@@ -3,6 +3,7 @@
 #include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/bim/BimSemanticColorMode.h"
 #include "Container/renderer/core/RendererTelemetry.h"
+#include "Container/renderer/scene/ScenePrimitives.h"
 #include "Container/utility/BcfViewpoint.h"
 
 #include <imgui.h>
@@ -39,18 +40,16 @@ namespace container::ui {
 using container::gpu::kMaxDeferredPointLights;
 using container::gpu::LightingData;
 using container::gpu::LightingSettings;
+using container::renderer::EditableLightEntity;
+using container::renderer::EditableLightId;
+using container::renderer::EditableLightSource;
+using container::renderer::EditableLightType;
+using container::renderer::ScenePrimitiveKind;
 
 namespace {
 
 constexpr std::string_view kSampleModelsRelativeRoot =
     "models/glTF-Sample-Models/2.0";
-
-constexpr std::array<const char *, 4> kLightingPresetLabels = {{
-    "Sponza",
-    "Interior",
-    "Exterior",
-    "Custom",
-}};
 
 constexpr std::array<const char *, 3> kImportScaleLabels = {{
     "1x",
@@ -447,34 +446,6 @@ std::string ImportScaleLabel(float scale) {
   return std::to_string(scale) + "x";
 }
 
-LightingSettings LightingPreset(uint32_t preset) {
-  LightingSettings settings{};
-  settings.preset = preset;
-  switch (preset) {
-  case 1:
-    settings.density = 1.8f;
-    settings.radiusScale = 1.25f;
-    settings.intensityScale = 1.35f;
-    settings.directionalIntensity = 1.15f;
-    break;
-  case 2:
-    settings.density = 0.55f;
-    settings.radiusScale = 1.8f;
-    settings.intensityScale = 0.65f;
-    settings.directionalIntensity = 3.25f;
-    break;
-  case 0:
-  default:
-    settings.preset = 0u;
-    settings.density = 1.0f;
-    settings.radiusScale = 1.0f;
-    settings.intensityScale = 1.0f;
-    settings.directionalIntensity = 2.0f;
-    break;
-  }
-  return settings;
-}
-
 void CheckVkResult(VkResult result) {
   if (result != VK_SUCCESS) {
     throw std::runtime_error("ImGui Vulkan backend error");
@@ -651,6 +622,63 @@ bool DrawTransformControls(const char *label, TransformControls &transform,
   return changed;
 }
 
+bool DrawEditableLightInspector(EditableLightEntity &light) {
+  bool changed = false;
+  ImGui::Text("%s / %s",
+              container::renderer::editableLightSourceLabel(light.source),
+              container::renderer::editableLightTypeLabel(light.type));
+
+  if (light.source == EditableLightSource::Generated) {
+    ImGui::TextDisabled("Live generated light; generator changes may overwrite edits");
+  }
+
+  if (light.type != EditableLightType::Directional) {
+    changed |= ImGui::DragFloat3("Position", &light.position.x, 0.05f);
+    changed |= ImGui::DragFloat("Range", &light.range, 0.05f, 0.0f,
+                                100000.0f, "%.3f");
+  }
+
+  if (light.type == EditableLightType::Directional) {
+    changed |=
+        ImGui::DragFloat3("Directional direction", &light.direction.x, 0.01f);
+  } else if (light.type == EditableLightType::Spot ||
+             light.type == EditableLightType::Area) {
+    changed |= ImGui::DragFloat3("Direction", &light.direction.x, 0.01f);
+  }
+
+  changed |= ImGui::ColorEdit3("Color", &light.color.x);
+  changed |= ImGui::DragFloat("Intensity", &light.intensity, 0.05f, 0.0f,
+                              100000.0f, "%.3f");
+
+  if (light.type == EditableLightType::Spot) {
+    changed |= ImGui::SliderFloat("Inner cone", &light.innerConeDegrees, 0.0f,
+                                  179.0f, "%.1f deg");
+    changed |= ImGui::SliderFloat("Outer cone", &light.outerConeDegrees, 0.0f,
+                                  179.0f, "%.1f deg");
+    if (light.outerConeDegrees < light.innerConeDegrees) {
+      light.outerConeDegrees = light.innerConeDegrees;
+      changed = true;
+    }
+  }
+
+  if (light.type == EditableLightType::Area) {
+    static constexpr const char *kAreaShapeLabels[] = {"Rectangle", "Disk"};
+    int shape = light.areaShape >= (container::gpu::kAreaLightTypeDisk - 0.5f)
+                    ? 1
+                    : 0;
+    if (ImGui::Combo("Area shape", &shape, kAreaShapeLabels,
+                     IM_ARRAYSIZE(kAreaShapeLabels))) {
+      light.areaShape = shape == 1 ? container::gpu::kAreaLightTypeDisk
+                                   : container::gpu::kAreaLightTypeRectangle;
+      changed = true;
+    }
+    changed |= ImGui::DragFloat2("Area half size", &light.areaHalfSize.x,
+                                 0.025f, 0.001f, 100000.0f, "%.3f");
+  }
+
+  return changed;
+}
+
 const char *ViewportGestureLabel(ViewportGesture gesture) {
   switch (gesture) {
   case ViewportGesture::None:
@@ -695,6 +723,36 @@ const char *TransformAxisLabel(TransformAxis axis) {
     return "Z";
   }
   return "Free";
+}
+
+const char *CameraViewPresetLabel(CameraViewPreset preset) {
+  switch (preset) {
+  case CameraViewPreset::Front:
+    return "Front";
+  case CameraViewPreset::Back:
+    return "Back";
+  case CameraViewPreset::Right:
+    return "Right";
+  case CameraViewPreset::Left:
+    return "Left";
+  case CameraViewPreset::Top:
+    return "Top";
+  case CameraViewPreset::Bottom:
+    return "Bottom";
+  }
+  return "Front";
+}
+
+const char *BimElevationTechnicalStyleLabel(BimElevationTechnicalStyle style) {
+  switch (style) {
+  case BimElevationTechnicalStyle::Shaded:
+    return "Shaded";
+  case BimElevationTechnicalStyle::ShadedWithLines:
+    return "Technical";
+  case BimElevationTechnicalStyle::HiddenLine:
+    return "Hidden line";
+  }
+  return "Technical";
 }
 
 void DrawRenderPassToggleEntry(RenderPassToggle &pass) {
@@ -1004,6 +1062,33 @@ void DrawSemanticLegendEntry(
 } // namespace
 
 GuiManager::~GuiManager() = default;
+
+void GuiManager::applyBimElevationDisplayIntent() {
+  switch (bimElevationViewState_.style) {
+  case BimElevationTechnicalStyle::Shaded:
+    gBufferViewMode_ = GBufferViewMode::Overview;
+    wireframeSettings_.enabled = false;
+    break;
+  case BimElevationTechnicalStyle::ShadedWithLines:
+    gBufferViewMode_ = GBufferViewMode::Overview;
+    wireframeSettings_.enabled = wireframeSupported_;
+    wireframeSettings_.mode = WireframeMode::Overlay;
+    wireframeSettings_.depthTest = bimElevationViewState_.useDepthTestedLines;
+    wireframeSettings_.color = {0.02f, 0.02f, 0.02f};
+    wireframeSettings_.overlayIntensity = 0.70f;
+    wireframeSettings_.lineWidth = wireframeWideLineSupported_ ? 1.25f : 1.0f;
+    break;
+  case BimElevationTechnicalStyle::HiddenLine:
+    gBufferViewMode_ = GBufferViewMode::Albedo;
+    wireframeSettings_.enabled = wireframeSupported_;
+    wireframeSettings_.mode = WireframeMode::Full;
+    wireframeSettings_.depthTest = true;
+    wireframeSettings_.color = {0.02f, 0.02f, 0.02f};
+    wireframeSettings_.overlayIntensity = 1.0f;
+    wireframeSettings_.lineWidth = wireframeWideLineSupported_ ? 1.5f : 1.0f;
+    break;
+  }
+}
 
 void GuiManager::initialize(VkInstance instance, VkDevice device,
                             VkPhysicalDevice physicalDevice,
@@ -1617,6 +1702,7 @@ void GuiManager::drawSceneControls(
     const container::scene::SceneGraph &sceneGraph,
     const std::function<bool(const std::string &, float)> &reloadModel,
     const std::function<bool(float)> &reloadDefault,
+    const std::function<void(ScenePrimitiveKind)> &addScenePrimitive,
     const TransformControls &cameraTransform,
     const std::function<void(const TransformControls &)> &applyCameraTransform,
     const TransformControls &sceneTransform,
@@ -1624,6 +1710,11 @@ void GuiManager::drawSceneControls(
     const glm::vec3 &directionalLightPosition,
     const container::gpu::LightingData &lightingData,
     const std::vector<container::gpu::PointLightData> &pointLights,
+    const std::vector<EditableLightEntity> &editableLights,
+    EditableLightId selectedEditableLight,
+    const std::function<void(EditableLightId)> &selectEditableLight,
+    const std::function<void(const EditableLightEntity &)> &updateEditableLight,
+    const std::function<void(EditableLightType)> &addManualEditableLight,
     uint32_t selectedMeshNode, const BimInspectionState &bimInspection,
     const ViewpointSnapshotState &currentViewpoint,
     const std::function<bool(const ViewpointSnapshotState &)> &restoreViewpoint,
@@ -1712,6 +1803,35 @@ void GuiManager::drawSceneControls(
                 : "Failed to load default model";
     modelPathInput_ = defaultModelPath_;
     selectedSampleModelIndex_ = sampleModelIndexForPath(modelPathInput_);
+  }
+
+  if (ImGui::Button("Add Primitive")) {
+    ImGui::OpenPopup("Add Primitive Menu");
+  }
+  if (ImGui::BeginPopup("Add Primitive Menu")) {
+    if (ImGui::MenuItem("Quad")) {
+      addScenePrimitive(ScenePrimitiveKind::Quad);
+    }
+    if (ImGui::MenuItem("Plane (double-sided wall)")) {
+      addScenePrimitive(ScenePrimitiveKind::Plane);
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Cube")) {
+      addScenePrimitive(ScenePrimitiveKind::Cube);
+    }
+    if (ImGui::MenuItem("Sphere")) {
+      addScenePrimitive(ScenePrimitiveKind::Sphere);
+    }
+    if (ImGui::MenuItem("Triangular Prism")) {
+      addScenePrimitive(ScenePrimitiveKind::TriangularPrism);
+    }
+    if (ImGui::MenuItem("Pyramid")) {
+      addScenePrimitive(ScenePrimitiveKind::Pyramid);
+    }
+    if (ImGui::MenuItem("Torus")) {
+      addScenePrimitive(ScenePrimitiveKind::Torus);
+    }
+    ImGui::EndPopup();
   }
 
   ImGui::Separator();
@@ -2156,6 +2276,123 @@ void GuiManager::drawSceneControls(
                    bimFilterState_.storeyFilterEnabled &&
                    bimFilterState_.storey == storeyRange.label;
           };
+
+      const auto elevationNormalForPreset = [](CameraViewPreset preset) {
+        switch (preset) {
+        case CameraViewPreset::Front:
+          return glm::vec3{0.0f, 0.0f, -1.0f};
+        case CameraViewPreset::Back:
+          return glm::vec3{0.0f, 0.0f, 1.0f};
+        case CameraViewPreset::Right:
+          return glm::vec3{-1.0f, 0.0f, 0.0f};
+        case CameraViewPreset::Left:
+          return glm::vec3{1.0f, 0.0f, 0.0f};
+        case CameraViewPreset::Top:
+          return glm::vec3{0.0f, -1.0f, 0.0f};
+        case CameraViewPreset::Bottom:
+          return glm::vec3{0.0f, 1.0f, 0.0f};
+        }
+        return glm::vec3{0.0f, 0.0f, -1.0f};
+      };
+      const auto requestElevationView = [&](CameraViewPreset preset) {
+        bimElevationViewState_.preset = preset;
+        applyBimElevationDisplayIntent();
+        if (bimElevationViewState_.syncSectionPlaneToView) {
+          sectionPlaneState_.enabled = true;
+          sectionPlaneAxis_ = -1;
+          sectionPlaneState_.normal = elevationNormalForPreset(preset);
+        }
+        bimElevationViewRequest_ =
+            BimElevationViewRequest{.preset = preset,
+                                    .style = bimElevationViewState_.style,
+                                    .forceOrthographic =
+                                        bimElevationViewState_.forceOrthographic,
+                                    .syncSectionPlaneToView =
+                                        bimElevationViewState_
+                                            .syncSectionPlaneToView};
+        statusMessage_ = std::string("Applied BIM ") +
+                         CameraViewPresetLabel(preset) + " elevation (" +
+                         BimElevationTechnicalStyleLabel(
+                             bimElevationViewState_.style) +
+                         ")";
+      };
+
+      if (ImGui::TreeNode("BIM Elevation View")) {
+        static constexpr const char *kElevationViewLabels[] = {
+            "Front elevation", "Back elevation", "Right elevation",
+            "Left elevation"};
+        int elevationPresetIndex = 0;
+        switch (bimElevationViewState_.preset) {
+        case CameraViewPreset::Back:
+          elevationPresetIndex = 1;
+          break;
+        case CameraViewPreset::Right:
+          elevationPresetIndex = 2;
+          break;
+        case CameraViewPreset::Left:
+          elevationPresetIndex = 3;
+          break;
+        default:
+          elevationPresetIndex = 0;
+          break;
+        }
+        if (ImGui::Combo("Elevation view", &elevationPresetIndex,
+                         kElevationViewLabels,
+                         IM_ARRAYSIZE(kElevationViewLabels))) {
+          static constexpr std::array kElevationPresets{
+              CameraViewPreset::Front, CameraViewPreset::Back,
+              CameraViewPreset::Right, CameraViewPreset::Left};
+          bimElevationViewState_.preset =
+              kElevationPresets[static_cast<size_t>(
+                  std::clamp(elevationPresetIndex, 0, 3))];
+        }
+        int elevationStyle =
+            static_cast<int>(bimElevationViewState_.style);
+        static constexpr const char *kElevationStyleLabels[] = {
+            "Shaded", "Technical", "Hidden line"};
+        if (ImGui::Combo("Technical style", &elevationStyle,
+                         kElevationStyleLabels,
+                         IM_ARRAYSIZE(kElevationStyleLabels))) {
+          bimElevationViewState_.style =
+              static_cast<BimElevationTechnicalStyle>(
+                  std::clamp(elevationStyle, 0, 2));
+        }
+        ImGui::Checkbox("Force orthographic",
+                        &bimElevationViewState_.forceOrthographic);
+        ImGui::Checkbox("Depth-tested lines",
+                        &bimElevationViewState_.useDepthTestedLines);
+        ImGui::Checkbox("Align section plane to elevation",
+                        &bimElevationViewState_.syncSectionPlaneToView);
+        if (ImGui::Button("Apply elevation view")) {
+          requestElevationView(bimElevationViewState_.preset);
+        }
+        if (ImGui::BeginTable("BimElevationQuickViews", 2,
+                              ImGuiTableFlags_SizingStretchSame)) {
+          ImGui::TableNextColumn();
+          if (ImGui::SmallButton("Front elevation")) {
+            requestElevationView(CameraViewPreset::Front);
+          }
+          ImGui::TableNextColumn();
+          if (ImGui::SmallButton("Back elevation")) {
+            requestElevationView(CameraViewPreset::Back);
+          }
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          if (ImGui::SmallButton("Right elevation")) {
+            requestElevationView(CameraViewPreset::Right);
+          }
+          ImGui::TableNextColumn();
+          if (ImGui::SmallButton("Left elevation")) {
+            requestElevationView(CameraViewPreset::Left);
+          }
+          ImGui::EndTable();
+        }
+        ImGui::Text("Active style: %s, %s lines",
+                    BimElevationTechnicalStyleLabel(
+                        bimElevationViewState_.style),
+                    wireframeSettings_.depthTest ? "hidden" : "x-ray");
+        ImGui::TreePop();
+      }
 
       if (ImGui::TreeNode("Search and Filters")) {
         ImGui::InputText("Search filter values", &bimQuickFilterSearch_);
@@ -3402,21 +3639,38 @@ void GuiManager::drawSceneControls(
       ImGui::Separator();
       if (ImGui::TreeNode("Clip / Cap / Hatching")) {
         ImGui::Checkbox("Section plane", &sectionPlaneState_.enabled);
-        static constexpr const char *kSectionAxisLabels[] = {"X", "Y", "Z"};
-        if (ImGui::Combo("Section axis", &sectionPlaneAxis_,
+        static constexpr const char *kSectionAxisLabels[] = {"X", "Y", "Z",
+                                                             "Custom"};
+        int sectionAxisCombo = sectionPlaneAxis_ < 0 ? 3 : sectionPlaneAxis_;
+        if (ImGui::Combo("Section axis", &sectionAxisCombo,
                          kSectionAxisLabels,
                          IM_ARRAYSIZE(kSectionAxisLabels))) {
-          switch (sectionPlaneAxis_) {
+          switch (sectionAxisCombo) {
           case 0:
+            sectionPlaneAxis_ = 0;
             sectionPlaneState_.normal = {1.0f, 0.0f, 0.0f};
             break;
           case 2:
+            sectionPlaneAxis_ = 2;
             sectionPlaneState_.normal = {0.0f, 0.0f, 1.0f};
+            break;
+          case 3:
+            sectionPlaneAxis_ = -1;
             break;
           default:
             sectionPlaneAxis_ = 1;
             sectionPlaneState_.normal = {0.0f, 1.0f, 0.0f};
             break;
+          }
+        }
+        if (sectionPlaneAxis_ < 0) {
+          if (ImGui::DragFloat3("Section normal",
+                                &sectionPlaneState_.normal.x, 0.01f, -1.0f,
+                                1.0f, "%.3f")) {
+            const float length = glm::length(sectionPlaneState_.normal);
+            sectionPlaneState_.normal =
+                length > 0.0001f ? sectionPlaneState_.normal / length
+                                  : glm::vec3{0.0f, 1.0f, 0.0f};
           }
         }
         ImGui::SliderFloat("Section offset", &sectionPlaneState_.offset,
@@ -4300,6 +4554,12 @@ void GuiManager::drawSceneControls(
   }
 
   if (ImGui::TreeNode("Shadows")) {
+    ImGui::Text("Directional shadow atlas: %u x %u",
+                container::gpu::kShadowMapResolution,
+                container::gpu::kShadowMapResolution);
+    ImGui::Text("Local shadow atlas: %u x %u",
+                container::gpu::kLocalShadowMapResolution,
+                container::gpu::kLocalShadowMapResolution);
     ImGui::SliderFloat("Normal Bias Min Texels",
                        &shadowSettings_.normalBiasMinTexels, 0.0f, 8.0f,
                        "%.2f");
@@ -4329,6 +4589,8 @@ void GuiManager::drawSceneControls(
                        "%.2f");
     ImGui::SliderFloat("Raster Slope Bias", &shadowSettings_.rasterSlopeBias,
                        -8.0f, 0.0f, "%.2f");
+    ImGui::Checkbox("Local contact visibility",
+                    &shadowSettings_.localContactVisibility);
     ImGui::TreePop();
   }
 
@@ -4343,83 +4605,129 @@ void GuiManager::drawSceneControls(
   }
 
   if (ImGui::TreeNode("Lights")) {
-    ImGui::Text("Generator");
-    int presetIndex = static_cast<int>(std::min<uint32_t>(
-        lightingSettings_.preset,
-        static_cast<uint32_t>(kLightingPresetLabels.size() - 1u)));
-    if (ImGui::Combo("Lighting Preset", &presetIndex,
-                     kLightingPresetLabels.data(),
-                     static_cast<int>(kLightingPresetLabels.size()))) {
-      if (presetIndex < static_cast<int>(kLightingPresetLabels.size() - 1u)) {
-        lightingSettings_ = LightingPreset(static_cast<uint32_t>(presetIndex));
-      } else {
-        lightingSettings_.preset =
-            static_cast<uint32_t>(kLightingPresetLabels.size() - 1u);
+    ImGui::Text("Editable lights");
+    if (ImGui::SmallButton("Add directional")) {
+      addManualEditableLight(EditableLightType::Directional);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Add point")) {
+      addManualEditableLight(EditableLightType::Point);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Add spot")) {
+      addManualEditableLight(EditableLightType::Spot);
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Add area")) {
+      addManualEditableLight(EditableLightType::Area);
+    }
+
+    const auto selectedEditableIt =
+        std::ranges::find_if(editableLights, [&](const auto &light) {
+          return light.id == selectedEditableLight;
+        });
+    const char *selectedEditableLabel =
+        selectedEditableIt != editableLights.end()
+            ? selectedEditableIt->label.c_str()
+            : "None";
+    if (ImGui::BeginCombo("Selected light", selectedEditableLabel)) {
+      if (ImGui::Selectable("None",
+                            selectedEditableIt == editableLights.end())) {
+        selectEditableLight({});
       }
+      for (const EditableLightEntity &light : editableLights) {
+        const bool selected = light.id == selectedEditableLight;
+        if (ImGui::Selectable(light.label.c_str(), selected)) {
+          selectEditableLight(light.id);
+        }
+        if (ImGui::IsItemHovered()) {
+          ImGui::SetTooltip("%s %s",
+                            container::renderer::editableLightSourceLabel(
+                                light.source),
+                            container::renderer::editableLightTypeLabel(
+                                light.type));
+        }
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
+      }
+      ImGui::EndCombo();
     }
 
-    bool lightSliderChanged = false;
-    lightSliderChanged |= ImGui::SliderFloat(
-        "Light Density", &lightingSettings_.density, 0.1f, 16.0f, "%.2f");
-    lightSliderChanged |=
-        ImGui::SliderFloat("Light Radius Scale", &lightingSettings_.radiusScale,
-                           0.05f, 8.0f, "%.2f");
-    lightSliderChanged |= ImGui::SliderFloat("Point Intensity Scale",
-                                             &lightingSettings_.intensityScale,
-                                             0.0f, 16.0f, "%.2f");
-    lightSliderChanged |= ImGui::SliderFloat(
-        "Directional Intensity", &lightingSettings_.directionalIntensity, 0.0f,
-        16.0f, "%.2f");
-    lightSliderChanged |= ImGui::SliderFloat(
-        "Environment Intensity", &lightingSettings_.environmentIntensity, 0.0f,
-        16.0f, "%.2f");
-    if (lightSliderChanged) {
-      lightingSettings_.preset =
-          static_cast<uint32_t>(kLightingPresetLabels.size() - 1u);
+    if (selectedEditableIt != editableLights.end()) {
+      EditableLightEntity editableLight = *selectedEditableIt;
+      if (DrawEditableLightInspector(editableLight)) {
+        updateEditableLight(editableLight);
+      }
+    } else if (editableLights.empty()) {
+      ImGui::TextDisabled("No editable lights");
     }
 
-    ImGui::Separator();
-    ImGui::Text("Cluster Stats");
-    ImGui::BulletText("Submitted lights: %u",
-                      lightCullingStats_.submittedLights);
-    ImGui::BulletText("Active clusters: %u / %u",
-                      lightCullingStats_.activeClusters,
-                      lightCullingStats_.totalClusters);
-    ImGui::BulletText("Max lights per cluster: %u",
-                      lightCullingStats_.maxLightsPerCluster);
-    ImGui::BulletText("Dropped light refs: %u",
-                      lightCullingStats_.droppedLightReferences);
-    ImGui::BulletText("Cluster cull GPU: %.3f ms",
-                      lightCullingStats_.clusterCullMs);
-    ImGui::BulletText("Clustered lighting GPU: %.3f ms",
-                      lightCullingStats_.clusteredLightingMs);
-
-    ImGui::Separator();
-    ImGui::Text("Directional");
-    ImGui::BulletText("Position: (%.2f, %.2f, %.2f)",
-                      directionalLightPosition.x, directionalLightPosition.y,
-                      directionalLightPosition.z);
-    ImGui::BulletText("Direction: (%.2f, %.2f, %.2f)",
-                      lightingData.directionalDirection.x,
-                      lightingData.directionalDirection.y,
-                      lightingData.directionalDirection.z);
-
-    const uint32_t submittedPointLightCount =
-        static_cast<uint32_t>(std::min<size_t>(pointLights.size(), UINT32_MAX));
-    const uint32_t visiblePointLightCount =
-        std::min(submittedPointLightCount, kMaxDeferredPointLights);
-    ImGui::Text("Point lights: %u submitted, %u uploaded",
-                submittedPointLightCount, lightingData.pointLightCount);
-    if (submittedPointLightCount > visiblePointLightCount) {
-      ImGui::Text("Showing first %u SSBO lights", visiblePointLightCount);
+    if (ImGui::TreeNode("Generated Light Settings")) {
+      ImGui::SliderFloat("Light Density", &lightingSettings_.density, 0.1f,
+                         16.0f, "%.2f");
+      ImGui::SliderFloat("Light Radius Scale",
+                         &lightingSettings_.radiusScale, 0.05f, 8.0f,
+                         "%.2f");
+      ImGui::SliderFloat("Point Intensity Scale",
+                         &lightingSettings_.intensityScale, 0.0f, 16.0f,
+                         "%.2f");
+      ImGui::SliderFloat("Directional Intensity",
+                         &lightingSettings_.directionalIntensity, 0.0f, 16.0f,
+                         "%.2f");
+      ImGui::SliderFloat("Environment Intensity",
+                         &lightingSettings_.environmentIntensity, 0.0f, 16.0f,
+                         "%.2f");
+      ImGui::SliderFloat("Bounce Intensity",
+                         &lightingSettings_.bounceIntensity, 0.0f, 2.0f,
+                         "%.2f");
+      ImGui::TreePop();
     }
-    for (uint32_t i = 0; i < visiblePointLightCount; ++i) {
-      const auto &light = pointLights[i];
+
+    if (ImGui::TreeNode("Light Runtime Stats")) {
+      ImGui::BulletText("Submitted lights: %u",
+                        lightCullingStats_.submittedLights);
+      ImGui::BulletText("Active clusters: %u / %u",
+                        lightCullingStats_.activeClusters,
+                        lightCullingStats_.totalClusters);
+      ImGui::BulletText("Max lights per cluster: %u",
+                        lightCullingStats_.maxLightsPerCluster);
+      ImGui::BulletText("Dropped light refs: %u",
+                        lightCullingStats_.droppedLightReferences);
+      ImGui::BulletText("Cluster cull GPU: %.3f ms",
+                        lightCullingStats_.clusterCullMs);
+      ImGui::BulletText("Clustered lighting GPU: %.3f ms",
+                        lightCullingStats_.clusteredLightingMs);
+
       ImGui::Separator();
-      ImGui::Text("Point Light %u", i);
-      ImGui::BulletText("Position: (%.2f, %.2f, %.2f)", light.positionRadius.x,
-                        light.positionRadius.y, light.positionRadius.z);
-      ImGui::BulletText("Radius: %.2f", light.positionRadius.w);
+      ImGui::Text("Directional");
+      ImGui::BulletText("Position: (%.2f, %.2f, %.2f)",
+                        directionalLightPosition.x, directionalLightPosition.y,
+                        directionalLightPosition.z);
+      ImGui::BulletText("Direction: (%.2f, %.2f, %.2f)",
+                        lightingData.directionalDirection.x,
+                        lightingData.directionalDirection.y,
+                        lightingData.directionalDirection.z);
+
+      const uint32_t submittedPointLightCount = static_cast<uint32_t>(
+          std::min<size_t>(pointLights.size(), UINT32_MAX));
+      const uint32_t visiblePointLightCount =
+          std::min(submittedPointLightCount, kMaxDeferredPointLights);
+      ImGui::Text("Point lights: %u submitted, %u uploaded",
+                  submittedPointLightCount, lightingData.pointLightCount);
+      if (submittedPointLightCount > visiblePointLightCount) {
+        ImGui::Text("Showing first %u SSBO lights", visiblePointLightCount);
+      }
+      for (uint32_t i = 0; i < visiblePointLightCount; ++i) {
+        const auto &light = pointLights[i];
+        ImGui::Separator();
+        ImGui::Text("Point Light %u", i);
+        ImGui::BulletText("Position: (%.2f, %.2f, %.2f)",
+                          light.positionRadius.x, light.positionRadius.y,
+                          light.positionRadius.z);
+        ImGui::BulletText("Radius: %.2f", light.positionRadius.w);
+      }
+      ImGui::TreePop();
     }
     ImGui::TreePop();
   }

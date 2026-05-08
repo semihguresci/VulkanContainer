@@ -33,6 +33,9 @@
 #include "Container/renderer/shadow/ShadowManager.h"
 #include "Container/renderer/shadow/ShadowCullPassPlanner.h"
 #include "Container/renderer/shadow/ShadowCullPassRecorder.h"
+#include "Container/renderer/shadow/ShadowPassRecorder.h"
+#include "Container/renderer/shadow/ShadowPipelineBridge.h"
+#include "Container/renderer/shadow/ShadowResourceBridge.h"
 
 #include <algorithm>
 #include <array>
@@ -44,6 +47,8 @@
 namespace container::renderer {
 
 using container::gpu::kShadowCascadeCount;
+using container::gpu::kLocalShadowMapResolution;
+using container::gpu::kMaxShadowedLocalLightLayers;
 
 namespace {
 
@@ -57,6 +62,7 @@ void registerDeferredRasterFrameResources(FrameResourceRegistry& registry) {
   registry.registerExternal(kDeferredRasterTechnique, "scene-geometry");
   registry.registerExternal(kDeferredRasterTechnique, "bim-geometry");
   registry.registerExternal(kDeferredRasterTechnique, "shadow-atlas");
+  registry.registerExternal(kDeferredRasterTechnique, "local-shadow-atlas");
 
   registry.registerBuffer(
       kDeferredRasterTechnique, "camera-buffer",
@@ -82,6 +88,9 @@ void registerDeferredRasterFrameResources(FrameResourceRegistry& registry) {
                                  FrameResourceLifetime::Imported);
   registry.registerDescriptorSet(kDeferredRasterTechnique,
                                  "shadow-descriptor-set",
+                                 FrameResourceLifetime::Imported);
+  registry.registerDescriptorSet(kDeferredRasterTechnique,
+                                 "local-shadow-descriptor-set",
                                  FrameResourceLifetime::Imported);
   registry.registerSampler(kDeferredRasterTechnique, "g-buffer-sampler",
                            FrameSamplerDesc{},
@@ -252,6 +261,12 @@ void registerDeferredRasterPipelineRecipes(PipelineRegistry& registry) {
       .kind = PipelineRecipeKind::Graphics,
       .shaderStages = {"spv_shaders/shadow_depth.vert.spv",
                        "spv_shaders/shadow_depth.frag.spv"},
+      .layoutName = "shadow"});
+  registry.registerRecipe(PipelineRecipe{
+      .key = {kDeferredRasterTechnique, "local-shadow-depth"},
+      .kind = PipelineRecipeKind::Graphics,
+      .shaderStages = {"spv_shaders/local_shadow_depth.vert.spv",
+                       "spv_shaders/local_shadow_depth.frag.spv"},
       .layoutName = "shadow"});
   registry.registerRecipe(PipelineRecipe{
       .key = {kDeferredRasterTechnique, "post-process"},
@@ -556,6 +571,141 @@ DeferredRasterScenePassRecordInputs deferredRasterScenePassInputs(
 VkPipeline chooseDeferredRasterPipeline(VkPipeline preferred,
                                         VkPipeline fallback) {
   return preferred != VK_NULL_HANDLE ? preferred : fallback;
+}
+
+ShadowPassGeometryBinding deferredRasterShadowGeometryBinding(
+    VkDescriptorSet descriptorSet,
+    const FrameSceneGeometry& scene) {
+  return {.sceneDescriptorSet = descriptorSet,
+          .vertexSlice = scene.vertexSlice,
+          .indexSlice = scene.indexSlice,
+          .indexType = scene.indexType};
+}
+
+bool deferredRasterLocalShadowSceneReady(const FrameRecordParams& p) {
+  return shadowDescriptorSet(p, ShadowDescriptorSetId::Scene) !=
+             VK_NULL_HANDLE &&
+         p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
+         p.scene.indexSlice.buffer != VK_NULL_HANDLE &&
+         hasOpaqueDrawCommands(p.draws);
+}
+
+bool deferredRasterLocalShadowBimReady(const FrameRecordParams& p) {
+  return shadowDescriptorSet(p, ShadowDescriptorSetId::BimScene) !=
+             VK_NULL_HANDLE &&
+         p.bim.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
+         p.bim.scene.indexSlice.buffer != VK_NULL_HANDLE &&
+         hasBimOpaqueDrawCommands(p.bim);
+}
+
+ShadowPassDrawLists deferredRasterLocalShadowSceneDraws(
+    const FrameDrawLists& draws) {
+  return {.singleSided = hasDrawCommands(draws.opaqueSingleSidedDrawCommands)
+                             ? draws.opaqueSingleSidedDrawCommands
+                             : draws.opaqueDrawCommands,
+          .windingFlipped = draws.opaqueWindingFlippedDrawCommands,
+          .doubleSided = draws.opaqueDoubleSidedDrawCommands};
+}
+
+ShadowPassDrawLists deferredRasterLocalShadowBimDraws(
+    const FrameBimResources& bim) {
+  return {.singleSided = hasDrawCommands(bim.draws.opaqueSingleSidedDrawCommands)
+                             ? bim.draws.opaqueSingleSidedDrawCommands
+                             : bim.draws.opaqueDrawCommands,
+          .windingFlipped = bim.draws.opaqueWindingFlippedDrawCommands,
+          .doubleSided = bim.draws.opaqueDoubleSidedDrawCommands};
+}
+
+bool deferredRasterCanRecordLocalShadowPass(const FrameRecordParams& p) {
+  return p.shadows.renderPass != VK_NULL_HANDLE &&
+         p.shadows.localShadowFramebuffers != nullptr &&
+         shadowDescriptorSet(p, ShadowDescriptorSetId::LocalShadow) !=
+             VK_NULL_HANDLE &&
+         p.shadows.localShadowLayerCount > 0u &&
+         shadowPipelineReady(p, ShadowPipelineId::LocalDepth) &&
+         shadowPipelineLayoutReady(p, ShadowPipelineLayoutId::Shadow) &&
+         (deferredRasterLocalShadowSceneReady(p) ||
+          deferredRasterLocalShadowBimReady(p));
+}
+
+void recordDeferredRasterLocalShadowPass(
+    VkCommandBuffer cmd,
+    const FrameRecordParams& p,
+    bool localShadowAtlasVisible) {
+  if (!deferredRasterCanRecordLocalShadowPass(p)) {
+    return;
+  }
+
+  const uint32_t layerCount =
+      std::min(p.shadows.localShadowLayerCount, kMaxShadowedLocalLightLayers);
+  if (layerCount == 0u) {
+    return;
+  }
+
+  const VkPipeline primaryPipeline =
+      shadowPipelineHandle(p, ShadowPipelineId::LocalDepth);
+  const VkPipeline frontCullPipeline =
+      chooseDeferredRasterPipeline(
+          shadowPipelineHandle(p, ShadowPipelineId::LocalDepthFrontCull),
+          primaryPipeline);
+  const VkPipeline noCullPipeline =
+      chooseDeferredRasterPipeline(
+          shadowPipelineHandle(p, ShadowPipelineId::LocalDepthNoCull),
+          primaryPipeline);
+  const VkExtent2D localShadowExtent{kLocalShadowMapResolution,
+                                     kLocalShadowMapResolution};
+
+  for (uint32_t layerIndex = 0u; layerIndex < layerCount; ++layerIndex) {
+    const VkFramebuffer framebuffer =
+        p.shadows.localShadowFramebuffers[layerIndex];
+    if (framebuffer == VK_NULL_HANDLE) {
+      continue;
+    }
+
+    container::gpu::ShadowPushConstants pushConstants{};
+    pushConstants.cascadeIndex = layerIndex;
+    if (p.pushConstants.bindless != nullptr) {
+      pushConstants.sectionPlaneEnabled =
+          p.pushConstants.bindless->sectionPlaneEnabled;
+      pushConstants.sectionPlane = p.pushConstants.bindless->sectionPlane;
+    }
+
+    static_cast<void>(recordShadowCascadePassCommands(
+        cmd,
+        {.cascadePassActive = true,
+         .raster =
+             {.shadowAtlasVisible = localShadowAtlasVisible,
+              .shadowPassRecordable = true,
+              .extent = localShadowExtent},
+         .renderPass = p.shadows.renderPass,
+         .framebuffer = framebuffer,
+         .extent = localShadowExtent,
+         .scene = deferredRasterShadowGeometryBinding(
+             shadowDescriptorSet(p, ShadowDescriptorSetId::Scene), p.scene),
+         .bim = deferredRasterShadowGeometryBinding(
+             shadowDescriptorSet(p, ShadowDescriptorSetId::BimScene),
+             p.bim.scene),
+         .shadowDescriptorSet =
+             shadowDescriptorSet(p, ShadowDescriptorSetId::LocalShadow),
+         .pipelines = {.primary = primaryPipeline,
+                       .frontCull = frontCullPipeline,
+                       .noCull = noCullPipeline},
+         .pipelineLayout =
+             shadowPipelineLayout(p, ShadowPipelineLayoutId::Shadow),
+         .pushConstants = pushConstants,
+         .rasterConstantBias = p.shadows.shadowSettings.rasterConstantBias,
+         .rasterSlopeBias = p.shadows.shadowSettings.rasterSlopeBias,
+         .bimManager = p.services.bimManager,
+         .drawInputs =
+             {.sceneGeometryReady = deferredRasterLocalShadowSceneReady(p),
+              .bimGeometryReady = deferredRasterLocalShadowBimReady(p),
+              .sceneGpuCullActive = false,
+              .bimGpuFilteredMeshActive =
+                  p.bim.opaqueMeshDrawsUseGpuVisibility &&
+                  hasOpaqueDrawCommands(p.bim.draws),
+              .sceneDraws = deferredRasterLocalShadowSceneDraws(p.draws),
+              .bimDraws = deferredRasterLocalShadowBimDraws(p.bim)}}));
+  }
 }
 
 bool deferredRasterBimSurfacePassReady(const FrameRecordParams& p,
@@ -1002,6 +1152,13 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext& context) {
                    });
   }
 
+  graph.addPass(RenderPassId::LocalShadowDepth,
+                [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
+                  recordDeferredRasterLocalShadowPass(
+                      cmd, p,
+                      displayModeRecordsShadowAtlas(deferred->displayMode()));
+                });
+
   // Transition depth from attachment-writable to read-only for the compute
   // passes (TileCull, GTAO) that sample depth.  The lighting render pass
   // initialLayout also expects DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL.
@@ -1019,7 +1176,17 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext& context) {
                          : VK_NULL_HANDLE,
                  .shadowAtlasVisible = displayModeRecordsShadowAtlas(
                      deferred->displayMode()),
-                 .shadowCascadeCount = kShadowCascadeCount});
+                 .shadowCascadeCount = kShadowCascadeCount,
+                 .localShadowAtlasImage =
+                     p.shadows.shadowManager != nullptr
+                         ? p.shadows.shadowManager->localShadowAtlasImage()
+                         : VK_NULL_HANDLE,
+                 .localShadowAtlasVisible =
+                     displayModeRecordsShadowAtlas(deferred->displayMode()) &&
+                     deferredRasterCanRecordLocalShadowPass(p),
+                 .localShadowLayerCount =
+                     std::min(p.shadows.localShadowLayerCount,
+                              kMaxShadowedLocalLightLayers)});
         static_cast<void>(
             recordDeferredRasterDepthReadOnlyTransitionCommands(
                 cmd, transitionPlan));
@@ -1409,6 +1576,20 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext& context) {
       return renderPassReady();
     });
   }
+
+  graph.setPassReadiness(RenderPassId::LocalShadowDepth,
+                         [deferred](const FrameRecordParams& p) {
+    if (!displayModeRecordsShadowAtlas(deferred->displayMode())) {
+      return renderPassNotNeeded();
+    }
+    if (p.shadows.localShadowLayerCount == 0u) {
+      return renderPassNotNeeded();
+    }
+    if (!deferredRasterCanRecordLocalShadowPass(p)) {
+      return renderPassMissingResource(RenderResourceId::LocalShadowAtlas);
+    }
+    return renderPassReady();
+  });
 
   graph.setPassReadiness(RenderPassId::TileCull,
                           [deferred](const FrameRecordParams &p) {

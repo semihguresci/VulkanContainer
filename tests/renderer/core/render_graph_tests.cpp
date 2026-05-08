@@ -64,6 +64,15 @@ bool activeContains(const RenderGraph& graph, RenderPassId id) {
   return std::ranges::find(order, id) != order.end();
 }
 
+bool resourceSpanContains(std::span<const RenderResourceId> resources,
+                          RenderResourceId id) {
+  return std::ranges::find(resources, id) != resources.end();
+}
+
+bool passSpanContains(std::span<const RenderPassId> passes, RenderPassId id) {
+  return std::ranges::find(passes, id) != passes.end();
+}
+
 const container::renderer::RenderPassExecutionStatus* statusFor(
     std::span<const container::renderer::RenderPassExecutionStatus> statuses,
     RenderPassId id) {
@@ -844,6 +853,7 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
       RenderPassId::ShadowCascade1,
       RenderPassId::ShadowCascade2,
       RenderPassId::ShadowCascade3,
+      RenderPassId::LocalShadowDepth,
       RenderPassId::DepthToReadOnly,
       RenderPassId::TileCull,
       RenderPassId::GTAO,
@@ -874,6 +884,8 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
             executionPosition(graph, RenderPassId::TransparentPick));
   EXPECT_LT(executionPosition(graph, RenderPassId::TransparentPick),
             executionPosition(graph, RenderPassId::DepthToReadOnly));
+  EXPECT_LT(executionPosition(graph, RenderPassId::LocalShadowDepth),
+            executionPosition(graph, RenderPassId::DepthToReadOnly));
   EXPECT_LT(executionPosition(graph, RenderPassId::DepthToReadOnly),
             executionPosition(graph, RenderPassId::Lighting));
   EXPECT_LT(executionPosition(graph, RenderPassId::Lighting),
@@ -886,6 +898,60 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
             executionPosition(graph, RenderPassId::Bloom));
   EXPECT_LT(executionPosition(graph, RenderPassId::Bloom),
             executionPosition(graph, RenderPassId::PostProcess));
+  EXPECT_TRUE(resourceSpanContains(
+      container::renderer::renderPassResourceReads(
+          RenderPassId::LocalShadowDepth),
+      RenderResourceId::LocalShadowData));
+  EXPECT_TRUE(resourceSpanContains(
+      container::renderer::renderPassResourceWrites(
+          RenderPassId::LocalShadowDepth),
+      RenderResourceId::LocalShadowAtlas));
+  EXPECT_TRUE(resourceSpanContains(
+      container::renderer::renderPassOptionalResourceReads(
+          RenderPassId::Lighting),
+      RenderResourceId::LocalShadowAtlas));
+  EXPECT_FALSE(passSpanContains(
+      container::renderer::renderPassScheduleDependencies(
+          RenderPassId::LocalShadowDepth),
+      RenderPassId::ShadowCascade0));
+  EXPECT_FALSE(passSpanContains(
+      container::renderer::renderPassScheduleDependencies(
+          RenderPassId::LocalShadowDepth),
+      RenderPassId::ShadowCascade3));
+  EXPECT_FALSE(passSpanContains(
+      container::renderer::renderPassScheduleDependencies(
+          RenderPassId::DepthToReadOnly),
+      RenderPassId::LocalShadowDepth));
+}
+
+TEST(RenderGraphTests, OpenWorldFrameDoesNotRequireLocalShadowDepthPass) {
+  constexpr std::array passes = {
+      RenderPassId::FrustumCull,
+      RenderPassId::DepthPrepass,
+      RenderPassId::HiZGenerate,
+      RenderPassId::OcclusionCull,
+      RenderPassId::CullStatsReadback,
+      RenderPassId::GBuffer,
+      RenderPassId::TransparentPick,
+      RenderPassId::ShadowCullCascade0,
+      RenderPassId::ShadowCullCascade1,
+      RenderPassId::ShadowCullCascade2,
+      RenderPassId::ShadowCullCascade3,
+      RenderPassId::ShadowCascade0,
+      RenderPassId::ShadowCascade1,
+      RenderPassId::ShadowCascade2,
+      RenderPassId::ShadowCascade3,
+      RenderPassId::DepthToReadOnly,
+  };
+
+  RenderGraph graph;
+  for (auto it = passes.rbegin(); it != passes.rend(); ++it) {
+    graph.addPass(*it, noopRecord());
+  }
+
+  EXPECT_NO_THROW(graph.compile());
+  EXPECT_LT(executionPosition(graph, RenderPassId::ShadowCascade3),
+            executionPosition(graph, RenderPassId::DepthToReadOnly));
 }
 
 TEST(RenderGraphTests, BimPassesSlotIntoFrameOrderWhenRegistered) {
@@ -908,6 +974,7 @@ TEST(RenderGraphTests, BimPassesSlotIntoFrameOrderWhenRegistered) {
       RenderPassId::ShadowCascade1,
       RenderPassId::ShadowCascade2,
       RenderPassId::ShadowCascade3,
+      RenderPassId::LocalShadowDepth,
       RenderPassId::DepthToReadOnly,
       RenderPassId::TileCull,
       RenderPassId::GTAO,

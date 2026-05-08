@@ -309,7 +309,7 @@ void RenderSurfaceInteractionController::handleLookOwnership(
 
   if (input.mouseButtonPressed(GLFW_MOUSE_BUTTON_LEFT) &&
       state_.tool != container::ui::ViewportTool::Select &&
-      context.selectedMeshNode != std::numeric_limits<uint32_t>::max() &&
+      context.hasSelection &&
       context.transformSelectedByDrag &&
       context.pickTransformGizmoAxisAtCursor) {
     if (const auto pickedAxis = context.pickTransformGizmoAxisAtCursor(
@@ -409,7 +409,7 @@ void RenderSurfaceInteractionController::handleViewportActions(
   if (state_.gesture == container::ui::ViewportGesture::None &&
       !anyPointerButtonDown(input) &&
       state_.tool != container::ui::ViewportTool::Select &&
-      context.selectedMeshNode != std::numeric_limits<uint32_t>::max() &&
+      context.hasSelection &&
       context.pickTransformGizmoAxisAtCursor) {
     if (const auto pickedAxis = context.pickTransformGizmoAxisAtCursor(
             input.framebufferCursorX, input.framebufferCursorY)) {

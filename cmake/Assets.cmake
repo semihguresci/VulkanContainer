@@ -74,6 +74,19 @@ add_custom_target(generate_models ALL
     DEPENDS ${GENERATE_MODEL_OUTPUTS}
 )
 
+# --- local validation models -------------------------------------------
+
+if(EXISTS "${MODELS_DIR}/validation")
+    add_custom_target(copy_validation_models ALL
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${MODELS_DIR}/validation"
+                "${MODELS_OUTPUT_DIR}/validation"
+        COMMENT "Copying validation glTF assets to build directory"
+    )
+
+    add_dependencies(generate_models copy_validation_models)
+endif()
+
 # --- buildingSMART IFC5 sample files download ----------------------------
 
 if(ENABLE_BIM_SAMPLE_MODEL_DOWNLOAD)

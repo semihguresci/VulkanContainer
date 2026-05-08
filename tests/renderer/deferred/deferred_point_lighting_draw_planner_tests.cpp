@@ -37,12 +37,16 @@ TEST(DeferredPointLightingDrawPlannerTests,
        .framebufferWidth = 0u,
        .framebufferHeight = 0u,
        .cameraNear = 0.25f,
-       .cameraFar = 250.0f});
+       .cameraFar = 250.0f,
+       .contactVisibilityEnabled = 1u,
+       .localShadowEnabled = 1u});
   EXPECT_EQ(zeroPlan.path, DeferredPointLightingPath::Tiled);
   EXPECT_EQ(zeroPlan.tiledPushConstants.tileCountX, 1u);
   EXPECT_EQ(zeroPlan.tiledPushConstants.tileCountY, 1u);
   EXPECT_EQ(zeroPlan.tiledPushConstants.depthSliceCount,
             container::gpu::kClusterDepthSlices);
+  EXPECT_EQ(zeroPlan.tiledPushConstants.contactVisibilityEnabled, 1u);
+  EXPECT_EQ(zeroPlan.tiledPushConstants.localShadowEnabled, 1u);
   EXPECT_FLOAT_EQ(zeroPlan.tiledPushConstants.cameraNear, 0.25f);
   EXPECT_FLOAT_EQ(zeroPlan.tiledPushConstants.cameraFar, 250.0f);
 
@@ -59,6 +63,29 @@ TEST(DeferredPointLightingDrawPlannerTests,
        .framebufferHeight = container::gpu::kTileSize * 2u + 1u});
   EXPECT_EQ(roundedPlan.tiledPushConstants.tileCountX, 2u);
   EXPECT_EQ(roundedPlan.tiledPushConstants.tileCountY, 3u);
+}
+
+TEST(DeferredPointLightingDrawPlannerTests,
+     ContactVisibilityTogglePropagatesToLocalLightingPlans) {
+  const auto tiledPlan = buildDeferredPointLightingDrawPlan(
+      {.state = {.path = DeferredPointLightingPath::Tiled},
+       .contactVisibilityEnabled = 1u,
+       .localShadowEnabled = 1u});
+  EXPECT_EQ(tiledPlan.contactVisibilityEnabled, 1u);
+  EXPECT_EQ(tiledPlan.localShadowEnabled, 1u);
+  EXPECT_EQ(tiledPlan.tiledPushConstants.contactVisibilityEnabled, 1u);
+  EXPECT_EQ(tiledPlan.tiledPushConstants.localShadowEnabled, 1u);
+
+  const std::vector<container::gpu::PointLightData> lights = {light(2.0f)};
+  const auto stencilPlan = buildDeferredPointLightingDrawPlan(
+      {.state = {.path = DeferredPointLightingPath::Stencil,
+                 .stencilLightCount = 1u},
+       .contactVisibilityEnabled = 1u,
+       .localShadowEnabled = 1u,
+       .pointLights = lights});
+  EXPECT_EQ(stencilPlan.contactVisibilityEnabled, 1u);
+  EXPECT_EQ(stencilPlan.localShadowEnabled, 1u);
+  EXPECT_EQ(stencilPlan.stencilRouteCount, 1u);
 }
 
 TEST(DeferredPointLightingDrawPlannerTests, NonePathProducesNoRoutes) {

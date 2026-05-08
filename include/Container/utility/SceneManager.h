@@ -136,6 +136,8 @@ class SceneManager {
   }
   bool isDefaultTestSceneActive() const;
   void populateSceneGraph(SceneGraph& sceneGraph) const;
+  [[nodiscard]] uint32_t appendRuntimeMesh(
+      container::geometry::Mesh mesh);
   [[nodiscard]] MaterialRenderProperties materialRenderProperties(
       uint32_t materialIndex) const;
 

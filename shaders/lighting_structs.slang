@@ -8,7 +8,16 @@ static const uint MAX_AREA_LIGHTS = 256u;
 static const uint TILE_SIZE = 16u;
 static const uint CLUSTER_DEPTH_SLICES = 16u;
 static const uint MAX_LIGHTS_PER_TILE = 128u;
+static const uint LOCAL_SHADOW_MAP_RESOLUTION = 1024u;
+static const uint MAX_SHADOWED_LOCAL_LIGHT_LAYERS = 24u;
+static const uint LOCAL_SHADOW_POINT_FACE_COUNT = 6u;
+static const uint LOCAL_SHADOW_SPOT_LAYER_COUNT = 1u;
+static const uint LOCAL_SHADOW_AREA_LAYER_COUNT = 1u;
+static const uint LOCAL_SHADOW_AREA_REF_PACKED_COUNT = 64u;
 static const float UNBOUNDED_POINT_LIGHT_RANGE = 0.0;
+static const float LOCAL_SHADOW_TYPE_POINT = 0.0;
+static const float LOCAL_SHADOW_TYPE_SPOT = 1.0;
+static const float LOCAL_SHADOW_TYPE_AREA = 2.0;
 
 // These structs mirror C++ GPU upload structs in SceneData.h. Keep float4
 // alignment, array sizes, and field order synchronized with the static_asserts.
@@ -89,7 +98,11 @@ struct LightingBuffer
     uint prefilteredMipCount;
     float environmentIntensity;
     uint areaLightCount;
+    uint localShadowEnabled;
+    float bounceIntensity;
+    uint padding0;
     uint padding1;
+    uint padding2;
 };
 
 struct ExposureStateData
@@ -108,12 +121,14 @@ struct TileLightGrid
 
 float SanitizeClusterNear(float nearPlane)
 {
-    return max(nearPlane, 1e-4);
+    return isfinite(nearPlane) ? max(nearPlane, 1e-4) : 0.1;
 }
 
 float SanitizeClusterFar(float nearPlane, float farPlane)
 {
-    return max(farPlane, nearPlane + 1e-3);
+    float n = SanitizeClusterNear(nearPlane);
+    float f = isfinite(farPlane) ? farPlane : 100.0;
+    return max(f, n + 1e-3);
 }
 
 float LinearizeReverseZDepth(float depth, float nearPlane, float farPlane)
@@ -177,6 +192,26 @@ struct ShadowBuffer
     float4 biasSettings;
     // x = PCF radius in texels, y = cascade blend fraction,
     // z = constant depth bias, w = max depth bias.
+    float4 filterSettings;
+};
+
+struct LocalShadowLayerData
+{
+    column_major float4x4 viewProj;
+    float4 positionRange;
+    float4 directionType;
+    uint4 meta;
+    // x = texel size, y = depth range, z = outer cone cosine,
+    // w = source radius used to widen soft local-shadow filtering.
+    float4 params;
+};
+
+struct LocalShadowBuffer
+{
+    LocalShadowLayerData layers[MAX_SHADOWED_LOCAL_LIGHT_LAYERS];
+    uint4 areaLightRefs[LOCAL_SHADOW_AREA_REF_PACKED_COUNT];
+    uint4 counts;
+    float4 biasSettings;
     float4 filterSettings;
 };
 

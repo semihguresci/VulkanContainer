@@ -16,10 +16,26 @@ ConstantBuffer<ShadowCullPushConstants> pc;
 
 bool SphereIntersectsCascade(float4 sphere, ShadowCascadeCullData cascade)
 {
+	if (!all(isfinite(sphere)) || sphere.w <= 0.0)
+	{
+		return true;
+	}
+
 	float3 center = mul(cascade.lightView, float4(sphere.xyz, 1.0)).xyz;
 	float radius = sphere.w;
+	if (!all(isfinite(center)) || !isfinite(radius) || radius <= 0.0)
+	{
+		return true;
+	}
+
 	float3 sphereMin = center - radius.xxx;
 	float3 sphereMax = center + radius.xxx;
+	if (!all(isfinite(sphereMin)) || !all(isfinite(sphereMax)) ||
+		!all(isfinite(cascade.casterMinBounds)) ||
+		!all(isfinite(cascade.casterMaxBounds)))
+	{
+		return true;
+	}
 
 	return sphereMax.x >= cascade.casterMinBounds.x &&
 		   sphereMin.x <= cascade.casterMaxBounds.x &&
@@ -48,7 +64,8 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
 	ObjectBuffer objectData = uObjects[objectIndex];
 	float4 boundingSphere = objectData.boundingSphere;
 
-	bool visible = boundingSphere.w <= 0.0 ||
+	bool visible = !all(isfinite(boundingSphere)) ||
+				   boundingSphere.w <= 0.0 ||
 				   SphereIntersectsCascade(
 					   boundingSphere,
 					   uShadowCull.cascades[pc.cascadeIndex]);
