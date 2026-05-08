@@ -361,6 +361,23 @@ bool contains(std::string_view haystack, std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
 }
 
+std::string stripAsciiWhitespace(std::string_view text) {
+  std::string stripped;
+  stripped.reserve(text.size());
+  for (const char c : text) {
+    if (c != ' ' && c != '\n' && c != '\r' && c != '\t') {
+      stripped.push_back(c);
+    }
+  }
+  return stripped;
+}
+
+bool containsIgnoringWhitespace(std::string_view haystack,
+                                std::string_view needle) {
+  return contains(stripAsciiWhitespace(haystack),
+                  stripAsciiWhitespace(needle));
+}
+
 } // namespace
 
 TEST(RenderingConventionTests, PerspectiveReverseZMapsNearAndFarToOneAndZero) {
@@ -479,9 +496,10 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(shadowRecorder, "viewport.height = static_cast<float>"));
   EXPECT_FALSE(
       contains(shadowRecorder, "viewport.height = -static_cast<float>"));
-  EXPECT_TRUE(contains(shadowRecorder, "vkCmdSetDepthBias"));
-  EXPECT_TRUE(contains(shadowRecorder, "inputs.rasterConstantBias"));
-  EXPECT_TRUE(contains(shadowRecorder, "inputs.rasterSlopeBias"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      shadowRecorder,
+      "vkCmdSetDepthBias(cmd, inputs.rasterConstantBias, 0.0f, "
+      "inputs.rasterSlopeBias)"));
 
   EXPECT_TRUE(contains(pipelineBuilder,
                        "shadowRaster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE"));
@@ -489,6 +507,10 @@ TEST(RenderingConventionTests,
                        "shadowRaster.cullMode = VK_CULL_MODE_BACK_BIT"));
   EXPECT_TRUE(contains(pipelineBuilder,
                        "shadowNoCullRaster.cullMode = VK_CULL_MODE_NONE"));
+  EXPECT_TRUE(contains(pipelineBuilder,
+                       "sdNoCullPCI.pRasterizationState = &shadowNoCullRaster"));
+  EXPECT_TRUE(contains(pipelineBuilder,
+                       "localSdNoCullPCI.pRasterizationState = &shadowNoCullRaster"));
   EXPECT_TRUE(contains(pipelineBuilder, "local_shadow_depth_no_cull_pipeline"));
 }
 TEST(RenderingConventionTests,
