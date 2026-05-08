@@ -16,15 +16,76 @@ ConstantBuffer<GtaoPushConstants> pc;
 [[vk::binding(4, 0)]] SamplerState                 gNormalSampler;
 [[vk::binding(5, 0)]] RWTexture2D<float>           outAO;
 
+static const uint GTAO_MAX_SAMPLE_COUNT = 64u;
+
 // Simple hash for spatial noise.
 float InterleavedGradientNoise(float2 pos)
 {
     return frac(52.9829189 * frac(dot(pos, float2(0.06711056, 0.00583715))));
 }
 
-float3 ReconstructViewPos(float2 uv, float depth)
+bool ReconstructViewPos(float2 uv, float depth, out float3 worldPosition)
 {
-    return ReconstructWorldPosition(uv, depth, uCamera.inverseViewProj);
+    return TryReconstructWorldPosition(uv, depth, uCamera.inverseViewProj,
+                                       worldPosition);
+}
+
+float2 PixelCenterUv(uint2 pixelCoord, uint2 dimensions)
+{
+    return (float2(pixelCoord) + 0.5.xx) /
+           float2(max(dimensions.x, 1u), max(dimensions.y, 1u));
+}
+
+uint2 ScenePixelFromUv(float2 uv, uint2 dimensions)
+{
+    uint2 maxPixel = uint2(dimensions.x - 1u, dimensions.y - 1u);
+    return min(uint2(saturate(uv) * float2(dimensions)), maxPixel);
+}
+
+bool LoadSceneDepth(uint2 pixelCoord, uint2 dimensions, out float depth)
+{
+    pixelCoord = min(pixelCoord, uint2(dimensions.x - 1u, dimensions.y - 1u));
+    depth = gDepthTexture.Load(int3(pixelCoord, 0));
+    return isfinite(depth) && depth > 0.0 && depth <= 1.0;
+}
+
+bool LoadSceneNormal(uint2 pixelCoord, uint2 dimensions, out float3 normal)
+{
+    pixelCoord = min(pixelCoord, uint2(dimensions.x - 1u, dimensions.y - 1u));
+    float3 encoded = gNormalTexture.Load(int3(pixelCoord, 0)).xyz;
+    float3 decoded = encoded * 2.0 - 1.0;
+    float lenSq = dot(decoded, decoded);
+    if (!all(isfinite(decoded)) || lenSq < 1e-8)
+    {
+        normal = float3(0.0, 1.0, 0.0);
+        return false;
+    }
+    normal = decoded * rsqrt(lenSq);
+    return true;
+}
+
+bool ProjectWorldToSceneUv(float3 worldPos, out float2 sceneUv)
+{
+    sceneUv = 0.0.xx;
+    if (!all(isfinite(worldPos)))
+    {
+        return false;
+    }
+
+    float4 projected = mul(uCamera.viewProj, float4(worldPos, 1.0));
+    if (!all(isfinite(projected)) || projected.w <= 1e-6)
+    {
+        return false;
+    }
+
+    float3 ndc = projected.xyz / projected.w;
+    if (!all(isfinite(ndc)) || ndc.z <= 0.0 || ndc.z > 1.0)
+    {
+        return false;
+    }
+
+    sceneUv = float2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
+    return all(isfinite(sceneUv)) && !any(sceneUv < 0.0) && !any(sceneUv > 1.0);
 }
 
 [shader("compute")]
@@ -37,24 +98,58 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
 
     if (dtid.x >= aoWidth || dtid.y >= aoHeight) return;
 
-    // Map half-res texel to full-res UV.
-    float2 uv = (float2(dtid.xy) * 2.0 + 1.0) / float2(pc.fullWidth, pc.fullHeight);
-
-    float depth = gDepthTexture.SampleLevel(gDepthSampler, uv, 0.0);
-    if (depth == 0.0)
+    uint depthWidth = 0u;
+    uint depthHeight = 0u;
+    uint normalWidth = 0u;
+    uint normalHeight = 0u;
+    gDepthTexture.GetDimensions(depthWidth, depthHeight);
+    gNormalTexture.GetDimensions(normalWidth, normalHeight);
+    if (depthWidth == 0u || depthHeight == 0u ||
+        normalWidth == 0u || normalHeight == 0u)
     {
         outAO[dtid.xy] = 1.0;
         return;
     }
 
-    float3 worldPos = ReconstructViewPos(uv, depth);
-    float3 normal = normalize(gNormalTexture.SampleLevel(gNormalSampler, uv, 0.0).xyz * 2.0 - 1.0);
+    uint2 depthDimensions = uint2(depthWidth, depthHeight);
+    uint2 normalDimensions = uint2(normalWidth, normalHeight);
+    uint2 fullResPixel = min(dtid.xy * 2u + uint2(1u, 1u),
+                             uint2(depthWidth - 1u, depthHeight - 1u));
+    float2 uv = PixelCenterUv(fullResPixel, depthDimensions);
+
+    float depth = 0.0;
+    if (!LoadSceneDepth(fullResPixel, depthDimensions, depth))
+    {
+        outAO[dtid.xy] = 1.0;
+        return;
+    }
+
+    float3 worldPos;
+    if (!ReconstructViewPos(uv, depth, worldPos))
+    {
+        outAO[dtid.xy] = 1.0;
+        return;
+    }
+
+    float3 normal = 0.0.xxx;
+    uint2 normalPixel = min(fullResPixel,
+                            uint2(normalWidth - 1u, normalHeight - 1u));
+    if (!LoadSceneNormal(normalPixel, normalDimensions, normal))
+    {
+        outAO[dtid.xy] = 1.0;
+        return;
+    }
 
     float occlusion = 0.0;
     float noise = InterleavedGradientNoise(float2(dtid.xy));
 
-    uint sampleCount = max(pc.sampleCount, 1u);
+    uint sampleCount = min(max(pc.sampleCount, 1u), GTAO_MAX_SAMPLE_COUNT);
     float radius = pc.aoRadius;
+    if (!isfinite(radius) || radius <= 1e-5 || !isfinite(pc.aoIntensity))
+    {
+        outAO[dtid.xy] = 1.0;
+        return;
+    }
 
     for (uint i = 0u; i < sampleCount; ++i)
     {
@@ -79,21 +174,39 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
 
         float3 samplePos = worldPos + sampleDir * radius;
 
-        // Project sample to screen.
-        float4 projected = mul(uCamera.viewProj, float4(samplePos, 1.0));
-        projected.xyz /= max(projected.w, 1e-6);
-        float2 sampleUV = float2(projected.x * 0.5 + 0.5, -projected.y * 0.5 + 0.5);
+        float2 sampleUV = 0.0.xx;
+        if (!ProjectWorldToSceneUv(samplePos, sampleUV)) continue;
 
-        if (any(sampleUV < 0.0) || any(sampleUV > 1.0)) continue;
+        uint2 sampleDepthPixel = ScenePixelFromUv(sampleUV, depthDimensions);
+        float sampleDepth = 0.0;
+        if (!LoadSceneDepth(sampleDepthPixel, depthDimensions, sampleDepth))
+        {
+            continue;
+        }
 
-        float sampleDepth = gDepthTexture.SampleLevel(gDepthSampler, sampleUV, 0.0);
-        float3 sampleWorldPos = ReconstructViewPos(sampleUV, sampleDepth);
+        float3 sampleNormal = 0.0.xxx;
+        uint2 sampleNormalPixel = ScenePixelFromUv(sampleUV, normalDimensions);
+        if (!LoadSceneNormal(sampleNormalPixel, normalDimensions, sampleNormal) ||
+            dot(normal, sampleNormal) <= 0.0)
+        {
+            continue;
+        }
+
+        float3 sampleWorldPos;
+        if (!ReconstructViewPos(sampleUV, sampleDepth, sampleWorldPos))
+        {
+            continue;
+        }
 
         float3 diff = sampleWorldPos - worldPos;
         float dist = length(diff);
+        if (!isfinite(dist) || dist <= 1e-5)
+        {
+            continue;
+        }
         float rangeFalloff = saturate(1.0 - dist / radius);
 
-        float occlusionSample = saturate(dot(normal, diff / max(dist, 1e-6)) - 0.01);
+        float occlusionSample = saturate(dot(normal, diff / dist) - 0.01);
         occlusion += occlusionSample * rangeFalloff;
     }
 

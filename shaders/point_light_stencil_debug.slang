@@ -48,12 +48,17 @@ float4 fragMain(VSOutput input) : SV_Target0
     // Depth is a classification input for the debug overlay; integer loads keep
     // point-light bounds from bleeding across geometry edges.
     float depth = gDepthTexture.Load(int3(pixelCoord, 0));
-    if (depth == 0.0)
+    if (!isfinite(depth) || depth <= 0.0 || depth > 1.0)
     {
         return 0.0.xxxx;
     }
 
-    float3 worldPosition = ReconstructWorldPosition(uv, depth, uCamera.inverseViewProj);
+    float3 worldPosition;
+    if (!TryReconstructWorldPosition(uv, depth, uCamera.inverseViewProj,
+                                     worldPosition))
+    {
+        return 0.0.xxxx;
+    }
     float3 toLight = pc.positionRadius.xyz - worldPosition;
     float lightRadius = pc.positionRadius.w;
     float distSq = dot(toLight, toLight);

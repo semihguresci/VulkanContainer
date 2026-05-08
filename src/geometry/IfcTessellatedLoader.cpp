@@ -60,6 +60,43 @@ struct GeometryInstance {
   glm::mat4 transform{1.0f};
 };
 
+struct StoreyMetadata {
+  std::string id{};
+  std::string name{};
+};
+
+struct SemanticMaterialMetadata {
+  std::string name{};
+  std::string category{};
+
+  [[nodiscard]] bool empty() const noexcept {
+    return name.empty() && category.empty();
+  }
+};
+
+struct ProductMetadata {
+  std::string guid{};
+  std::string displayName{};
+  std::string objectType{};
+  std::string storeyName{};
+  std::string storeyId{};
+  std::string materialName{};
+  std::string materialCategory{};
+  std::string discipline{};
+  std::string phase{};
+  std::string fireRating{};
+  std::string loadBearing{};
+  std::string status{};
+  std::string sourceId{};
+  std::vector<container::geometry::dotbim::ElementProperty> properties{};
+};
+
+struct LengthUnitMetadata {
+  bool authored{false};
+  float metersPerUnit{1.0f};
+  std::string sourceUnits{};
+};
+
 std::string upperAscii(std::string value) {
   std::ranges::transform(value, value.begin(), [](unsigned char c) {
     return static_cast<char>(std::toupper(c));
@@ -67,11 +104,61 @@ std::string upperAscii(std::string value) {
   return value;
 }
 
+std::string semanticPropertyKey(std::string_view value) {
+  std::string key;
+  key.reserve(value.size());
+  for (char c : value) {
+    if (std::isalnum(static_cast<unsigned char>(c)) != 0) {
+      key.push_back(static_cast<char>(
+          std::toupper(static_cast<unsigned char>(c))));
+    }
+  }
+  return key;
+}
+
 float sanitizeImportScale(float scale) {
   if (!std::isfinite(scale) || scale <= 0.0f) {
     return 1.0f;
   }
   return std::clamp(scale, 0.001f, 1000.0f);
+}
+
+std::string ifcSiLengthUnitLabel(const std::optional<std::string> &prefix) {
+  if (!prefix.has_value()) {
+    return "metre";
+  }
+  if (*prefix == "MILLI") {
+    return "millimetre";
+  }
+  if (*prefix == "CENTI") {
+    return "centimetre";
+  }
+  if (*prefix == "DECI") {
+    return "decimetre";
+  }
+  if (*prefix == "KILO") {
+    return "kilometre";
+  }
+  return "metre";
+}
+
+container::geometry::dotbim::ModelUnitMetadata
+makeUnitMetadata(const LengthUnitMetadata &lengthUnit, float importScale) {
+  const float sanitizedImportScale = sanitizeImportScale(importScale);
+  container::geometry::dotbim::ModelUnitMetadata metadata{};
+  if (lengthUnit.authored) {
+    metadata.hasSourceUnits = true;
+    metadata.sourceUnits = lengthUnit.sourceUnits;
+    metadata.hasMetersPerUnit = true;
+    metadata.metersPerUnit = lengthUnit.metersPerUnit;
+  }
+  metadata.hasImportScale = true;
+  metadata.importScale = sanitizedImportScale;
+  metadata.hasEffectiveImportScale = true;
+  metadata.effectiveImportScale =
+      sanitizedImportScale *
+      (lengthUnit.authored ? lengthUnit.metersPerUnit : 1.0f);
+  return metadata;
 }
 
 class ValueParser {
@@ -430,6 +517,41 @@ std::optional<std::string> stringValue(const StepValue *value) {
   return value->text;
 }
 
+std::optional<std::string> scalarLabelValue(const StepValue *value) {
+  if (value == nullptr) {
+    return std::nullopt;
+  }
+  switch (value->kind) {
+  case StepValue::Kind::String:
+    return value->text;
+  case StepValue::Kind::Enum:
+  case StepValue::Kind::Text:
+    if (value->text == "T") {
+      return std::string("true");
+    }
+    if (value->text == "F") {
+      return std::string("false");
+    }
+    return value->text;
+  case StepValue::Kind::Number:
+    if (std::isfinite(value->number)) {
+      return std::to_string(value->number);
+    }
+    return std::nullopt;
+  case StepValue::Kind::List:
+    for (const StepValue &item : value->list) {
+      if (auto nested = scalarLabelValue(&item); nested && !nested->empty()) {
+        return nested;
+      }
+    }
+    return std::nullopt;
+  case StepValue::Kind::Omitted:
+  case StepValue::Kind::Ref:
+    return std::nullopt;
+  }
+  return std::nullopt;
+}
+
 std::optional<std::string> enumValue(const StepValue *value) {
   if (value == nullptr || value->kind != StepValue::Kind::Enum) {
     return std::nullopt;
@@ -462,7 +584,9 @@ public:
       sortedEntityIds_.push_back(id);
     }
     std::ranges::sort(sortedEntityIds_);
-    unitScale_ = detectLengthUnitScale();
+    unitMetadata_ = detectLengthUnitMetadata();
+    unitScale_ = unitMetadata_.authored ? unitMetadata_.metersPerUnit : 1.0f;
+    model_.unitMetadata = makeUnitMetadata(unitMetadata_, importScale_);
     pointCache_.reserve(entities_.size() / 2u);
     directionCache_.reserve(entities_.size() / 8u);
     axisPlacementCache_.reserve(entities_.size() / 8u);
@@ -470,11 +594,23 @@ public:
     groupsByItem_.reserve(entities_.size() / 8u);
     boxSolidsByItem_.reserve(entities_.size() / 16u);
     openingsByHostProduct_.reserve(entities_.size() / 32u);
+    hostByOpeningProduct_.reserve(entities_.size() / 32u);
+    storeyByProduct_.reserve(entities_.size() / 32u);
+    materialByProduct_.reserve(entities_.size() / 32u);
+    semanticPropertiesByProduct_.reserve(entities_.size() / 32u);
   }
 
   Model build() {
     cacheStyleColors();
     cacheVoidRelations();
+    cacheFillRelations();
+    cacheSpatialContainmentRelations();
+    cacheMaterialRelations();
+    cachePropertyRelations();
+    cacheClassificationRelations();
+    cacheGroupRelations();
+    cacheHierarchyRelations();
+    cacheTypeRelations();
     appendTessellatedGeometry();
     appendSweptSolidGeometry();
     appendProductElements();
@@ -675,7 +811,7 @@ private:
     return color;
   }
 
-  float detectLengthUnitScale() const {
+  LengthUnitMetadata detectLengthUnitMetadata() const {
     for (const auto id : sortedEntityIds_) {
       const Entity *unit = entity(id);
       if (unit == nullptr || unit->type != "IFCSIUNIT") {
@@ -688,24 +824,33 @@ private:
         continue;
       }
       const auto prefix = enumValue(argAt(*unit, 2));
+      LengthUnitMetadata metadata{};
+      metadata.authored = true;
+      metadata.sourceUnits = ifcSiLengthUnitLabel(prefix);
       if (!prefix.has_value()) {
-        return 1.0f;
+        metadata.metersPerUnit = 1.0f;
+        return metadata;
       }
       if (*prefix == "MILLI") {
-        return 0.001f;
+        metadata.metersPerUnit = 0.001f;
+        return metadata;
       }
       if (*prefix == "CENTI") {
-        return 0.01f;
+        metadata.metersPerUnit = 0.01f;
+        return metadata;
       }
       if (*prefix == "DECI") {
-        return 0.1f;
+        metadata.metersPerUnit = 0.1f;
+        return metadata;
       }
       if (*prefix == "KILO") {
-        return 1000.0f;
+        metadata.metersPerUnit = 1000.0f;
+        return metadata;
       }
-      return 1.0f;
+      metadata.metersPerUnit = 1.0f;
+      return metadata;
     }
-    return 1.0f;
+    return {};
   }
 
   glm::mat4 importUnitTransform() const {
@@ -1003,7 +1148,998 @@ private:
         continue;
       }
       openingsByHostProduct_[*hostRef].push_back(*openingRef);
+      hostByOpeningProduct_[*openingRef] = *hostRef;
+      appendRelationshipReference(*hostRef, "IFCRELVOIDSELEMENT", "Opening",
+                                  *openingRef);
     }
+  }
+
+  void cacheFillRelations() {
+    for (const auto id : sortedEntityIds_) {
+      const Entity *relation = entity(id);
+      if (relation == nullptr || relation->type != "IFCRELFILLSELEMENT") {
+        continue;
+      }
+
+      const auto openingRef = firstRef(*relation, 4);
+      const auto fillerRef = firstRef(*relation, 5);
+      if (!openingRef.has_value() || !fillerRef.has_value()) {
+        continue;
+      }
+
+      appendRelationshipReference(*fillerRef, "IFCRELFILLSELEMENT", "Opening",
+                                  *openingRef);
+      appendRelationshipReference(*openingRef, "IFCRELFILLSELEMENT",
+                                  "FilledBy", *fillerRef);
+      if (const auto hostIt = hostByOpeningProduct_.find(*openingRef);
+          hostIt != hostByOpeningProduct_.end()) {
+        appendRelationshipReference(*fillerRef, "IFCRELFILLSELEMENT",
+                                    "VoidsElement", hostIt->second);
+        appendRelationshipReference(hostIt->second, "IFCRELFILLSELEMENT",
+                                    "FilledBy", *fillerRef);
+      }
+    }
+  }
+
+  void cacheSpatialContainmentRelations() {
+    for (const auto id : sortedEntityIds_) {
+      const Entity *relation = entity(id);
+      if (relation == nullptr ||
+          relation->type != "IFCRELCONTAINEDINSPATIALSTRUCTURE") {
+        continue;
+      }
+
+      const auto structureRef = firstRef(*relation, 5);
+      if (!structureRef.has_value()) {
+        continue;
+      }
+      const Entity *structure = entity(*structureRef);
+      if (structure == nullptr ||
+          (structure->type != "IFCBUILDINGSTOREY" &&
+           structure->type != "IFCSPACE")) {
+        continue;
+      }
+
+      StoreyMetadata storey{};
+      storey.id = stringValue(argAt(*structure, 0)).value_or("");
+      if (storey.id.empty()) {
+        storey.id = "#" + std::to_string(structure->id);
+      }
+      storey.name = stringValue(argAt(*structure, 2)).value_or("");
+      for (const auto productRef : refList(argAt(*relation, 4))) {
+        if (structure->type == "IFCBUILDINGSTOREY") {
+          storeyByProduct_[productRef] = storey;
+        }
+        ProductMetadata &metadata = semanticPropertiesByProduct_[productRef];
+        appendProperty(metadata,
+                       makeProperty("IFCRELCONTAINEDINSPATIALSTRUCTURE",
+                                    structure->type == "IFCSPACE" ? "Space"
+                                                                  : "BuildingStorey",
+                                    storey.name.empty() ? storey.id : storey.name,
+                                    "reference"));
+      }
+    }
+  }
+
+  SemanticMaterialMetadata materialMetadata(uint32_t ref) const {
+    std::unordered_set<uint32_t> visiting;
+    return materialMetadata(ref, visiting);
+  }
+
+  SemanticMaterialMetadata
+  materialMetadata(uint32_t ref, std::unordered_set<uint32_t> &visiting) const {
+    if (!visiting.insert(ref).second) {
+      return {};
+    }
+
+    const Entity *source = entity(ref);
+    if (source == nullptr) {
+      return {};
+    }
+
+    if (source->type == "IFCMATERIAL") {
+      return SemanticMaterialMetadata{
+          .name = stringValue(argAt(*source, 0)).value_or(""),
+          .category = stringValue(argAt(*source, 2)).value_or(""),
+      };
+    }
+
+    auto fromRef = [&](size_t index) {
+      if (const auto nestedRef = firstRef(*source, index);
+          nestedRef.has_value()) {
+        return materialMetadata(*nestedRef, visiting);
+      }
+      return SemanticMaterialMetadata{};
+    };
+
+    if (source->type == "IFCMATERIALLAYER") {
+      SemanticMaterialMetadata material = fromRef(0);
+      if (material.name.empty()) {
+        material.name = stringValue(argAt(*source, 3)).value_or("");
+      }
+      if (material.category.empty()) {
+        material.category = stringValue(argAt(*source, 5)).value_or("");
+      }
+      return material;
+    }
+
+    if (source->type == "IFCMATERIALLAYERSET") {
+      for (const auto layerRef : refList(argAt(*source, 0))) {
+        SemanticMaterialMetadata material = materialMetadata(layerRef, visiting);
+        if (!material.empty()) {
+          if (material.category.empty()) {
+            material.category = stringValue(argAt(*source, 1)).value_or("");
+          }
+          return material;
+        }
+      }
+      return SemanticMaterialMetadata{
+          .name = stringValue(argAt(*source, 1)).value_or(""),
+      };
+    }
+
+    if (source->type == "IFCMATERIALLAYERSETUSAGE") {
+      return fromRef(0);
+    }
+
+    if (source->type == "IFCMATERIALPROFILE") {
+      SemanticMaterialMetadata material = fromRef(2);
+      if (material.name.empty()) {
+        material.name = stringValue(argAt(*source, 0)).value_or("");
+      }
+      if (material.category.empty()) {
+        material.category = stringValue(argAt(*source, 5)).value_or("");
+      }
+      return material;
+    }
+
+    if (source->type == "IFCMATERIALCONSTITUENT") {
+      SemanticMaterialMetadata material = fromRef(2);
+      if (material.name.empty()) {
+        material.name = stringValue(argAt(*source, 0)).value_or("");
+      }
+      if (material.category.empty()) {
+        material.category = stringValue(argAt(*source, 4)).value_or("");
+      }
+      return material;
+    }
+
+    if (source->type == "IFCMATERIALPROFILESET" ||
+        source->type == "IFCMATERIALCONSTITUENTSET" ||
+        source->type == "IFCMATERIALLIST") {
+      for (size_t i = 0; i < source->args.list.size(); ++i) {
+        for (const auto nestedRef : refList(argAt(*source, i))) {
+          SemanticMaterialMetadata material =
+              materialMetadata(nestedRef, visiting);
+          if (!material.empty()) {
+            return material;
+          }
+        }
+        SemanticMaterialMetadata material = fromRef(i);
+        if (!material.empty()) {
+          return material;
+        }
+      }
+    }
+
+    return {};
+  }
+
+  void cacheMaterialRelations() {
+    for (const auto id : sortedEntityIds_) {
+      const Entity *relation = entity(id);
+      if (relation == nullptr ||
+          relation->type != "IFCRELASSOCIATESMATERIAL") {
+        continue;
+      }
+
+      const auto materialRef = firstRef(*relation, 5);
+      if (!materialRef.has_value()) {
+        continue;
+      }
+      const SemanticMaterialMetadata material = materialMetadata(*materialRef);
+      ProductMetadata materialProperties = materialBrowsingMetadata(*materialRef);
+      const std::string materialValue =
+          material.name.empty() ? materialLabel(*materialRef) : material.name;
+      appendProperty(materialProperties,
+                     makeProperty("IFCRELASSOCIATESMATERIAL", "Material",
+                                  materialValue, "relationship"));
+      appendProperty(materialProperties,
+                     makeProperty("IFCRELASSOCIATESMATERIAL", "MaterialId",
+                                  fallbackRefValue(*materialRef),
+                                  "relationship"));
+      for (const auto productRef : refList(argAt(*relation, 4))) {
+        if (!material.empty()) {
+          materialByProduct_[productRef] = material;
+        }
+        ProductMetadata &target = semanticPropertiesByProduct_[productRef];
+        mergeSemanticProperties(target, materialProperties);
+      }
+    }
+  }
+
+  static void appendProperty(
+      ProductMetadata &metadata,
+      container::geometry::dotbim::ElementProperty property) {
+    if (property.name.empty() || property.value.empty()) {
+      return;
+    }
+    const auto duplicate = std::ranges::find_if(
+        metadata.properties,
+        [&](const container::geometry::dotbim::ElementProperty &existing) {
+          return existing.set == property.set &&
+                 existing.name == property.name &&
+                 existing.category == property.category;
+        });
+    if (duplicate == metadata.properties.end()) {
+      metadata.properties.push_back(std::move(property));
+    }
+  }
+
+  static std::string joinedScalarValues(const StepValue *value) {
+    if (value == nullptr) {
+      return {};
+    }
+    if (value->kind != StepValue::Kind::List) {
+      return scalarLabelValue(value).value_or("");
+    }
+
+    std::string result;
+    for (const StepValue &item : value->list) {
+      const std::string itemValue = joinedScalarValues(&item);
+      if (itemValue.empty()) {
+        continue;
+      }
+      if (!result.empty()) {
+        result += ", ";
+      }
+      result += itemValue;
+    }
+    return result;
+  }
+
+  static container::geometry::dotbim::ElementProperty
+  makeProperty(std::string set, std::string name, std::string value,
+               std::string category) {
+    container::geometry::dotbim::ElementProperty property{};
+    property.set = std::move(set);
+    property.name = std::move(name);
+    property.value = std::move(value);
+    property.category = std::move(category);
+    return property;
+  }
+
+  static std::string fallbackRefValue(uint32_t ref) {
+    return "#" + std::to_string(ref);
+  }
+
+  std::string entityNameOrId(uint32_t ref) const {
+    const Entity *source = entity(ref);
+    if (source == nullptr) {
+      return fallbackRefValue(ref);
+    }
+    std::string value = stringValue(argAt(*source, 2)).value_or("");
+    if (value.empty()) {
+      value = stringValue(argAt(*source, 0)).value_or("");
+    }
+    return value.empty() ? fallbackRefValue(ref) : value;
+  }
+
+  void appendRelationshipReference(ProductMetadata &metadata,
+                                   std::string_view set, std::string name,
+                                   uint32_t relatedRef) const {
+    appendProperty(metadata,
+                   makeProperty(std::string(set), name, entityNameOrId(relatedRef),
+                                "relationship"));
+    appendProperty(metadata,
+                   makeProperty(std::string(set), name + "Id",
+                                fallbackRefValue(relatedRef), "relationship"));
+  }
+
+  void appendRelationshipReference(uint32_t productRef, std::string_view set,
+                                   std::string name, uint32_t relatedRef) {
+    appendRelationshipReference(semanticPropertiesByProduct_[productRef], set,
+                                std::move(name), relatedRef);
+  }
+
+  static void appendMaterialProperty(ProductMetadata &metadata,
+                                     std::string set, std::string name,
+                                     std::string value) {
+    appendProperty(metadata,
+                   makeProperty(std::move(set), std::move(name),
+                                std::move(value), "material"));
+  }
+
+  static std::vector<uint32_t> refsAt(const Entity &source, size_t index) {
+    std::vector<uint32_t> refs = refList(argAt(source, index));
+    if (refs.empty()) {
+      if (const auto ref = refValue(argAt(source, index)); ref.has_value()) {
+        refs.push_back(*ref);
+      }
+    }
+    return refs;
+  }
+
+  std::string materialLabel(uint32_t ref) const {
+    const Entity *source = entity(ref);
+    if (source == nullptr) {
+      return fallbackRefValue(ref);
+    }
+
+    if (source->type == "IFCMATERIAL") {
+      return stringValue(argAt(*source, 0)).value_or(fallbackRefValue(ref));
+    }
+    if (source->type == "IFCMATERIALLAYER") {
+      std::string value = stringValue(argAt(*source, 3)).value_or("");
+      if (!value.empty()) {
+        return value;
+      }
+    }
+    if (source->type == "IFCMATERIALLAYERSET") {
+      return stringValue(argAt(*source, 1)).value_or(fallbackRefValue(ref));
+    }
+    if (source->type == "IFCMATERIALLAYERSETUSAGE") {
+      if (const auto setRef = firstRef(*source, 0); setRef.has_value()) {
+        return materialLabel(*setRef);
+      }
+    }
+    if (source->type == "IFCMATERIALPROFILE" ||
+        source->type == "IFCMATERIALCONSTITUENT") {
+      std::string value = stringValue(argAt(*source, 0)).value_or("");
+      if (!value.empty()) {
+        return value;
+      }
+    }
+    if (source->type == "IFCMATERIALPROFILESET" ||
+        source->type == "IFCMATERIALCONSTITUENTSET") {
+      return stringValue(argAt(*source, 0)).value_or(fallbackRefValue(ref));
+    }
+    if (source->type == "IFCMATERIALPROFILESETUSAGE") {
+      if (const auto setRef = firstRef(*source, 0); setRef.has_value()) {
+        return materialLabel(*setRef);
+      }
+    }
+
+    const SemanticMaterialMetadata material = materialMetadata(ref);
+    if (!material.name.empty()) {
+      return material.name;
+    }
+    return entityNameOrId(ref);
+  }
+
+  ProductMetadata materialBrowsingMetadata(uint32_t ref) const {
+    std::unordered_set<uint32_t> visiting;
+    return materialBrowsingMetadata(ref, visiting);
+  }
+
+  ProductMetadata
+  materialBrowsingMetadata(uint32_t ref,
+                           std::unordered_set<uint32_t> &visiting) const {
+    ProductMetadata metadata{};
+    if (!visiting.insert(ref).second) {
+      return metadata;
+    }
+
+    const Entity *source = entity(ref);
+    if (source == nullptr) {
+      return metadata;
+    }
+
+    auto mergeNested = [&](uint32_t nestedRef) {
+      mergeSemanticProperties(metadata,
+                              materialBrowsingMetadata(nestedRef, visiting));
+    };
+
+    if (source->type == "IFCMATERIAL") {
+      appendMaterialProperty(metadata, "IFCMATERIAL", "Name",
+                             stringValue(argAt(*source, 0)).value_or(""));
+      appendMaterialProperty(metadata, "IFCMATERIAL", "Description",
+                             stringValue(argAt(*source, 1)).value_or(""));
+      appendMaterialProperty(metadata, "IFCMATERIAL", "Category",
+                             stringValue(argAt(*source, 2)).value_or(""));
+      return metadata;
+    }
+
+    if (source->type == "IFCMATERIALLAYER") {
+      const SemanticMaterialMetadata material = materialMetadata(ref);
+      appendMaterialProperty(metadata, "IFCMATERIALLAYER", "Layer",
+                             materialLabel(ref));
+      appendMaterialProperty(metadata, "IFCMATERIALLAYER", "Material",
+                             material.name);
+      appendMaterialProperty(metadata, "IFCMATERIALLAYER", "Thickness",
+                             joinedScalarValues(argAt(*source, 1)));
+      appendMaterialProperty(metadata, "IFCMATERIALLAYER", "Category",
+                             stringValue(argAt(*source, 5))
+                                 .value_or(material.category));
+      if (const auto materialRef = firstRef(*source, 0);
+          materialRef.has_value()) {
+        mergeNested(*materialRef);
+      }
+      return metadata;
+    }
+
+    if (source->type == "IFCMATERIALLAYERSET") {
+      appendMaterialProperty(metadata, "IFCMATERIALLAYERSET", "LayerSet",
+                             materialLabel(ref));
+      size_t layerIndex = 1u;
+      for (const auto layerRef : refsAt(*source, 0)) {
+        const Entity *layer = entity(layerRef);
+        const SemanticMaterialMetadata material = materialMetadata(layerRef);
+        const std::string prefix = "Layer." + std::to_string(layerIndex);
+        appendMaterialProperty(metadata, "IFCMATERIALLAYERSET", prefix,
+                               material.name.empty() ? materialLabel(layerRef)
+                                                     : material.name);
+        if (layer != nullptr) {
+          appendMaterialProperty(
+              metadata, "IFCMATERIALLAYERSET", prefix + ".Name",
+              stringValue(argAt(*layer, 3)).value_or(""));
+          appendMaterialProperty(metadata, "IFCMATERIALLAYERSET",
+                                 prefix + ".Thickness",
+                                 joinedScalarValues(argAt(*layer, 1)));
+          appendMaterialProperty(
+              metadata, "IFCMATERIALLAYERSET", prefix + ".Category",
+              stringValue(argAt(*layer, 5)).value_or(material.category));
+        }
+        mergeNested(layerRef);
+        ++layerIndex;
+      }
+      return metadata;
+    }
+
+    if (source->type == "IFCMATERIALLAYERSETUSAGE") {
+      if (const auto setRef = firstRef(*source, 0); setRef.has_value()) {
+        appendMaterialProperty(metadata, "IFCMATERIALLAYERSETUSAGE",
+                               "LayerSet", materialLabel(*setRef));
+        mergeNested(*setRef);
+      }
+      appendMaterialProperty(metadata, "IFCMATERIALLAYERSETUSAGE",
+                             "LayerSetDirection",
+                             enumValue(argAt(*source, 1)).value_or(""));
+      appendMaterialProperty(metadata, "IFCMATERIALLAYERSETUSAGE",
+                             "DirectionSense",
+                             enumValue(argAt(*source, 2)).value_or(""));
+      appendMaterialProperty(metadata, "IFCMATERIALLAYERSETUSAGE",
+                             "OffsetFromReferenceLine",
+                             joinedScalarValues(argAt(*source, 3)));
+      return metadata;
+    }
+
+    if (source->type == "IFCMATERIALPROFILE") {
+      const SemanticMaterialMetadata material = materialMetadata(ref);
+      appendMaterialProperty(metadata, "IFCMATERIALPROFILE", "Profile",
+                             materialLabel(ref));
+      appendMaterialProperty(metadata, "IFCMATERIALPROFILE", "Material",
+                             material.name);
+      appendMaterialProperty(metadata, "IFCMATERIALPROFILE", "Category",
+                             stringValue(argAt(*source, 5))
+                                 .value_or(material.category));
+      if (const auto profileRef = firstRef(*source, 3);
+          profileRef.has_value()) {
+        appendMaterialProperty(metadata, "IFCMATERIALPROFILE",
+                               "ProfileDefinition",
+                               entityNameOrId(*profileRef));
+      }
+      if (const auto materialRef = firstRef(*source, 2);
+          materialRef.has_value()) {
+        mergeNested(*materialRef);
+      }
+      return metadata;
+    }
+
+    if (source->type == "IFCMATERIALPROFILESET") {
+      appendMaterialProperty(metadata, "IFCMATERIALPROFILESET", "ProfileSet",
+                             materialLabel(ref));
+      size_t profileIndex = 1u;
+      for (const auto profileRef : refsAt(*source, 2)) {
+        const SemanticMaterialMetadata material = materialMetadata(profileRef);
+        const std::string prefix = "Profile." + std::to_string(profileIndex);
+        appendMaterialProperty(metadata, "IFCMATERIALPROFILESET", prefix,
+                               materialLabel(profileRef));
+        appendMaterialProperty(metadata, "IFCMATERIALPROFILESET",
+                               prefix + ".Material", material.name);
+        mergeNested(profileRef);
+        ++profileIndex;
+      }
+      return metadata;
+    }
+
+    if (source->type == "IFCMATERIALPROFILESETUSAGE") {
+      if (const auto setRef = firstRef(*source, 0); setRef.has_value()) {
+        appendMaterialProperty(metadata, "IFCMATERIALPROFILESETUSAGE",
+                               "ProfileSet", materialLabel(*setRef));
+        mergeNested(*setRef);
+      }
+      appendMaterialProperty(metadata, "IFCMATERIALPROFILESETUSAGE",
+                             "CardinalPoint",
+                             joinedScalarValues(argAt(*source, 1)));
+      appendMaterialProperty(metadata, "IFCMATERIALPROFILESETUSAGE",
+                             "ReferenceExtent",
+                             joinedScalarValues(argAt(*source, 2)));
+      return metadata;
+    }
+
+    if (source->type == "IFCMATERIALCONSTITUENT") {
+      const SemanticMaterialMetadata material = materialMetadata(ref);
+      appendMaterialProperty(metadata, "IFCMATERIALCONSTITUENT",
+                             "Constituent", materialLabel(ref));
+      appendMaterialProperty(metadata, "IFCMATERIALCONSTITUENT", "Material",
+                             material.name);
+      appendMaterialProperty(metadata, "IFCMATERIALCONSTITUENT", "Category",
+                             stringValue(argAt(*source, 4))
+                                 .value_or(material.category));
+      if (const auto materialRef = firstRef(*source, 2);
+          materialRef.has_value()) {
+        mergeNested(*materialRef);
+      }
+      return metadata;
+    }
+
+    if (source->type == "IFCMATERIALCONSTITUENTSET") {
+      appendMaterialProperty(metadata, "IFCMATERIALCONSTITUENTSET",
+                             "ConstituentSet", materialLabel(ref));
+      size_t constituentIndex = 1u;
+      for (const auto constituentRef : refsAt(*source, 2)) {
+        const SemanticMaterialMetadata material =
+            materialMetadata(constituentRef);
+        const std::string prefix =
+            "Constituent." + std::to_string(constituentIndex);
+        appendMaterialProperty(metadata, "IFCMATERIALCONSTITUENTSET", prefix,
+                               materialLabel(constituentRef));
+        appendMaterialProperty(metadata, "IFCMATERIALCONSTITUENTSET",
+                               prefix + ".Material", material.name);
+        mergeNested(constituentRef);
+        ++constituentIndex;
+      }
+      return metadata;
+    }
+
+    if (source->type == "IFCMATERIALLIST") {
+      size_t materialIndex = 1u;
+      for (const auto nestedRef : refsAt(*source, 0)) {
+        appendMaterialProperty(metadata, "IFCMATERIALLIST",
+                               "Material." + std::to_string(materialIndex),
+                               materialLabel(nestedRef));
+        mergeNested(nestedRef);
+        ++materialIndex;
+      }
+    }
+    return metadata;
+  }
+
+  static void assignSemanticProperty(ProductMetadata &metadata,
+                                     std::string_view name,
+                                     std::string value) {
+    if (value.empty()) {
+      return;
+    }
+    const std::string key = semanticPropertyKey(name);
+    if ((key == "DISCIPLINE" || key == "IFCDISCIPLINE") &&
+        metadata.discipline.empty()) {
+      metadata.discipline = std::move(value);
+    } else if ((key == "PHASE" || key == "PHASENAME" ||
+                key == "CONSTRUCTIONPHASE") &&
+               metadata.phase.empty()) {
+      metadata.phase = std::move(value);
+    } else if ((key == "FIRERATING" || key == "FIRERESISTANCERATING" ||
+                key == "FIRECLASSIFICATION") &&
+               metadata.fireRating.empty()) {
+      metadata.fireRating = std::move(value);
+    } else if ((key == "LOADBEARING" || key == "ISLOADBEARING") &&
+               metadata.loadBearing.empty()) {
+      metadata.loadBearing = std::move(value);
+    } else if ((key == "STATUS" || key == "ELEMENTSTATUS") &&
+               metadata.status.empty()) {
+      metadata.status = std::move(value);
+    }
+  }
+
+  void mergeSemanticProperties(ProductMetadata &target,
+                               const ProductMetadata &source) const {
+    if (target.discipline.empty()) {
+      target.discipline = source.discipline;
+    }
+    if (target.phase.empty()) {
+      target.phase = source.phase;
+    }
+    if (target.fireRating.empty()) {
+      target.fireRating = source.fireRating;
+    }
+    if (target.loadBearing.empty()) {
+      target.loadBearing = source.loadBearing;
+    }
+    if (target.status.empty()) {
+      target.status = source.status;
+    }
+    for (const auto &property : source.properties) {
+      appendProperty(target, property);
+    }
+  }
+
+  ProductMetadata propertySetMetadata(uint32_t ref) const {
+    ProductMetadata metadata{};
+    const Entity *propertySet = entity(ref);
+    if (propertySet == nullptr) {
+      return metadata;
+    }
+
+    if (propertySet->type == "IFCPROPERTYSET") {
+      const std::string setName =
+          stringValue(argAt(*propertySet, 2)).value_or(fallbackRefValue(ref));
+      for (const auto propertyRef : refList(argAt(*propertySet, 4))) {
+        mergeSemanticProperties(metadata,
+                                propertyMetadata(propertyRef, setName, "pset"));
+      }
+    } else if (propertySet->type == "IFCELEMENTQUANTITY") {
+      const std::string setName =
+          stringValue(argAt(*propertySet, 2)).value_or("BaseQuantities");
+      for (const auto quantityRef : refList(argAt(*propertySet, 5))) {
+        mergeSemanticProperties(metadata, quantityMetadata(quantityRef, setName));
+      }
+    } else if (propertySet->type == "IFCCOMPLEXPROPERTY") {
+      mergeSemanticProperties(metadata, propertyMetadata(ref, {}, "pset"));
+    } else {
+      mergeSemanticProperties(metadata, propertyMetadata(ref, {}, "pset"));
+    }
+    return metadata;
+  }
+
+  ProductMetadata propertyMetadata(uint32_t ref, std::string_view setName,
+                                   std::string_view category) const {
+    ProductMetadata metadata{};
+    const Entity *property = entity(ref);
+    if (property == nullptr) {
+      return metadata;
+    }
+
+    if (property->type == "IFCPROPERTYSINGLEVALUE") {
+      const std::string name = stringValue(argAt(*property, 0)).value_or("");
+      const std::string value = joinedScalarValues(argAt(*property, 2));
+      assignSemanticProperty(metadata, name, value);
+      appendProperty(metadata, makeProperty(std::string(setName), name, value,
+                                            std::string(category)));
+    } else if (property->type == "IFCPROPERTYENUMERATEDVALUE") {
+      const std::string name = stringValue(argAt(*property, 0)).value_or("");
+      const std::string value = joinedScalarValues(argAt(*property, 2));
+      assignSemanticProperty(metadata, name, value);
+      appendProperty(metadata, makeProperty(std::string(setName), name, value,
+                                            std::string(category)));
+    } else if (property->type == "IFCPROPERTYLISTVALUE" ||
+               property->type == "IFCPROPERTYTABLEVALUE") {
+      const std::string name = stringValue(argAt(*property, 0)).value_or("");
+      const std::string value = joinedScalarValues(argAt(*property, 2));
+      appendProperty(metadata, makeProperty(std::string(setName), name, value,
+                                            std::string(category)));
+    } else if (property->type == "IFCPROPERTYREFERENCEVALUE") {
+      const std::string name = stringValue(argAt(*property, 0)).value_or("");
+      std::string value;
+      if (const auto reference = refValue(argAt(*property, 3));
+          reference.has_value()) {
+        value = entityNameOrId(*reference);
+      } else {
+        value = joinedScalarValues(argAt(*property, 3));
+      }
+      appendProperty(metadata, makeProperty(std::string(setName), name, value,
+                                            std::string(category)));
+    } else if (property->type == "IFCPROPERTYBOUNDEDVALUE") {
+      const std::string name = stringValue(argAt(*property, 0)).value_or("");
+      appendProperty(metadata,
+                     makeProperty(std::string(setName), name + ".UpperBound",
+                                  joinedScalarValues(argAt(*property, 2)),
+                                  std::string(category)));
+      appendProperty(metadata,
+                     makeProperty(std::string(setName), name + ".LowerBound",
+                                  joinedScalarValues(argAt(*property, 3)),
+                                  std::string(category)));
+    } else if (property->type == "IFCCOMPLEXPROPERTY") {
+      const std::string complexName =
+          stringValue(argAt(*property, 0)).value_or(fallbackRefValue(ref));
+      std::string nestedSet = std::string(setName);
+      if (nestedSet.empty()) {
+        nestedSet = complexName;
+      } else if (!complexName.empty()) {
+        nestedSet += "." + complexName;
+      }
+      for (const auto propertyRef : refList(argAt(*property, 3))) {
+        mergeSemanticProperties(
+            metadata, propertyMetadata(propertyRef, nestedSet, category));
+      }
+    }
+    return metadata;
+  }
+
+  ProductMetadata quantityMetadata(uint32_t ref, std::string_view setName) const {
+    ProductMetadata metadata{};
+    const Entity *quantity = entity(ref);
+    if (quantity == nullptr) {
+      return metadata;
+    }
+
+    if (quantity->type == "IFCPHYSICALCOMPLEXQUANTITY") {
+      const std::string complexName =
+          stringValue(argAt(*quantity, 0)).value_or(fallbackRefValue(ref));
+      std::string nestedSet = std::string(setName);
+      if (!complexName.empty()) {
+        nestedSet = nestedSet.empty() ? complexName : nestedSet + "." + complexName;
+      }
+      for (const auto quantityRef : refList(argAt(*quantity, 2))) {
+        mergeSemanticProperties(metadata,
+                                quantityMetadata(quantityRef, nestedSet));
+      }
+      return metadata;
+    }
+
+    if (!quantity->type.starts_with("IFCQUANTITY")) {
+      return metadata;
+    }
+
+    const std::string name = stringValue(argAt(*quantity, 0)).value_or("");
+    const std::string value = joinedScalarValues(argAt(*quantity, 3));
+    appendProperty(metadata,
+                   makeProperty(std::string(setName), name, value, "quantity"));
+    return metadata;
+  }
+
+  void cachePropertyRelations() {
+    for (const auto id : sortedEntityIds_) {
+      const Entity *relation = entity(id);
+      if (relation == nullptr ||
+          relation->type != "IFCRELDEFINESBYPROPERTIES") {
+        continue;
+      }
+
+      const auto propertySetRef = firstRef(*relation, 5);
+      if (!propertySetRef.has_value()) {
+        continue;
+      }
+      const ProductMetadata properties = propertySetMetadata(*propertySetRef);
+      for (const auto productRef : refList(argAt(*relation, 4))) {
+        ProductMetadata &target = semanticPropertiesByProduct_[productRef];
+        mergeSemanticProperties(target, properties);
+      }
+    }
+  }
+
+  std::string classificationSourceName(uint32_t ref) const {
+    const Entity *source = entity(ref);
+    if (source == nullptr) {
+      return {};
+    }
+    if (source->type == "IFCCLASSIFICATIONREFERENCE") {
+      if (const auto sourceRef = firstRef(*source, 3); sourceRef.has_value()) {
+        const std::string nested = classificationSourceName(*sourceRef);
+        if (!nested.empty()) {
+          return nested;
+        }
+      }
+      return stringValue(argAt(*source, 2)).value_or("");
+    }
+    if (source->type == "IFCCLASSIFICATION") {
+      for (const size_t index : {3u, 0u, 1u, 4u}) {
+        const std::string value = stringValue(argAt(*source, index)).value_or("");
+        if (!value.empty()) {
+          return value;
+        }
+      }
+    }
+    return {};
+  }
+
+  ProductMetadata classificationMetadata(uint32_t ref) const {
+    ProductMetadata metadata{};
+    const Entity *classification = entity(ref);
+    if (classification == nullptr) {
+      return metadata;
+    }
+
+    if (classification->type == "IFCCLASSIFICATIONREFERENCE") {
+      std::string value = stringValue(argAt(*classification, 1)).value_or("");
+      if (value.empty()) {
+        value = stringValue(argAt(*classification, 0)).value_or("");
+      }
+      std::string name =
+          stringValue(argAt(*classification, 2)).value_or("Classification");
+      if (name.empty()) {
+        name = "Classification";
+      }
+      std::string set = classificationSourceName(ref);
+      if (set.empty()) {
+        set = "Classification";
+      }
+      appendProperty(metadata,
+                     makeProperty(std::move(set), std::move(name),
+                                  std::move(value), "classification"));
+    } else if (classification->type == "IFCCLASSIFICATION") {
+      std::string value = classificationSourceName(ref);
+      appendProperty(metadata,
+                     makeProperty("Classification", "Classification",
+                                  std::move(value), "classification"));
+    }
+    return metadata;
+  }
+
+  void cacheClassificationRelations() {
+    for (const auto id : sortedEntityIds_) {
+      const Entity *relation = entity(id);
+      if (relation == nullptr ||
+          relation->type != "IFCRELASSOCIATESCLASSIFICATION") {
+        continue;
+      }
+      const auto classificationRef = firstRef(*relation, 5);
+      if (!classificationRef.has_value()) {
+        continue;
+      }
+      const ProductMetadata classification =
+          classificationMetadata(*classificationRef);
+      for (const auto productRef : refList(argAt(*relation, 4))) {
+        ProductMetadata &target = semanticPropertiesByProduct_[productRef];
+        mergeSemanticProperties(target, classification);
+      }
+    }
+  }
+
+  ProductMetadata groupMetadata(uint32_t ref) const {
+    ProductMetadata metadata{};
+    const Entity *group = entity(ref);
+    if (group == nullptr) {
+      return metadata;
+    }
+
+    std::string name = "Group";
+    if (group->type == "IFCSYSTEM") {
+      name = "System";
+    } else if (group->type == "IFCZONE") {
+      name = "Zone";
+    } else if (group->type == "IFCSPACE") {
+      name = "Space";
+    }
+    appendProperty(metadata,
+                   makeProperty(group->type, name, entityNameOrId(ref),
+                                "reference"));
+    return metadata;
+  }
+
+  void cacheGroupRelations() {
+    for (const auto id : sortedEntityIds_) {
+      const Entity *relation = entity(id);
+      if (relation == nullptr ||
+          relation->type != "IFCRELASSIGNSTOGROUP") {
+        continue;
+      }
+      const auto groupRef = firstRef(*relation, 6);
+      if (!groupRef.has_value()) {
+        continue;
+      }
+      const ProductMetadata group = groupMetadata(*groupRef);
+      for (const auto productRef : refList(argAt(*relation, 4))) {
+        ProductMetadata &target = semanticPropertiesByProduct_[productRef];
+        mergeSemanticProperties(target, group);
+      }
+    }
+  }
+
+  void cacheHierarchyRelations() {
+    for (const auto id : sortedEntityIds_) {
+      const Entity *relation = entity(id);
+      if (relation == nullptr ||
+          (relation->type != "IFCRELAGGREGATES" &&
+           relation->type != "IFCRELNESTS")) {
+        continue;
+      }
+
+      const auto parentRef = firstRef(*relation, 4);
+      if (!parentRef.has_value()) {
+        continue;
+      }
+
+      size_t childIndex = 1u;
+      for (const auto childRef : refList(argAt(*relation, 5))) {
+        appendRelationshipReference(childRef, relation->type, "Parent",
+                                    *parentRef);
+        appendRelationshipReference(*parentRef, relation->type,
+                                    "Child." + std::to_string(childIndex),
+                                    childRef);
+        ++childIndex;
+      }
+    }
+  }
+
+  ProductMetadata typeObjectMetadata(uint32_t typeRef) const {
+    ProductMetadata metadata{};
+    const Entity *typeObject = entity(typeRef);
+    if (typeObject == nullptr) {
+      return metadata;
+    }
+
+    appendProperty(metadata,
+                   makeProperty("IFCRELDEFINESBYTYPE", "Type",
+                                entityNameOrId(typeRef), "relationship"));
+    appendProperty(metadata,
+                   makeProperty("IFCRELDEFINESBYTYPE", "TypeId",
+                                fallbackRefValue(typeRef), "relationship"));
+    appendProperty(metadata,
+                   makeProperty("IFCRELDEFINESBYTYPE", "TypeEntity",
+                                typeObject->type, "relationship"));
+
+    for (const size_t propertySetIndex : {5u, 6u}) {
+      for (const auto propertySetRef : refsAt(*typeObject, propertySetIndex)) {
+        mergeSemanticProperties(metadata, propertySetMetadata(propertySetRef));
+      }
+    }
+
+    if (const auto typeSemanticIt = semanticPropertiesByProduct_.find(typeRef);
+        typeSemanticIt != semanticPropertiesByProduct_.end()) {
+      mergeSemanticProperties(metadata, typeSemanticIt->second);
+    }
+    return metadata;
+  }
+
+  void cacheTypeRelations() {
+    for (const auto id : sortedEntityIds_) {
+      const Entity *relation = entity(id);
+      if (relation == nullptr ||
+          relation->type != "IFCRELDEFINESBYTYPE") {
+        continue;
+      }
+
+      const auto typeRef = firstRef(*relation, 5);
+      if (!typeRef.has_value()) {
+        continue;
+      }
+
+      const ProductMetadata typeMetadata = typeObjectMetadata(*typeRef);
+      for (const auto productRef : refList(argAt(*relation, 4))) {
+        ProductMetadata &target = semanticPropertiesByProduct_[productRef];
+        mergeSemanticProperties(target, typeMetadata);
+        if (!materialByProduct_.contains(productRef)) {
+          if (const auto materialIt = materialByProduct_.find(*typeRef);
+              materialIt != materialByProduct_.end()) {
+            materialByProduct_[productRef] = materialIt->second;
+          }
+        }
+      }
+    }
+  }
+
+  ProductMetadata productMetadata(const Entity &product) const {
+    ProductMetadata metadata{};
+    metadata.guid = stringValue(argAt(product, 0)).value_or("");
+    metadata.displayName = stringValue(argAt(product, 2)).value_or("");
+    metadata.objectType = stringValue(argAt(product, 4)).value_or("");
+    metadata.sourceId = "#" + std::to_string(product.id);
+
+    if (const auto storeyIt = storeyByProduct_.find(product.id);
+        storeyIt != storeyByProduct_.end()) {
+      metadata.storeyId = storeyIt->second.id;
+      metadata.storeyName = storeyIt->second.name;
+    }
+    if (const auto materialIt = materialByProduct_.find(product.id);
+        materialIt != materialByProduct_.end()) {
+      metadata.materialName = materialIt->second.name;
+      metadata.materialCategory = materialIt->second.category;
+    }
+    if (const auto semanticIt = semanticPropertiesByProduct_.find(product.id);
+        semanticIt != semanticPropertiesByProduct_.end()) {
+      mergeSemanticProperties(metadata, semanticIt->second);
+    }
+    return metadata;
+  }
+
+  void applyProductMetadata(container::geometry::dotbim::Element &element,
+                            const ProductMetadata &metadata) const {
+    element.guid = metadata.guid;
+    element.displayName = metadata.displayName;
+    element.objectType = metadata.objectType;
+    element.storeyName = metadata.storeyName;
+    element.storeyId = metadata.storeyId;
+    element.materialName = metadata.materialName;
+    element.materialCategory = metadata.materialCategory;
+    element.discipline = metadata.discipline;
+    element.phase = metadata.phase;
+    element.fireRating = metadata.fireRating;
+    element.loadBearing = metadata.loadBearing;
+    element.status = metadata.status;
+    element.sourceId = metadata.sourceId;
+    element.properties = metadata.properties;
   }
 
   void appendTessellatedGeometry() {
@@ -1579,7 +2715,7 @@ private:
   bool appendVoidedProductElement(const Entity &product,
                                   const glm::mat4 &placement,
                                   std::span<const GeometryInstance> instances,
-                                  const std::string &guid,
+                                  const ProductMetadata &metadata,
                                   const glm::mat4 &unitTransform) {
     const auto openingIt = openingsByHostProduct_.find(product.id);
     if (openingIt == openingsByHostProduct_.end() ||
@@ -1638,8 +2774,8 @@ private:
     element.meshId = group->meshId;
     element.transform = unitTransform * placement * hostInstance.transform;
     element.color = group->color;
-    element.guid = guid;
     element.type = product.type;
+    applyProductMetadata(element, metadata);
     model_.elements.push_back(std::move(element));
     return true;
   }
@@ -1670,11 +2806,11 @@ private:
       std::vector<GeometryInstance> instances;
       collectGeometryInstances(*representationRef, glm::mat4(1.0f), instances);
 
-      const std::string guid = stringValue(argAt(*product, 0)).value_or("");
+      const ProductMetadata metadata = productMetadata(*product);
       if (product->type == "IFCOPENINGELEMENT") {
         continue;
       }
-      if (appendVoidedProductElement(*product, placement, instances, guid,
+      if (appendVoidedProductElement(*product, placement, instances, metadata,
                                      unitTransform)) {
         continue;
       }
@@ -1688,8 +2824,8 @@ private:
           element.meshId = group.meshId;
           element.transform = unitTransform * placement * instance.transform;
           element.color = group.color;
-          element.guid = guid;
           element.type = product->type;
+          applyProductMetadata(element, metadata);
           model_.elements.push_back(std::move(element));
         }
       }
@@ -1713,6 +2849,7 @@ private:
         element.transform = transform;
         element.color = group.color;
         element.type = "IFCTRIANGULATEDFACESET";
+        element.sourceId = "#" + std::to_string(id);
         model_.elements.push_back(std::move(element));
       }
     }
@@ -1721,6 +2858,7 @@ private:
   std::unordered_map<uint32_t, Entity> entities_;
   std::vector<uint32_t> sortedEntityIds_{};
   float importScale_{1.0f};
+  LengthUnitMetadata unitMetadata_{};
   float unitScale_{1.0f};
   uint32_t nextMeshId_{1};
   Model model_{};
@@ -1733,6 +2871,10 @@ private:
   std::unordered_map<uint32_t, std::vector<MeshGroup>> groupsByItem_{};
   std::unordered_map<uint32_t, BoxSolid> boxSolidsByItem_{};
   std::unordered_map<uint32_t, std::vector<uint32_t>> openingsByHostProduct_{};
+  std::unordered_map<uint32_t, uint32_t> hostByOpeningProduct_{};
+  std::unordered_map<uint32_t, StoreyMetadata> storeyByProduct_{};
+  std::unordered_map<uint32_t, SemanticMaterialMetadata> materialByProduct_{};
+  std::unordered_map<uint32_t, ProductMetadata> semanticPropertiesByProduct_{};
 };
 
 } // namespace

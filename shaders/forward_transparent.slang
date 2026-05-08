@@ -1,5 +1,6 @@
 #include "brdf_common.slang"
 #include "area_light_common.slang"
+#include "local_shadow_common.slang"
 #include "shadow_common.slang"
 #include "oit_common.slang"
 #include "push_constants_common.slang"
@@ -28,7 +29,13 @@
 [[vk::binding(12, 3)]] Texture2D<float2> gBrdfLUT;
 [[vk::binding(13, 3)]] SamplerState envSampler;
 [[vk::binding(14, 3)]] SamplerState brdfSampler;
+[[vk::binding(18, 3)]] ConstantBuffer<LocalShadowBuffer> uLocalShadow;
+[[vk::binding(19, 3)]] Texture2DArray<float> gLocalShadowAtlas;
+[[vk::binding(20, 3)]] SamplerComparisonState gLocalShadowSampler;
+[[vk::binding(3, 3)]] Texture2D<float4> gSceneNormalTexture;
+[[vk::binding(6, 3)]] Texture2D<float> gSceneDepthTexture;
 
+#include "scene_clip_common.slang"
 #include "object_index_common.slang"
 #include "pbr_material_common.slang"
 #include "surface_normal_common.slang"
@@ -39,6 +46,34 @@ ConstantBuffer<BindlessPushConstants> pc;
 static const uint kObjectFlagAlphaCutoff = 0x1u;
 static const uint kObjectFlagTransparentOnly = 0x2u;
 static const uint kObjectFlagDoubleSided = 0x4u;
+
+float TransparentFiniteOr(float value, float fallback)
+{
+    return isfinite(value) ? value : fallback;
+}
+
+float2 TransparentFinite2Or(float2 value, float2 fallback)
+{
+    return all(isfinite(value)) ? value : fallback;
+}
+
+float3 TransparentFinite3Or(float3 value, float3 fallback)
+{
+    return all(isfinite(value)) ? value : fallback;
+}
+
+static const float kTransparentAmbientFloor = 0.025;
+
+float3 ComputeTransparentAmbientFloor(float3 baseColor,
+                                      float occlusion,
+                                      float environmentIntensity)
+{
+    float disabledEnvironment =
+        saturate(1.0 - max(TransparentFiniteOr(environmentIntensity, 0.0), 0.0));
+    float diffuseOcclusion = saturate(TransparentFiniteOr(occlusion, 1.0));
+    return max(TransparentFinite3Or(baseColor, 0.0.xxx), 0.0.xxx) *
+        (kTransparentAmbientFloor * disabledEnvironment * diffuseOcclusion);
+}
 
 struct VSInput
 {
@@ -143,6 +178,11 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 [shader("fragment")]
 float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 {
+    if (SceneClipPlanesClip(vertIn.worldPos, pc.sectionPlaneEnabled, pc.sectionPlane))
+    {
+        discard;
+    }
+
     GpuMaterial material =
         uMaterials[uObjects[vertIn.objectIndex].objectInfo.x];
     float2 baseColorTexCoord = ApplyGpuTextureTransform(
@@ -294,6 +334,19 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 
     float metallic = sampledMetallic;
     float roughness = sampledRoughness;
+    if (pc.semanticColorMode != kBimSemanticColorModeOff)
+    {
+        baseColor = EvaluateBimSemanticColor(
+            uObjects[vertIn.objectIndex].objectInfo.w, pc.semanticColorMode);
+        metallic = 0.0;
+        roughness = 0.74;
+        emissive = 0.0.xxx;
+        transmissionFactor = 0.0;
+        clearcoat = 0.0;
+        sheenColor = 0.0.xxx;
+        iridescence = 0.0;
+        volumeThickness = 0.0;
+    }
     float3 V = SafeNormalize(uCamera.cameraWorldPosition.xyz - vertIn.worldPos,
                              float3(0.0, 0.0, 1.0));
     float NdotV = max(dot(surfaceNormal.shadingNormal, V), 0.0);
@@ -305,18 +358,27 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
 
     float3 F_ibl = FresnelSchlickRoughness(NdotV, F0, roughness);
     float3 kD_ibl = (1.0 - F_ibl) * (1.0 - metallic);
-    float environmentIntensity = max(uLighting.environmentIntensity, 0.0);
+    float environmentIntensity =
+        max(TransparentFiniteOr(uLighting.environmentIntensity, 0.0), 0.0);
     float3 irradiance =
-        gIrradianceCubemap.Sample(envSampler, surfaceNormal.shadingNormal).rgb *
+        TransparentFinite3Or(
+            gIrradianceCubemap.Sample(envSampler, surfaceNormal.shadingNormal).rgb,
+            0.0.xxx) *
         environmentIntensity;
     float3 diffuseIBL = irradiance * baseColor;
     float3 R = reflect(-V, surfaceNormal.shadingNormal);
     float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
     float3 prefilteredColor =
-        gPrefilteredCubemap.SampleLevel(envSampler, R,
-                                        roughness * maxMipLevel).rgb *
+        TransparentFinite3Or(
+            gPrefilteredCubemap.SampleLevel(envSampler, R,
+                                            roughness * maxMipLevel).rgb,
+            0.0.xxx) *
         environmentIntensity;
-    float2 brdf = gBrdfLUT.Sample(brdfSampler, float2(NdotV, roughness));
+    float2 brdf = max(
+        TransparentFinite2Or(
+            gBrdfLUT.Sample(brdfSampler, float2(NdotV, roughness)),
+            0.0.xx),
+        0.0.xx);
     float3 specularIBL =
         EvaluateSpecularIblMultipleScattering(prefilteredColor, F0, brdf);
 
@@ -324,6 +386,8 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     float specularOcclusion = saturate(pow(NdotV + diffuseAO, exp2(-16.0 * roughness - 1.0)) - 1.0 + diffuseAO);
     specularOcclusion = lerp(1.0, specularOcclusion, saturate(1.0 - roughness));
     float3 lighting = kD_ibl * diffuseIBL * diffuseAO + specularIBL * specularOcclusion;
+    lighting += ComputeTransparentAmbientFloor(
+        baseColor, occlusion, environmentIntensity);
 
     if ((vertIn.flags & kPbrObjectFlagUnlit) != 0u)
     {
@@ -344,18 +408,23 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         float viewDepth =
             max(dot(vertIn.worldPos - uCamera.cameraWorldPosition.xyz,
                     cameraForward), 0.0);
-        float NdotLForShadow = dot(surfaceNormal.shadingNormal, directionalL);
+        float NdotLForShadow = dot(surfaceNormal.geometricNormal, directionalL);
         if (uLighting.shadowEnabled != 0u &&
             (NdotLForShadow > 0.0 || thinSurface))
         {
             shadowFactor = ComputeShadowFactor(
-                vertIn.worldPos, surfaceNormal.shadingNormal,
+                vertIn.worldPos, surfaceNormal.geometricNormal,
                 uLighting.directionalDirection.xyz, viewDepth,
                 uShadow, gShadowAtlas, gShadowSampler);
         }
         lighting += EvaluatePbrDirectLight(
             baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal, V,
             directionalL, directionalRadiance * shadowFactor);
+        lighting += EvaluateDiffuseBounceLight(
+            baseColor, metallic, surfaceNormal.shadingNormal,
+            surfaceNormal.geometricNormal, V, directionalL,
+            directionalRadiance * shadowFactor, shadowFactor, occlusion,
+            uLighting.bounceIntensity);
     }
     if (thinSurface)
     {
@@ -388,11 +457,23 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         float3 radiance =
             light.colorIntensity.rgb * light.colorIntensity.a * attenuation *
             coneAttenuation;
+        float lightVisibility = 1.0;
+        if (LocalShadowMapsEnabled(uLighting, uLocalShadow))
+        {
+            lightVisibility = LocalPointLightShadowVisibility(
+                light, vertIn.worldPos, surfaceNormal.geometricNormal, L,
+                uLocalShadow, gLocalShadowAtlas, gLocalShadowSampler);
+            radiance *= lightVisibility;
+        }
         if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)
         {
             lighting += EvaluatePbrDirectLight(
                 baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal,
                 V, L, radiance);
+            lighting += EvaluateDiffuseBounceLight(
+                baseColor, metallic, surfaceNormal.shadingNormal,
+                surfaceNormal.geometricNormal, V, L, radiance,
+                lightVisibility, occlusion, uLighting.bounceIntensity);
             if (thinSurface)
             {
                 lighting += EvaluateThinSurfaceTransmission(
@@ -415,11 +496,26 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                  ++sampleIndex)
             {
                 float3 L;
+                float3 samplePosition =
+                    AreaLightSamplePosition(frame, sampleIndex);
                 float3 radiance = EvaluateAreaLightSampleRadiance(
                     light, frame, vertIn.worldPos, sampleIndex, L);
+                float lightVisibility = 1.0;
+                if (LocalShadowMapsEnabled(uLighting, uLocalShadow))
+                {
+                    lightVisibility = LocalAreaLightShadowVisibility(
+                        i, vertIn.worldPos, surfaceNormal.geometricNormal,
+                        samplePosition, uLocalShadow, gLocalShadowAtlas,
+                        gLocalShadowSampler);
+                    radiance *= lightVisibility;
+                }
                 lighting += EvaluatePbrDirectLight(
                     baseColor, F0, metallic, roughness,
                     surfaceNormal.shadingNormal, V, L, radiance);
+                lighting += EvaluateDiffuseBounceLight(
+                    baseColor, metallic, surfaceNormal.shadingNormal,
+                    surfaceNormal.geometricNormal, V, L, radiance,
+                    lightVisibility, occlusion, uLighting.bounceIntensity);
                 if (thinSurface)
                 {
                     lighting += EvaluateThinSurfaceTransmission(
@@ -446,11 +542,19 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             float clearcoatNdotV = max(dot(clearcoatNormal, V), 0.0);
             float3 clearcoatF0 = IorToF0(1.5).xxx;
             float3 clearcoatR = reflect(-V, clearcoatNormal);
-            float3 clearcoatPrefiltered = gPrefilteredCubemap.SampleLevel(
-                envSampler, clearcoatR, clearcoatRoughness * maxMipLevel).rgb;
+            float3 clearcoatPrefiltered = TransparentFinite3Or(
+                gPrefilteredCubemap.SampleLevel(
+                    envSampler, clearcoatR,
+                    clearcoatRoughness * maxMipLevel).rgb,
+                0.0.xxx) *
+                environmentIntensity;
             float2 clearcoatBrdf =
-                gBrdfLUT.Sample(
-                    brdfSampler, float2(clearcoatNdotV, clearcoatRoughness));
+                max(TransparentFinite2Or(
+                        gBrdfLUT.Sample(
+                            brdfSampler,
+                            float2(clearcoatNdotV, clearcoatRoughness)),
+                        0.0.xx),
+                    0.0.xx);
             float3 clearcoatIbl =
                 EvaluateSpecularIblMultipleScattering(
                     clearcoatPrefiltered, clearcoatF0, clearcoatBrdf);
@@ -495,23 +599,42 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             float3 refrR = refract(-V, surfaceNormal.shadingNormal, etaR);
             float3 refrG = refract(-V, surfaceNormal.shadingNormal, etaG);
             float3 refrB = refract(-V, surfaceNormal.shadingNormal, etaB);
-            if (dot(refrG, refrG) > 1e-6 && all(isfinite(refrG)))
+            bool refrRValid = dot(refrR, refrR) > 1e-6 && all(isfinite(refrR));
+            bool refrGValid = dot(refrG, refrG) > 1e-6 && all(isfinite(refrG));
+            bool refrBValid = dot(refrB, refrB) > 1e-6 && all(isfinite(refrB));
+            if (refrRValid)
             {
-                transmittedColor.r = gPrefilteredCubemap.SampleLevel(
-                    envSampler, refrR, roughness * maxMipLevel).r;
-                transmittedColor.g = gPrefilteredCubemap.SampleLevel(
-                    envSampler, refrG, roughness * maxMipLevel).g;
-                transmittedColor.b = gPrefilteredCubemap.SampleLevel(
-                    envSampler, refrB, roughness * maxMipLevel).b;
+                transmittedColor.r = TransparentFiniteOr(
+                    gPrefilteredCubemap.SampleLevel(
+                        envSampler, refrR, roughness * maxMipLevel).r,
+                    0.0);
+            }
+            if (refrGValid)
+            {
+                transmittedColor.g = TransparentFiniteOr(
+                    gPrefilteredCubemap.SampleLevel(
+                        envSampler, refrG, roughness * maxMipLevel).g,
+                    0.0);
+            }
+            if (refrBValid)
+            {
+                transmittedColor.b = TransparentFiniteOr(
+                    gPrefilteredCubemap.SampleLevel(
+                        envSampler, refrB, roughness * maxMipLevel).b,
+                    0.0);
             }
         }
         else
         {
-            transmittedColor = gPrefilteredCubemap.SampleLevel(
-                envSampler, -V, roughness * maxMipLevel).rgb;
+            transmittedColor = TransparentFinite3Or(
+                gPrefilteredCubemap.SampleLevel(
+                    envSampler, -V, roughness * maxMipLevel).rgb,
+                0.0.xxx);
         }
+        transmittedColor *= environmentIntensity;
 
-        if (dot(transmittedColor, transmittedColor) > 0.0)
+        if (dot(transmittedColor, transmittedColor) > 0.0 &&
+            all(isfinite(transmittedColor)))
         {
             transmittedColor = ApplyBeerLambert(
                 transmittedColor * baseColor, material.attenuationColor.rgb,

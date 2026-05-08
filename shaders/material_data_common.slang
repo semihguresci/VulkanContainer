@@ -13,6 +13,7 @@ static const uint kGpuMaterialFlagAlphaMask = 0x1u;
 static const uint kGpuMaterialFlagAlphaBlend = 0x2u;
 static const uint kGpuMaterialFlagDoubleSided = 0x4u;
 static const float kGBufferMaterialThinSurfaceBit = 0.5;
+static const uint kBimSemanticColorModeOff = 0u;
 
 struct GpuTextureTransform
 {
@@ -116,6 +117,52 @@ struct DeferredMaterialLayerTerms
 bool HasGpuMaterialTexture(uint textureIndex)
 {
     return textureIndex != kInvalidGpuMaterialTexture;
+}
+
+float3 EvaluateBimSemanticColor(uint semanticId, uint semanticColorMode)
+{
+    if (semanticColorMode == kBimSemanticColorModeOff)
+    {
+        return 1.0.xxx;
+    }
+    if (semanticId == 0u)
+    {
+        return float3(0.55, 0.57, 0.60);
+    }
+
+    const uint paletteIndex =
+        (semanticId - 1u + semanticColorMode * 3u) % 14u;
+    switch (paletteIndex)
+    {
+    case 0u:
+        return float3(0.16, 0.47, 0.86);
+    case 1u:
+        return float3(0.86, 0.29, 0.24);
+    case 2u:
+        return float3(0.13, 0.58, 0.39);
+    case 3u:
+        return float3(0.88, 0.58, 0.16);
+    case 4u:
+        return float3(0.55, 0.36, 0.80);
+    case 5u:
+        return float3(0.10, 0.65, 0.72);
+    case 6u:
+        return float3(0.82, 0.33, 0.58);
+    case 7u:
+        return float3(0.45, 0.52, 0.22);
+    case 8u:
+        return float3(0.93, 0.42, 0.18);
+    case 9u:
+        return float3(0.22, 0.62, 0.93);
+    case 10u:
+        return float3(0.62, 0.43, 0.25);
+    case 11u:
+        return float3(0.42, 0.46, 0.58);
+    case 12u:
+        return float3(0.70, 0.28, 0.42);
+    default:
+        return float3(0.34, 0.68, 0.51);
+    }
 }
 
 float MaxGpuMaterialComponent(float3 value)

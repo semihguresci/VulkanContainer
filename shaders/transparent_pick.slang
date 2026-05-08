@@ -10,6 +10,7 @@
 [[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
 [[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
 
+#include "scene_clip_common.slang"
 #include "object_index_common.slang"
 #include "pbr_material_common.slang"
 
@@ -40,6 +41,7 @@ struct VSOutput
     [[vk::location(6)]] float alphaCutoff;
     [[vk::location(7)]] uint flags;
     [[vk::location(8)]] uint objectIndex;
+    [[vk::location(9)]] float3 worldPos;
 };
 
 [shader("vertex")]
@@ -70,12 +72,18 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.alphaCutoff = material.alphaCutoff;
     output.flags = material.flags | obj.objectInfo.y;
     output.objectIndex = objectIndex;
+    output.worldPos = worldPos.xyz;
     return output;
 }
 
 [shader("fragment")]
 uint fragMain(VSOutput vertIn) : SV_Target0
 {
+    if (SceneClipPlanesClip(vertIn.worldPos, pc.sectionPlaneEnabled, pc.sectionPlane))
+    {
+        discard;
+    }
+
     GpuMaterial material =
         uMaterials[uObjects[vertIn.objectIndex].objectInfo.x];
     float2 baseColorTexCoord = ApplyGpuTextureTransform(

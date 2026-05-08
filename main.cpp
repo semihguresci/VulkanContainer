@@ -129,6 +129,15 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.directionalIntensity =
           parseFloat(requireValue(argc, argv, i, arg), arg);
       config.hasDirectionalIntensityOverride = true;
+    } else if (arg == "--display-mode" || arg == "--render-mode") {
+      config.displayModeOverride =
+          std::string(requireValue(argc, argv, i, arg));
+    } else if (arg == "--no-bloom") {
+      config.bloomEnabled = false;
+      config.hasBloomEnabledOverride = true;
+    } else if (arg == "--bloom") {
+      config.bloomEnabled = true;
+      config.hasBloomEnabledOverride = true;
     } else if (arg == "--validation") {
       config.enableValidationLayers = true;
     } else if (arg == "--no-validation") {

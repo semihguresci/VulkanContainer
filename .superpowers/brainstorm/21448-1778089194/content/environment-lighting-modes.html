@@ -1,0 +1,179 @@
+<style>
+  .mode-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 18px;
+    margin-top: 18px;
+  }
+  .mode-card {
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    border-radius: 10px;
+    overflow: hidden;
+    background: rgba(15, 23, 42, 0.38);
+    cursor: pointer;
+  }
+  .mode-preview {
+    min-height: 220px;
+    position: relative;
+    display: grid;
+    place-items: center;
+    background: #10151f;
+  }
+  .pbr-sky {
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 18% 18%, rgba(255, 214, 145, 0.85), transparent 20%),
+      linear-gradient(145deg, #87a9bf 0%, #d6cab6 48%, #2d3748 100%);
+  }
+  .editor-sky {
+    position: absolute;
+    inset: 0;
+    background:
+      linear-gradient(180deg, #dbe3e7 0%, #b7c4c9 46%, #8b979e 100%);
+  }
+  .model {
+    position: relative;
+    width: 62%;
+    height: 118px;
+    transform: perspective(560px) rotateX(54deg) rotateZ(-33deg);
+  }
+  .slab, .tower, .gloss {
+    position: absolute;
+    background: #c9d1d9;
+    box-shadow: 0 18px 34px rgba(0, 0, 0, 0.28);
+  }
+  .slab {
+    inset: 36px 0 0 0;
+  }
+  .tower {
+    width: 34%;
+    height: 90px;
+    right: 13%;
+    bottom: 22px;
+    background: #a8b4bf;
+  }
+  .gloss {
+    width: 28%;
+    height: 64px;
+    left: 11%;
+    bottom: 30px;
+    background: linear-gradient(135deg, #5d7180, #d8e3ea 44%, #53616d);
+  }
+  .pbr-preview .gloss::after {
+    content: "";
+    position: absolute;
+    inset: 12px 10px;
+    background: linear-gradient(120deg, rgba(255, 240, 205, 0.95), transparent 54%);
+  }
+  .editor-preview .model {
+    filter: contrast(0.95) saturate(0.8);
+  }
+  .lamp {
+    position: absolute;
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    background: #ffffff;
+    box-shadow: 0 0 0 7px rgba(255, 255, 255, 0.18), 0 0 22px rgba(255, 255, 255, 0.8);
+  }
+  .lamp.one { top: 45px; left: 25%; }
+  .lamp.two { top: 55px; right: 21%; }
+  .lamp.three { bottom: 52px; left: 46%; }
+  .mode-body {
+    padding: 14px 16px 16px;
+  }
+  .mode-body h3 {
+    margin: 0 0 8px;
+  }
+  .pill-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 7px;
+    margin: 10px 0 0;
+  }
+  .pill {
+    font-size: 12px;
+    border: 1px solid rgba(148, 163, 184, 0.38);
+    border-radius: 999px;
+    padding: 3px 8px;
+    color: #cbd5e1;
+  }
+  .flow {
+    margin-top: 20px;
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 8px;
+    align-items: stretch;
+  }
+  .flow div {
+    border: 1px solid rgba(148, 163, 184, 0.28);
+    border-radius: 8px;
+    padding: 10px;
+    min-height: 58px;
+    background: rgba(2, 6, 23, 0.28);
+    font-size: 13px;
+  }
+  @media (max-width: 880px) {
+    .mode-grid, .flow { grid-template-columns: 1fr; }
+  }
+</style>
+
+<h2>Environment Map Lighting Modes</h2>
+<p class="subtitle">A first pass at the two-mode split: one for physically based rendering, one for editor-style model inspection.</p>
+
+<div class="mode-grid">
+  <div class="mode-card option" data-choice="pbr_environment" onclick="toggleSelect(this)">
+    <div class="mode-preview pbr-preview">
+      <div class="pbr-sky"></div>
+      <div class="model">
+        <div class="slab"></div>
+        <div class="tower"></div>
+        <div class="gloss"></div>
+      </div>
+    </div>
+    <div class="mode-body">
+      <h3>PBR Environment</h3>
+      <p>HDR map drives diffuse irradiance and prefiltered specular. Use this when checking material response, reflections, final screenshots, and realistic exposure.</p>
+      <div class="pill-row">
+        <span class="pill">HDR IBL active</span>
+        <span class="pill">Reflections matter</span>
+        <span class="pill">Material validation</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="mode-card option" data-choice="editor_lighting" onclick="toggleSelect(this)">
+    <div class="mode-preview editor-preview">
+      <div class="editor-sky"></div>
+      <span class="lamp one"></span>
+      <span class="lamp two"></span>
+      <span class="lamp three"></span>
+      <div class="model">
+        <div class="slab"></div>
+        <div class="tower"></div>
+        <div class="gloss"></div>
+      </div>
+    </div>
+    <div class="mode-body">
+      <h3>Design Editor Lighting</h3>
+      <p>Stable neutral viewport lighting for model reading, closer to Revit or Blender solid/material preview. Geometry should stay legible even when the HDR map is dark or high contrast.</p>
+      <div class="pill-row">
+        <span class="pill">Neutral visibility</span>
+        <span class="pill">Bounds-based fill</span>
+        <span class="pill">Inspection workflow</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>Likely Data Flow</h3>
+  <div class="flow">
+    <div>Mode selector in Lighting UI</div>
+    <div>LightingSettings stores mode</div>
+    <div>LightingManager applies preset policy</div>
+    <div>Shader keeps same PBR path</div>
+    <div>Environment status reports active mode</div>
+  </div>
+</div>

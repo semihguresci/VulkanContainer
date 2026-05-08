@@ -3,6 +3,7 @@
 // light list for a 16x16xZ screen-space cluster.
 
 #include "lighting_structs.slang"
+#include "brdf_common.slang"
 #include "push_constants_common.slang"
 
 [[vk::push_constant]]
@@ -42,6 +43,13 @@ void computeMain(
     gDepthTexture.GetDimensions(screenWidth, screenHeight);
 
     uint safeDepthSliceCount = max(pc.depthSliceCount, 1u);
+    if (pc.tileCountX == 0u || pc.tileCountY == 0u ||
+        tileX >= pc.tileCountX || tileY >= pc.tileCountY ||
+        sliceZ >= safeDepthSliceCount)
+    {
+        return;
+    }
+
     uint clusterIndex =
         (sliceZ * pc.tileCountY + tileY) * pc.tileCountX + tileX;
 
@@ -72,7 +80,7 @@ void computeMain(
         // G-buffer depth is a per-pixel classification input here; using Load
         // avoids filtering depth across geometry edges into the wrong cluster.
         float depth = gDepthTexture.Load(int3(pixel, 0));
-        if (depth > 0.0 &&
+        if (isfinite(depth) && depth > 0.0 && depth <= 1.0 &&
             DepthToClusterSlice(depth, pc.cameraNear, pc.cameraFar,
                                 safeDepthSliceCount) == sliceZ)
         {
@@ -118,18 +126,27 @@ void computeMain(
     corners[7] = float4(tileRight, tileBottom, sliceFarDepth, 1.0);
 
     float3 worldCorners[8];
+    bool clusterAabbValid = true;
     for (int c = 0; c < 8; ++c)
     {
-        float4 w = mul(uCamera.inverseViewProj, corners[c]);
-        worldCorners[c] = w.xyz / max(w.w, 1e-6);
+        float3 worldCorner = 0.0.xxx;
+        bool cornerValid = TryReconstructWorldPositionFromClip(
+            corners[c], uCamera.inverseViewProj, worldCorner);
+        worldCorners[c] = worldCorner;
+        clusterAabbValid = clusterAabbValid && cornerValid;
     }
 
-    float3 aabbMin = worldCorners[0];
-    float3 aabbMax = worldCorners[0];
-    for (int c = 1; c < 8; ++c)
+    float3 aabbMin = float3(-1.0e20, -1.0e20, -1.0e20);
+    float3 aabbMax = float3(1.0e20, 1.0e20, 1.0e20);
+    if (clusterAabbValid)
     {
-        aabbMin = min(aabbMin, worldCorners[c]);
-        aabbMax = max(aabbMax, worldCorners[c]);
+        aabbMin = worldCorners[0];
+        aabbMax = worldCorners[0];
+        for (int c = 1; c < 8; ++c)
+        {
+            aabbMin = min(aabbMin, worldCorners[c]);
+            aabbMax = max(aabbMax, worldCorners[c]);
+        }
     }
 
     uint threadsPerCluster = TILE_SIZE * TILE_SIZE;
@@ -139,9 +156,16 @@ void computeMain(
         // avoids dropping lights near cluster boundaries after depth slicing.
         float3 lightPos = uLights[i].positionRadius.xyz;
         float lightRange = uLights[i].positionRadius.w;
+        if (!all(isfinite(lightPos)) || !isfinite(lightRange) ||
+            lightRange < UNBOUNDED_POINT_LIGHT_RANGE)
+        {
+            continue;
+        }
+        bool unboundedLight =
+            lightRange == UNBOUNDED_POINT_LIGHT_RANGE;
         float lightRadius = lightRange * 1.03;
 
-        if (!PointLightHasFiniteRange(lightRange) ||
+        if (unboundedLight || !clusterAabbValid ||
             SphereIntersectsAabb(lightPos, lightRadius, aabbMin, aabbMax))
         {
             uint idx;

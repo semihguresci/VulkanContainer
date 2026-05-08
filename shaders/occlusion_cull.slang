@@ -23,12 +23,18 @@ ConstantBuffer<CullPushConstants> pc;
 
 float ReverseZDepthFromWorldPoint(float4x4 viewProj, float3 worldPoint)
 {
-    float4 clip = mul(viewProj, float4(worldPoint, 1.0));
-    if (clip.w <= 1e-6)
+    if (!all(isfinite(worldPoint)))
     {
         return 1.0;
     }
-    return saturate(clip.z / clip.w);
+
+    float4 clip = mul(viewProj, float4(worldPoint, 1.0));
+    if (!all(isfinite(clip)) || clip.w <= 1e-6)
+    {
+        return 1.0;
+    }
+    float depth = clip.z / clip.w;
+    return isfinite(depth) ? saturate(depth) : 1.0;
 }
 
 // Project a world-space bounding sphere to a conservative screen-space AABB.
@@ -39,27 +45,46 @@ bool ProjectSphere(float4x4 viewProj, float3 cameraWorldPosition,
                    float3 center, float radius,
                    out float2 minUV, out float2 maxUV, out float closestDepth)
 {
+    minUV = float2(0.0, 0.0);
+    maxUV = float2(1.0, 1.0);
+    closestDepth = 1.0;
+
+    if (!all(isfinite(center)) || !isfinite(radius) || radius <= 0.0 ||
+        !all(isfinite(cameraWorldPosition)))
+    {
+        return true;
+    }
+
     float4 clipCenter = mul(viewProj, float4(center, 1.0));
     float3 cameraToCenter = center - cameraWorldPosition;
     float cameraDistance = length(cameraToCenter);
 
     // If the sphere contains the camera, straddles the near plane, or the
     // center is behind the eye, conservatively keep it visible.
-    if (cameraDistance <= radius || clipCenter.w <= radius || clipCenter.w <= 0.0)
+    if (!all(isfinite(clipCenter)) ||
+        !isfinite(cameraDistance) ||
+        cameraDistance <= radius ||
+        clipCenter.w <= radius ||
+        clipCenter.w <= 0.0)
     {
-        minUV = float2(0.0, 0.0);
-        maxUV = float2(1.0, 1.0);
-        closestDepth = 1.0;
         return true;
     }
 
     float3 ndc = clipCenter.xyz / clipCenter.w;
+    if (!all(isfinite(ndc)))
+    {
+        return true;
+    }
 
     // In Slang, matrix indexing is row-first. For a perspective view-projection
     // matrix, the XYZ lengths of rows 0/1 yield the horizontal/vertical
     // projection scale because the view rows are orthonormal.
     float projScaleX = length(float3(viewProj[0][0], viewProj[0][1], viewProj[0][2]));
     float projScaleY = length(float3(viewProj[1][0], viewProj[1][1], viewProj[1][2]));
+    if (!isfinite(projScaleX) || !isfinite(projScaleY))
+    {
+        return true;
+    }
 
     float nearestDepth = max(clipCenter.w - radius, 1e-4);
     float2 projRadius = float2(projScaleX, projScaleY) * (radius / nearestDepth);

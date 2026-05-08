@@ -58,3 +58,9 @@ Depth prepass
 Prefer adding new behavior to the narrowest manager that already owns the data
 being mutated. Keep `RendererFrontend` as orchestration code rather than a home
 for feature-specific Vulkan resources.
+
+## BIM GPU Filtering
+
+The BIM renderer uses GPU visibility masks and compacted indirect draw streams
+for large model filtering and LOD. The safety and performance contracts are
+documented in [BIM GPU Visibility And Draw Compaction](bim-gpu-visibility-compaction.md).

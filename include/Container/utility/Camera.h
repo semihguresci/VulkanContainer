@@ -110,7 +110,10 @@ class OrthographicCamera : public BaseCamera {
                                           halfHeight, nearPlane_, farPlane_);
   }
 
-  void setViewHeight(float height) { viewHeight_ = height; }
+  void setViewHeight(float height) {
+    viewHeight_ = std::max(height, 0.001f);
+  }
+  [[nodiscard]] float viewHeight() const noexcept { return viewHeight_; }
   void setNearFar(float nearPlane, float farPlane) {
     nearPlane_ = nearPlane;
     farPlane_ = farPlane;

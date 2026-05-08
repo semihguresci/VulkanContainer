@@ -23,8 +23,12 @@ float BinCenterLogLuminance(uint bin, uint binCount)
 {
     float denominator = max(float(binCount - 1u), 1.0);
     float t = (float(bin) - 0.5) / denominator;
-    return pc.minLogLuminance +
-        t * max(pc.maxLogLuminance - pc.minLogLuminance, 1.0e-4);
+    float minLogLuminance = FiniteOr(pc.minLogLuminance, -12.0);
+    float maxLogLuminance = FiniteOr(pc.maxLogLuminance,
+                                     minLogLuminance + 1.0);
+    maxLogLuminance = max(maxLogLuminance, minLogLuminance + 1.0e-4);
+    return minLogLuminance +
+        t * (maxLogLuminance - minLogLuminance);
 }
 
 [numthreads(1, 1, 1)]
@@ -56,7 +60,7 @@ void computeMain(uint3 dispatchThreadId : SV_DispatchThreadID)
         nonBlackSampleCount += luminanceHistogram[bin];
     }
 
-    float averageLuminance = exp2(pc.minLogLuminance);
+    float averageLuminance = exp2(FiniteOr(pc.minLogLuminance, -12.0));
     if (nonBlackSampleCount > 0u)
     {
         float lowPercentile = clamp(FiniteOr(pc.meteringLowPercentile, 0.50), 0.0, 0.99);
@@ -103,8 +107,12 @@ void computeMain(uint3 dispatchThreadId : SV_DispatchThreadID)
             accumulatedSamples = max(float(nonBlackSampleCount), 1.0);
         }
 
-        averageLuminance = exp2(weightedLog2Luminance / accumulatedSamples);
+        float averageLogLuminance =
+            weightedLog2Luminance / max(accumulatedSamples, 1.0);
+        averageLuminance = exp2(FiniteOr(averageLogLuminance,
+                                         FiniteOr(pc.minLogLuminance, -12.0)));
     }
+    averageLuminance = max(FiniteOr(averageLuminance, 1.0e-6), 1.0e-6);
 
     float targetLuminance = max(FiniteOr(pc.targetLuminance, 0.18), 0.001);
     float targetExposure =

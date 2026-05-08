@@ -82,7 +82,7 @@ Important files:
 - GPU object and material upload layouts: `include/Container/utility/SceneData.h`
 - glTF and MaterialX import bridge: `src/utility/MaterialXIntegration.cpp`
 - Material resolution and texture descriptors: `src/utility/SceneManager.cpp`
-- Object data upload: `src/renderer/SceneController.cpp`
+- Object data upload: `src/renderer/scene/SceneController.cpp`
 - Shared shader object layout: `shaders/object_data_common.slang`
 - Shared shader material layout: `shaders/material_data_common.slang`
 - Shared PBR material helpers: `shaders/pbr_material_common.slang`
@@ -97,7 +97,7 @@ Important files:
 | CPU material factors and texture indices | `include/Container/utility/Material.h` |
 | Host-to-GPU object/material layouts and material flags | `include/Container/utility/SceneData.h` |
 | glTF extension parsing and texture color-space classification | `src/utility/MaterialXIntegration.cpp` |
-| Material resolution into `GpuMaterial` data and object material indices | `src/utility/SceneManager.cpp` and `src/renderer/SceneController.cpp` |
+| Material resolution into `GpuMaterial` data and object material indices | `src/utility/SceneManager.cpp` and `src/renderer/scene/SceneController.cpp` |
 | Shader-side `ObjectData` and `GpuMaterial` mirrors | `shaders/object_data_common.slang` and `shaders/material_data_common.slang` |
 | Texture channel sampling and material parameter helpers | `shaders/pbr_material_common.slang` |
 | GGX BRDF, Fresnel, F0, IBL compensation | `shaders/brdf_common.slang` |

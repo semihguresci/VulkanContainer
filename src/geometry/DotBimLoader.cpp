@@ -8,8 +8,10 @@
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <unordered_set>
@@ -134,6 +136,220 @@ std::string stringOrEmpty(const Json &object, const char *key) {
   return object.at(key).get<std::string>();
 }
 
+std::string scalarStringOrEmpty(const Json &value) {
+  if (value.is_string()) {
+    return value.get<std::string>();
+  }
+  if (value.is_boolean()) {
+    return value.get<bool>() ? "true" : "false";
+  }
+  if (value.is_number_integer()) {
+    return std::to_string(value.get<int64_t>());
+  }
+  if (value.is_number_unsigned()) {
+    return std::to_string(value.get<uint64_t>());
+  }
+  if (value.is_number_float()) {
+    const double number = value.get<double>();
+    if (std::isfinite(number)) {
+      return std::to_string(number);
+    }
+  }
+  if (value.is_object()) {
+    for (const char *key : {"code", "value", "name", "id", "label"}) {
+      if (value.contains(key)) {
+        std::string nested = scalarStringOrEmpty(value.at(key));
+        if (!nested.empty()) {
+          return nested;
+        }
+      }
+    }
+  }
+  return {};
+}
+
+std::string scalarStringOrEmpty(const Json &object, const char *key) {
+  if (!object.is_object() || !object.contains(key)) {
+    return {};
+  }
+  return scalarStringOrEmpty(object.at(key));
+}
+
+std::string firstStringOrEmpty(const Json &object,
+                               std::initializer_list<const char *> keys) {
+  for (const char *key : keys) {
+    std::string value = stringOrEmpty(object, key);
+    if (!value.empty()) {
+      return value;
+    }
+  }
+  return {};
+}
+
+std::string firstScalarStringOrEmpty(
+    const Json &object, std::initializer_list<const char *> keys) {
+  for (const char *key : keys) {
+    std::string value = scalarStringOrEmpty(object, key);
+    if (!value.empty()) {
+      return value;
+    }
+  }
+  return {};
+}
+
+void appendProperty(std::vector<ElementProperty> &properties,
+                    ElementProperty property) {
+  if (property.name.empty() || property.value.empty()) {
+    return;
+  }
+  const auto duplicate = std::ranges::find_if(
+      properties, [&](const ElementProperty &existing) {
+        return existing.set == property.set && existing.name == property.name &&
+               existing.category == property.category;
+      });
+  if (duplicate == properties.end()) {
+    properties.push_back(std::move(property));
+  }
+}
+
+ElementProperty propertyFromJsonObject(const Json &value,
+                                       std::string fallbackName = {}) {
+  ElementProperty property{};
+  if (!value.is_object()) {
+    property.name = std::move(fallbackName);
+    property.value = scalarStringOrEmpty(value);
+    return property;
+  }
+
+  property.set = firstScalarStringOrEmpty(
+      value, {"set", "propertySet", "property_set", "setName", "set_name"});
+  property.name =
+      firstScalarStringOrEmpty(value, {"name", "property", "propertyName",
+                                       "property_name"});
+  if (property.name.empty()) {
+    property.name = std::move(fallbackName);
+  }
+  property.value =
+      firstScalarStringOrEmpty(value, {"value", "displayValue",
+                                       "display_value", "nominalValue",
+                                       "nominal_value"});
+  property.category =
+      firstScalarStringOrEmpty(value, {"category", "type", "propertyType",
+                                       "property_type"});
+  return property;
+}
+
+std::vector<ElementProperty> readElementProperties(const Json &source) {
+  std::vector<ElementProperty> properties;
+  if (!source.is_object() || !source.contains("properties")) {
+    return properties;
+  }
+
+  const Json &value = source.at("properties");
+  if (value.is_array()) {
+    properties.reserve(value.size());
+    for (const Json &item : value) {
+      appendProperty(properties, propertyFromJsonObject(item));
+    }
+  } else if (value.is_object()) {
+    properties.reserve(value.size());
+    for (auto it = value.begin(); it != value.end(); ++it) {
+      appendProperty(properties, propertyFromJsonObject(it.value(), it.key()));
+    }
+  }
+  return properties;
+}
+
+std::optional<double> numberAsDouble(const Json &value) {
+  if (!value.is_number()) {
+    return std::nullopt;
+  }
+  const double parsed = value.get<double>();
+  if (!std::isfinite(parsed)) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+std::optional<glm::dvec3> dvec3FromJson(const Json &value) {
+  if (value.is_array() && value.size() >= 3u) {
+    const auto x = numberAsDouble(value[0]);
+    const auto y = numberAsDouble(value[1]);
+    const auto z = numberAsDouble(value[2]);
+    if (x && y && z) {
+      return glm::dvec3(*x, *y, *z);
+    }
+  }
+  if (value.is_object()) {
+    const auto x = value.contains("x") ? numberAsDouble(value.at("x"))
+                                       : std::optional<double>{};
+    const auto y = value.contains("y") ? numberAsDouble(value.at("y"))
+                                       : std::optional<double>{};
+    const auto z = value.contains("z") ? numberAsDouble(value.at("z"))
+                                       : std::optional<double>{};
+    if (x && y && z) {
+      return glm::dvec3(*x, *y, *z);
+    }
+  }
+  return std::nullopt;
+}
+
+void applyGeoreferenceObject(const Json &value,
+                             ModelGeoreferenceMetadata &metadata) {
+  if (!value.is_object()) {
+    return;
+  }
+  metadata.sourceUpAxis = firstScalarStringOrEmpty(
+      value, {"sourceUpAxis", "source_up_axis", "upAxis", "up_axis"});
+  metadata.hasSourceUpAxis = !metadata.sourceUpAxis.empty();
+  metadata.crsName =
+      firstScalarStringOrEmpty(value, {"crsName", "crs_name", "crs"});
+  metadata.crsAuthority = firstScalarStringOrEmpty(
+      value, {"crsAuthority", "crs_authority", "authority"});
+  metadata.crsCode =
+      firstScalarStringOrEmpty(value, {"crsCode", "crs_code", "epsg"});
+  metadata.mapConversionName =
+      firstScalarStringOrEmpty(value, {"mapConversionName",
+                                       "map_conversion_name",
+                                       "mapConversion"});
+  for (const char *key : {"coordinateOffset", "coordinate_offset",
+                          "siteCoordinateOffset", "projectCoordinateOffset",
+                          "origin", "falseOrigin"}) {
+    if (!value.contains(key)) {
+      continue;
+    }
+    if (auto offset = dvec3FromJson(value.at(key))) {
+      metadata.coordinateOffset = *offset;
+      metadata.hasCoordinateOffset = true;
+      metadata.coordinateOffsetSource = key;
+      break;
+    }
+  }
+}
+
+ModelGeoreferenceMetadata readGeoreferenceMetadata(const Json &root) {
+  ModelGeoreferenceMetadata metadata{};
+  if (!root.is_object()) {
+    return metadata;
+  }
+  for (const char *key : {"georeference", "georeferencing",
+                          "geoReference"}) {
+    if (root.contains(key)) {
+      applyGeoreferenceObject(root.at(key), metadata);
+    }
+  }
+  if (root.contains("info") && root.at("info").is_object()) {
+    const Json &info = root.at("info");
+    for (const char *key : {"georeference", "georeferencing",
+                            "geoReference"}) {
+      if (info.contains(key)) {
+        applyGeoreferenceObject(info.at(key), metadata);
+      }
+    }
+  }
+  return metadata;
+}
+
 glm::vec3 safeNormal(const glm::vec3 &a, const glm::vec3 &b,
                      const glm::vec3 &c) {
   const glm::vec3 normal = glm::cross(b - a, c - a);
@@ -255,6 +471,16 @@ glm::mat4 makeTransform(const Json &element, float importScale) {
          glm::mat4_cast(rotation);
 }
 
+ModelUnitMetadata makeUnitMetadata(float importScale) {
+  const float sanitizedImportScale = sanitizeImportScale(importScale);
+  ModelUnitMetadata metadata{};
+  metadata.hasImportScale = true;
+  metadata.importScale = sanitizedImportScale;
+  metadata.hasEffectiveImportScale = true;
+  metadata.effectiveImportScale = sanitizedImportScale;
+  return metadata;
+}
+
 } // namespace
 
 Model LoadFromJson(std::string_view jsonText, float importScale) {
@@ -263,6 +489,8 @@ Model LoadFromJson(std::string_view jsonText, float importScale) {
   const Json &elements = requiredArray(root, "elements", "file");
 
   Model model{};
+  model.unitMetadata = makeUnitMetadata(importScale);
+  model.georeferenceMetadata = readGeoreferenceMetadata(root);
   model.meshRanges.reserve(meshes.size());
   std::unordered_set<uint32_t> seenMeshIds;
 
@@ -314,6 +542,38 @@ Model LoadFromJson(std::string_view jsonText, float importScale) {
     element.color = readColor(source);
     element.guid = stringOrEmpty(source, "guid");
     element.type = stringOrEmpty(source, "type");
+    element.displayName =
+        firstStringOrEmpty(source, {"displayName", "display_name", "name"});
+    element.objectType =
+        firstStringOrEmpty(source, {"objectType", "object_type"});
+    element.storeyName =
+        firstStringOrEmpty(source, {"storeyName", "storey_name"});
+    element.storeyId =
+        firstStringOrEmpty(source, {"storeyId", "storey_id", "storeyGuid",
+                                    "storey_guid"});
+    element.materialName =
+        firstStringOrEmpty(source, {"materialName", "material_name"});
+    element.materialCategory =
+        firstStringOrEmpty(source, {"materialCategory", "material_category"});
+    element.discipline =
+        firstScalarStringOrEmpty(source, {"discipline", "ifcDiscipline",
+                                          "ifc_discipline"});
+    element.phase = firstScalarStringOrEmpty(
+        source, {"phase", "phaseName", "phase_name", "constructionPhase",
+                 "construction_phase"});
+    element.fireRating =
+        firstScalarStringOrEmpty(source, {"fireRating", "fire_rating",
+                                          "FireRating"});
+    element.loadBearing =
+        firstScalarStringOrEmpty(source, {"loadBearing", "load_bearing",
+                                          "LoadBearing", "isLoadBearing",
+                                          "is_load_bearing"});
+    element.status =
+        firstScalarStringOrEmpty(source, {"status", "Status", "elementStatus",
+                                          "element_status"});
+    element.sourceId =
+        firstStringOrEmpty(source, {"sourceId", "source_id"});
+    element.properties = readElementProperties(source);
     model.elements.push_back(std::move(element));
   }
 

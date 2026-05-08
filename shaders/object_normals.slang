@@ -12,6 +12,7 @@
 [[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
 [[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
 
+#include "scene_clip_common.slang"
 #include "alpha_mask_common.slang"
 #include "pbr_material_common.slang"
 
@@ -39,6 +40,7 @@ struct VSOutput
     [[vk::location(6)]] uint opacityTextureIndex;
     [[vk::location(7)]] float opacityFactor;
     [[vk::location(8)]] uint objectIndex;
+    [[vk::location(9)]] float3 worldPos;
 };
 
 [shader("vertex")]
@@ -65,6 +67,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.opacityTextureIndex = material.opacityTextureIndex;
     output.opacityFactor = material.opacityFactor;
     output.objectIndex = objectIndex;
+    output.worldPos = worldPos.xyz;
     return output;
 }
 
@@ -72,6 +75,10 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 float4 fragMain(VSOutput input) : SV_Target0
 {
     if ((input.flags & 0x2u) != 0u)
+    {
+        discard;
+    }
+    if (SceneClipPlanesClip(input.worldPos, pc.sectionPlaneEnabled, pc.sectionPlane))
     {
         discard;
     }

@@ -5,6 +5,7 @@
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
 [[vk::binding(1, 0)]] StructuredBuffer<ObjectBuffer> uObjects;
 
+#include "scene_clip_common.slang"
 #include "object_index_common.slang"
 
 [[vk::push_constant]]
@@ -19,7 +20,8 @@ struct VSOutput
 {
     float4 pos : SV_Position;
     float pointSize : SV_PointSize;
-    float3 color : COLOR0;
+    [[vk::location(0)]] float3 color;
+    [[vk::location(1)]] float3 worldPos;
 };
 
 float3 hashColor(uint index)
@@ -44,11 +46,17 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     output.pos = mul(uCamera.viewProj, worldPos);
     output.pointSize = 4.0;
     output.color = hashColor(objectIndex);
+    output.worldPos = worldPos.xyz;
     return output;
 }
 
 [shader("fragment")]
 float4 fragMain(VSOutput input) : SV_Target0
 {
+    if (SceneClipPlanesClip(input.worldPos, pc.sectionPlaneEnabled, pc.sectionPlane))
+    {
+        discard;
+    }
+
     return float4(input.color, 1.0);
 }

@@ -22,32 +22,76 @@ float GaussianWeight(int x, int y)
     return exp(-d2 / (2.0 * sigma * sigma));
 }
 
+bool ValidReverseZDepth(float depth)
+{
+    return isfinite(depth) && depth > 0.0 && depth <= 1.0;
+}
+
 float LinearizeReverseZDepth(float depth)
 {
-    float n = max(pc.cameraNear, 1e-4);
-    float f = max(pc.cameraFar, n + 1e-3);
+    float n = max(isfinite(pc.cameraNear) ? pc.cameraNear : 0.01, 1e-4);
+    float f = max(isfinite(pc.cameraFar) ? pc.cameraFar : n + 1e-3,
+                  n + 1e-3);
     return (n * f) / (saturate(depth) * (f - n) + n);
 }
 
 float SanitizedFarPlane()
 {
-    float n = max(pc.cameraNear, 1e-4);
-    return max(pc.cameraFar, n + 1e-3);
+    float n = max(isfinite(pc.cameraNear) ? pc.cameraNear : 0.01, 1e-4);
+    return max(isfinite(pc.cameraFar) ? pc.cameraFar : n + 1e-3,
+               n + 1e-3);
+}
+
+uint2 ClampPixel(uint2 pixel, uint2 dimensions)
+{
+    return min(pixel, dimensions - uint2(1u, 1u));
+}
+
+uint2 DepthPixelForAoPixel(uint2 aoPixel, uint2 aoDimensions,
+                           uint2 depthDimensions)
+{
+    float2 depthCoord =
+        (float2(aoPixel) + 0.5.xx) *
+        (float2(depthDimensions) / float2(aoDimensions));
+    return ClampPixel(uint2(depthCoord), depthDimensions);
+}
+
+float LoadAo(uint2 pixel)
+{
+    float ao = inAO.Load(int3(int(pixel.x), int(pixel.y), 0));
+    return saturate(isfinite(ao) ? ao : 1.0);
+}
+
+float LoadDepthForAoPixel(uint2 aoPixel, uint2 aoDimensions,
+                          uint2 depthDimensions)
+{
+    uint2 depthPixel =
+        DepthPixelForAoPixel(aoPixel, aoDimensions, depthDimensions);
+    return gDepthTexture.Load(int3(int(depthPixel.x), int(depthPixel.y), 0));
 }
 
 [shader("compute")]
 [numthreads(8, 8, 1)]
 void computeMain(uint3 dtid : SV_DispatchThreadID)
 {
-    if (dtid.x >= pc.width || dtid.y >= pc.height) return;
+    if (pc.width == 0u || pc.height == 0u ||
+        dtid.x >= pc.width || dtid.y >= pc.height)
+    {
+        return;
+    }
 
-    float2 texelSize = 1.0 / float2(pc.width, pc.height);
-    float2 centerUV = (float2(dtid.xy) + 0.5) * texelSize;
+    uint depthWidth;
+    uint depthHeight;
+    gDepthTexture.GetDimensions(depthWidth, depthHeight);
+    uint2 aoDimensions = uint2(pc.width, pc.height);
+    uint2 depthDimensions =
+        uint2(max(depthWidth, 1u), max(depthHeight, 1u));
 
-    float centerDepth = gDepthTexture.SampleLevel(depthSampler, centerUV, 0.0);
-    float centerAO = inAO.SampleLevel(aoSampler, centerUV, 0.0);
+    uint2 centerPixel = dtid.xy;
+    float centerDepth =
+        LoadDepthForAoPixel(centerPixel, aoDimensions, depthDimensions);
 
-    if (centerDepth == 0.0)
+    if (!ValidReverseZDepth(centerDepth))
     {
         outAO[dtid.xy] = 1.0;
         return;
@@ -62,16 +106,25 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
     {
         for (int x = -KERNEL_RADIUS; x <= KERNEL_RADIUS; ++x)
         {
-            float2 sampleUV = centerUV + float2(x, y) * texelSize;
-            sampleUV = clamp(sampleUV, 0.0, 1.0);
+            int2 samplePixelSigned =
+                clamp(int2(dtid.xy) + int2(x, y),
+                      int2(0, 0),
+                      int2(int(pc.width) - 1, int(pc.height) - 1));
+            uint2 samplePixel = uint2(samplePixelSigned);
 
-            float sampleDepth = gDepthTexture.SampleLevel(depthSampler, sampleUV, 0.0);
-            float sampleAO = inAO.SampleLevel(aoSampler, sampleUV, 0.0);
+            float sampleDepth =
+                LoadDepthForAoPixel(samplePixel, aoDimensions, depthDimensions);
+            float sampleAO = LoadAo(samplePixel);
 
             float sampleLinearDepth =
-                sampleDepth > 0.0 ? LinearizeReverseZDepth(sampleDepth) : SanitizedFarPlane();
+                ValidReverseZDepth(sampleDepth) ?
+                    LinearizeReverseZDepth(sampleDepth) :
+                    SanitizedFarPlane();
             float depthDiff = abs(centerLinearDepth - sampleLinearDepth);
-            float depthLimit = max(pc.depthThreshold, centerLinearDepth * 0.015);
+            float depthThreshold =
+                max(isfinite(pc.depthThreshold) ? pc.depthThreshold : 0.0,
+                    0.0);
+            float depthLimit = max(depthThreshold, centerLinearDepth * 0.015);
             float depthWeight = depthDiff < depthLimit ? 1.0 : 0.0;
 
             float spatialWeight = GaussianWeight(x, y);

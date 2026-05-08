@@ -15,6 +15,7 @@
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -33,6 +34,8 @@
 #include <tinyusdz.hh>
 #include <tydra/render-data-converter.hh>
 #include <tydra/render-data.hh>
+#include <tydra/scene-access.hh>
+#include <tydra/shader-network.hh>
 #endif
 
 namespace container::geometry::usd {
@@ -46,10 +49,17 @@ struct Token {
   double number{0.0};
 };
 
+struct StageUnitMetadata {
+  bool authored{false};
+  float metersPerUnit{1.0f};
+};
+
 struct MeshData {
   std::vector<glm::vec3> points{};
   std::vector<uint32_t> faceVertexCounts{};
   std::vector<uint32_t> faceVertexIndices{};
+  std::vector<uint32_t> curveVertexCounts{};
+  std::vector<float> widths{};
   std::vector<glm::vec3> normals{};
   std::vector<glm::vec2> texcoords0{};
   std::vector<glm::vec2> texcoords1{};
@@ -60,6 +70,19 @@ struct Node {
   std::string name{};
   std::string path{};
   std::string typeName{};
+  std::string displayName{};
+  std::string guid{};
+  std::string semanticType{};
+  std::string objectType{};
+  std::string storeyName{};
+  std::string storeyId{};
+  std::string materialName{};
+  std::string materialCategory{};
+  std::string discipline{};
+  std::string phase{};
+  std::string fireRating{};
+  std::string loadBearing{};
+  std::string status{};
   int parent{-1};
   std::vector<int> children{};
   MeshData mesh{};
@@ -179,6 +202,168 @@ bool startsWith(std::string_view value, std::string_view prefix) {
          value.substr(0, prefix.size()) == prefix;
 }
 
+std::string metadataLookupKey(std::string_view name) {
+  if (const size_t separator = name.find_last_of(':');
+      separator != std::string_view::npos) {
+    name = name.substr(separator + 1u);
+  }
+
+  std::string key;
+  key.reserve(name.size());
+  for (char c : name) {
+    if (std::isalnum(static_cast<unsigned char>(c))) {
+      key.push_back(static_cast<char>(
+          std::tolower(static_cast<unsigned char>(c))));
+    }
+  }
+  return key;
+}
+
+bool isGuidMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "guid" || key == "globalid" || key == "ifcguid" ||
+         key == "elementguid" || key == "uniqueid";
+}
+
+bool isTypeMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "type" || key == "ifctype" || key == "ifcclass" ||
+         key == "class" || key == "category";
+}
+
+bool isDisplayNameMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "displayname" || key == "name" || key == "productname";
+}
+
+bool isObjectTypeMetadataName(std::string_view name) {
+  return metadataLookupKey(name) == "objecttype";
+}
+
+bool isStoreyNameMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "storeyname" || key == "buildingstoreyname" ||
+         key == "levelname";
+}
+
+bool isStoreyIdMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "storeyid" || key == "storeyguid" ||
+         key == "buildingstoreyid" || key == "buildingstoreyguid" ||
+         key == "levelid";
+}
+
+bool isMaterialNameMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "materialname" || key == "ifcmaterialname";
+}
+
+bool isMaterialCategoryMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "materialcategory" || key == "ifcmaterialcategory";
+}
+
+bool isDisciplineMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "discipline" || key == "ifcdiscipline";
+}
+
+bool isPhaseMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "phase" || key == "phasename" ||
+         key == "constructionphase" || key == "ifcphase";
+}
+
+bool isFireRatingMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "firerating" || key == "fireclassification";
+}
+
+bool isLoadBearingMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "loadbearing" || key == "isloadbearing";
+}
+
+bool isStatusMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "status" || key == "elementstatus";
+}
+
+void applyCommonMetadataValue(std::string_view name, std::string value,
+                              std::string &guid, std::string &semanticType,
+                              std::string &displayName,
+                              std::string *objectType = nullptr,
+                              std::string *storeyName = nullptr,
+                              std::string *storeyId = nullptr,
+                              std::string *materialName = nullptr,
+                              std::string *materialCategory = nullptr,
+                              std::string *discipline = nullptr,
+                              std::string *phase = nullptr,
+                              std::string *fireRating = nullptr,
+                              std::string *loadBearing = nullptr,
+                              std::string *status = nullptr) {
+  if (value.empty()) {
+    return;
+  }
+  if (isGuidMetadataName(name) && guid.empty()) {
+    guid = std::move(value);
+  } else if (objectType != nullptr && isObjectTypeMetadataName(name) &&
+             objectType->empty()) {
+    *objectType = std::move(value);
+  } else if (isTypeMetadataName(name) && semanticType.empty()) {
+    semanticType = std::move(value);
+  } else if (isDisplayNameMetadataName(name) && displayName.empty()) {
+    displayName = std::move(value);
+  } else if (storeyName != nullptr && isStoreyNameMetadataName(name) &&
+             storeyName->empty()) {
+    *storeyName = std::move(value);
+  } else if (storeyId != nullptr && isStoreyIdMetadataName(name) &&
+             storeyId->empty()) {
+    *storeyId = std::move(value);
+  } else if (materialName != nullptr && isMaterialNameMetadataName(name) &&
+             materialName->empty()) {
+    *materialName = std::move(value);
+  } else if (materialCategory != nullptr &&
+             isMaterialCategoryMetadataName(name) &&
+             materialCategory->empty()) {
+    *materialCategory = std::move(value);
+  } else if (discipline != nullptr && isDisciplineMetadataName(name) &&
+             discipline->empty()) {
+    *discipline = std::move(value);
+  } else if (phase != nullptr && isPhaseMetadataName(name) &&
+             phase->empty()) {
+    *phase = std::move(value);
+  } else if (fireRating != nullptr && isFireRatingMetadataName(name) &&
+             fireRating->empty()) {
+    *fireRating = std::move(value);
+  } else if (loadBearing != nullptr && isLoadBearingMetadataName(name) &&
+             loadBearing->empty()) {
+    *loadBearing = std::move(value);
+  } else if (status != nullptr && isStatusMetadataName(name) &&
+             status->empty()) {
+    *status = std::move(value);
+  }
+}
+
+std::string usdFallbackType(std::string_view typeName,
+                            std::string_view fallback = "UsdPrim") {
+  if (typeName.empty()) {
+    return std::string(fallback);
+  }
+  if (startsWith(typeName, "Usd")) {
+    return std::string(typeName);
+  }
+  if (typeName == "Mesh" || typeName == "Xform" || typeName == "Scope" ||
+      typeName == "Cube" || typeName == "Sphere" || typeName == "Cone" ||
+      typeName == "Cylinder" || typeName == "Capsule" ||
+      typeName == "Plane" || typeName == "BasisCurves" ||
+      typeName == "NurbsCurves" || typeName == "PointInstancer" ||
+      typeName == "Points") {
+    return "UsdGeom" + std::string(typeName);
+  }
+  return "Usd" + std::string(typeName);
+}
+
 bool isPrimKeyword(const Token &token) {
   return token.kind == TokenKind::Identifier &&
          (token.text == "def" || token.text == "over" || token.text == "class");
@@ -194,6 +379,61 @@ float sanitizeImportScale(float scale) {
     return 1.0f;
   }
   return std::clamp(scale, 0.001f, 1000.0f);
+}
+
+float sanitizeUsdMetersPerUnit(double metersPerUnit) {
+  if (!std::isfinite(metersPerUnit) || metersPerUnit <= 0.0) {
+    return 1.0f;
+  }
+  return static_cast<float>(std::clamp(metersPerUnit, 1.0e-9, 1.0e9));
+}
+
+bool approximatelyEqual(float lhs, float rhs) {
+  const float tolerance =
+      std::max(1.0e-9f, std::max(std::abs(lhs), std::abs(rhs)) * 1.0e-5f);
+  return std::abs(lhs - rhs) <= tolerance;
+}
+
+std::string sourceUnitLabelFromMetersPerUnit(float metersPerUnit) {
+  struct KnownUnit {
+    float metersPerUnit;
+    const char *label;
+  };
+  static constexpr KnownUnit kKnownUnits[] = {
+      {0.001f, "millimeters"},
+      {0.01f, "centimeters"},
+      {0.1f, "decimeters"},
+      {1.0f, "meters"},
+      {1000.0f, "kilometers"},
+      {0.0254f, "inches"},
+      {0.3048f, "feet"},
+  };
+  for (const KnownUnit &unit : kKnownUnits) {
+    if (approximatelyEqual(metersPerUnit, unit.metersPerUnit)) {
+      return unit.label;
+    }
+  }
+  return "USD units";
+}
+
+dotbim::ModelUnitMetadata makeUnitMetadata(StageUnitMetadata stageUnits,
+                                           float importScale) {
+  const float sanitizedImportScale = sanitizeImportScale(importScale);
+  dotbim::ModelUnitMetadata metadata{};
+  if (stageUnits.authored) {
+    metadata.hasSourceUnits = true;
+    metadata.sourceUnits =
+        sourceUnitLabelFromMetersPerUnit(stageUnits.metersPerUnit);
+    metadata.hasMetersPerUnit = true;
+    metadata.metersPerUnit = stageUnits.metersPerUnit;
+  }
+  metadata.hasImportScale = true;
+  metadata.importScale = sanitizedImportScale;
+  metadata.hasEffectiveImportScale = true;
+  metadata.effectiveImportScale =
+      sanitizedImportScale *
+      (stageUnits.authored ? stageUnits.metersPerUnit : 1.0f);
+  return metadata;
 }
 
 std::string stageUpAxisFromText(std::string_view usdText) {
@@ -230,6 +470,53 @@ std::string stageUpAxisFromText(std::string_view usdText) {
     }
   }
   return "Y";
+}
+
+void applySourceUpAxis(dotbim::Model& model, std::string upAxis) {
+  if (upAxis.empty()) {
+    upAxis = "Y";
+  }
+  model.georeferenceMetadata.hasSourceUpAxis = true;
+  model.georeferenceMetadata.sourceUpAxis = std::move(upAxis);
+}
+
+StageUnitMetadata stageMetersPerUnitFromText(std::string_view usdText) {
+  const std::vector<Token> tokens = tokenize(usdText);
+  int braceDepth = 0;
+  for (size_t i = 0; i < tokens.size(); ++i) {
+    const Token &token = tokens[i];
+    if (token.kind == TokenKind::End) {
+      break;
+    }
+    if (tokenIsSymbol(token, '{')) {
+      ++braceDepth;
+      continue;
+    }
+    if (tokenIsSymbol(token, '}')) {
+      if (braceDepth > 0) {
+        --braceDepth;
+      }
+      continue;
+    }
+    if (braceDepth != 0) {
+      continue;
+    }
+    if (isPrimKeyword(token)) {
+      break;
+    }
+    if (token.kind == TokenKind::Identifier &&
+        token.text == "metersPerUnit" && i + 2u < tokens.size() &&
+        tokenIsSymbol(tokens[i + 1u], '=')) {
+      const Token &value = tokens[i + 2u];
+      if (value.kind == TokenKind::Number) {
+        return StageUnitMetadata{
+            .authored = true,
+            .metersPerUnit = sanitizeUsdMetersPerUnit(value.number),
+        };
+      }
+    }
+  }
+  return {};
 }
 
 glm::vec3 safeNormal(const glm::vec3 &a, const glm::vec3 &b,
@@ -407,6 +694,17 @@ private:
     return values;
   }
 
+  std::optional<std::string> collectFirstStringFromValue() {
+    std::optional<std::string> result;
+    collectValue([&](const Token &token) {
+      if (!result && (token.kind == TokenKind::String ||
+                      token.kind == TokenKind::Identifier)) {
+        result = token.text;
+      }
+    });
+    return result;
+  }
+
   template <typename Visitor> void collectValue(Visitor &&visitor) {
     if (isEnd()) {
       return;
@@ -417,6 +715,10 @@ private:
     }
     if (peekSymbol('[')) {
       collectBalanced('[', ']', visitor);
+      return;
+    }
+    if (peekSymbol('{')) {
+      collectBalanced('{', '}', visitor);
       return;
     }
     visitor(peek());
@@ -487,6 +789,22 @@ private:
     for (size_t i = 0; i < values.size(); i += 2u) {
       result.emplace_back(static_cast<float>(values[i]),
                           static_cast<float>(values[i + 1u]));
+    }
+    return result;
+  }
+
+  static std::vector<float>
+  floatArrayFromNumbers(const std::vector<double> &values,
+                        std::string_view attributeName) {
+    std::vector<float> result;
+    result.reserve(values.size());
+    for (double value : values) {
+      if (!std::isfinite(value)) {
+        throw std::runtime_error("USD attribute '" +
+                                 std::string(attributeName) +
+                                 "' must contain finite float values");
+      }
+      result.push_back(static_cast<float>(value));
     }
     return result;
   }
@@ -668,13 +986,61 @@ private:
 
     while (!isEnd() && !peekSymbol('{')) {
       if (peekSymbol('(')) {
-        skipBalanced('(', ')');
+        parsePrimMetadata(nodes_[static_cast<size_t>(nodeIndex)]);
       } else {
         ++position_;
       }
     }
     if (matchSymbol('{')) {
       parseBlock(nodeIndex);
+    }
+  }
+
+  void parsePrimMetadata(Node &node) {
+    if (!matchSymbol('(')) {
+      return;
+    }
+
+    int depth = 1;
+    std::optional<std::string> key;
+    while (!isEnd() && depth > 0) {
+      if (peekSymbol('(') || peekSymbol('[') || peekSymbol('{')) {
+        ++depth;
+        ++position_;
+        key.reset();
+        continue;
+      }
+      if (peekSymbol(')') || peekSymbol(']') || peekSymbol('}')) {
+        --depth;
+        ++position_;
+        key.reset();
+        continue;
+      }
+
+      if (peek().kind == TokenKind::Identifier) {
+        key = peek().text;
+        ++position_;
+        continue;
+      }
+
+      if (peekSymbol('=') && key) {
+        const std::string name = *key;
+        ++position_;
+        if (peek().kind == TokenKind::String ||
+            peek().kind == TokenKind::Identifier) {
+          applyCommonMetadataValue(name, peek().text, node.guid,
+                                   node.semanticType, node.displayName,
+                                   &node.objectType, &node.storeyName,
+                                   &node.storeyId, &node.materialName,
+                                   &node.materialCategory, &node.discipline,
+                                   &node.phase, &node.fireRating,
+                                   &node.loadBearing, &node.status);
+        }
+        key.reset();
+        continue;
+      }
+
+      ++position_;
     }
   }
 
@@ -703,11 +1069,16 @@ private:
     if (name == "faceVertexCounts") {
       node.mesh.faceVertexCounts =
           indexArrayFromNumbers(collectNumbersFromValue(), name);
+    } else if (name == "curveVertexCounts") {
+      node.mesh.curveVertexCounts =
+          indexArrayFromNumbers(collectNumbersFromValue(), name);
     } else if (name == "faceVertexIndices") {
       node.mesh.faceVertexIndices =
           indexArrayFromNumbers(collectNumbersFromValue(), name);
     } else if (name == "points") {
       node.mesh.points = vec3ArrayFromNumbers(collectNumbersFromValue(), name);
+    } else if (name == "widths") {
+      node.mesh.widths = floatArrayFromNumbers(collectNumbersFromValue(), name);
     } else if (name == "normals" || name == "primvars:normals") {
       node.mesh.normals = vec3ArrayFromNumbers(collectNumbersFromValue(), name);
     } else if (name == "primvars:st" || name == "st" || name == "texcoords") {
@@ -758,6 +1129,25 @@ private:
         node.color.a =
             std::clamp(static_cast<float>(values.front()), 0.0f, 1.0f);
         node.hasOpacity = true;
+      }
+    } else if (isGuidMetadataName(name) || isTypeMetadataName(name) ||
+               isDisplayNameMetadataName(name) ||
+               isObjectTypeMetadataName(name) ||
+               isStoreyNameMetadataName(name) ||
+               isStoreyIdMetadataName(name) ||
+               isMaterialNameMetadataName(name) ||
+               isMaterialCategoryMetadataName(name) ||
+               isDisciplineMetadataName(name) || isPhaseMetadataName(name) ||
+               isFireRatingMetadataName(name) ||
+               isLoadBearingMetadataName(name) || isStatusMetadataName(name)) {
+      if (const auto value = collectFirstStringFromValue()) {
+        applyCommonMetadataValue(name, *value, node.guid, node.semanticType,
+                                 node.displayName, &node.objectType,
+                                 &node.storeyName, &node.storeyId,
+                                 &node.materialName, &node.materialCategory,
+                                 &node.discipline, &node.phase,
+                                 &node.fireRating, &node.loadBearing,
+                                 &node.status);
       }
     } else {
       skipValue();
@@ -849,6 +1239,47 @@ bool inheritedDoubleSided(int nodeIndex, const std::vector<Node> &nodes) {
   return false;
 }
 
+std::optional<std::string> inheritedGuid(int nodeIndex,
+                                         const std::vector<Node> &nodes) {
+  for (int cursor = nodeIndex; cursor >= 0;) {
+    const Node &node = nodes[static_cast<size_t>(cursor)];
+    if (!node.guid.empty()) {
+      return node.guid;
+    }
+    cursor = node.parent;
+  }
+  return std::nullopt;
+}
+
+std::string inheritedSemanticType(int nodeIndex,
+                                  const std::vector<Node> &nodes) {
+  for (int cursor = nodeIndex; cursor >= 0;) {
+    const Node &node = nodes[static_cast<size_t>(cursor)];
+    if (!node.semanticType.empty()) {
+      return node.semanticType;
+    }
+    cursor = node.parent;
+  }
+  if (nodeIndex >= 0 && static_cast<size_t>(nodeIndex) < nodes.size()) {
+    return usdFallbackType(nodes[static_cast<size_t>(nodeIndex)].typeName);
+  }
+  return "UsdPrim";
+}
+
+std::optional<std::string> inheritedNodeString(
+    int nodeIndex, const std::vector<Node> &nodes,
+    const std::string Node::*member) {
+  for (int cursor = nodeIndex; cursor >= 0;) {
+    const Node &node = nodes[static_cast<size_t>(cursor)];
+    const std::string &value = node.*member;
+    if (!value.empty()) {
+      return value;
+    }
+    cursor = node.parent;
+  }
+  return std::nullopt;
+}
+
 glm::vec3 normalizeOrFallback(const glm::vec3 &value,
                               const glm::vec3 &fallback) {
   const float len2 = glm::dot(value, value);
@@ -893,6 +1324,9 @@ std::optional<glm::vec2> attributeVec2(const std::vector<glm::vec2> &values,
   }
   return std::nullopt;
 }
+
+void appendMeshletClustersForRange(dotbim::Model &model,
+                                   const dotbim::MeshRange &range);
 
 void appendMesh(dotbim::Model &model, const MeshData &mesh, uint32_t meshId,
                 std::string_view path, const glm::vec4 &color) {
@@ -943,7 +1377,357 @@ void appendMesh(dotbim::Model &model, const MeshData &mesh, uint32_t meshId,
       static_cast<uint32_t>(model.indices.size()) - range.firstIndex;
   if (range.indexCount > 0u) {
     model.meshRanges.push_back(range);
+    appendMeshletClustersForRange(model, range);
   }
+}
+
+float defaultPointPlaceholderRadius(const MeshData &mesh) {
+  const auto [center, radius] = computeBounds(mesh.points);
+  (void)center;
+  if (std::isfinite(radius) && radius > 0.0f) {
+    return std::clamp(radius * 0.025f, 0.02f, 1.0f);
+  }
+  return 0.05f;
+}
+
+float pointPlaceholderRadius(const MeshData &mesh, size_t pointIndex,
+                             float fallback) {
+  float width = 0.0f;
+  if (pointIndex < mesh.widths.size()) {
+    width = mesh.widths[pointIndex];
+  } else if (mesh.widths.size() == 1u) {
+    width = mesh.widths.front();
+  }
+  if (std::isfinite(width) && width > 0.0f) {
+    return width * 0.5f;
+  }
+  return fallback;
+}
+
+void appendPlaceholderTriangle(dotbim::Model &model,
+                               std::vector<glm::vec3> &rangePoints,
+                               const glm::vec3 &a, const glm::vec3 &b,
+                               const glm::vec3 &c,
+                               const glm::vec3 &vertexColor) {
+  const glm::vec2 texCoord(0.0f);
+  const glm::vec3 normal = safeNormal(a, b, c);
+  const glm::vec4 tangent(safeTangent(a, b, normal), 1.0f);
+  const uint32_t base = static_cast<uint32_t>(model.vertices.size());
+  model.vertices.push_back(
+      makeVertex(a, normal, tangent, vertexColor, texCoord, texCoord));
+  model.vertices.push_back(
+      makeVertex(b, normal, tangent, vertexColor, texCoord, texCoord));
+  model.vertices.push_back(
+      makeVertex(c, normal, tangent, vertexColor, texCoord, texCoord));
+  model.indices.insert(model.indices.end(), {base, base + 1u, base + 2u});
+  rangePoints.insert(rangePoints.end(), {a, b, c});
+}
+
+glm::vec3 fallbackPlaceholderColor(const glm::vec4 &color) {
+  return glm::clamp(glm::vec3(color.r, color.g, color.b), glm::vec3(0.0f),
+                    glm::vec3(1.0f));
+}
+
+glm::vec3 placeholderPointColor(const MeshData &mesh, size_t pointIndex,
+                                const glm::vec4 &fallbackColor) {
+  if (pointIndex < mesh.colors.size()) {
+    return glm::clamp(mesh.colors[pointIndex], glm::vec3(0.0f),
+                      glm::vec3(1.0f));
+  }
+  if (mesh.colors.size() == 1u) {
+    return glm::clamp(mesh.colors.front(), glm::vec3(0.0f),
+                      glm::vec3(1.0f));
+  }
+  return fallbackPlaceholderColor(fallbackColor);
+}
+
+glm::vec3 placeholderCurveSegmentColor(const MeshData &mesh, size_t first,
+                                       size_t second,
+                                       const glm::vec4 &fallbackColor) {
+  const glm::vec3 firstColor =
+      placeholderPointColor(mesh, first, fallbackColor);
+  const glm::vec3 secondColor =
+      placeholderPointColor(mesh, second, fallbackColor);
+  return glm::clamp((firstColor + secondColor) * 0.5f, glm::vec3(0.0f),
+                    glm::vec3(1.0f));
+}
+
+void appendNativePointRange(dotbim::Model &model, const MeshData &mesh,
+                            uint32_t meshId, const glm::vec4 &color) {
+  if (mesh.points.empty()) {
+    return;
+  }
+
+  dotbim::NativePrimitiveRange range{};
+  range.meshId = meshId;
+  range.firstIndex = static_cast<uint32_t>(model.indices.size());
+  const auto [center, radius] = computeBounds(mesh.points);
+  range.boundsCenter = center;
+  range.boundsRadius = radius;
+  const glm::vec2 texCoord(0.0f);
+  for (size_t pointIndex = 0; pointIndex < mesh.points.size(); ++pointIndex) {
+    const uint32_t vertexIndex = static_cast<uint32_t>(model.vertices.size());
+    model.vertices.push_back(makeVertex(
+        mesh.points[pointIndex], glm::vec3(0.0f, 1.0f, 0.0f),
+        glm::vec4(1.0f, 0.0f, 0.0f, 1.0f),
+        placeholderPointColor(mesh, pointIndex, color), texCoord, texCoord));
+    model.indices.push_back(vertexIndex);
+  }
+  range.indexCount =
+      static_cast<uint32_t>(model.indices.size()) - range.firstIndex;
+  if (range.indexCount > 0u) {
+    model.nativePointRanges.push_back(range);
+  }
+}
+
+void appendNativeCurveRange(dotbim::Model &model, const MeshData &mesh,
+                            const std::vector<uint32_t> &curveVertexCounts,
+                            uint32_t meshId, const glm::vec4 &color,
+                            std::string_view path) {
+  if (mesh.points.size() < 2u) {
+    return;
+  }
+
+  dotbim::NativePrimitiveRange range{};
+  range.meshId = meshId;
+  range.firstIndex = static_cast<uint32_t>(model.indices.size());
+  const auto [center, radius] = computeBounds(mesh.points);
+  range.boundsCenter = center;
+  range.boundsRadius = radius;
+  const glm::vec2 texCoord(0.0f);
+  size_t cursor = 0;
+  for (uint32_t count : curveVertexCounts) {
+    if (cursor + static_cast<size_t>(count) > mesh.points.size()) {
+      throw std::runtime_error("USD curve '" + std::string(path) +
+                               "' has inconsistent curve vertex counts");
+    }
+    for (uint32_t i = 0; i + 1u < count; ++i) {
+      const size_t first = cursor + i;
+      const size_t second = first + 1u;
+      const glm::vec3 segment = mesh.points[second] - mesh.points[first];
+      if (glm::dot(segment, segment) <= 1.0e-12f) {
+        continue;
+      }
+      const uint32_t base = static_cast<uint32_t>(model.vertices.size());
+      const glm::vec3 vertexColor =
+          placeholderCurveSegmentColor(mesh, first, second, color);
+      model.vertices.push_back(makeVertex(
+          mesh.points[first], glm::vec3(0.0f, 1.0f, 0.0f),
+          glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), vertexColor, texCoord,
+          texCoord));
+      model.vertices.push_back(makeVertex(
+          mesh.points[second], glm::vec3(0.0f, 1.0f, 0.0f),
+          glm::vec4(1.0f, 0.0f, 0.0f, 1.0f), vertexColor, texCoord,
+          texCoord));
+      model.indices.insert(model.indices.end(), {base, base + 1u});
+    }
+    cursor += count;
+  }
+  if (cursor != mesh.points.size()) {
+    throw std::runtime_error("USD curve '" + std::string(path) +
+                             "' has unused points");
+  }
+  range.indexCount =
+      static_cast<uint32_t>(model.indices.size()) - range.firstIndex;
+  if (range.indexCount > 0u) {
+    model.nativeCurveRanges.push_back(range);
+  }
+}
+
+void appendMeshletClustersForRange(dotbim::Model &model,
+                                   const dotbim::MeshRange &range) {
+  constexpr uint32_t kMeshletTriangleBudget = 64u;
+  constexpr uint32_t kMeshletIndexBudget = kMeshletTriangleBudget * 3u;
+  const uint32_t endIndex = range.firstIndex + range.indexCount;
+  if (range.indexCount < 3u || endIndex > model.indices.size()) {
+    return;
+  }
+
+  for (uint32_t firstIndex = range.firstIndex; firstIndex + 2u < endIndex;
+       firstIndex += kMeshletIndexBudget) {
+    const uint32_t indexCount =
+        std::min(kMeshletIndexBudget, endIndex - firstIndex);
+    const uint32_t triangleAlignedIndexCount = (indexCount / 3u) * 3u;
+    if (triangleAlignedIndexCount == 0u) {
+      continue;
+    }
+    std::vector<glm::vec3> clusterPoints;
+    clusterPoints.reserve(triangleAlignedIndexCount);
+    for (uint32_t offset = 0u; offset < triangleAlignedIndexCount; ++offset) {
+      const uint32_t vertexIndex = model.indices[firstIndex + offset];
+      if (vertexIndex < model.vertices.size()) {
+        clusterPoints.push_back(model.vertices[vertexIndex].position);
+      }
+    }
+    if (clusterPoints.empty()) {
+      continue;
+    }
+    const auto [center, radius] = computeBounds(clusterPoints);
+    model.meshletClusters.push_back(dotbim::MeshletClusterRange{
+        .meshId = range.meshId,
+        .firstIndex = firstIndex,
+        .indexCount = triangleAlignedIndexCount,
+        .triangleCount = triangleAlignedIndexCount / 3u,
+        .lodLevel = 0u,
+        .boundsCenter = center,
+        .boundsRadius = radius,
+    });
+  }
+}
+
+void appendPointPlaceholders(dotbim::Model &model, const MeshData &mesh,
+                             uint32_t meshId, std::string_view path,
+                             const glm::vec4 &color) {
+  (void)path;
+  if (mesh.points.empty()) {
+    return;
+  }
+
+  dotbim::MeshRange range{};
+  range.meshId = meshId;
+  range.firstIndex = static_cast<uint32_t>(model.indices.size());
+
+  const float fallbackRadius = defaultPointPlaceholderRadius(mesh);
+  std::vector<glm::vec3> rangePoints;
+  rangePoints.reserve(mesh.points.size() * 24u);
+
+  const glm::vec3 offsets[] = {{1.0f, 0.0f, 0.0f},  {-1.0f, 0.0f, 0.0f},
+                               {0.0f, 1.0f, 0.0f},  {0.0f, -1.0f, 0.0f},
+                               {0.0f, 0.0f, 1.0f},  {0.0f, 0.0f, -1.0f}};
+  const uint32_t faces[][3] = {{0u, 2u, 4u}, {2u, 1u, 4u},
+                               {1u, 3u, 4u}, {3u, 0u, 4u},
+                               {2u, 0u, 5u}, {1u, 2u, 5u},
+                               {3u, 1u, 5u}, {0u, 3u, 5u}};
+
+  for (size_t pointIndex = 0; pointIndex < mesh.points.size(); ++pointIndex) {
+    const glm::vec3 &point = mesh.points[pointIndex];
+    const glm::vec3 vertexColor =
+        placeholderPointColor(mesh, pointIndex, color);
+    const float markerRadius =
+        pointPlaceholderRadius(mesh, pointIndex, fallbackRadius);
+    glm::vec3 markerPoints[6]{};
+    for (size_t i = 0; i < std::size(offsets); ++i) {
+      markerPoints[i] = point + offsets[i] * markerRadius;
+    }
+
+    for (const auto &face : faces) {
+      const glm::vec3 &a = markerPoints[face[0]];
+      const glm::vec3 &b = markerPoints[face[1]];
+      const glm::vec3 &c = markerPoints[face[2]];
+      appendPlaceholderTriangle(model, rangePoints, a, b, c, vertexColor);
+    }
+  }
+
+  range.indexCount =
+      static_cast<uint32_t>(model.indices.size()) - range.firstIndex;
+  if (range.indexCount == 0u) {
+    return;
+  }
+  const auto [center, radius] = computeBounds(rangePoints);
+  range.boundsCenter = center;
+  range.boundsRadius = radius;
+  model.meshRanges.push_back(range);
+  appendNativePointRange(model, mesh, meshId, color);
+}
+
+void appendCurveSegmentPlaceholder(dotbim::Model &model,
+                                   std::vector<glm::vec3> &rangePoints,
+                                   const glm::vec3 &a, const glm::vec3 &b,
+                                   float radius,
+                                   const glm::vec3 &vertexColor) {
+  const glm::vec3 segment = b - a;
+  const float len2 = glm::dot(segment, segment);
+  if (!std::isfinite(len2) || len2 <= 1.0e-12f) {
+    return;
+  }
+
+  const glm::vec3 direction = segment * (1.0f / std::sqrt(len2));
+  const glm::vec3 reference =
+      std::abs(direction.y) < 0.95f ? glm::vec3(0.0f, 1.0f, 0.0f)
+                                    : glm::vec3(1.0f, 0.0f, 0.0f);
+  const glm::vec3 side =
+      normalizeOrFallback(glm::cross(direction, reference),
+                          glm::vec3(1.0f, 0.0f, 0.0f));
+  const glm::vec3 up =
+      normalizeOrFallback(glm::cross(side, direction),
+                          glm::vec3(0.0f, 1.0f, 0.0f));
+  radius = std::max(radius, 0.001f);
+
+  const glm::vec3 s = side * radius;
+  const glm::vec3 u = up * radius;
+  const glm::vec3 corners[] = {a - s - u, a + s - u, a + s + u, a - s + u,
+                               b - s - u, b + s - u, b + s + u, b - s + u};
+  const uint32_t triangles[][3] = {
+      {0u, 1u, 5u}, {0u, 5u, 4u}, {1u, 2u, 6u}, {1u, 6u, 5u},
+      {2u, 3u, 7u}, {2u, 7u, 6u}, {3u, 0u, 4u}, {3u, 4u, 7u},
+      {0u, 3u, 2u}, {0u, 2u, 1u}, {4u, 5u, 6u}, {4u, 6u, 7u}};
+
+  for (const auto &triangle : triangles) {
+    appendPlaceholderTriangle(model, rangePoints, corners[triangle[0]],
+                              corners[triangle[1]], corners[triangle[2]],
+                              vertexColor);
+  }
+}
+
+void appendBasisCurvePlaceholders(dotbim::Model &model, const MeshData &mesh,
+                                  uint32_t meshId, std::string_view path,
+                                  const glm::vec4 &color) {
+  if (mesh.points.empty()) {
+    return;
+  }
+
+  dotbim::MeshRange range{};
+  range.meshId = meshId;
+  range.firstIndex = static_cast<uint32_t>(model.indices.size());
+
+  const float fallbackRadius = defaultPointPlaceholderRadius(mesh);
+  std::vector<glm::vec3> rangePoints;
+  rangePoints.reserve(mesh.points.size() * 36u);
+
+  std::vector<uint32_t> curveVertexCounts = mesh.curveVertexCounts;
+  if (curveVertexCounts.empty()) {
+    curveVertexCounts.push_back(static_cast<uint32_t>(mesh.points.size()));
+  }
+
+  size_t cursor = 0;
+  for (uint32_t count : curveVertexCounts) {
+    if (cursor + static_cast<size_t>(count) > mesh.points.size()) {
+      throw std::runtime_error("USD curve '" + std::string(path) +
+                               "' has inconsistent curve vertex counts");
+    }
+    if (count >= 2u) {
+      for (uint32_t i = 0; i + 1u < count; ++i) {
+        const size_t first = cursor + i;
+        const size_t second = first + 1u;
+        const float radius =
+            (pointPlaceholderRadius(mesh, first, fallbackRadius) +
+             pointPlaceholderRadius(mesh, second, fallbackRadius)) *
+            0.5f;
+        const glm::vec3 vertexColor =
+            placeholderCurveSegmentColor(mesh, first, second, color);
+        appendCurveSegmentPlaceholder(model, rangePoints, mesh.points[first],
+                                      mesh.points[second], radius,
+                                      vertexColor);
+      }
+    }
+    cursor += count;
+  }
+
+  if (cursor != mesh.points.size()) {
+    throw std::runtime_error("USD curve '" + std::string(path) +
+                             "' has unused points");
+  }
+
+  range.indexCount =
+      static_cast<uint32_t>(model.indices.size()) - range.firstIndex;
+  if (range.indexCount == 0u) {
+    return;
+  }
+  const auto [center, radius] = computeBounds(rangePoints);
+  range.boundsCenter = center;
+  range.boundsRadius = radius;
+  model.meshRanges.push_back(range);
+  appendNativeCurveRange(model, mesh, curveVertexCounts, meshId, color, path);
 }
 
 #if defined(CONTAINER_HAS_TINYUSDZ)
@@ -965,6 +1749,10 @@ float sanitizeColorComponent(float value, float fallback) {
   return std::clamp(value, 0.0f, 1.0f);
 }
 
+glm::vec4 colorFromTinyUsdMaterialId(
+    const tinyusdz::tydra::RenderScene &scene, int materialId,
+    glm::vec4 color);
+
 glm::vec4 colorFromTinyUsdMaterial(const tinyusdz::tydra::RenderScene &scene,
                                    const tinyusdz::tydra::RenderMesh &mesh,
                                    int materialOverrideId) {
@@ -975,6 +1763,12 @@ glm::vec4 colorFromTinyUsdMaterial(const tinyusdz::tydra::RenderScene &scene,
 
   const int materialId =
       materialOverrideId >= 0 ? materialOverrideId : mesh.material_id;
+  return colorFromTinyUsdMaterialId(scene, materialId, color);
+}
+
+glm::vec4 colorFromTinyUsdMaterialId(
+    const tinyusdz::tydra::RenderScene &scene, int materialId,
+    glm::vec4 color) {
   if (materialId < 0 ||
       static_cast<size_t>(materialId) >= scene.materials.size()) {
     return color;
@@ -1024,6 +1818,14 @@ glm::vec2 tinyVec2(const tinyusdz::tydra::vec2 &value) {
 }
 
 glm::vec3 tinyVec3(const tinyusdz::tydra::vec3 &value) {
+  return {value[0], value[1], value[2]};
+}
+
+glm::vec3 tinyVec3(const tinyusdz::value::point3f &value) {
+  return {value[0], value[1], value[2]};
+}
+
+glm::vec3 tinyVec3(const tinyusdz::value::color3f &value) {
   return {value[0], value[1], value[2]};
 }
 
@@ -1395,6 +2197,1023 @@ uint32_t materialIndexFromTinyUsd(const tinyusdz::tydra::RenderScene &scene,
              : std::numeric_limits<uint32_t>::max();
 }
 
+struct TinyUsdPrimMetadata {
+  std::string path{};
+  std::string displayName{};
+  std::string guid{};
+  std::string semanticType{};
+  std::string objectType{};
+  std::string storeyName{};
+  std::string storeyId{};
+  std::string materialName{};
+  std::string materialCategory{};
+  std::string discipline{};
+  std::string phase{};
+  std::string fireRating{};
+  std::string loadBearing{};
+  std::string status{};
+  std::string primType{};
+};
+
+std::optional<std::string>
+stringFromTinyUsdMetaVariable(const tinyusdz::MetaVariable &variable) {
+  if (const auto value = variable.get_value<std::string>()) {
+    return *value;
+  }
+  if (const auto value = variable.get_value<tinyusdz::value::StringData>()) {
+    return value->value;
+  }
+  if (const auto value = variable.get_value<tinyusdz::value::token>()) {
+    return value->str();
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string>
+stringFromTinyUsdAttribute(const tinyusdz::Attribute &attribute) {
+  if (!attribute.has_value()) {
+    return std::nullopt;
+  }
+  if (const auto value = attribute.get_value<std::string>()) {
+    return *value;
+  }
+  if (const auto value = attribute.get_value<tinyusdz::value::StringData>()) {
+    return value->value;
+  }
+  if (const auto value = attribute.get_value<tinyusdz::value::token>()) {
+    return value->str();
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string>
+stringFromTinyUsdProperty(const tinyusdz::Property &property) {
+  const tinyusdz::Attribute *attribute = property.get_attribute_or_null();
+  if (attribute == nullptr) {
+    return std::nullopt;
+  }
+  return stringFromTinyUsdAttribute(*attribute);
+}
+
+void applyTinyUsdDictionaryMetadata(const tinyusdz::Dictionary &dictionary,
+                                    TinyUsdPrimMetadata &metadata) {
+  for (const auto &[name, variable] : dictionary) {
+    if (const auto nested = variable.get_value<tinyusdz::Dictionary>()) {
+      applyTinyUsdDictionaryMetadata(*nested, metadata);
+    }
+    if (const auto value = stringFromTinyUsdMetaVariable(variable)) {
+      applyCommonMetadataValue(name, *value, metadata.guid,
+                               metadata.semanticType, metadata.displayName,
+                               &metadata.objectType, &metadata.storeyName,
+                               &metadata.storeyId, &metadata.materialName,
+                               &metadata.materialCategory,
+                               &metadata.discipline, &metadata.phase,
+                               &metadata.fireRating, &metadata.loadBearing,
+                               &metadata.status);
+    }
+  }
+}
+
+void applyTinyUsdPropertyMetadata(
+    const std::map<std::string, tinyusdz::Property> &properties,
+    TinyUsdPrimMetadata &metadata) {
+  for (const auto &[name, property] : properties) {
+    if (!isGuidMetadataName(name) && !isTypeMetadataName(name) &&
+        !isDisplayNameMetadataName(name) &&
+        !isObjectTypeMetadataName(name) &&
+        !isStoreyNameMetadataName(name) && !isStoreyIdMetadataName(name) &&
+        !isMaterialNameMetadataName(name) &&
+        !isMaterialCategoryMetadataName(name) &&
+        !isDisciplineMetadataName(name) && !isPhaseMetadataName(name) &&
+        !isFireRatingMetadataName(name) && !isLoadBearingMetadataName(name) &&
+        !isStatusMetadataName(name)) {
+      continue;
+    }
+    if (const auto value = stringFromTinyUsdProperty(property)) {
+      applyCommonMetadataValue(name, *value, metadata.guid,
+                               metadata.semanticType, metadata.displayName,
+                               &metadata.objectType, &metadata.storeyName,
+                               &metadata.storeyId, &metadata.materialName,
+                               &metadata.materialCategory,
+                               &metadata.discipline, &metadata.phase,
+                               &metadata.fireRating, &metadata.loadBearing,
+                               &metadata.status);
+    }
+  }
+}
+
+template <typename PrimT>
+const std::map<std::string, tinyusdz::Property> *
+tinyUsdPrimPropertiesAs(const tinyusdz::Prim &prim) {
+  if (const PrimT *typed = prim.as<PrimT>()) {
+    return &typed->props;
+  }
+  return nullptr;
+}
+
+const std::map<std::string, tinyusdz::Property> *
+tinyUsdPrimProperties(const tinyusdz::Prim &prim) {
+  if (const auto *props = tinyUsdPrimPropertiesAs<tinyusdz::GeomMesh>(prim)) {
+    return props;
+  }
+  if (const auto *props = tinyUsdPrimPropertiesAs<tinyusdz::Xform>(prim)) {
+    return props;
+  }
+  if (const auto *props = tinyUsdPrimPropertiesAs<tinyusdz::Model>(prim)) {
+    return props;
+  }
+  if (const auto *props = tinyUsdPrimPropertiesAs<tinyusdz::Scope>(prim)) {
+    return props;
+  }
+  if (const auto *props = tinyUsdPrimPropertiesAs<tinyusdz::GeomCube>(prim)) {
+    return props;
+  }
+  if (const auto *props = tinyUsdPrimPropertiesAs<tinyusdz::GeomSphere>(prim)) {
+    return props;
+  }
+  if (const auto *props = tinyUsdPrimPropertiesAs<tinyusdz::GeomCone>(prim)) {
+    return props;
+  }
+  if (const auto *props =
+          tinyUsdPrimPropertiesAs<tinyusdz::GeomCylinder>(prim)) {
+    return props;
+  }
+  if (const auto *props =
+          tinyUsdPrimPropertiesAs<tinyusdz::GeomCapsule>(prim)) {
+    return props;
+  }
+  if (const auto *props = tinyUsdPrimPropertiesAs<tinyusdz::GeomPlane>(prim)) {
+    return props;
+  }
+  if (const auto *props =
+          tinyUsdPrimPropertiesAs<tinyusdz::GeomBasisCurves>(prim)) {
+    return props;
+  }
+  if (const auto *props =
+          tinyUsdPrimPropertiesAs<tinyusdz::GeomNurbsCurves>(prim)) {
+    return props;
+  }
+  if (const auto *props = tinyUsdPrimPropertiesAs<tinyusdz::GeomPoints>(prim)) {
+    return props;
+  }
+  if (const auto *props =
+          tinyUsdPrimPropertiesAs<tinyusdz::GeomPointInstancer>(prim)) {
+    return props;
+  }
+  return nullptr;
+}
+
+TinyUsdPrimMetadata tinyUsdPrimMetadata(const tinyusdz::Stage &stage,
+                                        std::string_view path) {
+  TinyUsdPrimMetadata metadata{};
+  if (path.empty()) {
+    return metadata;
+  }
+  metadata.path = std::string(path);
+
+  const tinyusdz::Prim *prim = nullptr;
+  std::string err;
+  if (!stage.find_prim_at_path(tinyusdz::Path(metadata.path, ""), prim, &err) ||
+      prim == nullptr) {
+    return metadata;
+  }
+
+  metadata.primType =
+      !prim->prim_type_name().empty() ? prim->prim_type_name()
+                                      : prim->type_name();
+  if (prim->metas().has_displayName()) {
+    metadata.displayName = prim->metas().get_displayName();
+  }
+  if (prim->metas().has_customData()) {
+    applyTinyUsdDictionaryMetadata(prim->metas().get_customData(), metadata);
+  }
+  if (const auto *properties = tinyUsdPrimProperties(*prim)) {
+    applyTinyUsdPropertyMetadata(*properties, metadata);
+  }
+  return metadata;
+}
+
+TinyUsdPrimMetadata mergeTinyUsdMetadata(TinyUsdPrimMetadata primary,
+                                         const TinyUsdPrimMetadata &fallback) {
+  if (primary.path.empty()) {
+    primary.path = fallback.path;
+  }
+  if (primary.displayName.empty()) {
+    primary.displayName = fallback.displayName;
+  }
+  if (primary.guid.empty()) {
+    primary.guid = fallback.guid;
+  }
+  if (primary.semanticType.empty()) {
+    primary.semanticType = fallback.semanticType;
+  }
+  if (primary.objectType.empty()) {
+    primary.objectType = fallback.objectType;
+  }
+  if (primary.storeyName.empty()) {
+    primary.storeyName = fallback.storeyName;
+  }
+  if (primary.storeyId.empty()) {
+    primary.storeyId = fallback.storeyId;
+  }
+  if (primary.materialName.empty()) {
+    primary.materialName = fallback.materialName;
+  }
+  if (primary.materialCategory.empty()) {
+    primary.materialCategory = fallback.materialCategory;
+  }
+  if (primary.discipline.empty()) {
+    primary.discipline = fallback.discipline;
+  }
+  if (primary.phase.empty()) {
+    primary.phase = fallback.phase;
+  }
+  if (primary.fireRating.empty()) {
+    primary.fireRating = fallback.fireRating;
+  }
+  if (primary.loadBearing.empty()) {
+    primary.loadBearing = fallback.loadBearing;
+  }
+  if (primary.status.empty()) {
+    primary.status = fallback.status;
+  }
+  if (primary.primType.empty()) {
+    primary.primType = fallback.primType;
+  }
+  return primary;
+}
+
+std::string parentUsdPrimPath(std::string_view path) {
+  if (path.empty()) {
+    return {};
+  }
+  size_t end = path.size();
+  while (end > 1u && path[end - 1u] == '/') {
+    --end;
+  }
+  const std::string_view trimmed = path.substr(0u, end);
+  const size_t separator = trimmed.find_last_of('/');
+  if (separator == std::string_view::npos || separator == 0u) {
+    return {};
+  }
+  return std::string(trimmed.substr(0u, separator));
+}
+
+TinyUsdPrimMetadata tinyUsdInheritedPrimMetadata(const tinyusdz::Stage &stage,
+                                                 std::string_view path) {
+  TinyUsdPrimMetadata metadata = tinyUsdPrimMetadata(stage, path);
+  for (std::string parent = parentUsdPrimPath(path); !parent.empty();
+       parent = parentUsdPrimPath(parent)) {
+    metadata =
+        mergeTinyUsdMetadata(std::move(metadata),
+                             tinyUsdPrimMetadata(stage, parent));
+  }
+  return metadata;
+}
+
+std::string tinyUsdElementGuid(const TinyUsdPrimMetadata &metadata,
+                               std::string_view renderPath,
+                               std::string_view fallbackPrefix, int32_t id,
+                               uint32_t meshId) {
+  if (!metadata.guid.empty()) {
+    return metadata.guid;
+  }
+
+  std::string base =
+      !metadata.path.empty()
+          ? metadata.path
+          : (!renderPath.empty()
+                 ? std::string(renderPath)
+                 : (!metadata.displayName.empty()
+                        ? metadata.displayName
+                        : std::string(fallbackPrefix) + std::to_string(id)));
+  base += "#mesh=" + std::to_string(meshId);
+  return base;
+}
+
+std::string tinyUsdElementType(const TinyUsdPrimMetadata &metadata,
+                               std::string_view fallback,
+                               bool usePrimType) {
+  if (!metadata.semanticType.empty()) {
+    return metadata.semanticType;
+  }
+  return usePrimType ? usdFallbackType(metadata.primType, fallback)
+                     : std::string(fallback);
+}
+
+const tinyusdz::GPrim *tinyUsdGPrim(const tinyusdz::Prim &prim) {
+  if (const auto *typed = prim.as<tinyusdz::Xform>()) {
+    return typed;
+  }
+  if (const auto *typed = prim.as<tinyusdz::GeomMesh>()) {
+    return typed;
+  }
+  if (const auto *typed = prim.as<tinyusdz::GeomCube>()) {
+    return typed;
+  }
+  if (const auto *typed = prim.as<tinyusdz::GeomSphere>()) {
+    return typed;
+  }
+  if (const auto *typed = prim.as<tinyusdz::GeomCone>()) {
+    return typed;
+  }
+  if (const auto *typed = prim.as<tinyusdz::GeomCylinder>()) {
+    return typed;
+  }
+  if (const auto *typed = prim.as<tinyusdz::GeomCapsule>()) {
+    return typed;
+  }
+  if (const auto *typed = prim.as<tinyusdz::GeomPlane>()) {
+    return typed;
+  }
+  if (const auto *typed = prim.as<tinyusdz::GeomBasisCurves>()) {
+    return typed;
+  }
+  if (const auto *typed = prim.as<tinyusdz::GeomNurbsCurves>()) {
+    return typed;
+  }
+  if (const auto *typed = prim.as<tinyusdz::GeomPoints>()) {
+    return typed;
+  }
+  if (const auto *typed = prim.as<tinyusdz::GeomPointInstancer>()) {
+    return typed;
+  }
+  return nullptr;
+}
+
+bool tinyUsdPrimIsPointsLike(const tinyusdz::Prim &prim) {
+  return prim.as<tinyusdz::GeomPoints>() != nullptr ||
+         prim.prim_type_name() == "Points" || prim.type_name() == "Points" ||
+         prim.type_name() == "GeomPoints";
+}
+
+bool tinyUsdPrimIsCurveLike(const tinyusdz::Prim &prim) {
+  return prim.as<tinyusdz::GeomBasisCurves>() != nullptr ||
+         prim.as<tinyusdz::GeomNurbsCurves>() != nullptr ||
+         prim.prim_type_name() == "BasisCurves" ||
+         prim.prim_type_name() == "NurbsCurves" ||
+         prim.type_name() == "BasisCurves" ||
+         prim.type_name() == "NurbsCurves" ||
+         prim.type_name() == "GeomBasisCurves" ||
+         prim.type_name() == "GeomNurbsCurves";
+}
+
+bool tinyUsdPrimNeedsPlaceholderGeometry(const tinyusdz::Prim &prim) {
+  return tinyUsdPrimIsPointsLike(prim) || tinyUsdPrimIsCurveLike(prim);
+}
+
+template <typename VisibilityAttribute>
+bool tinyUsdVisibilityIsVisible(const VisibilityAttribute &visibility,
+                                bool inheritedVisible) {
+  if (!inheritedVisible || !visibility.authored()) {
+    return inheritedVisible;
+  }
+
+  const auto &value = visibility.get_value();
+  tinyusdz::Visibility defaultValue{tinyusdz::Visibility::Inherited};
+  if (value.get_default(&defaultValue) &&
+      defaultValue == tinyusdz::Visibility::Invisible) {
+    return false;
+  }
+  return true;
+}
+
+bool tinyUsdPrimIsVisible(const tinyusdz::Prim &prim, bool inheritedVisible) {
+  if (const tinyusdz::GPrim *gprim = tinyUsdGPrim(prim)) {
+    return tinyUsdVisibilityIsVisible(gprim->visibility, inheritedVisible);
+  }
+  if (const auto *scope = prim.as<tinyusdz::Scope>()) {
+    return tinyUsdVisibilityIsVisible(scope->visibility, inheritedVisible);
+  }
+  return inheritedVisible;
+}
+
+std::string tinyUsdPrimPathString(const tinyusdz::Prim &prim,
+                                  std::string_view parentPath) {
+  std::string name = prim.element_name();
+  if (name.empty()) {
+    if (const auto elementName = tinyusdz::GetPrimElementName(prim.data())) {
+      name = *elementName;
+    }
+  }
+
+  std::string path = prim.absolute_path().prim_part();
+  if (!path.empty()) {
+    if (!parentPath.empty() && parentPath != "/" && !name.empty()) {
+      const std::string parentPrefix = std::string(parentPath) + "/";
+      if (!startsWith(path, parentPrefix)) {
+        return parentPrefix + name;
+      }
+    }
+    return path;
+  }
+
+  if (name.empty()) {
+    return std::string(parentPath);
+  }
+  if (parentPath.empty() || parentPath == "/") {
+    return "/" + name;
+  }
+  return std::string(parentPath) + "/" + name;
+}
+
+std::string tinyUsdPathLeaf(std::string_view path) {
+  if (path.empty()) {
+    return {};
+  }
+  size_t end = path.size();
+  while (end > 1u && path[end - 1u] == '/') {
+    --end;
+  }
+  const size_t separator = path.substr(0u, end).find_last_of('/');
+  if (separator == std::string_view::npos) {
+    return std::string(path.substr(0u, end));
+  }
+  return std::string(path.substr(separator + 1u, end - separator - 1u));
+}
+
+tinyusdz::value::matrix4d tinyUsdGlobalMatrixForPrim(
+    const tinyusdz::Prim &prim,
+    const tinyusdz::value::matrix4d &parentMatrix,
+    std::string_view path) {
+  const tinyusdz::GPrim *gprim = tinyUsdGPrim(prim);
+  if (gprim == nullptr) {
+    return parentMatrix;
+  }
+
+  auto matrix = gprim->GetGlobalMatrix(parentMatrix);
+  if (!matrix) {
+    throw std::runtime_error("USD prim '" + std::string(path) +
+                             "' has an invalid transform: " + matrix.error());
+  }
+  return matrix.value();
+}
+
+glm::vec4 tinyUsdDisplayColor(const tinyusdz::Stage &stage,
+                              std::string_view path) {
+  glm::vec4 color{0.8f, 0.82f, 0.86f, 1.0f};
+  if (path.empty()) {
+    return color;
+  }
+
+  tinyusdz::GeomPrimvar displayColor;
+  std::string err;
+  if (tinyusdz::tydra::FindPrimvarWithInheritance(
+          stage, tinyusdz::Path(std::string(path), ""), "displayColor",
+          &displayColor, &err)) {
+    std::vector<tinyusdz::value::color3f> colors;
+    tinyusdz::value::color3f scalarColor{};
+    if (displayColor.get_value(&colors) && !colors.empty()) {
+      color = glm::vec4(glm::clamp(tinyVec3(colors.front()), glm::vec3(0.0f),
+                                   glm::vec3(1.0f)),
+                        color.a);
+    } else if (displayColor.get_value(&scalarColor)) {
+      color = glm::vec4(glm::clamp(tinyVec3(scalarColor), glm::vec3(0.0f),
+                                   glm::vec3(1.0f)),
+                        color.a);
+    }
+  }
+
+  tinyusdz::GeomPrimvar displayOpacity;
+  if (tinyusdz::tydra::FindPrimvarWithInheritance(
+          stage, tinyusdz::Path(std::string(path), ""), "displayOpacity",
+          &displayOpacity, &err)) {
+    std::vector<float> opacities;
+    float scalarOpacity = color.a;
+    if (displayOpacity.get_value(&opacities) && !opacities.empty()) {
+      color.a = sanitizeColorComponent(opacities.front(), color.a);
+    } else if (displayOpacity.get_value(&scalarOpacity)) {
+      color.a = sanitizeColorComponent(scalarOpacity, color.a);
+    }
+  }
+  return color;
+}
+
+const tinyusdz::MaterialBinding *
+tinyUsdMaterialBinding(const tinyusdz::Prim &prim) {
+  if (const tinyusdz::GPrim *gprim = tinyUsdGPrim(prim)) {
+    return gprim;
+  }
+  if (const auto *scope = prim.as<tinyusdz::Scope>()) {
+    return scope;
+  }
+  if (const auto *model = prim.as<tinyusdz::Model>()) {
+    return model;
+  }
+  return nullptr;
+}
+
+std::optional<std::string> tinyUsdDirectMaterialPath(const tinyusdz::Prim &prim) {
+  const tinyusdz::MaterialBinding *binding = tinyUsdMaterialBinding(prim);
+  if (binding != nullptr) {
+    tinyusdz::Relationship relationship;
+    if (binding->get_materialBinding(tinyusdz::value::token(""),
+                                     &relationship)) {
+      if (relationship.is_path()) {
+        return relationship.targetPath.prim_part();
+      }
+      if (relationship.is_pathvector() &&
+          !relationship.targetPathVector.empty()) {
+        return relationship.targetPathVector.front().prim_part();
+      }
+    }
+  }
+
+  if (const auto *properties = tinyUsdPrimProperties(prim)) {
+    if (const auto it = properties->find("material:binding");
+        it != properties->end()) {
+      if (const auto target = it->second.get_relationTarget()) {
+        return target->prim_part();
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+bool tinyUsdMaterialPathMatches(std::string_view scenePath,
+                                std::string_view materialPath) {
+  if (scenePath == materialPath) {
+    return true;
+  }
+  return !materialPath.empty() && scenePath.ends_with(materialPath);
+}
+
+int tinyUsdMaterialIndexForPath(
+    const tinyusdz::tydra::RenderScene &scene, std::string_view materialPath) {
+  if (materialPath.empty()) {
+    return -1;
+  }
+  for (size_t i = 0; i < scene.materials.size(); ++i) {
+    if (tinyUsdMaterialPathMatches(scene.materials[i].abs_path, materialPath)) {
+      return static_cast<int>(i);
+    }
+  }
+  return -1;
+}
+
+const tinyusdz::Material *tinyUsdMaterialAtPath(const tinyusdz::Stage &stage,
+                                                std::string_view path) {
+  if (path.empty()) {
+    return nullptr;
+  }
+  const tinyusdz::Prim *prim = nullptr;
+  std::string err;
+  if (!stage.find_prim_at_path(tinyusdz::Path(std::string(path), ""), prim,
+                               &err) ||
+      prim == nullptr) {
+    return nullptr;
+  }
+  return prim->as<tinyusdz::Material>();
+}
+
+struct TinyUsdBoundMaterial {
+  std::string path{};
+  const tinyusdz::Material *material{nullptr};
+};
+
+std::optional<TinyUsdBoundMaterial>
+tinyUsdBoundMaterialForPrim(const tinyusdz::Stage &stage,
+                            std::string_view path) {
+  if (path.empty()) {
+    return std::nullopt;
+  }
+
+  tinyusdz::Path materialPath;
+  const tinyusdz::Material *material = nullptr;
+  std::string err;
+  if (tinyusdz::tydra::GetBoundMaterial(
+          stage, tinyusdz::Path(std::string(path), ""), "", &materialPath,
+          &material, &err)) {
+    const std::string resolvedPath = materialPath.prim_part();
+    if (material == nullptr) {
+      material = tinyUsdMaterialAtPath(stage, resolvedPath);
+    }
+    if (!resolvedPath.empty() && material != nullptr) {
+      return TinyUsdBoundMaterial{resolvedPath, material};
+    }
+  }
+
+  for (std::string current = std::string(path); !current.empty();
+       current = parentUsdPrimPath(current)) {
+    const tinyusdz::Prim *prim = nullptr;
+    if (std::string directErr; stage.find_prim_at_path(
+            tinyusdz::Path(current, ""), prim, &directErr) &&
+        prim != nullptr) {
+      if (const auto directPath = tinyUsdDirectMaterialPath(*prim)) {
+        if (const tinyusdz::Material *directMaterial =
+                tinyUsdMaterialAtPath(stage, *directPath)) {
+          return TinyUsdBoundMaterial{*directPath, directMaterial};
+        }
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+int tinyUsdMaterialIndexForPrim(const tinyusdz::Stage &stage,
+                                const tinyusdz::tydra::RenderScene &scene,
+                                std::string_view path) {
+  if (const auto boundMaterial = tinyUsdBoundMaterialForPrim(stage, path)) {
+    return tinyUsdMaterialIndexForPath(scene, boundMaterial->path);
+  }
+  return -1;
+}
+
+MeshData tinyUsdPointsMeshData(const tinyusdz::GeomPoints &points,
+                               std::string_view path) {
+  MeshData mesh{};
+  const std::vector<tinyusdz::value::point3f> sourcePoints =
+      points.get_points();
+  if (sourcePoints.size() >
+      static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+    throw std::runtime_error("USD points prim '" + std::string(path) +
+                             "' has too many points for 32-bit indices");
+  }
+
+  mesh.points.reserve(sourcePoints.size());
+  for (const tinyusdz::value::point3f &point : sourcePoints) {
+    const glm::vec3 value = tinyVec3(point);
+    if (!std::isfinite(value.x) || !std::isfinite(value.y) ||
+        !std::isfinite(value.z)) {
+      throw std::runtime_error("USD points prim '" + std::string(path) +
+                               "' contains a non-finite point");
+    }
+    mesh.points.push_back(value);
+  }
+  mesh.widths = points.get_widths();
+  return mesh;
+}
+
+template <typename CurveT>
+MeshData tinyUsdCurveMeshData(const CurveT &curves, std::string_view path) {
+  MeshData mesh{};
+  const std::vector<tinyusdz::value::point3f> sourcePoints =
+      curves.get_points();
+  if (sourcePoints.size() >
+      static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
+    throw std::runtime_error("USD curve prim '" + std::string(path) +
+                             "' has too many points for 32-bit indices");
+  }
+
+  mesh.points.reserve(sourcePoints.size());
+  for (const tinyusdz::value::point3f &point : sourcePoints) {
+    const glm::vec3 value = tinyVec3(point);
+    if (!std::isfinite(value.x) || !std::isfinite(value.y) ||
+        !std::isfinite(value.z)) {
+      throw std::runtime_error("USD curve prim '" + std::string(path) +
+                               "' contains a non-finite point");
+    }
+    mesh.points.push_back(value);
+  }
+
+  for (int count : curves.get_curveVertexCounts()) {
+    if (count < 0 ||
+        static_cast<uint64_t>(count) >
+            static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
+      throw std::runtime_error("USD curve prim '" + std::string(path) +
+                               "' has an invalid curve vertex count");
+    }
+    mesh.curveVertexCounts.push_back(static_cast<uint32_t>(count));
+  }
+  mesh.widths = curves.get_widths();
+  return mesh;
+}
+
+dotbim::Element *modelElementBySource(dotbim::Model &model,
+                                      std::string_view path) {
+  for (dotbim::Element &element : model.elements) {
+    if (element.sourceId == path) {
+      return &element;
+    }
+  }
+  return nullptr;
+}
+
+void applyTinyUsdPointsElementFields(
+    dotbim::Element &element, const tinyusdz::Stage &stage,
+    const tinyusdz::tydra::RenderScene &scene, const tinyusdz::Prim &prim,
+    const tinyusdz::GeomPoints &points, const glm::mat4 &importTransform,
+    const tinyusdz::value::matrix4d &globalMatrix, std::string_view path,
+    uint32_t meshId) {
+  const int materialId = tinyUsdMaterialIndexForPrim(stage, scene, path);
+  const glm::vec4 displayColor = tinyUsdDisplayColor(stage, path);
+  const glm::vec4 color =
+      colorFromTinyUsdMaterialId(scene, materialId, displayColor);
+
+  TinyUsdPrimMetadata metadata = tinyUsdInheritedPrimMetadata(stage, path);
+  if (metadata.displayName.empty()) {
+    metadata.displayName = prim.element_name();
+    if (metadata.displayName.empty()) {
+      if (const auto elementName = tinyusdz::GetPrimElementName(prim.data())) {
+        metadata.displayName = *elementName;
+      }
+    }
+    if (metadata.displayName.empty()) {
+      metadata.displayName = tinyUsdPathLeaf(path);
+    }
+  }
+  if (metadata.primType.empty()) {
+    metadata.primType = "Points";
+  }
+
+  int32_t primId = 0;
+  if (prim.prim_id() > 0 &&
+      prim.prim_id() <= std::numeric_limits<int32_t>::max()) {
+    primId = static_cast<int32_t>(prim.prim_id());
+  }
+
+  element.transform = importTransform * matrixFromTinyUsd(globalMatrix);
+  element.color = color;
+  if (const uint32_t materialIndex =
+          materialIndexFromTinyUsd(scene, materialId);
+      materialIndex != std::numeric_limits<uint32_t>::max()) {
+    element.materialIndex = materialIndex;
+  }
+  element.doubleSided = points.doubleSided.get_value();
+  element.guid =
+      tinyUsdElementGuid(metadata, path, "usd-points-", primId, meshId);
+  element.type = tinyUsdElementType(metadata, "UsdGeomPoints", true);
+  element.displayName = metadata.displayName;
+  element.objectType = metadata.objectType;
+  element.storeyName = metadata.storeyName;
+  element.storeyId = metadata.storeyId;
+  element.materialName = metadata.materialName;
+  element.materialCategory = metadata.materialCategory;
+  element.discipline = metadata.discipline;
+  element.phase = metadata.phase;
+  element.fireRating = metadata.fireRating;
+  element.loadBearing = metadata.loadBearing;
+  element.status = metadata.status;
+  element.sourceId = !metadata.path.empty() ? metadata.path : std::string(path);
+  element.geometryKind = dotbim::GeometryKind::Points;
+}
+
+template <typename CurveT>
+void appendTinyUsdCurvePrim(dotbim::Model &model, const tinyusdz::Stage &stage,
+                            const tinyusdz::tydra::RenderScene &scene,
+                            const tinyusdz::Prim &prim, const CurveT &curves,
+                            const glm::mat4 &importTransform,
+                            const tinyusdz::value::matrix4d &globalMatrix,
+                            std::string_view path,
+                            std::string_view fallbackType);
+
+void appendTinyUsdPointsPrim(dotbim::Model &model, const tinyusdz::Stage &stage,
+                             const tinyusdz::tydra::RenderScene &scene,
+                             const tinyusdz::Prim &prim,
+                             const tinyusdz::GeomPoints &points,
+                             const glm::mat4 &importTransform,
+                             const tinyusdz::value::matrix4d &globalMatrix,
+                             std::string_view path) {
+  if (dotbim::Element *existing = modelElementBySource(model, path)) {
+    applyTinyUsdPointsElementFields(*existing, stage, scene, prim, points,
+                                    importTransform, globalMatrix, path,
+                                    existing->meshId);
+    return;
+  }
+
+  const MeshData mesh = tinyUsdPointsMeshData(points, path);
+  if (mesh.points.empty()) {
+    return;
+  }
+
+  const uint32_t meshId = static_cast<uint32_t>(model.meshRanges.size());
+  const size_t rangeCountBefore = model.meshRanges.size();
+  const glm::vec4 color = colorFromTinyUsdMaterialId(
+      scene, tinyUsdMaterialIndexForPrim(stage, scene, path),
+      tinyUsdDisplayColor(stage, path));
+  appendPointPlaceholders(model, mesh, meshId, path, color);
+  if (model.meshRanges.size() == rangeCountBefore) {
+    return;
+  }
+
+  dotbim::Element element{};
+  element.meshId = meshId;
+  applyTinyUsdPointsElementFields(element, stage, scene, prim, points,
+                                  importTransform, globalMatrix, path, meshId);
+  model.elements.push_back(std::move(element));
+}
+
+void appendTinyUsdPointsFromPrim(
+    dotbim::Model &model, const tinyusdz::Stage &stage,
+    const tinyusdz::tydra::RenderScene &scene, const tinyusdz::Prim &prim,
+    const glm::mat4 &importTransform,
+    const tinyusdz::value::matrix4d &parentMatrix, std::string_view parentPath,
+    bool inheritedVisible) {
+  const std::string path = tinyUsdPrimPathString(prim, parentPath);
+  const tinyusdz::value::matrix4d globalMatrix =
+      tinyUsdGlobalMatrixForPrim(prim, parentMatrix, path);
+  const bool visible = tinyUsdPrimIsVisible(prim, inheritedVisible);
+  if (visible) {
+    if (const auto *points = prim.as<tinyusdz::GeomPoints>()) {
+      appendTinyUsdPointsPrim(model, stage, scene, prim, *points,
+                              importTransform, globalMatrix, path);
+    } else if (const auto *basisCurves =
+                   prim.as<tinyusdz::GeomBasisCurves>()) {
+      appendTinyUsdCurvePrim(model, stage, scene, prim, *basisCurves,
+                             importTransform, globalMatrix, path,
+                             "UsdGeomBasisCurves");
+    } else if (const auto *nurbsCurves =
+                   prim.as<tinyusdz::GeomNurbsCurves>()) {
+      appendTinyUsdCurvePrim(model, stage, scene, prim, *nurbsCurves,
+                             importTransform, globalMatrix, path,
+                             "UsdGeomNurbsCurves");
+    }
+  }
+
+  for (const tinyusdz::Prim &child : prim.children()) {
+    appendTinyUsdPointsFromPrim(model, stage, scene, child, importTransform,
+                                globalMatrix, path, visible);
+  }
+}
+
+void appendTinyUsdPointsFromStage(dotbim::Model &model,
+                                  const tinyusdz::Stage &stage,
+                                  const tinyusdz::tydra::RenderScene &scene,
+                                  const glm::mat4 &importTransform) {
+  const tinyusdz::value::matrix4d identity =
+      tinyusdz::value::matrix4d::identity();
+  for (const tinyusdz::Prim &prim : stage.root_prims()) {
+    appendTinyUsdPointsFromPrim(model, stage, scene, prim, importTransform,
+                                identity, "", true);
+  }
+}
+
+template <typename CurveT>
+void applyTinyUsdCurveElementFields(
+    dotbim::Element &element, const tinyusdz::Stage &stage,
+    const tinyusdz::tydra::RenderScene &scene, const tinyusdz::Prim &prim,
+    const CurveT &curves, const glm::mat4 &importTransform,
+    const tinyusdz::value::matrix4d &globalMatrix, std::string_view path,
+    uint32_t meshId, std::string_view fallbackType) {
+  const int materialId = tinyUsdMaterialIndexForPrim(stage, scene, path);
+  const glm::vec4 displayColor = tinyUsdDisplayColor(stage, path);
+  const glm::vec4 color =
+      colorFromTinyUsdMaterialId(scene, materialId, displayColor);
+
+  TinyUsdPrimMetadata metadata = tinyUsdInheritedPrimMetadata(stage, path);
+  if (metadata.displayName.empty()) {
+    metadata.displayName = prim.element_name();
+    if (metadata.displayName.empty()) {
+      if (const auto elementName = tinyusdz::GetPrimElementName(prim.data())) {
+        metadata.displayName = *elementName;
+      }
+    }
+    if (metadata.displayName.empty()) {
+      metadata.displayName = tinyUsdPathLeaf(path);
+    }
+  }
+
+  int32_t primId = 0;
+  if (prim.prim_id() > 0 &&
+      prim.prim_id() <= std::numeric_limits<int32_t>::max()) {
+    primId = static_cast<int32_t>(prim.prim_id());
+  }
+
+  element.transform = importTransform * matrixFromTinyUsd(globalMatrix);
+  element.color = color;
+  if (const uint32_t materialIndex =
+          materialIndexFromTinyUsd(scene, materialId);
+      materialIndex != std::numeric_limits<uint32_t>::max()) {
+    element.materialIndex = materialIndex;
+  }
+  element.doubleSided = curves.doubleSided.get_value();
+  element.guid =
+      tinyUsdElementGuid(metadata, path, "usd-curves-", primId, meshId);
+  element.type = tinyUsdElementType(metadata, fallbackType, true);
+  element.displayName = metadata.displayName;
+  element.objectType = metadata.objectType;
+  element.storeyName = metadata.storeyName;
+  element.storeyId = metadata.storeyId;
+  element.materialName = metadata.materialName;
+  element.materialCategory = metadata.materialCategory;
+  element.discipline = metadata.discipline;
+  element.phase = metadata.phase;
+  element.fireRating = metadata.fireRating;
+  element.loadBearing = metadata.loadBearing;
+  element.status = metadata.status;
+  element.sourceId = !metadata.path.empty() ? metadata.path : std::string(path);
+  element.geometryKind = dotbim::GeometryKind::Curves;
+}
+
+template <typename CurveT>
+void appendTinyUsdCurvePrim(dotbim::Model &model, const tinyusdz::Stage &stage,
+                            const tinyusdz::tydra::RenderScene &scene,
+                            const tinyusdz::Prim &prim, const CurveT &curves,
+                            const glm::mat4 &importTransform,
+                            const tinyusdz::value::matrix4d &globalMatrix,
+                            std::string_view path,
+                            std::string_view fallbackType) {
+  if (dotbim::Element *existing = modelElementBySource(model, path)) {
+    applyTinyUsdCurveElementFields(*existing, stage, scene, prim, curves,
+                                   importTransform, globalMatrix, path,
+                                   existing->meshId, fallbackType);
+    return;
+  }
+
+  const MeshData mesh = tinyUsdCurveMeshData(curves, path);
+  if (mesh.points.empty()) {
+    return;
+  }
+
+  const uint32_t meshId = static_cast<uint32_t>(model.meshRanges.size());
+  const size_t rangeCountBefore = model.meshRanges.size();
+  const glm::vec4 color = colorFromTinyUsdMaterialId(
+      scene, tinyUsdMaterialIndexForPrim(stage, scene, path),
+      tinyUsdDisplayColor(stage, path));
+  appendBasisCurvePlaceholders(model, mesh, meshId, path, color);
+  if (model.meshRanges.size() == rangeCountBefore) {
+    return;
+  }
+
+  dotbim::Element element{};
+  element.meshId = meshId;
+  applyTinyUsdCurveElementFields(element, stage, scene, prim, curves,
+                                 importTransform, globalMatrix, path, meshId,
+                                 fallbackType);
+  model.elements.push_back(std::move(element));
+}
+
+void appendTinyUsdPointMaterialIfMissing(
+    tinyusdz::tydra::RenderScene &scene,
+    tinyusdz::tydra::RenderSceneConverter &converter,
+    const tinyusdz::tydra::RenderSceneConverterEnv &env,
+    const TinyUsdBoundMaterial &boundMaterial) {
+  if (boundMaterial.path.empty() || boundMaterial.material == nullptr ||
+      tinyUsdMaterialIndexForPath(scene, boundMaterial.path) >= 0) {
+    return;
+  }
+
+  tinyusdz::tydra::RenderMaterial renderMaterial;
+  if (converter.ConvertMaterial(env, tinyusdz::Path(boundMaterial.path, ""),
+                                *boundMaterial.material, &renderMaterial)) {
+    scene.materials.push_back(std::move(renderMaterial));
+  }
+}
+
+void appendTinyUsdPointMaterialsFromPrim(
+    tinyusdz::tydra::RenderScene &scene, const tinyusdz::Stage &stage,
+    tinyusdz::tydra::RenderSceneConverter &converter,
+    const tinyusdz::tydra::RenderSceneConverterEnv &env,
+    const tinyusdz::Prim &prim, std::string_view parentPath,
+    bool inheritedVisible) {
+  const std::string path = tinyUsdPrimPathString(prim, parentPath);
+  const bool visible = tinyUsdPrimIsVisible(prim, inheritedVisible);
+  if (visible && tinyUsdPrimNeedsPlaceholderGeometry(prim)) {
+    if (const auto boundMaterial = tinyUsdBoundMaterialForPrim(stage, path)) {
+      appendTinyUsdPointMaterialIfMissing(scene, converter, env,
+                                          *boundMaterial);
+    }
+  }
+
+  for (const tinyusdz::Prim &child : prim.children()) {
+    appendTinyUsdPointMaterialsFromPrim(scene, stage, converter, env, child,
+                                        path, visible);
+  }
+}
+
+void appendTinyUsdPointMaterialsFromStage(
+    tinyusdz::tydra::RenderScene &scene, const tinyusdz::Stage &stage,
+    const tinyusdz::tydra::RenderSceneConverterEnv &env) {
+  tinyusdz::tydra::RenderSceneConverter converter;
+  for (const tinyusdz::Prim &prim : stage.root_prims()) {
+    appendTinyUsdPointMaterialsFromPrim(scene, stage, converter, env, prim, "",
+                                        true);
+  }
+}
+
+bool tinyUsdPathNeedsPlaceholderGeometry(const tinyusdz::Stage &stage,
+                                         std::string_view path) {
+  if (path.empty()) {
+    return false;
+  }
+  const tinyusdz::Prim *prim = nullptr;
+  std::string err;
+  return stage.find_prim_at_path(tinyusdz::Path(std::string(path), ""), prim,
+                                 &err) &&
+         prim != nullptr && tinyUsdPrimNeedsPlaceholderGeometry(*prim);
+}
+
+void applyTinyUsdPointsMaterialFallbacks(
+    dotbim::Model &model, const tinyusdz::Stage &stage,
+    const tinyusdz::tydra::RenderScene &scene) {
+  for (dotbim::Element &element : model.elements) {
+    if (element.materialIndex != std::numeric_limits<uint32_t>::max() ||
+        !tinyUsdPathNeedsPlaceholderGeometry(stage, element.sourceId)) {
+      continue;
+    }
+
+    const int materialId =
+        tinyUsdMaterialIndexForPrim(stage, scene, element.sourceId);
+    if (const uint32_t materialIndex =
+            materialIndexFromTinyUsd(scene, materialId);
+        materialIndex != std::numeric_limits<uint32_t>::max()) {
+      element.materialIndex = materialIndex;
+      element.color = colorFromTinyUsdMaterialId(scene, materialId,
+                                                 element.color);
+    }
+  }
+}
+
 struct TinyMeshTriangle {
   uint32_t pointIndex[3]{};
   size_t faceVertexOrdinal[3]{};
@@ -1752,6 +3571,7 @@ bool appendTinyUsdTrianglePart(dotbim::Model &model,
     return false;
   }
   model.meshRanges.push_back(range);
+  appendMeshletClustersForRange(model, range);
   return true;
 }
 
@@ -1851,9 +3671,18 @@ bool hasRenderableGeometry(const dotbim::Model &model) {
          !model.meshRanges.empty() && !model.elements.empty();
 }
 
+void fillTinyUsdElementDisplayNameFallbacks(dotbim::Model &model) {
+  for (dotbim::Element &element : model.elements) {
+    if (element.displayName.empty() && !element.sourceId.empty()) {
+      element.displayName = tinyUsdPathLeaf(element.sourceId);
+    }
+  }
+}
+
 void appendTinyUsdNode(
-    dotbim::Model &model, const tinyusdz::tydra::RenderScene &scene,
-    const tinyusdz::tydra::Node &node, const glm::mat4 &importTransform,
+    dotbim::Model &model, const tinyusdz::Stage &stage,
+    const tinyusdz::tydra::RenderScene &scene, const tinyusdz::tydra::Node &node,
+    const glm::mat4 &importTransform,
     std::unordered_map<int32_t, std::vector<TinyMeshPart>> &loadedMeshes,
     const std::unordered_set<std::string> &handledInstancePaths,
     bool insideHandledInstance) {
@@ -1867,6 +3696,16 @@ void appendTinyUsdNode(
     if (parts != nullptr) {
       const tinyusdz::tydra::RenderMesh &mesh =
           scene.meshes[static_cast<size_t>(node.id)];
+      TinyUsdPrimMetadata metadata = mergeTinyUsdMetadata(
+          tinyUsdInheritedPrimMetadata(stage, node.abs_path),
+          tinyUsdInheritedPrimMetadata(stage, mesh.abs_path));
+      if (metadata.displayName.empty()) {
+        metadata.displayName =
+            !node.display_name.empty() ? node.display_name : mesh.display_name;
+      }
+      if (metadata.primType.empty()) {
+        metadata.primType = "Mesh";
+      }
       for (const TinyMeshPart &part : *parts) {
         const glm::vec4 color =
             colorFromTinyUsdMaterial(scene, mesh, part.materialId);
@@ -1881,24 +3720,36 @@ void appendTinyUsdNode(
             static_cast<size_t>(node.id) < scene.meshes.size()
                 ? scene.meshes[static_cast<size_t>(node.id)].doubleSided
                 : true;
-        element.guid = node.abs_path.empty()
-                           ? "usd-node-" + std::to_string(node.id)
-                           : node.abs_path + "#" + std::to_string(part.meshId);
-        element.type = "UsdGeomMesh";
+        element.guid = tinyUsdElementGuid(metadata, node.abs_path, "usd-node-",
+                                          node.id, part.meshId);
+        element.type = tinyUsdElementType(metadata, "UsdGeomMesh", true);
+        element.displayName = metadata.displayName;
+        element.objectType = metadata.objectType;
+        element.storeyName = metadata.storeyName;
+        element.storeyId = metadata.storeyId;
+        element.materialName = metadata.materialName;
+        element.materialCategory = metadata.materialCategory;
+        element.discipline = metadata.discipline;
+        element.phase = metadata.phase;
+        element.fireRating = metadata.fireRating;
+        element.loadBearing = metadata.loadBearing;
+        element.status = metadata.status;
+        element.sourceId =
+            !metadata.path.empty() ? metadata.path : node.abs_path;
         model.elements.push_back(std::move(element));
       }
     }
   }
 
   for (const tinyusdz::tydra::Node &child : node.children) {
-    appendTinyUsdNode(model, scene, child, importTransform, loadedMeshes,
+    appendTinyUsdNode(model, stage, scene, child, importTransform, loadedMeshes,
                       handledInstancePaths, handledInstance);
   }
 }
 
 void appendTinyUsdInstances(
-    dotbim::Model &model, const tinyusdz::tydra::RenderScene &scene,
-    const glm::mat4 &importTransform,
+    dotbim::Model &model, const tinyusdz::Stage &stage,
+    const tinyusdz::tydra::RenderScene &scene, const glm::mat4 &importTransform,
     std::unordered_map<int32_t, std::vector<TinyMeshPart>> &loadedMeshes) {
   for (const tinyusdz::tydra::RenderInstance &instance : scene.instances) {
     if (!instance.visible || instance.mesh_id < 0) {
@@ -1913,6 +3764,14 @@ void appendTinyUsdInstances(
 
     const tinyusdz::tydra::RenderMesh &mesh =
         scene.meshes[static_cast<size_t>(instance.mesh_id)];
+    TinyUsdPrimMetadata metadata = mergeTinyUsdMetadata(
+        tinyUsdInheritedPrimMetadata(stage, instance.abs_path),
+        tinyUsdInheritedPrimMetadata(stage, mesh.abs_path));
+    if (metadata.displayName.empty()) {
+      metadata.displayName = !instance.display_name.empty()
+                                 ? instance.display_name
+                                 : mesh.display_name;
+    }
     for (const TinyMeshPart &part : *parts) {
       const int materialId =
           instance.material_id >= 0 ? instance.material_id : part.materialId;
@@ -1927,10 +3786,23 @@ void appendTinyUsdInstances(
               ? scene.meshes[static_cast<size_t>(instance.mesh_id)].doubleSided
               : true;
       element.guid =
-          instance.abs_path.empty()
-              ? "usd-instance-" + std::to_string(instance.mesh_id)
-              : instance.abs_path + "#" + std::to_string(part.meshId);
-      element.type = "UsdGeomMeshInstance";
+          tinyUsdElementGuid(metadata, instance.abs_path, "usd-instance-",
+                             instance.mesh_id, part.meshId);
+      element.type =
+          tinyUsdElementType(metadata, "UsdGeomMeshInstance", false);
+      element.displayName = metadata.displayName;
+      element.objectType = metadata.objectType;
+      element.storeyName = metadata.storeyName;
+      element.storeyId = metadata.storeyId;
+      element.materialName = metadata.materialName;
+      element.materialCategory = metadata.materialCategory;
+      element.discipline = metadata.discipline;
+      element.phase = metadata.phase;
+      element.fireRating = metadata.fireRating;
+      element.loadBearing = metadata.loadBearing;
+      element.status = metadata.status;
+      element.sourceId =
+          !metadata.path.empty() ? metadata.path : instance.abs_path;
       model.elements.push_back(std::move(element));
     }
   }
@@ -1947,12 +3819,13 @@ dotbim::Model modelFromTinyUsdStage(const tinyusdz::Stage &stage,
   env.usd_filename = filename;
   env.scene_config.load_texture_assets = false;
   env.set_search_paths({sourceDir});
-  if (!converter.ConvertToRenderScene(env, &scene)) {
-    const std::string converterError = converter.GetError();
-    throw std::runtime_error(
-        "TinyUSDZ failed to convert USD scene '" + filename +
-        "': " + (converterError.empty() ? "unknown error" : converterError));
+  const bool convertedScene = converter.ConvertToRenderScene(env, &scene);
+  std::string converterError;
+  if (!convertedScene) {
+    converterError = converter.GetError();
+    scene = tinyusdz::tydra::RenderScene{};
   }
+  appendTinyUsdPointMaterialsFromStage(scene, stage, env);
 
   dotbim::Model model{};
   model.materials.reserve(scene.materials.size());
@@ -1976,16 +3849,37 @@ dotbim::Model modelFromTinyUsdStage(const tinyusdz::Stage &stage,
   if (stage.metas().upAxis.authored()) {
     upAxis = stage.metas().upAxis.get_value();
   }
+  double metersPerUnit = 1.0;
+  if (stage.metas().metersPerUnit.authored()) {
+    metersPerUnit = stage.metas().metersPerUnit.get_value();
+  }
+  const StageUnitMetadata stageUnits{
+      .authored = stage.metas().metersPerUnit.authored(),
+      .metersPerUnit = sanitizeUsdMetersPerUnit(metersPerUnit),
+  };
+  model.unitMetadata = makeUnitMetadata(stageUnits, importScale);
+  applySourceUpAxis(model, upAxis == tinyusdz::Axis::Z ? "Z" : "Y");
+  const float unitScale =
+      sanitizeImportScale(importScale) *
+      (stageUnits.authored ? stageUnits.metersPerUnit : 1.0f);
   const glm::mat4 importTransform =
       (upAxis == tinyusdz::Axis::Z
            ? container::geometry::zUpForwardYToRendererAxes()
            : glm::mat4(1.0f)) *
-      glm::scale(glm::mat4(1.0f), glm::vec3(sanitizeImportScale(importScale)));
+      glm::scale(glm::mat4(1.0f), glm::vec3(unitScale));
   for (const tinyusdz::tydra::Node &node : scene.nodes) {
-    appendTinyUsdNode(model, scene, node, importTransform, loadedMeshes,
+    appendTinyUsdNode(model, stage, scene, node, importTransform, loadedMeshes,
                       handledInstancePaths, false);
   }
-  appendTinyUsdInstances(model, scene, importTransform, loadedMeshes);
+  appendTinyUsdInstances(model, stage, scene, importTransform, loadedMeshes);
+  appendTinyUsdPointsFromStage(model, stage, scene, importTransform);
+  applyTinyUsdPointsMaterialFallbacks(model, stage, scene);
+  fillTinyUsdElementDisplayNameFallbacks(model);
+  if (!convertedScene && !hasRenderableGeometry(model)) {
+    throw std::runtime_error(
+        "TinyUSDZ failed to convert USD scene '" + filename +
+        "': " + (converterError.empty() ? "unknown error" : converterError));
+  }
   return model;
 }
 
@@ -2183,16 +4077,25 @@ dotbim::Model LoadFromText(std::string_view usdText, float importScale) {
   const std::vector<Node> nodes = parser.parse();
 
   dotbim::Model model{};
+  const StageUnitMetadata stageUnits = stageMetersPerUnitFromText(usdText);
+  model.unitMetadata = makeUnitMetadata(stageUnits, importScale);
+  const std::string sourceUpAxis = stageUpAxisFromText(usdText);
+  applySourceUpAxis(model, sourceUpAxis);
   std::vector<std::optional<glm::mat4>> transformCache(nodes.size());
+  const float unitScale =
+      sanitizeImportScale(importScale) *
+      (stageUnits.authored ? stageUnits.metersPerUnit : 1.0f);
   const glm::mat4 importTransform =
-      container::geometry::usdUpAxisToRendererAxes(
-          stageUpAxisFromText(usdText)) *
-      glm::scale(glm::mat4(1.0f), glm::vec3(sanitizeImportScale(importScale)));
+      container::geometry::usdUpAxisToRendererAxes(sourceUpAxis) *
+      glm::scale(glm::mat4(1.0f), glm::vec3(unitScale));
 
   uint32_t nextMeshId = 0;
   for (size_t nodeIndex = 0; nodeIndex < nodes.size(); ++nodeIndex) {
     const Node &node = nodes[nodeIndex];
-    if (node.typeName != "Mesh" || node.mesh.points.empty() ||
+    const bool isMesh = node.typeName == "Mesh";
+    const bool isPoints = node.typeName == "Points";
+    const bool isBasisCurves = node.typeName == "BasisCurves";
+    if ((!isMesh && !isPoints && !isBasisCurves) || node.mesh.points.empty() ||
         !nodeVisible(static_cast<int>(nodeIndex), nodes)) {
       continue;
     }
@@ -2200,21 +4103,77 @@ dotbim::Model LoadFromText(std::string_view usdText, float importScale) {
     const glm::vec4 color = inheritedColor(static_cast<int>(nodeIndex), nodes);
     const uint32_t meshId = nextMeshId++;
     const size_t meshRangeCount = model.meshRanges.size();
-    appendMesh(model, node.mesh, meshId, node.path, color);
+    if (isPoints) {
+      appendPointPlaceholders(model, node.mesh, meshId, node.path, color);
+    } else if (isBasisCurves) {
+      appendBasisCurvePlaceholders(model, node.mesh, meshId, node.path, color);
+    } else {
+      appendMesh(model, node.mesh, meshId, node.path, color);
+    }
     if (model.meshRanges.size() == meshRangeCount) {
       continue;
     }
 
     dotbim::Element element{};
     element.meshId = meshId;
+    element.geometryKind = isPoints   ? dotbim::GeometryKind::Points
+                           : isBasisCurves
+                               ? dotbim::GeometryKind::Curves
+                               : dotbim::GeometryKind::Mesh;
     element.transform =
         importTransform *
         nodeWorldTransform(static_cast<int>(nodeIndex), nodes, transformCache);
     element.color = color;
     element.doubleSided =
         inheritedDoubleSided(static_cast<int>(nodeIndex), nodes);
-    element.guid = node.path;
-    element.type = "UsdGeomMesh";
+    element.guid =
+        inheritedGuid(static_cast<int>(nodeIndex), nodes).value_or(node.path);
+    element.type = inheritedSemanticType(static_cast<int>(nodeIndex), nodes);
+    element.displayName =
+        inheritedNodeString(static_cast<int>(nodeIndex), nodes,
+                            &Node::displayName)
+            .value_or("");
+    if (element.displayName.empty()) {
+      element.displayName = !node.name.empty() ? node.name : node.path;
+    }
+    element.objectType =
+        inheritedNodeString(static_cast<int>(nodeIndex), nodes,
+                            &Node::objectType)
+            .value_or("");
+    element.storeyName =
+        inheritedNodeString(static_cast<int>(nodeIndex), nodes,
+                            &Node::storeyName)
+            .value_or("");
+    element.storeyId =
+        inheritedNodeString(static_cast<int>(nodeIndex), nodes, &Node::storeyId)
+            .value_or("");
+    element.materialName =
+        inheritedNodeString(static_cast<int>(nodeIndex), nodes,
+                            &Node::materialName)
+            .value_or("");
+    element.materialCategory =
+        inheritedNodeString(static_cast<int>(nodeIndex), nodes,
+                            &Node::materialCategory)
+            .value_or("");
+    element.discipline =
+        inheritedNodeString(static_cast<int>(nodeIndex), nodes,
+                            &Node::discipline)
+            .value_or("");
+    element.phase =
+        inheritedNodeString(static_cast<int>(nodeIndex), nodes, &Node::phase)
+            .value_or("");
+    element.fireRating =
+        inheritedNodeString(static_cast<int>(nodeIndex), nodes,
+                            &Node::fireRating)
+            .value_or("");
+    element.loadBearing =
+        inheritedNodeString(static_cast<int>(nodeIndex), nodes,
+                            &Node::loadBearing)
+            .value_or("");
+    element.status =
+        inheritedNodeString(static_cast<int>(nodeIndex), nodes, &Node::status)
+            .value_or("");
+    element.sourceId = node.path;
     model.elements.push_back(std::move(element));
   }
 

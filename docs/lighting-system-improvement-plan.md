@@ -94,7 +94,8 @@ Depth Prepass → G-Buffer Fill (4 MRTs) → OIT Clear
 
 ### Point Light Rendering Cost (Per Light)
 
-The point light loop in `FrameRecorder::recordLightingPass()` (lines 304–326) performs per light:
+The point light loop now reached from
+`DeferredRasterLightingPassRecorder::record()` performs per light:
 
 1. `vkCmdClearAttachments` — stencil clear
 2. `vkCmdBindPipeline` — stencil volume pipeline
@@ -269,7 +270,7 @@ Matching Slang structs added to `lighting_structs.slang` (`SHADOW_CASCADE_COUNT`
 | `FrameResourceManager` descriptor expansion | ✅ | Lighting layout expanded from 7 → 10 bindings (7=shadow UBO, 8=shadow atlas SAMPLED_IMAGE, 9=shadow comparison SAMPLER); pool sizes updated; `updateDescriptorSets()` accepts shadow params |
 | `FrameRecorder` render graph integration | ✅ | 4 `ShadowCascade0..3` passes added between `OitClear` and `Lighting`; `recordShadowPass()` method renders all opaque geometry per cascade |
 | `cmake/Shaders.cmake` exclude filter | ✅ | `shadow_common.slang` excluded from compilation (include-only) |
-| `src/CMakeLists.txt` | ✅ | `renderer/ShadowManager.cpp` added to `VulkanSceneRenderer_renderer` library |
+| `src/CMakeLists.txt` | ✅ | `renderer/shadow/ShadowManager.cpp` added to `VulkanSceneRenderer_renderer` library |
 | `RendererFrontend` wiring | ✅ | `ShadowManager` in `OwnedSubsystems`; `createResources()` + `createFramebuffers()` in `initialize()`; per-frame `update()` with camera/aspect/lightDirection; shadow descriptor set + framebuffers passed to `FrameRecordParams`; shadow UBO/atlas/sampler passed to `updateDescriptorSets()` |
 | `shadow_depth.slang` binding fix | ✅ | Corrected descriptor bindings to `(1,0)` for ObjectBuffer SSBO (scene set 0, binding 1) and `(0,1)` for ShadowBuffer UBO (shadow set 1, binding 0) |
 | Build verification | ✅ | C++ build successful |
@@ -321,7 +322,7 @@ lambda = 0.75
 All core CSM infrastructure is fully wired:
 
 1. ✅ `shadow_common.slang` excluded from Shaders.cmake (include-only file)
-2. ✅ `renderer/ShadowManager.cpp` added to `src/CMakeLists.txt`
+2. ✅ `renderer/shadow/ShadowManager.cpp` added to `src/CMakeLists.txt`
 3. ✅ `shadow_depth.slang` descriptor bindings corrected (`binding(1,0)` for ObjectBuffer, `binding(0,1)` for ShadowBuffer)
 4. ✅ `ShadowManager` wired into `RendererFrontend`:
    - `std::unique_ptr<ShadowManager> shadowManager` in `OwnedSubsystems`
@@ -500,7 +501,7 @@ Phase 5 adds two major lighting quality improvements:
 
 #### Implementation Summary
 
-1. ✅ **Created `EnvironmentManager` class** (`include/Container/renderer/EnvironmentManager.h`, `src/renderer/EnvironmentManager.cpp`):
+1. ✅ **Created `EnvironmentManager` class** (`include/Container/renderer/lighting/EnvironmentManager.h`, `src/renderer/lighting/EnvironmentManager.cpp`):
    - Owns BRDF LUT (512×512 RG16F), placeholder irradiance/prefiltered cubemaps (1×1 white), all samplers
    - `createResources()` generates BRDF LUT via one-time compute dispatch at startup
    - `createPlaceholderCubemaps()` creates white 1×1 RGBA16F cubemaps (6 layers) — ready for HDR environment loading
@@ -561,7 +562,7 @@ Phase 5 adds two major lighting quality improvements:
 
 6. ✅ **`cmake/Shaders.cmake`** — all Phase 5 shaders excluded from vert/frag glob, added as explicit compute entries
 
-7. ✅ **`src/CMakeLists.txt`** — `renderer/EnvironmentManager.cpp` added to `VulkanSceneRenderer_renderer`
+7. ✅ **`src/CMakeLists.txt`** — `renderer/lighting/EnvironmentManager.cpp` added to `VulkanSceneRenderer_renderer`
 
 ### Render Graph Order (Updated)
 
@@ -642,8 +643,8 @@ Currently every mesh is drawn unconditionally in every pass (depth prepass, G-Bu
 
 #### GpuCullManager (New Class)
 
-- **Header:** `include/Container/renderer/GpuCullManager.h`
-- **Implementation:** `src/renderer/GpuCullManager.cpp`
+- **Header:** `include/Container/renderer/culling/GpuCullManager.h`
+- **Implementation:** `src/renderer/culling/GpuCullManager.cpp`
 - **Frustum cull pipeline:** 5-binding descriptor set (camera UBO, object SSBO, input draws, output draws, draw count) + push constants for object count
 - **Occlusion cull pipeline:** 8-binding descriptor set (camera UBO, object SSBO, input draws, output draws, occlusion count, Hi-Z sampled image, frustum draw count, Hi-Z sampler) + push constants
 - **Hi-Z generation pipeline:** 3-binding descriptor set (source sampled image, sampler, destination storage image) + push constants for mip dimensions
@@ -692,16 +693,16 @@ Currently every mesh is drawn unconditionally in every pass (depth prepass, G-Bu
 #### Build System
 
 - `cmake/Shaders.cmake` — exclude filters + explicit compute entries for 3 new shaders
-- `src/CMakeLists.txt` — added `renderer/GpuCullManager.cpp`
+- `src/CMakeLists.txt` — added `renderer/culling/GpuCullManager.cpp`
 
 ### Files Modified
 
 | File | Change |
 |---|---|
 | `include/Container/utility/SceneData.h` | `ObjectData.boundingSphere`, new GPU-driven structs |
-| `src/renderer/SceneController.cpp` | Bounding sphere computation |
-| `include/Container/renderer/GpuCullManager.h` | **New** — GPU cull manager class |
-| `src/renderer/GpuCullManager.cpp` | **New** — full implementation |
+| `src/renderer/scene/SceneController.cpp` | Bounding sphere computation |
+| `include/Container/renderer/culling/GpuCullManager.h` | **New** — GPU cull manager class |
+| `src/renderer/culling/GpuCullManager.cpp` | **New** — full implementation |
 | `shaders/frustum_cull.slang` | **New** — frustum cull compute |
 | `shaders/hiz_generate.slang` | **New** — Hi-Z mip generation |
 | `shaders/occlusion_cull.slang` | **New** — full Hi-Z occlusion cull (sphere projection, mip selection, 4-corner sampling) |
@@ -715,15 +716,15 @@ Currently every mesh is drawn unconditionally in every pass (depth prepass, G-Bu
 | `shaders/surface_normals.slang` | ObjectBuffer + SV_InstanceID |
 | `shaders/wireframe_debug.slang` | ObjectBuffer + SV_InstanceID |
 | `shaders/wireframe_fallback.slang` | ObjectBuffer + SV_InstanceID |
-| `src/renderer/DebugOverlayRenderer.cpp` | firstInstance = dc.objectIndex in all draw calls |
-| `src/renderer/FrameRecorder.cpp` | GpuCullManager wiring, FrustumCull pass, indirect draw paths |
-| `include/Container/renderer/FrameRecorder.h` | GpuCullManager params |
-| `include/Container/renderer/RendererFrontend.h` | GpuCullManager ownership |
-| `src/renderer/RendererFrontend.cpp` | GpuCullManager creation + wiring, `collectStats()` at frame start, F8 freeze toggle |
+| `src/renderer/debug/DebugOverlayRenderer.cpp` | firstInstance = dc.objectIndex in all draw calls |
+| `src/renderer/core/FrameRecorder.cpp` | GpuCullManager wiring, FrustumCull pass, indirect draw paths |
+| `include/Container/renderer/core/FrameRecorder.h` | GpuCullManager params |
+| `include/Container/renderer/core/RendererFrontend.h` | GpuCullManager ownership |
+| `src/renderer/core/RendererFrontend.cpp` | GpuCullManager creation + wiring, `collectStats()` at frame start, F8 freeze toggle |
 | `include/Container/utility/GuiManager.h` | `setCullStats()`, `setFreezeCulling()`, `freezeCullingRequested()` methods |
 | `src/utility/GuiManager.cpp` | Stats display, freeze checkbox + orange indicator in Scene Controls |
-| `include/Container/renderer/DebugRenderState.h` | `freezeCulling` + `freezeCullingKeyDown` fields |
-| `include/Container/renderer/FrameRecorder.h` | `debugFreezeCulling` in FrameRecordParams |
+| `include/Container/renderer/debug/DebugRenderState.h` | `freezeCulling` + `freezeCullingKeyDown` fields |
+| `include/Container/renderer/core/FrameRecorder.h` | `debugFreezeCulling` in FrameRecordParams |
 | `cmake/Shaders.cmake` | 3 new compute shader entries |
 | `src/CMakeLists.txt` | GpuCullManager.cpp source |
 
@@ -754,24 +755,24 @@ Currently every mesh is drawn unconditionally in every pass (depth prepass, G-Bu
 | File | Role | Phase |
 |---|---|---|
 | `include/Container/utility/SceneData.h` | `LightingData`, `PointLightData`, `ShadowData`, `ShadowCascadeData`, `ShadowPushConstants`, `TileLightGrid`, `TileCullPushConstants`, constants | 1, 3, 4 |
-| `include/Container/renderer/LightingManager.h` | `LightingManager` class, `SceneLightingAnchor`, `LightPushConstants`, tiled culling | 4 |
-| `src/renderer/LightingManager.cpp` | Light data computation, descriptor setup, gizmo drawing, tiled culling dispatch | 4 |
-| `include/Container/renderer/ShadowManager.h` | `ShadowManager` class — owns shadow atlas, UBO, sampler, framebuffers, cascade computation | 3 |
-| `src/renderer/ShadowManager.cpp` | Shadow manager implementation — cascade splits, viewProj, VMA image/buffer allocation | 3 |
-| `include/Container/renderer/EnvironmentManager.h` | `EnvironmentManager` class — BRDF LUT, placeholder cubemaps, GTAO compute dispatch, IBL accessors | 5 |
-| `src/renderer/EnvironmentManager.cpp` | IBL resource creation (BRDF LUT compute, cubemaps, samplers), GTAO pipelines/textures, per-frame dispatch | 5 |
-| `include/Container/renderer/FrameRecorder.h` | `FrameRecordParams` (shadow/tiled/camera/gpuCullManager params), `recordShadowPass()` | 3, 4, 6 |
-| `src/renderer/FrameRecorder.cpp` | Render pass recording; shadow cascade + tile cull + GTAO + frustum cull + indirect draw + lighting passes in render graph | 3, 4, 5, 6 |
-| `include/Container/renderer/FrameResources.h` | Per-frame GPU resources (framebuffers, descriptor sets, `depthSamplingView`) | 2 |
-| `include/Container/renderer/FrameResourceManager.h` | Descriptor layout creation (17-binding lighting layout with shadow 7–9, IBL 10–14, AO 15–16) | 2, 3, 5 |
-| `src/renderer/FrameResourceManager.cpp` | Attachment/framebuffer/descriptor creation, `updateDescriptorSets()` with shadow/IBL/AO params | 2, 3, 5 |
-| `include/Container/renderer/RenderPassManager.h` | `RenderPasses` struct (includes `shadow` render pass) | 3 |
-| `src/renderer/RenderPassManager.cpp` | Render pass creation (depth prepass, G-Buffer, shadow, lighting, post-process) | 2, 3 |
-| `include/Container/renderer/PipelineTypes.h` | `PipelineLayouts` (shadow, tiledLighting), `GraphicsPipelines` (shadowDepth, tiledPointLight), descriptor layouts | 3, 4 |
-| `include/Container/renderer/GraphicsPipelineBuilder.h` | Pipeline builder interface | 3 |
-| `src/renderer/GraphicsPipelineBuilder.cpp` | Shadow depth + tiled lighting pipeline creation | 3, 4 |
-| `include/Container/renderer/RendererFrontend.h` | `OwnedSubsystems` (shadowManager, environmentManager, gpuCullManager), `buildFrameRecordParams()` | 3, 5, 6 |
-| `src/renderer/RendererFrontend.cpp` | ShadowManager + EnvironmentManager + GpuCullManager wiring, IBL/AO descriptor updates | 3, 5, 6 |
+| `include/Container/renderer/lighting/LightingManager.h` | `LightingManager` class, `SceneLightingAnchor`, `LightPushConstants`, tiled culling | 4 |
+| `src/renderer/lighting/LightingManager.cpp` | Light data computation, descriptor setup, gizmo drawing, tiled culling dispatch | 4 |
+| `include/Container/renderer/shadow/ShadowManager.h` | `ShadowManager` class — owns shadow atlas, UBO, sampler, framebuffers, cascade computation | 3 |
+| `src/renderer/shadow/ShadowManager.cpp` | Shadow manager implementation — cascade splits, viewProj, VMA image/buffer allocation | 3 |
+| `include/Container/renderer/lighting/EnvironmentManager.h` | `EnvironmentManager` class — BRDF LUT, placeholder cubemaps, GTAO compute dispatch, IBL accessors | 5 |
+| `src/renderer/lighting/EnvironmentManager.cpp` | IBL resource creation (BRDF LUT compute, cubemaps, samplers), GTAO pipelines/textures, per-frame dispatch | 5 |
+| `include/Container/renderer/core/FrameRecorder.h` | `FrameRecordParams` (shadow/tiled/camera/gpuCullManager params), `recordShadowPass()` | 3, 4, 6 |
+| `src/renderer/core/FrameRecorder.cpp` | Render pass recording; shadow cascade + tile cull + GTAO + frustum cull + indirect draw + lighting passes in render graph | 3, 4, 5, 6 |
+| `include/Container/renderer/resources/FrameResources.h` | Per-frame GPU resources (framebuffers, descriptor sets, `depthSamplingView`) | 2 |
+| `include/Container/renderer/resources/FrameResourceManager.h` | Descriptor layout creation (17-binding lighting layout with shadow 7–9, IBL 10–14, AO 15–16) | 2, 3, 5 |
+| `src/renderer/resources/FrameResourceManager.cpp` | Attachment/framebuffer/descriptor creation, `updateDescriptorSets()` with shadow/IBL/AO params | 2, 3, 5 |
+| `include/Container/renderer/core/RenderPassManager.h` | `RenderPasses` struct (includes `shadow` render pass) | 3 |
+| `src/renderer/core/RenderPassManager.cpp` | Render pass creation (depth prepass, G-Buffer, shadow, lighting, post-process) | 2, 3 |
+| `include/Container/renderer/pipeline/PipelineTypes.h` | `PipelineLayouts` (shadow, tiledLighting), `GraphicsPipelines` (shadowDepth, tiledPointLight), descriptor layouts | 3, 4 |
+| `include/Container/renderer/pipeline/GraphicsPipelineBuilder.h` | Pipeline builder interface | 3 |
+| `src/renderer/pipeline/GraphicsPipelineBuilder.cpp` | Shadow depth + tiled lighting pipeline creation | 3, 4 |
+| `include/Container/renderer/core/RendererFrontend.h` | `OwnedSubsystems` (shadowManager, environmentManager, gpuCullManager), `buildFrameRecordParams()` | 3, 5, 6 |
+| `src/renderer/core/RendererFrontend.cpp` | ShadowManager + EnvironmentManager + GpuCullManager wiring, IBL/AO descriptor updates | 3, 5, 6 |
 
 ### Shader Files (Lighting-Related)
 
@@ -811,8 +812,8 @@ Currently every mesh is drawn unconditionally in every pass (depth prepass, G-Bu
 | 6 | `shaders/frustum_cull.slang` | Compute shader | ✅ Created |
 | 6 | `shaders/hiz_generate.slang` | Compute shader | ✅ Created |
 | 6 | `shaders/occlusion_cull.slang` | Compute shader | ✅ Created (full Hi-Z implementation) |
-| 6 | `include/Container/renderer/GpuCullManager.h` | C++ header | ✅ Created |
-| 6 | `src/renderer/GpuCullManager.cpp` | C++ source | ✅ Created |
+| 6 | `include/Container/renderer/culling/GpuCullManager.h` | C++ header | ✅ Created |
+| 6 | `src/renderer/culling/GpuCullManager.cpp` | C++ source | ✅ Created |
 
 ### Files Created (Bloom)
 
@@ -820,8 +821,8 @@ Currently every mesh is drawn unconditionally in every pass (depth prepass, G-Bu
 |---|---|---|---|
 | Bloom | `shaders/bloom_downsample.slang` | Compute shader | ✅ Created (13-tap downsample, Jimenez 2014, soft knee threshold, Karis 2014) |
 | Bloom | `shaders/bloom_upsample.slang` | Compute shader | ✅ Created (9-tap tent filter upsample, additive blend) |
-| Bloom | `include/Container/renderer/BloomManager.h` | C++ header | ✅ Created |
-| Bloom | `src/renderer/BloomManager.cpp` | C++ source | ✅ Created |
+| Bloom | `include/Container/renderer/effects/BloomManager.h` | C++ header | ✅ Created |
+| Bloom | `src/renderer/effects/BloomManager.cpp` | C++ source | ✅ Created |
 
 ---
 
@@ -880,16 +881,16 @@ samples the bloom result via descriptor set bindings 7–8.
 |---|---|
 | `shaders/post_process.slang` | Added bloom texture/sampler bindings (7–8), bloom compositing before tone mapping, shadow cascade debug view (outputMode 11) |
 | `include/Container/utility/SceneData.h` | Extended `PostProcessPushConstants` with `bloomEnabled`, `bloomIntensity`, `cameraNear`, `cameraFar`, `cascadeSplits[4]`, `tileCountX`, `totalLights` |
-| `src/renderer/FrameRecorder.cpp` | Added Bloom render graph pass, bloom push constant fields |
-| `include/Container/renderer/FrameRecorder.h` | Added `BloomManager*` to `FrameRecordParams` and constructor |
-| `src/renderer/RendererFrontend.cpp` | BloomManager lifecycle, descriptor updates, GUI bidirectional sync |
-| `include/Container/renderer/RendererFrontend.h` | Added `unique_ptr<BloomManager>` to `OwnedSubsystems` |
-| `src/renderer/FrameResourceManager.cpp` | Extended post-process descriptor layout (7→9 bindings), pool sizes, descriptor writes |
-| `include/Container/renderer/FrameResourceManager.h` | Extended `updateDescriptorSets()` signature |
+| `src/renderer/core/FrameRecorder.cpp` | Added Bloom render graph pass, bloom push constant fields |
+| `include/Container/renderer/core/FrameRecorder.h` | Added `BloomManager*` to `FrameRecordParams` and constructor |
+| `src/renderer/core/RendererFrontend.cpp` | BloomManager lifecycle, descriptor updates, GUI bidirectional sync |
+| `include/Container/renderer/core/RendererFrontend.h` | Added `unique_ptr<BloomManager>` to `OwnedSubsystems` |
+| `src/renderer/resources/FrameResourceManager.cpp` | Extended post-process descriptor layout (7→9 bindings), pool sizes, descriptor writes |
+| `include/Container/renderer/resources/FrameResourceManager.h` | Extended `updateDescriptorSets()` signature |
 | `src/utility/GuiManager.cpp` | Added bloom GUI section (checkbox + sliders), `setBloomSettings()` |
 | `include/Container/utility/GuiManager.h` | Added bloom settings members and accessors |
 | `cmake/Shaders.cmake` | Added bloom shader compilation entries |
-| `src/CMakeLists.txt` | Added `renderer/BloomManager.cpp` |
+| `src/CMakeLists.txt` | Added `renderer/effects/BloomManager.cpp` |
 
 ---
 

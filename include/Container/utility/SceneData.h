@@ -25,7 +25,8 @@ struct ObjectData {
   alignas(16) glm::vec4 normalMatrix0{1.0f, 0.0f, 0.0f, 0.0f};
   alignas(16) glm::vec4 normalMatrix1{0.0f, 1.0f, 0.0f, 0.0f};
   alignas(16) glm::vec4 normalMatrix2{0.0f, 0.0f, 1.0f, 0.0f};
-  // x = material index; y = object flags; z = pick ID source mask; w reserved.
+  // x = material index; y = object flags; z = pick ID source mask;
+  // w = optional semantic/material class id for sidecar renderers.
   alignas(16) glm::uvec4 objectInfo{0, 0, 0, 0};
   // Bounding sphere in world space: xyz = center, w = radius.
   alignas(16) glm::vec4 boundingSphere{0.0f, 0.0f, 0.0f, 0.0f};
@@ -125,6 +126,18 @@ struct NormalValidationSettings
 
 struct BindlessPushConstants {
   uint32_t objectIndex{0};
+  uint32_t sectionPlaneEnabled{0};
+  uint32_t semanticColorMode{0};
+  uint32_t padding0{0};
+  alignas(16) glm::vec4 sectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
+};
+
+struct SceneClipState {
+  uint32_t boxClipEnabled{0};
+  uint32_t boxClipInvert{0};
+  uint32_t boxClipPlaneCount{0};
+  uint32_t padding0{0};
+  alignas(16) glm::vec4 boxClipPlanes[6]{};
 };
 
 inline constexpr uint32_t kObjectFlagAlphaMask = 1u << 0;
@@ -161,7 +174,17 @@ inline constexpr uint32_t kMaxAreaLights = 256;
 inline constexpr float kAreaLightTypeRectangle = 0.0f;
 inline constexpr float kAreaLightTypeDisk = 1.0f;
 inline constexpr uint32_t kShadowCascadeCount = 4;
-inline constexpr uint32_t kShadowMapResolution = 2048;
+inline constexpr uint32_t kShadowMapResolution = 4096;
+inline constexpr uint32_t kLocalShadowMapResolution = 2048;
+inline constexpr uint32_t kMaxShadowedLocalLightLayers = 24;
+inline constexpr uint32_t kLocalShadowPointFaceCount = 6;
+inline constexpr uint32_t kLocalShadowSpotLayerCount = 1;
+inline constexpr uint32_t kLocalShadowAreaLayerCount = 1;
+inline constexpr uint32_t kLocalShadowAreaRefPackedCount =
+    (kMaxAreaLights + 3u) / 4u;
+inline constexpr float kLocalShadowTypePoint = 0.0f;
+inline constexpr float kLocalShadowTypeSpot = 1.0f;
+inline constexpr float kLocalShadowTypeArea = 2.0f;
 
 struct LightingSettings {
   uint32_t preset{0};
@@ -170,6 +193,7 @@ struct LightingSettings {
   float intensityScale{1.0f};
   float directionalIntensity{2.0f};
   float environmentIntensity{1.0f};
+  float bounceIntensity{0.35f};
 };
 
 struct LightCullingStats {
@@ -193,6 +217,7 @@ struct ShadowSettings {
   float maxDepthBias{0.006f};
   float rasterConstantBias{-4.0f};
   float rasterSlopeBias{-1.5f};
+  bool localContactVisibility{true};
 };
 
 struct ShadowCascadeData {
@@ -207,6 +232,36 @@ struct ShadowData {
   ShadowCascadeData cascades[kShadowCascadeCount];
   alignas(16) glm::vec4 biasSettings{1.5f, 3.5f, 0.0012f, 1.5f};
   alignas(16) glm::vec4 filterSettings{1.0f, 0.1f, 0.00035f, 0.006f};
+};
+
+struct LocalShadowLayerData {
+  alignas(16) glm::mat4 viewProj{1.0f};
+  // xyz = light/sample position, w = finite shadow range.
+  alignas(16) glm::vec4 positionRange{0.0f, 0.0f, 0.0f, 10.0f};
+  // xyz = layer forward direction, w = kLocalShadowType*.
+  alignas(16) glm::vec4 directionType{0.0f, 0.0f, -1.0f,
+                                      kLocalShadowTypePoint};
+  // x = source light index, y = face/sample index, z = layer count for the
+  // source light, w = enabled.
+  alignas(16) glm::uvec4 meta{0u, 0u, 0u, 0u};
+  // x = texel size in world units, y = depth range, z = outer cone cosine,
+  // w = source radius in world units for soft local-shadow filtering.
+  alignas(16) glm::vec4 params{0.0f, 0.0f, 0.0f, 0.0f};
+};
+
+struct LocalShadowData {
+  LocalShadowLayerData layers[kMaxShadowedLocalLightLayers];
+  // Packed base-layer refs for area lights: each scalar stores baseLayer + 1,
+  // or 0 when that area light has no local shadow layer.
+  alignas(16) glm::uvec4 areaLightRefs[kLocalShadowAreaRefPackedCount]{};
+  // x = active layer count, y = max layer count, z = map resolution,
+  // w = enabled.
+  alignas(16) glm::uvec4 counts{0u, kMaxShadowedLocalLightLayers,
+                                kLocalShadowMapResolution, 0u};
+  alignas(16) glm::vec4 biasSettings{1.5f, 3.5f, 0.0012f, 1.5f};
+  // x = base PCF radius in texels, y = max soft PCF radius in texels,
+  // z = constant depth bias, w = max depth bias.
+  alignas(16) glm::vec4 filterSettings{1.0f, 28.0f, 0.00035f, 0.006f};
 };
 
 struct ShadowCascadeCullData {
@@ -236,6 +291,9 @@ struct ShadowCullCountData {
 struct ShadowPushConstants {
   uint32_t objectIndex{0};
   uint32_t cascadeIndex{0};
+  uint32_t sectionPlaneEnabled{0};
+  uint32_t padding0{0};
+  alignas(16) glm::vec4 sectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
 };
 
 struct PointLightData {
@@ -315,7 +373,11 @@ struct LightingData {
   alignas(4) uint32_t prefilteredMipCount{1};
   alignas(4) float environmentIntensity{1.0f};
   alignas(4) uint32_t areaLightCount{0};
+  alignas(4) uint32_t localShadowEnabled{0};
+  alignas(4) float bounceIntensity{0.35f};
+  alignas(4) uint32_t padding0{0};
   alignas(4) uint32_t padding1{0};
+  alignas(4) uint32_t padding2{0};
 };
 
 struct TileLightGrid {
@@ -338,6 +400,9 @@ struct TiledLightingPushConstants {
   uint32_t depthSliceCount{kClusterDepthSlices};
   float cameraNear{0.1f};
   float cameraFar{100.0f};
+  uint32_t contactVisibilityEnabled{0};
+  uint32_t localShadowEnabled{0};
+  float bounceIntensity{0.35f};
 };
 
 // GPU-driven rendering: matches VkDrawIndexedIndirectCommand layout.
@@ -535,7 +600,7 @@ static_assert(offsetof(AreaLightData, tangentHalfSize) == 48,
 static_assert(offsetof(AreaLightData, bitangentHalfSize) == 64,
               "AreaLightData.bitangentHalfSize offset");
 
-static_assert(sizeof(LightingData) == 64,
+static_assert(sizeof(LightingData) == 80,
               "LightingData size mismatch with shaders/lighting_structs.slang "
               "LightingBuffer. Update shader layout in lockstep.");
 static_assert(alignof(LightingData) == 16,
@@ -558,8 +623,10 @@ static_assert(offsetof(LightingData, environmentIntensity) == 52,
               "LightingData.environmentIntensity offset");
 static_assert(offsetof(LightingData, areaLightCount) == 56,
               "LightingData.areaLightCount offset");
-static_assert(offsetof(LightingData, padding1) == 60,
-              "LightingData.padding1 offset");
+static_assert(offsetof(LightingData, localShadowEnabled) == 60,
+              "LightingData.localShadowEnabled offset");
+static_assert(offsetof(LightingData, bounceIntensity) == 64,
+              "LightingData.bounceIntensity offset");
 static_assert(sizeof(ShadowCascadeData) == 80,
               "ShadowCascadeData size mismatch with shader ShadowCascadeData.");
 static_assert(alignof(ShadowCascadeData) == 16,
@@ -575,9 +642,9 @@ static_assert(offsetof(ShadowCascadeData, worldRadius) == 72,
 static_assert(offsetof(ShadowCascadeData, depthRange) == 76,
               "ShadowCascadeData.depthRange offset");
 
-static_assert(sizeof(ShadowSettings) == 40,
-              "ShadowSettings stores two float4 shader vectors plus raster "
-              "depth-bias controls.");
+static_assert(sizeof(ShadowSettings) == 44,
+              "ShadowSettings stores two float4 shader vectors, raster "
+              "depth-bias controls, and CPU contact-visibility state.");
 static_assert(offsetof(ShadowSettings, normalBiasMinTexels) == 0,
               "ShadowSettings.normalBiasMinTexels offset");
 static_assert(offsetof(ShadowSettings, normalBiasMaxTexels) == 4,
@@ -598,6 +665,8 @@ static_assert(offsetof(ShadowSettings, rasterConstantBias) == 32,
               "ShadowSettings.rasterConstantBias offset");
 static_assert(offsetof(ShadowSettings, rasterSlopeBias) == 36,
               "ShadowSettings.rasterSlopeBias offset");
+static_assert(offsetof(ShadowSettings, localContactVisibility) == 40,
+              "ShadowSettings.localContactVisibility offset");
 
 static_assert(sizeof(ShadowData) == 80 * kShadowCascadeCount + 32,
               "ShadowData size mismatch with shaders/lighting_structs.slang "
@@ -608,6 +677,47 @@ static_assert(offsetof(ShadowData, biasSettings) == 320,
               "ShadowData.biasSettings offset");
 static_assert(offsetof(ShadowData, filterSettings) == 336,
               "ShadowData.filterSettings offset");
+
+static_assert(sizeof(LocalShadowLayerData) == 128,
+              "LocalShadowLayerData size mismatch with shader "
+              "LocalShadowLayerData.");
+static_assert(alignof(LocalShadowLayerData) == 16,
+              "LocalShadowLayerData must be 16-byte aligned.");
+static_assert(offsetof(LocalShadowLayerData, viewProj) == 0,
+              "LocalShadowLayerData.viewProj offset");
+static_assert(offsetof(LocalShadowLayerData, positionRange) == 64,
+              "LocalShadowLayerData.positionRange offset");
+static_assert(offsetof(LocalShadowLayerData, directionType) == 80,
+              "LocalShadowLayerData.directionType offset");
+static_assert(offsetof(LocalShadowLayerData, meta) == 96,
+              "LocalShadowLayerData.meta offset");
+static_assert(offsetof(LocalShadowLayerData, params) == 112,
+              "LocalShadowLayerData.params offset");
+static_assert(sizeof(LocalShadowData) ==
+                  sizeof(LocalShadowLayerData) *
+                      kMaxShadowedLocalLightLayers +
+                      sizeof(glm::uvec4) * kLocalShadowAreaRefPackedCount +
+                      sizeof(glm::uvec4) + sizeof(glm::vec4) * 2,
+              "LocalShadowData size mismatch with shader LocalShadowBuffer.");
+static_assert(alignof(LocalShadowData) == 16,
+              "LocalShadowData must be 16-byte aligned.");
+static_assert(offsetof(LocalShadowData, layers) == 0,
+              "LocalShadowData.layers offset");
+static_assert(offsetof(LocalShadowData, areaLightRefs) ==
+                  sizeof(LocalShadowLayerData) *
+                      kMaxShadowedLocalLightLayers,
+              "LocalShadowData.areaLightRefs offset");
+static_assert(offsetof(LocalShadowData, counts) ==
+                  sizeof(LocalShadowLayerData) *
+                      kMaxShadowedLocalLightLayers +
+                      sizeof(glm::uvec4) * kLocalShadowAreaRefPackedCount,
+              "LocalShadowData.counts offset");
+static_assert(offsetof(LocalShadowData, biasSettings) ==
+                  offsetof(LocalShadowData, counts) + sizeof(glm::uvec4),
+              "LocalShadowData.biasSettings offset");
+static_assert(offsetof(LocalShadowData, filterSettings) ==
+                  offsetof(LocalShadowData, biasSettings) + sizeof(glm::vec4),
+              "LocalShadowData.filterSettings offset");
 
 static_assert(sizeof(ShadowCascadeCullData) == 192,
               "ShadowCascadeCullData size mismatch with shaders/lighting_structs.slang "
@@ -645,19 +755,29 @@ static_assert(offsetof(ShadowCullPushConstants, objectCount) == 12,
 static_assert(sizeof(ShadowCullCountData) == sizeof(uint32_t) * kShadowCascadeCount,
               "ShadowCullCountData stores one visible count per shadow cascade.");
 
-static_assert(sizeof(BindlessPushConstants) == 4,
+static_assert(sizeof(BindlessPushConstants) == 32,
               "BindlessPushConstants size mismatch with "
               "shaders/push_constants_common.slang BindlessPushConstants.");
 static_assert(offsetof(BindlessPushConstants, objectIndex) == 0,
               "BindlessPushConstants.objectIndex offset");
+static_assert(offsetof(BindlessPushConstants, sectionPlaneEnabled) == 4,
+              "BindlessPushConstants.sectionPlaneEnabled offset");
+static_assert(offsetof(BindlessPushConstants, semanticColorMode) == 8,
+              "BindlessPushConstants.semanticColorMode offset");
+static_assert(offsetof(BindlessPushConstants, sectionPlane) == 16,
+              "BindlessPushConstants.sectionPlane offset");
 
-static_assert(sizeof(ShadowPushConstants) == 8,
+static_assert(sizeof(ShadowPushConstants) == 32,
               "ShadowPushConstants size mismatch with "
               "shaders/push_constants_common.slang ShadowPushConstants.");
 static_assert(offsetof(ShadowPushConstants, objectIndex) == 0,
               "ShadowPushConstants.objectIndex offset");
 static_assert(offsetof(ShadowPushConstants, cascadeIndex) == 4,
               "ShadowPushConstants.cascadeIndex offset");
+static_assert(offsetof(ShadowPushConstants, sectionPlaneEnabled) == 8,
+              "ShadowPushConstants.sectionPlaneEnabled offset");
+static_assert(offsetof(ShadowPushConstants, sectionPlane) == 16,
+              "ShadowPushConstants.sectionPlane offset");
 
 static_assert(sizeof(ExposureSettings) == 32,
               "ExposureSettings stores CPU-side post-process exposure controls.");
@@ -738,7 +858,7 @@ static_assert(offsetof(TileCullPushConstants, cameraNear) == 16,
 static_assert(offsetof(TileCullPushConstants, cameraFar) == 20,
               "TileCullPushConstants.cameraFar offset");
 
-static_assert(sizeof(TiledLightingPushConstants) == 20,
+static_assert(sizeof(TiledLightingPushConstants) == 32,
               "TiledLightingPushConstants size mismatch with "
               "shaders/push_constants_common.slang TiledLightingPushConstants.");
 static_assert(offsetof(TiledLightingPushConstants, tileCountX) == 0,
@@ -751,6 +871,12 @@ static_assert(offsetof(TiledLightingPushConstants, cameraNear) == 12,
               "TiledLightingPushConstants.cameraNear offset");
 static_assert(offsetof(TiledLightingPushConstants, cameraFar) == 16,
               "TiledLightingPushConstants.cameraFar offset");
+static_assert(offsetof(TiledLightingPushConstants, contactVisibilityEnabled) == 20,
+              "TiledLightingPushConstants.contactVisibilityEnabled offset");
+static_assert(offsetof(TiledLightingPushConstants, localShadowEnabled) == 24,
+              "TiledLightingPushConstants.localShadowEnabled offset");
+static_assert(offsetof(TiledLightingPushConstants, bounceIntensity) == 28,
+              "TiledLightingPushConstants.bounceIntensity offset");
 
 static_assert(sizeof(CullPushConstants) == 16,
               "CullPushConstants size mismatch with "
@@ -853,6 +979,40 @@ static_assert(offsetof(ExposureStateData, targetExposure) == 8,
               "ExposureStateData.targetExposure offset");
 static_assert(offsetof(ExposureStateData, initialized) == 12,
               "ExposureStateData.initialized offset");
+
+static_assert(sizeof(LocalShadowLayerData) == 128,
+              "LocalShadowLayerData size mismatch with "
+              "shaders/lighting_structs.slang LocalShadowLayerData.");
+static_assert(offsetof(LocalShadowLayerData, viewProj) == 0,
+              "LocalShadowLayerData.viewProj offset");
+static_assert(offsetof(LocalShadowLayerData, positionRange) == 64,
+              "LocalShadowLayerData.positionRange offset");
+static_assert(offsetof(LocalShadowLayerData, directionType) == 80,
+              "LocalShadowLayerData.directionType offset");
+static_assert(offsetof(LocalShadowLayerData, meta) == 96,
+              "LocalShadowLayerData.meta offset");
+static_assert(offsetof(LocalShadowLayerData, params) == 112,
+              "LocalShadowLayerData.params offset");
+static_assert(sizeof(LocalShadowData) ==
+                  sizeof(LocalShadowLayerData) *
+                      kMaxShadowedLocalLightLayers +
+                      sizeof(glm::uvec4) *
+                          kLocalShadowAreaRefPackedCount +
+                      sizeof(glm::uvec4) + sizeof(glm::vec4) * 2,
+              "LocalShadowData size mismatch with "
+              "shaders/lighting_structs.slang LocalShadowBuffer.");
+static_assert(offsetof(LocalShadowData, layers) == 0,
+              "LocalShadowData.layers offset");
+static_assert(offsetof(LocalShadowData, areaLightRefs) ==
+                  sizeof(LocalShadowLayerData) *
+                      kMaxShadowedLocalLightLayers,
+              "LocalShadowData.areaLightRefs offset");
+static_assert(offsetof(LocalShadowData, counts) ==
+                  sizeof(LocalShadowLayerData) *
+                      kMaxShadowedLocalLightLayers +
+                      sizeof(glm::uvec4) *
+                          kLocalShadowAreaRefPackedCount,
+              "LocalShadowData.counts offset");
 
 static_assert(sizeof(ExposureAdaptPushConstants) == 64,
               "ExposureAdaptPushConstants size mismatch with "
@@ -966,6 +1126,17 @@ static_assert(offsetof(ObjectData, objectInfo) == 112,
               "ObjectData.objectInfo offset");
 static_assert(offsetof(ObjectData, boundingSphere) == 128,
               "ObjectData.boundingSphere offset");
+
+static_assert(sizeof(SceneClipState) == 112,
+              "SceneClipState size mismatch with shaders/scene_clip_common.slang.");
+static_assert(alignof(SceneClipState) == 16,
+              "SceneClipState must be 16-byte aligned.");
+static_assert(offsetof(SceneClipState, boxClipEnabled) == 0,
+              "SceneClipState.boxClipEnabled offset");
+static_assert(offsetof(SceneClipState, boxClipPlaneCount) == 8,
+              "SceneClipState.boxClipPlaneCount offset");
+static_assert(offsetof(SceneClipState, boxClipPlanes) == 16,
+              "SceneClipState.boxClipPlanes offset");
 
 static_assert(sizeof(GpuTextureTransform) == 32,
               "GpuTextureTransform size mismatch with "

@@ -10,6 +10,7 @@
 [[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
 [[vk::binding(5, 0)]] Texture2D materialTextures[MATERIAL_TEXTURE_DESCRIPTOR_COUNT];
 
+#include "scene_clip_common.slang"
 #include "object_index_common.slang"
 #include "pbr_material_common.slang"
 
@@ -100,6 +101,11 @@ void geomMain(triangle VSOutput input[3], inout LineStream<GSOutput> stream)
     const float3 faceNormal = normalize(faceNormalRaw);
 
     const float3 centroid = (p0 + p1 + p2) / 3.0;
+    if (SceneClipPlanesClip(centroid, pc.sectionPlaneEnabled, pc.sectionPlane))
+    {
+        return;
+    }
+
     float3 cameraOffsetDirection = uCamera.cameraWorldPosition.xyz - centroid;
     if (!all(isfinite(cameraOffsetDirection)) || length(cameraOffsetDirection) < 1e-6)
     {

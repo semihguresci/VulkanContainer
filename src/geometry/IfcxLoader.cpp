@@ -13,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <iterator>
 #include <limits>
 #include <optional>
@@ -56,6 +57,16 @@ float sanitizeImportScale(float scale) {
     return 1.0f;
   }
   return std::clamp(scale, 0.001f, 1000.0f);
+}
+
+dotbim::ModelUnitMetadata makeUnitMetadata(float importScale) {
+  const float sanitizedImportScale = sanitizeImportScale(importScale);
+  dotbim::ModelUnitMetadata metadata{};
+  metadata.hasImportScale = true;
+  metadata.importScale = sanitizedImportScale;
+  metadata.hasEffectiveImportScale = true;
+  metadata.effectiveImportScale = sanitizedImportScale;
+  return metadata;
 }
 
 const Json &requiredArray(const Json &object, const char *key,
@@ -477,6 +488,487 @@ std::string inheritedType(const std::vector<std::string> &chain,
   return {};
 }
 
+std::optional<std::string> stringValue(const Json &value) {
+  if (value.is_string()) {
+    return value.get<std::string>();
+  }
+  if (value.is_boolean()) {
+    return value.get<bool>() ? "true" : "false";
+  }
+  if (value.is_number_integer()) {
+    return std::to_string(value.get<int64_t>());
+  }
+  if (value.is_number_unsigned()) {
+    return std::to_string(value.get<uint64_t>());
+  }
+  if (value.is_number_float()) {
+    const double number = value.get<double>();
+    if (std::isfinite(number)) {
+      return std::to_string(number);
+    }
+  }
+  if (value.is_object()) {
+    for (const char *key : {"code", "value", "name", "id", "category",
+                            "label"}) {
+      if (value.contains(key)) {
+        if (auto nested = stringValue(value.at(key)); nested && !nested->empty()) {
+          return nested;
+        }
+      }
+    }
+  }
+  return std::nullopt;
+}
+
+std::string metadataLookupKey(std::string_view name) {
+  if (const size_t separator = name.find_last_of(':');
+      separator != std::string_view::npos) {
+    name = name.substr(separator + 1u);
+  }
+
+  std::string key;
+  key.reserve(name.size());
+  for (char c : name) {
+    if (std::isalnum(static_cast<unsigned char>(c)) != 0) {
+      key.push_back(static_cast<char>(
+          std::tolower(static_cast<unsigned char>(c))));
+    }
+  }
+  return key;
+}
+
+std::string lowerMetadataName(std::string_view name) {
+  std::string result;
+  result.reserve(name.size());
+  for (char c : name) {
+    result.push_back(
+        static_cast<char>(std::tolower(static_cast<unsigned char>(c))));
+  }
+  return result;
+}
+
+bool isMappedIfcMetadataName(std::string_view name) {
+  const std::string key = metadataLookupKey(name);
+  return key == "guid" || key == "globalid" || key == "ifcguid" ||
+         key == "elementguid" || key == "uniqueid" || key == "type" ||
+         key == "ifctype" || key == "ifcclass" || key == "class" ||
+         key == "category" || key == "displayname" || key == "name" ||
+         key == "productname" || key == "objecttype" ||
+         key == "storeyname" || key == "buildingstoreyname" ||
+         key == "levelname" || key == "storeyid" || key == "storeyguid" ||
+         key == "buildingstoreyid" || key == "buildingstoreyguid" ||
+         key == "levelid" || key == "materialname" ||
+         key == "ifcmaterialname" || key == "materialcategory" ||
+         key == "ifcmaterialcategory" || key == "discipline" ||
+         key == "ifcdiscipline" || key == "phase" || key == "phasename" ||
+         key == "constructionphase" || key == "ifcphase" ||
+         key == "firerating" || key == "fireclassification" ||
+         key == "loadbearing" || key == "isloadbearing" || key == "status" ||
+         key == "elementstatus";
+}
+
+std::vector<std::string> splitMetadataPath(std::string_view name) {
+  std::vector<std::string> result;
+  size_t cursor = 0;
+  while (cursor < name.size()) {
+    size_t separator = name.find("::", cursor);
+    size_t separatorLength = 2u;
+    const size_t dot = name.find('.', cursor);
+    if (dot != std::string_view::npos &&
+        (separator == std::string_view::npos || dot < separator)) {
+      separator = dot;
+      separatorLength = 1u;
+    }
+    const std::string_view segment =
+        separator == std::string_view::npos
+            ? name.substr(cursor)
+            : name.substr(cursor, separator - cursor);
+    if (!segment.empty()) {
+      result.emplace_back(segment);
+    }
+    if (separator == std::string_view::npos) {
+      break;
+    }
+    cursor = separator + separatorLength;
+  }
+  return result;
+}
+
+bool startsWithAsciiInsensitive(std::string_view value,
+                                std::string_view prefix) {
+  return value.size() >= prefix.size() &&
+         std::equal(prefix.begin(), prefix.end(), value.begin(),
+                    [](char lhs, char rhs) {
+                      return std::tolower(static_cast<unsigned char>(lhs)) ==
+                             std::tolower(static_cast<unsigned char>(rhs));
+                    });
+}
+
+bool isIfcGeoreferenceAttributeName(std::string_view name) {
+  const std::string lower = lowerMetadataName(name);
+  return lower.find("projectedcrs") != std::string::npos ||
+         lower.find("mapconversion") != std::string::npos ||
+         lower.find("coordinateoperation") != std::string::npos ||
+         lower.find("georeference") != std::string::npos ||
+         lower.find("crs") != std::string::npos ||
+         lower.find("eastings") != std::string::npos ||
+         lower.find("northings") != std::string::npos ||
+         lower.find("orthogonalheight") != std::string::npos ||
+         lower.find("sourceupaxis") != std::string::npos ||
+         lower == "upaxis" || lower == "usd::upaxis";
+}
+
+bool isIfcPropertyAttributeName(std::string_view name) {
+  const std::string lower = lowerMetadataName(name);
+  if (lower.find("presentation::") != std::string::npos ||
+      lower.find("usd::") != std::string::npos ||
+      lower.find("gltf::") != std::string::npos ||
+      lower.find("points::") != std::string::npos ||
+      lower.find("pcd::") != std::string::npos ||
+      lower == "sourceid" || lower == "source_id") {
+    return false;
+  }
+  if (isMappedIfcMetadataName(name) || isIfcGeoreferenceAttributeName(name)) {
+    return false;
+  }
+  return lower.find("bsi::ifc") != std::string::npos ||
+         lower.find("ifc::") != std::string::npos ||
+         lower.find("pset") != std::string::npos ||
+         lower.find("propertyset") != std::string::npos ||
+         lower.find("classification") != std::string::npos ||
+         lower.find("quantity") != std::string::npos ||
+         lower.find("qto") != std::string::npos ||
+         lower.find("system") != std::string::npos ||
+         lower.find("zone") != std::string::npos ||
+         lower.find("space") != std::string::npos;
+}
+
+std::string propertyCategoryForAttribute(std::string_view name) {
+  const std::string lower = lowerMetadataName(name);
+  if (lower.find("classification") != std::string::npos) {
+    return "classification";
+  }
+  if (lower.find("quantity") != std::string::npos ||
+      lower.find("qto") != std::string::npos) {
+    return "quantity";
+  }
+  if (lower.find("system") != std::string::npos ||
+      lower.find("zone") != std::string::npos ||
+      lower.find("space") != std::string::npos) {
+    return "reference";
+  }
+  if (lower.find("pset") != std::string::npos ||
+      lower.find("propertyset") != std::string::npos ||
+      lower.find("::prop::") != std::string::npos) {
+    return "pset";
+  }
+  return "ifc";
+}
+
+std::optional<dotbim::ElementProperty>
+propertyFromIfcAttribute(std::string_view name, const Json &value) {
+  if (!isIfcPropertyAttributeName(name)) {
+    return std::nullopt;
+  }
+  const auto string = stringValue(value);
+  if (!string || string->empty()) {
+    return std::nullopt;
+  }
+
+  dotbim::ElementProperty property{};
+  property.category = propertyCategoryForAttribute(name);
+  property.value = *string;
+
+  std::vector<std::string> segments = splitMetadataPath(name);
+  while (!segments.empty() &&
+         (segments.front() == "bsi" || segments.front() == "ifc")) {
+    segments.erase(segments.begin());
+  }
+  if (!segments.empty() && segments.front() == "ifc") {
+    segments.erase(segments.begin());
+  }
+
+  for (size_t i = 0; i < segments.size(); ++i) {
+    const std::string &segment = segments[i];
+    if (startsWithAsciiInsensitive(segment, "Pset_") ||
+        startsWithAsciiInsensitive(segment, "Qto_")) {
+      property.set = segment;
+      if (i + 1u < segments.size()) {
+        property.name = segments[i + 1u];
+      }
+      break;
+    }
+    const std::string key = metadataLookupKey(segment);
+    if ((key == "pset" || key == "propertyset" || key == "prop" ||
+         key == "quantity" || key == "classification" || key == "system" ||
+         key == "zone" || key == "space") &&
+        i + 1u < segments.size()) {
+      property.set = segment;
+      property.name = segments[i + 1u];
+      break;
+    }
+  }
+
+  if (property.name.empty() && !segments.empty()) {
+    property.name = segments.back();
+    if (segments.size() > 1u) {
+      property.set = segments[segments.size() - 2u];
+    }
+  }
+  if (isMappedIfcMetadataName(property.name)) {
+    return std::nullopt;
+  }
+  return property;
+}
+
+void appendProperty(std::vector<dotbim::ElementProperty> &properties,
+                    dotbim::ElementProperty property) {
+  if (property.name.empty() || property.value.empty()) {
+    return;
+  }
+  const auto duplicate = std::ranges::find_if(
+      properties, [&](const dotbim::ElementProperty &existing) {
+        return existing.set == property.set && existing.name == property.name &&
+               existing.category == property.category;
+      });
+  if (duplicate == properties.end()) {
+    properties.push_back(std::move(property));
+  }
+}
+
+void collectPropertiesFromPath(
+    const std::string &path, const std::unordered_map<std::string, Node> &nodes,
+    std::vector<dotbim::ElementProperty> &properties,
+    std::unordered_set<std::string> &visiting) {
+  if (!visiting.insert(path).second) {
+    return;
+  }
+  if (const auto nodeIt = nodes.find(path); nodeIt != nodes.end()) {
+    const Node &node = nodeIt->second;
+    for (auto it = node.attributes.begin(); it != node.attributes.end(); ++it) {
+      if (auto property = propertyFromIfcAttribute(it.key(), it.value())) {
+        appendProperty(properties, std::move(*property));
+      }
+    }
+    for (const std::string &inheritedPath : node.inherits) {
+      collectPropertiesFromPath(inheritedPath, nodes, properties, visiting);
+    }
+  }
+  visiting.erase(path);
+}
+
+std::vector<dotbim::ElementProperty> inheritedProperties(
+    const std::vector<std::string> &chain,
+    const std::unordered_map<std::string, Node> &nodes) {
+  std::vector<dotbim::ElementProperty> properties;
+  std::unordered_set<std::string> checked;
+  for (const std::string &path : chain) {
+    if (!checked.insert(path).second) {
+      continue;
+    }
+    std::unordered_set<std::string> visiting;
+    collectPropertiesFromPath(path, nodes, properties, visiting);
+  }
+  return properties;
+}
+
+std::optional<double> numberAsDouble(const Json &value) {
+  if (!value.is_number()) {
+    return std::nullopt;
+  }
+  const double parsed = value.get<double>();
+  if (!std::isfinite(parsed)) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+std::optional<glm::dvec3> readDVec3(const Json &value) {
+  if (value.is_array() && value.size() >= 3u) {
+    const auto x = numberAsDouble(value[0]);
+    const auto y = numberAsDouble(value[1]);
+    const auto z = numberAsDouble(value[2]);
+    if (x && y && z) {
+      return glm::dvec3(*x, *y, *z);
+    }
+  }
+  if (value.is_object()) {
+    const auto x = value.contains("x") ? numberAsDouble(value.at("x"))
+                                       : std::optional<double>{};
+    const auto y = value.contains("y") ? numberAsDouble(value.at("y"))
+                                       : std::optional<double>{};
+    const auto z = value.contains("z") ? numberAsDouble(value.at("z"))
+                                       : std::optional<double>{};
+    if (x && y && z) {
+      return glm::dvec3(*x, *y, *z);
+    }
+  }
+  return std::nullopt;
+}
+
+void applyGeoreferenceAttribute(dotbim::ModelGeoreferenceMetadata &metadata,
+                                std::string_view name, const Json &value) {
+  const std::string lower = lowerMetadataName(name);
+  if ((lower == "upaxis" || lower == "usd::upaxis" ||
+       lower.find("sourceupaxis") != std::string::npos) &&
+      stringValue(value)) {
+    metadata.sourceUpAxis = *stringValue(value);
+    metadata.hasSourceUpAxis = !metadata.sourceUpAxis.empty();
+    return;
+  }
+  if (lower.find("coordinateoffset") != std::string::npos ||
+      lower.find("falseorigin") != std::string::npos ||
+      lower.find("siteorigin") != std::string::npos) {
+    if (auto offset = readDVec3(value)) {
+      metadata.coordinateOffset = *offset;
+      metadata.hasCoordinateOffset = true;
+      metadata.coordinateOffsetSource = std::string(name);
+      return;
+    }
+  }
+  if (lower.find("eastings") != std::string::npos ||
+      lower.find("easting") != std::string::npos) {
+    if (const auto number = numberAsDouble(value)) {
+      metadata.coordinateOffset.x = *number;
+      metadata.hasCoordinateOffset = true;
+      metadata.coordinateOffsetSource = "IFCX map conversion";
+    }
+  } else if (lower.find("northings") != std::string::npos ||
+             lower.find("northing") != std::string::npos) {
+    if (const auto number = numberAsDouble(value)) {
+      metadata.coordinateOffset.y = *number;
+      metadata.hasCoordinateOffset = true;
+      metadata.coordinateOffsetSource = "IFCX map conversion";
+    }
+  } else if (lower.find("orthogonalheight") != std::string::npos ||
+             (lower.find("mapconversion") != std::string::npos &&
+              lower.find("height") != std::string::npos)) {
+    if (const auto number = numberAsDouble(value)) {
+      metadata.coordinateOffset.z = *number;
+      metadata.hasCoordinateOffset = true;
+      metadata.coordinateOffsetSource = "IFCX map conversion";
+    }
+  }
+
+  const auto string = stringValue(value);
+  if (!string || string->empty()) {
+    return;
+  }
+  if (metadata.crsName.empty() &&
+      ((lower.find("crs") != std::string::npos &&
+        lower.find("name") != std::string::npos) ||
+       lower.find("projectedcrs::name") != std::string::npos)) {
+    metadata.crsName = *string;
+  } else if (metadata.crsAuthority.empty() &&
+             lower.find("authority") != std::string::npos) {
+    metadata.crsAuthority = *string;
+  } else if (metadata.crsCode.empty() &&
+             (lower.find("epsg") != std::string::npos ||
+              (lower.find("crs") != std::string::npos &&
+               lower.find("code") != std::string::npos))) {
+    metadata.crsCode = *string;
+    if (metadata.crsAuthority.empty() &&
+        lower.find("epsg") != std::string::npos) {
+      metadata.crsAuthority = "EPSG";
+    }
+  } else if (metadata.mapConversionName.empty() &&
+             lower.find("mapconversion") != std::string::npos &&
+             lower.find("name") != std::string::npos) {
+    metadata.mapConversionName = *string;
+  }
+}
+
+void applyGeoreferenceObject(dotbim::ModelGeoreferenceMetadata &metadata,
+                             const Json &object) {
+  if (!object.is_object()) {
+    return;
+  }
+  for (auto it = object.begin(); it != object.end(); ++it) {
+    applyGeoreferenceAttribute(metadata, it.key(), it.value());
+  }
+}
+
+dotbim::ModelGeoreferenceMetadata readGeoreferenceMetadata(
+    const Json &root, const NodeGraph &graph) {
+  dotbim::ModelGeoreferenceMetadata metadata{};
+  if (root.is_object()) {
+    if (root.contains("attributes")) {
+      applyGeoreferenceObject(metadata, root.at("attributes"));
+    }
+    for (const char *key : {"georeference", "georeferencing",
+                            "geoReference"}) {
+      if (root.contains(key)) {
+        applyGeoreferenceObject(metadata, root.at(key));
+      }
+    }
+  }
+  for (const auto &[path, node] : graph.nodes) {
+    (void)path;
+    applyGeoreferenceObject(metadata, node.attributes);
+  }
+  if (!metadata.hasSourceUpAxis) {
+    metadata.hasSourceUpAxis = true;
+    metadata.sourceUpAxis = "Z";
+  }
+  return metadata;
+}
+
+std::optional<std::string> directStringAttribute(
+    const Node &node, std::initializer_list<const char *> keys) {
+  for (const char *key : keys) {
+    const auto attrIt = node.attributes.find(key);
+    if (attrIt == node.attributes.end()) {
+      continue;
+    }
+    if (auto value = stringValue(attrIt.value()); value && !value->empty()) {
+      return value;
+    }
+  }
+  return std::nullopt;
+}
+
+std::optional<std::string> inheritedStringAttributeFromPath(
+    const std::string &path, const std::unordered_map<std::string, Node> &nodes,
+    std::initializer_list<const char *> keys,
+    std::unordered_set<std::string> &visiting) {
+  if (!visiting.insert(path).second) {
+    return std::nullopt;
+  }
+
+  std::optional<std::string> result;
+  if (const auto nodeIt = nodes.find(path); nodeIt != nodes.end()) {
+    const Node &node = nodeIt->second;
+    result = directStringAttribute(node, keys);
+    if (!result) {
+      for (const std::string &inheritedPath : node.inherits) {
+        result =
+            inheritedStringAttributeFromPath(inheritedPath, nodes, keys,
+                                             visiting);
+        if (result) {
+          break;
+        }
+      }
+    }
+  }
+
+  visiting.erase(path);
+  return result;
+}
+
+std::optional<std::string> inheritedStringAttribute(
+    const std::vector<std::string> &chain,
+    const std::unordered_map<std::string, Node> &nodes,
+    std::initializer_list<const char *> keys) {
+  for (const std::string &path : chain) {
+    std::unordered_set<std::string> visiting;
+    if (auto value =
+            inheritedStringAttributeFromPath(path, nodes, keys, visiting)) {
+      return value;
+    }
+  }
+  return std::nullopt;
+}
+
 std::filesystem::path resolveAssetPath(const std::filesystem::path *sourceDir,
                                        const std::string &pathText) {
   std::filesystem::path path = container::util::pathFromUtf8(pathText);
@@ -500,11 +992,73 @@ void assignTexturePath(const Json &value,
   asset.name = pathText;
 }
 
+void normalizeMaterialTexturePath(Json &value,
+                                  const std::filesystem::path &sourceDir) {
+  if (!value.is_string()) {
+    return;
+  }
+  const std::string pathText = value.get<std::string>();
+  if (pathText.empty()) {
+    return;
+  }
+  value = container::util::pathToUtf8(resolveAssetPath(&sourceDir, pathText));
+}
+
+void normalizeGltfMaterialTexturePaths(Json &value,
+                                       const std::filesystem::path &sourceDir) {
+  if (!value.is_object()) {
+    return;
+  }
+
+  if (value.contains("pbrMetallicRoughness") &&
+      value.at("pbrMetallicRoughness").is_object()) {
+    Json &pbr = value.at("pbrMetallicRoughness");
+    if (pbr.contains("baseColorTexture")) {
+      normalizeMaterialTexturePath(pbr.at("baseColorTexture"), sourceDir);
+    }
+    if (pbr.contains("metallicRoughnessTexture")) {
+      normalizeMaterialTexturePath(pbr.at("metallicRoughnessTexture"),
+                                   sourceDir);
+    }
+  }
+
+  if (value.contains("normalTexture") &&
+      value.at("normalTexture").is_object()) {
+    Json &normal = value.at("normalTexture");
+    if (normal.contains("texture")) {
+      normalizeMaterialTexturePath(normal.at("texture"), sourceDir);
+    }
+  }
+  if (value.contains("occlusionTexture") &&
+      value.at("occlusionTexture").is_object()) {
+    Json &occlusion = value.at("occlusionTexture");
+    if (occlusion.contains("texture")) {
+      normalizeMaterialTexturePath(occlusion.at("texture"), sourceDir);
+    }
+  }
+  if (value.contains("emissiveTexture")) {
+    normalizeMaterialTexturePath(value.at("emissiveTexture"), sourceDir);
+  }
+}
+
+bool equalsAsciiInsensitive(std::string_view lhs, std::string_view rhs) {
+  if (lhs.size() != rhs.size()) {
+    return false;
+  }
+  for (size_t i = 0; i < lhs.size(); ++i) {
+    if (std::tolower(static_cast<unsigned char>(lhs[i])) !=
+        std::tolower(static_cast<unsigned char>(rhs[i]))) {
+      return false;
+    }
+  }
+  return true;
+}
+
 container::material::AlphaMode alphaModeFromString(std::string_view mode) {
-  if (mode == "MASK" || mode == "mask") {
+  if (equalsAsciiInsensitive(mode, "mask")) {
     return container::material::AlphaMode::Mask;
   }
-  if (mode == "BLEND" || mode == "blend") {
+  if (equalsAsciiInsensitive(mode, "blend")) {
     return container::material::AlphaMode::Blend;
   }
   return container::material::AlphaMode::Opaque;
@@ -634,6 +1188,116 @@ void appendQuad(Model &model, const glm::vec3 &a, const glm::vec3 &b,
   appendTriangle(model, a, c, d, color);
 }
 
+void appendNativePointRange(Model &model, const PointCloud &cloud,
+                            uint32_t meshId, const glm::vec3 &boundsCenter,
+                            float boundsRadius) {
+  if (cloud.positions.empty()) {
+    return;
+  }
+
+  dotbim::NativePrimitiveRange range{};
+  range.meshId = meshId;
+  range.firstIndex = static_cast<uint32_t>(model.indices.size());
+  range.boundsCenter = boundsCenter;
+  range.boundsRadius = boundsRadius;
+  for (size_t i = 0; i < cloud.positions.size(); ++i) {
+    const glm::vec3 color =
+        i < cloud.colors.size() ? cloud.colors[i] : glm::vec3(1.0f);
+    const uint32_t vertexIndex = static_cast<uint32_t>(model.vertices.size());
+    model.vertices.push_back(makeVertex(cloud.positions[i],
+                                        glm::vec3(0.0f, 1.0f, 0.0f),
+                                        glm::vec3(1.0f, 0.0f, 0.0f), color));
+    model.indices.push_back(vertexIndex);
+  }
+  range.indexCount =
+      static_cast<uint32_t>(model.indices.size()) - range.firstIndex;
+  if (range.indexCount > 0u) {
+    model.nativePointRanges.push_back(range);
+  }
+}
+
+void appendNativeCurveRange(Model &model, const std::vector<glm::vec3> &points,
+                            const std::vector<size_t> &curveVertexCounts,
+                            uint32_t meshId,
+                            const glm::vec3 &boundsCenter,
+                            float boundsRadius) {
+  if (points.size() < 2u) {
+    return;
+  }
+
+  dotbim::NativePrimitiveRange range{};
+  range.meshId = meshId;
+  range.firstIndex = static_cast<uint32_t>(model.indices.size());
+  range.boundsCenter = boundsCenter;
+  range.boundsRadius = boundsRadius;
+  size_t cursor = 0;
+  for (const size_t count : curveVertexCounts) {
+    for (size_t segment = 0; segment + 1u < count; ++segment) {
+      const glm::vec3 a = points[cursor + segment];
+      const glm::vec3 b = points[cursor + segment + 1u];
+      if (glm::dot(b - a, b - a) <= 1.0e-12f) {
+        continue;
+      }
+      const uint32_t base = static_cast<uint32_t>(model.vertices.size());
+      constexpr glm::vec3 color{1.0f, 1.0f, 1.0f};
+      model.vertices.push_back(makeVertex(a, glm::vec3(0.0f, 1.0f, 0.0f),
+                                          glm::vec3(1.0f, 0.0f, 0.0f),
+                                          color));
+      model.vertices.push_back(makeVertex(b, glm::vec3(0.0f, 1.0f, 0.0f),
+                                          glm::vec3(1.0f, 0.0f, 0.0f),
+                                          color));
+      model.indices.insert(model.indices.end(), {base, base + 1u});
+    }
+    cursor += count;
+  }
+  range.indexCount =
+      static_cast<uint32_t>(model.indices.size()) - range.firstIndex;
+  if (range.indexCount > 0u) {
+    model.nativeCurveRanges.push_back(range);
+  }
+}
+
+void appendMeshletClustersForRange(Model &model,
+                                   const dotbim::MeshRange &range) {
+  constexpr uint32_t kMeshletTriangleBudget = 64u;
+  constexpr uint32_t kMeshletIndexBudget = kMeshletTriangleBudget * 3u;
+  const uint32_t endIndex = range.firstIndex + range.indexCount;
+  if (range.indexCount < 3u || endIndex > model.indices.size()) {
+    return;
+  }
+
+  for (uint32_t firstIndex = range.firstIndex; firstIndex + 2u < endIndex;
+       firstIndex += kMeshletIndexBudget) {
+    const uint32_t indexCount =
+        std::min(kMeshletIndexBudget, endIndex - firstIndex);
+    const uint32_t triangleAlignedIndexCount = (indexCount / 3u) * 3u;
+    if (triangleAlignedIndexCount == 0u) {
+      continue;
+    }
+    std::vector<glm::vec3> clusterPoints;
+    clusterPoints.reserve(triangleAlignedIndexCount);
+    for (uint32_t offset = 0u; offset < triangleAlignedIndexCount; ++offset) {
+      const uint32_t vertexIndex = model.indices[firstIndex + offset];
+      if (vertexIndex < model.vertices.size()) {
+        clusterPoints.push_back(model.vertices[vertexIndex].position);
+      }
+    }
+    if (clusterPoints.empty()) {
+      continue;
+    }
+    const auto [center, radius] = computeBounds(clusterPoints);
+    model.meshletClusters.push_back(dotbim::MeshletClusterRange{
+        .meshId = range.meshId,
+        .firstIndex = firstIndex,
+        .indexCount = triangleAlignedIndexCount,
+        .triangleCount = triangleAlignedIndexCount / 3u,
+        .lodLevel = 0u,
+        .boundsCenter = center,
+        .boundsRadius = radius,
+    });
+  }
+}
+
 bool appendMesh(Model &model, const Json &mesh, uint32_t meshId,
                 std::string_view context) {
   const std::vector<glm::vec3> points = readPoints(mesh, context);
@@ -663,6 +1327,7 @@ bool appendMesh(Model &model, const Json &mesh, uint32_t meshId,
     return false;
   }
   model.meshRanges.push_back(range);
+  appendMeshletClustersForRange(model, range);
   return true;
 }
 
@@ -750,6 +1415,8 @@ bool appendBasisCurves(Model &model, const Json &curves, uint32_t meshId,
     return false;
   }
   model.meshRanges.push_back(range);
+  appendNativeCurveRange(model, points, curveVertexCounts, meshId, center,
+                         radius);
   return true;
 }
 
@@ -846,11 +1513,12 @@ PointCloud readPointsArray(const Json &value, std::string_view context) {
   }
   if (value.contains("colors") && value.at("colors").is_array()) {
     const Json &colors = value.at("colors");
-    cloud.colors.reserve(colors.size());
-    for (const Json &color : colors) {
-      if (auto parsed = readVec3(color)) {
-        cloud.colors.push_back(
-            glm::clamp(*parsed, glm::vec3(0.0f), glm::vec3(1.0f)));
+    const size_t colorCount = std::min(colors.size(), cloud.positions.size());
+    cloud.colors.assign(colorCount, glm::vec3(1.0f));
+    for (size_t i = 0; i < colorCount; ++i) {
+      if (auto parsed = readVec3(colors[i])) {
+        cloud.colors[i] =
+            glm::clamp(*parsed, glm::vec3(0.0f), glm::vec3(1.0f));
       }
     }
   }
@@ -912,6 +1580,8 @@ struct PcdHeader {
   std::vector<uint32_t> sizes{};
   std::vector<char> types{};
   std::vector<uint32_t> counts{};
+  size_t width{0};
+  size_t height{1};
   size_t points{0};
   std::string data{};
   size_t dataOffset{0};
@@ -959,8 +1629,10 @@ PcdHeader parsePcdHeader(const std::vector<uint8_t> &bytes) {
       for (auto it = words.begin() + 1; it != words.end(); ++it) {
         header.counts.push_back(static_cast<uint32_t>(std::stoul(*it)));
       }
-    } else if (key == "width" && words.size() > 1u && header.points == 0u) {
-      header.points = static_cast<size_t>(std::stoull(words[1]));
+    } else if (key == "width" && words.size() > 1u) {
+      header.width = static_cast<size_t>(std::stoull(words[1]));
+    } else if (key == "height" && words.size() > 1u) {
+      header.height = static_cast<size_t>(std::stoull(words[1]));
     } else if (key == "points" && words.size() > 1u) {
       header.points = static_cast<size_t>(std::stoull(words[1]));
     } else if (key == "data" && words.size() > 1u) {
@@ -979,6 +1651,13 @@ PcdHeader parsePcdHeader(const std::vector<uint8_t> &bytes) {
   }
   if (header.counts.empty()) {
     header.counts.assign(fieldCount, 1u);
+  }
+  if (header.points == 0u && header.width > 0u) {
+    const size_t height = std::max<size_t>(header.height, 1u);
+    if (header.width > std::numeric_limits<size_t>::max() / height) {
+      throw std::runtime_error("IFCX PCD width and height overflow points");
+    }
+    header.points = header.width * height;
   }
   if (header.sizes.size() != fieldCount || header.types.size() != fieldCount ||
       header.counts.size() != fieldCount || fieldCount == 0u ||
@@ -1254,8 +1933,7 @@ PointCloud readPcdBase64(const Json &value) {
   return {};
 }
 
-bool appendPointCloud(Model &model, const PointCloud &cloud, uint32_t meshId,
-                      const glm::vec4 &elementColor) {
+bool appendPointCloud(Model &model, const PointCloud &cloud, uint32_t meshId) {
   if (cloud.positions.empty()) {
     return false;
   }
@@ -1271,7 +1949,7 @@ bool appendPointCloud(Model &model, const PointCloud &cloud, uint32_t meshId,
 
   for (size_t i = 0; i < cloud.positions.size(); ++i) {
     const glm::vec3 color =
-        i < cloud.colors.size() ? cloud.colors[i] : glm::vec3(elementColor);
+        i < cloud.colors.size() ? cloud.colors[i] : glm::vec3(1.0f);
     const glm::vec3 p = cloud.positions[i];
     const glm::vec3 xp = p + glm::vec3(pointRadius, 0.0f, 0.0f);
     const glm::vec3 xn = p - glm::vec3(pointRadius, 0.0f, 0.0f);
@@ -1296,6 +1974,7 @@ bool appendPointCloud(Model &model, const PointCloud &cloud, uint32_t meshId,
     return false;
   }
   model.meshRanges.push_back(range);
+  appendNativePointRange(model, cloud, meshId, center, radius);
   return true;
 }
 
@@ -1305,6 +1984,7 @@ struct SceneBuilder {
   const std::filesystem::path *sourceDir{nullptr};
   std::unordered_map<std::string, uint32_t> geometryCache{};
   std::unordered_map<std::string, uint32_t> materialCache{};
+  std::unordered_map<std::string, uint32_t> materialOpacityCache{};
   uint32_t nextMeshId{0};
   glm::mat4 importTransform{1.0f};
 };
@@ -1345,16 +2025,134 @@ void appendElement(SceneBuilder &builder, const std::string &geometryKey,
 
   dotbim::Element element{};
   element.meshId = meshIt->second;
+  if (geometryKey.starts_with("curve:")) {
+    element.geometryKind = dotbim::GeometryKind::Curves;
+  } else if (geometryKey.starts_with("points-") ||
+             geometryKey.starts_with("pcd-")) {
+    element.geometryKind = dotbim::GeometryKind::Points;
+  }
   element.transform = builder.importTransform * worldTransform;
   element.color = color;
   if (materialIndex) {
-    element.materialIndex = *materialIndex;
     const dotbim::Material &material = builder.model.materials[*materialIndex];
     element.color = material.pbr.baseColor;
+    const float inheritedAlpha = std::clamp(color.a, 0.0f, 1.0f);
+    if (inheritedAlpha < 0.999f) {
+      dotbim::Material adjustedMaterial = material;
+      adjustedMaterial.pbr.baseColor.a =
+          std::clamp(material.pbr.baseColor.a * inheritedAlpha, 0.0f, 1.0f);
+      if (adjustedMaterial.pbr.baseColor.a < 0.999f &&
+          adjustedMaterial.pbr.alphaMode ==
+              container::material::AlphaMode::Opaque) {
+        adjustedMaterial.pbr.alphaMode = container::material::AlphaMode::Blend;
+      }
+      const auto alphaKey = static_cast<int64_t>(
+          std::llround(adjustedMaterial.pbr.baseColor.a * 1000000.0f));
+      const std::string cacheKey =
+          std::to_string(*materialIndex) + ":" + std::to_string(alphaKey);
+      const auto cached = builder.materialOpacityCache.find(cacheKey);
+      if (cached != builder.materialOpacityCache.end()) {
+        element.materialIndex = cached->second;
+      } else {
+        element.materialIndex =
+            static_cast<uint32_t>(builder.model.materials.size());
+        builder.model.materials.push_back(std::move(adjustedMaterial));
+        builder.materialOpacityCache.emplace(cacheKey, element.materialIndex);
+      }
+      element.color = builder.model.materials[element.materialIndex].pbr.baseColor;
+    } else {
+      element.materialIndex = *materialIndex;
+    }
     element.doubleSided = material.pbr.doubleSided;
   }
-  element.guid = logicalPath;
+  element.guid =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"bsi::ifc::globalId", "bsi::ifc::GlobalId",
+                                "ifc::globalId", "globalId", "GlobalId",
+                                "guid"})
+          .value_or(logicalPath);
   element.type = inheritedType(chain, builder.graph.nodes);
+  element.displayName =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"bsi::ifc::name", "bsi::ifc::prop::Name",
+                                "bsi::ifc::prop::name", "displayName",
+                                "display_name", "name", "Name"})
+          .value_or("");
+  element.objectType =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"bsi::ifc::objectType", "objectType",
+                                "object_type"})
+          .value_or("");
+  element.storeyName =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"bsi::ifc::storeyName",
+                                "bsi::ifc::storey::name", "storeyName",
+                                "storey_name"})
+          .value_or("");
+  element.storeyId =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"bsi::ifc::storeyId",
+                                "bsi::ifc::storey::globalId", "storeyId",
+                                "storey_id", "storeyGuid", "storey_guid"})
+          .value_or("");
+  element.materialName =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"bsi::ifc::materialName",
+                                "bsi::ifc::material::name", "materialName",
+                                "material_name"})
+          .value_or("");
+  element.materialCategory =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"bsi::ifc::materialCategory",
+                                "bsi::ifc::material::category",
+                                "materialCategory", "material_category"})
+          .value_or("");
+  element.discipline =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"bsi::ifc::discipline", "ifc::discipline",
+                                "discipline", "Discipline"})
+          .value_or("");
+  element.phase =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"bsi::ifc::phase", "bsi::ifc::phaseName",
+                                "bsi::ifc::constructionPhase", "ifc::phase",
+                                "phase", "phaseName", "phase_name",
+                                "constructionPhase", "construction_phase"})
+          .value_or("");
+  element.fireRating =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"bsi::ifc::fireRating",
+                                "bsi::ifc::FireRating",
+                                "bsi::ifc::prop::FireRating",
+                                "bsi::ifc::pset::FireRating",
+                                "bsi::ifc::Pset_WallCommon::FireRating",
+                                "Pset_WallCommon.FireRating", "fireRating",
+                                "fire_rating", "FireRating"})
+          .value_or("");
+  element.loadBearing =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"bsi::ifc::loadBearing",
+                                "bsi::ifc::LoadBearing",
+                                "bsi::ifc::prop::LoadBearing",
+                                "bsi::ifc::pset::LoadBearing",
+                                "bsi::ifc::Pset_WallCommon::LoadBearing",
+                                "Pset_WallCommon.LoadBearing", "loadBearing",
+                                "load_bearing", "LoadBearing",
+                                "isLoadBearing", "is_load_bearing"})
+          .value_or("");
+  element.status =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"bsi::ifc::status", "bsi::ifc::Status",
+                                "bsi::ifc::prop::Status",
+                                "bsi::ifc::pset::Status",
+                                "Pset_WallCommon.Status", "status", "Status",
+                                "elementStatus", "element_status"})
+          .value_or("");
+  element.sourceId =
+      inheritedStringAttribute(chain, builder.graph.nodes,
+                               {"sourceId", "source_id"})
+          .value_or(logicalPath);
+  element.properties = inheritedProperties(chain, builder.graph.nodes);
   builder.model.elements.push_back(std::move(element));
 }
 
@@ -1426,8 +2224,7 @@ void traverseNode(SceneBuilder &builder, const std::string &path,
         const uint32_t meshId = builder.nextMeshId++;
         const PointCloud cloud = readPointsArray(
             node.attributes.at("points::array"), "points[" + logicalPath + "]");
-        if (appendPointCloud(builder.model, cloud, meshId,
-                             inheritedColor(chain, builder.graph.nodes))) {
+        if (appendPointCloud(builder.model, cloud, meshId)) {
           builder.geometryCache.emplace(key, meshId);
         }
       }
@@ -1441,8 +2238,7 @@ void traverseNode(SceneBuilder &builder, const std::string &path,
         const PointCloud cloud =
             readPointsBase64(node.attributes.at("points::base64"),
                              "points-base64[" + logicalPath + "]");
-        if (appendPointCloud(builder.model, cloud, meshId,
-                             inheritedColor(chain, builder.graph.nodes))) {
+        if (appendPointCloud(builder.model, cloud, meshId)) {
           builder.geometryCache.emplace(key, meshId);
         }
       }
@@ -1454,8 +2250,7 @@ void traverseNode(SceneBuilder &builder, const std::string &path,
         const uint32_t meshId = builder.nextMeshId++;
         const PointCloud cloud =
             readPcdBase64(node.attributes.at("pcd::base64"));
-        if (appendPointCloud(builder.model, cloud, meshId,
-                             inheritedColor(chain, builder.graph.nodes))) {
+        if (appendPointCloud(builder.model, cloud, meshId)) {
           builder.geometryCache.emplace(key, meshId);
         }
       }
@@ -1496,6 +2291,45 @@ bool hasRenderableData(const Json &root) {
     }
   }
   return false;
+}
+
+bool hasUnresolvedGraphReferences(const Json &root) {
+  if (!root.is_object() || !root.contains("data") ||
+      !root.at("data").is_array()) {
+    return false;
+  }
+
+  const NodeGraph graph = buildGraph(root.at("data"));
+  for (const std::string &childPath : graph.directChildren) {
+    if (!graph.nodes.contains(childPath)) {
+      return true;
+    }
+  }
+  for (const std::string &inheritedPath : graph.inheritedReferences) {
+    if (!graph.nodes.contains(inheritedPath)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void normalizeRootMaterialTexturePaths(Json &root,
+                                       const std::filesystem::path &sourceDir) {
+  if (!root.is_object() || !root.contains("data") ||
+      !root.at("data").is_array()) {
+    return;
+  }
+  for (Json &item : root.at("data")) {
+    if (!item.is_object() || !item.contains("attributes") ||
+        !item.at("attributes").is_object()) {
+      continue;
+    }
+    Json &attributes = item.at("attributes");
+    if (attributes.contains("gltf::material")) {
+      normalizeGltfMaterialTexturePaths(attributes.at("gltf::material"),
+                                        sourceDir);
+    }
+  }
 }
 
 void appendRootData(Json &data, const Json &root) {
@@ -1585,7 +2419,8 @@ std::optional<std::filesystem::path>
 heuristicBaseLayerPath(const std::filesystem::path &path) {
   const std::filesystem::path dir = path.parent_path();
   const std::string stem = path.stem().string();
-  if (const size_t add = stem.find("-add-");
+  const std::string lowerStem = lowerAscii(stem);
+  if (const size_t add = lowerStem.find("-add-");
       add != std::string::npos && add > 0u) {
     std::filesystem::path candidate = dir / (stem.substr(0, add) + ".ifcx");
     std::error_code existsError;
@@ -1594,7 +2429,9 @@ heuristicBaseLayerPath(const std::filesystem::path &path) {
     }
   }
 
-  if (startsWith(stem, "add-") && dir.has_parent_path()) {
+  if ((startsWith(lowerStem, "add-") ||
+       lowerAscii(dir.filename().string()) == "advanced") &&
+      dir.has_parent_path()) {
     const std::filesystem::path parent = dir.parent_path();
     std::error_code iterError;
     for (const std::filesystem::directory_entry &entry :
@@ -1625,19 +2462,22 @@ Json composeRootFromFile(const std::filesystem::path &path,
   }
 
   const Json root = readJsonFile(normalized);
+  Json localRoot = root;
+  normalizeRootMaterialTexturePaths(localRoot, normalized.parent_path());
   Json composed{{"data", Json::array()}};
   const std::vector<std::filesystem::path> imports =
       localImportPaths(root, normalized.parent_path());
   for (const std::filesystem::path &importPath : imports) {
     appendRootData(composed["data"], composeRootFromFile(importPath, visiting));
   }
-  if (imports.empty() && !hasRenderableData(root)) {
+  if (imports.empty() &&
+      (!hasRenderableData(root) || hasUnresolvedGraphReferences(root))) {
     if (auto baseLayer = heuristicBaseLayerPath(normalized)) {
       appendRootData(composed["data"],
                      composeRootFromFile(*baseLayer, visiting));
     }
   }
-  appendRootData(composed["data"], root);
+  appendRootData(composed["data"], localRoot);
 
   visiting.erase(key);
   return composed;
@@ -1654,10 +2494,14 @@ Model loadFromRoot(const Json &root, float importScale,
       sourceDir,
       {},
       {},
+      {},
       0u,
       container::geometry::zUpForwardYToRendererAxes() *
-          glm::scale(glm::mat4(1.0f),
+           glm::scale(glm::mat4(1.0f),
                      glm::vec3(sanitizeImportScale(importScale)))};
+  builder.model.unitMetadata = makeUnitMetadata(importScale);
+  builder.model.georeferenceMetadata =
+      readGeoreferenceMetadata(root, graph);
 
   std::vector<std::string> roots;
   roots.reserve(graph.nodes.size());

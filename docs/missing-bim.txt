@@ -1,0 +1,37 @@
+Current state: the BIM/USD renderer is usable, but not yet a full production BIM viewer. The remaining gaps are mostly around richer BIM semantics, advanced clipping/section output, native point/curve rendering, and large-model scalability.
+
+Mostly Finished
+
+IFCX, IFC tessellated, USD/USDZ, glTF, dotbim loading paths.
+IFCX imports, inherited type geometry, PBR materials, point arrays, point base64, PCD base64, basis curves.
+USD via TinyUSDZ when enabled, with sample downloads, transforms, units, Z-up conversion, PreviewSurface/OpenPBR material mapping, textures, instancing.
+Element metadata: guid/source id, type/class, name, storey, material, discipline, phase, fire rating, load-bearing, status.
+BIM selection/hover, GPU pick first with CPU fallback, isolate/hide selected.
+BIM inspection panel and filters.
+Semantic color modes: type, storey, material, fire rating, load-bearing, status.
+Section plane and storey floor slicing.
+Floor plan overlay with both projected-ground and source/storey elevation modes.
+BCF viewpoint import/export and saved camera snapshots.
+Basic measurement UI from selected element bounds.
+Transparent/OIT path for BIM glass and separate BIM render passes.
+Important Gaps
+
+IFC STEP support is still limited. It handles tessellated/mapped/simple swept/opening cases, but not a full IFC geometry kernel: advanced CSG, arbitrary booleans, NURBS, swept disk solids, profiles, revolved solids, and many parametric products are not complete.
+IFC property sets are not fully exposed. The UI has selected metadata fields, but not general Pset_*, quantities, classifications, spatial containment tree, systems, zones, or relationship browsing.
+USD support is broad but not “full OpenUSD.” Missing or partial areas include variants, payload workflows, animation/time samples, skeletons, subdivision surfaces, NURBS, volumes, lights/cameras as scene objects, full material networks, and native Hydra-level behavior. Binary .usdc depends on TinyUSDZ; the lightweight fallback rejects it.
+Point clouds and curves are converted to placeholder mesh geometry. There is no native point-cloud renderer yet: no splats, octree/LOD, point budget, scan styling, or efficient GPU point path. Curves are not rendered as true tubes/screen-space lines.
+Sectioning is still basic. There is one plane and floor slicing, but no full box clipping, multiple clipping planes, true generated section cap faces, hatching, cap picking, or per-material cut fills.
+Large-model performance is only partially addressed. There is draw filtering cache and shared mesh ranges, but no true hardware instancing batches, spatial hierarchy by building/storey, background loading, streaming GPU upload, LOD/proxy meshes, or persistent optimized cache format.
+Georeferencing is incomplete. Units and axis alignment exist, but not full IFC map conversion, CRS handling, survey/project base points, true large-coordinate origin rebasing, or coordinate readouts.
+BIM transparency has OIT/depth behavior, but not full BIM-specific modes: transparent spaces/zones, MEP x-ray behind walls, or semantic occlusion modes.
+Measurement tools are basic. Missing: point/edge/face snapping, distance between arbitrary picked points, angle, polygon area, live cursor elevation, and measurement annotations.
+Review workflows are early. BCF viewpoint import/export exists, but not full BCF topics/comments, in-scene markups, issue pins, annotation drawing, snapshots, or clash visualization.
+UX gaps: no spatial tree browser, search, multi-select/selection sets, legend editor for semantic colors, per-storey plan navigation, or discipline/layer visibility presets.
+Best Next Priorities
+
+Native point-cloud and curve rendering.
+Section cap generation with hatching and box clipping.
+IFC property-set/spatial-tree browser.
+Origin rebasing and georeferencing.
+Hardware instancing plus storey/spatial culling.
+BCF topics/markups and clash overlay support.

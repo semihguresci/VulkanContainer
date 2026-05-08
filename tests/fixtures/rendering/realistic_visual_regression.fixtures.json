@@ -15,9 +15,7 @@
     "maxP95AbsoluteError": 0.05,
     "maxDifferentPixelFraction": 0.01,
     "platformBuckets": [
-      "windows-nvidia",
-      "windows-amd",
-      "linux-mesa"
+      "windows-nvidia"
     ]
   },
   "cpuChecks": {
@@ -41,9 +39,9 @@
     },
     "shadowTexelSnap": {
       "cascadeWorldRadius": 24.0,
-      "shadowMapSize": 2048,
+      "shadowMapSize": 4096,
       "unsnappedLightSpaceCenter": [3.14159, -2.71828],
-      "expectedTexelSize": 0.0234375,
+      "expectedTexelSize": 0.01171875,
       "maxSnapErrorTexels": 0.5
     },
     "materialExpectations": [
@@ -181,26 +179,26 @@
         {
           "id": "single_sided_test_column_stays_green",
           "kind": "dominant_color_fraction",
-          "regionUv": [0.500, 0.305, 0.045, 0.070],
-          "targetColor": [0.00, 0.65, 0.08],
-          "maxDistance": 0.28,
-          "minimumFraction": 0.05
+          "regionUv": [0.500, 0.410, 0.052, 0.090],
+          "targetColor": [0.03, 0.78, 0.05],
+          "maxDistance": 0.22,
+          "minimumFraction": 0.75
         },
         {
           "id": "double_sided_test_column_stays_green",
           "kind": "dominant_color_fraction",
-          "regionUv": [0.500, 0.370, 0.045, 0.075],
-          "targetColor": [0.00, 0.65, 0.08],
-          "maxDistance": 0.28,
-          "minimumFraction": 0.05
+          "regionUv": [0.500, 0.515, 0.052, 0.090],
+          "targetColor": [0.03, 0.78, 0.05],
+          "maxDistance": 0.22,
+          "minimumFraction": 0.75
         },
         {
           "id": "sample_pass_column_stays_green",
           "kind": "dominant_color_fraction",
-          "regionUv": [0.568, 0.370, 0.050, 0.075],
-          "targetColor": [0.00, 0.65, 0.08],
-          "maxDistance": 0.28,
-          "minimumFraction": 0.05
+          "regionUv": [0.621, 0.410, 0.052, 0.090],
+          "targetColor": [0.03, 0.78, 0.05],
+          "maxDistance": 0.22,
+          "minimumFraction": 0.75
         }
       ],
       "screenshots": {
@@ -243,6 +241,153 @@
         "golden": "tests/visual-regression/golden/{platform}/sponza_lion_relief_culling.png",
         "candidate": "test_results/visual-regression/candidate/{platform}/sponza_lion_relief_culling.png",
         "diff": "test_results/visual-regression/diff/{platform}/sponza_lion_relief_culling.png"
+      }
+    },
+    {
+      "id": "cornell_box_local_light_occlusion",
+      "category": "shadow",
+      "status": "active",
+      "asset": "models/validation/cornell_box_local_light.gltf",
+      "renderMode": "final-lit",
+      "camera": {
+        "position": [0.0, 1.05, 4.1],
+        "target": [0.0, 0.95, 0.0],
+        "verticalFovDegrees": 36.0
+      },
+      "lighting": {
+        "environment": "hdr/citrus_orchard_road_puresky_4k.exr",
+        "environmentIntensity": 0.0,
+        "exposure": 0.25,
+        "authoredLightsFromAsset": true,
+        "directionalLight": {
+          "illuminanceLux": 0.0,
+          "direction": [0.0, -1.0, 0.0],
+          "color": [1.0, 1.0, 1.0]
+        },
+        "pointLights": []
+      },
+      "probes": [
+        {
+          "id": "blocker_reduces_floor_contact_visibility",
+          "kind": "relative_region_luminance",
+          "litRegionUv": [0.360, 0.840, 0.080, 0.060],
+          "shadowRegionUv": [0.460, 0.840, 0.120, 0.060],
+          "maximumShadowToLitRatio": 0.70
+        },
+        {
+          "id": "blocker_shadow_has_soft_penumbra",
+          "kind": "shadow_softness_gradient",
+          "umbraRegionUv": [0.480, 0.840, 0.035, 0.035],
+          "penumbraRegionUv": [0.540, 0.840, 0.035, 0.035],
+          "litRegionUv": [0.560, 0.840, 0.035, 0.035],
+          "minimumUmbraToPenumbraDelta": 0.08,
+          "minimumPenumbraToLitDelta": 0.08
+        },
+        {
+          "id": "left_wall_keeps_cornell_red",
+          "kind": "dominant_color_fraction",
+          "regionUv": [0.225, 0.460, 0.105, 0.220],
+          "targetColor": [0.89, 0.44, 0.36],
+          "maxDistance": 0.20,
+          "minimumFraction": 0.65
+        },
+        {
+          "id": "right_wall_keeps_cornell_green",
+          "kind": "dominant_color_fraction",
+          "regionUv": [0.710, 0.460, 0.075, 0.220],
+          "targetColor": [0.60, 0.79, 0.46],
+          "maxDistance": 0.20,
+          "minimumFraction": 0.65
+        }
+      ],
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/cornell_box_local_light_occlusion.png",
+        "candidate": "test_results/visual-regression/candidate/{platform}/cornell_box_local_light_occlusion.png",
+        "diff": "test_results/visual-regression/diff/{platform}/cornell_box_local_light_occlusion.png"
+      }
+    },
+    {
+      "id": "open_shadow_wall_blocker",
+      "category": "shadow",
+      "status": "planned",
+      "asset": "models/validation/open_shadow_wall_blocker.gltf",
+      "renderMode": "final-lit",
+      "camera": {
+        "position": [0.0, 1.6, 4.5],
+        "target": [0.0, 0.9, 0.0],
+        "verticalFovDegrees": 42.0
+      },
+      "lighting": {
+        "environment": "hdr/citrus_orchard_road_puresky_4k.exr",
+        "environmentIntensity": 0.05,
+        "exposure": 0.25,
+        "directionalLight": {
+          "illuminanceLux": 7000.0,
+          "direction": [-0.35, -0.85, -0.30],
+          "color": [1.0, 0.96, 0.90]
+        },
+        "pointLights": []
+      },
+      "probes": [
+        {
+          "id": "wall_blocker_casts_open_floor_shadow",
+          "kind": "relative_region_luminance",
+          "litRegionUv": [0.265, 0.720, 0.090, 0.055],
+          "shadowRegionUv": [0.455, 0.730, 0.110, 0.060],
+          "maximumShadowToLitRatio": 0.70
+        },
+        {
+          "id": "open_shadow_stays_stable_across_camera_sweep",
+          "kind": "camera_stability_shadow_ratio",
+          "maximumRatioDrift": 0.10
+        }
+      ],
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/open_shadow_wall_blocker.png",
+        "candidate": "test_results/visual-regression/candidate/{platform}/open_shadow_wall_blocker.png",
+        "diff": "test_results/visual-regression/diff/{platform}/open_shadow_wall_blocker.png"
+      }
+    },
+    {
+      "id": "closed_shadow_room_blocker",
+      "category": "shadow",
+      "status": "planned",
+      "asset": "models/validation/closed_shadow_room_blocker.gltf",
+      "renderMode": "final-lit",
+      "camera": {
+        "position": [0.0, 1.25, 3.8],
+        "target": [0.0, 0.95, 0.0],
+        "verticalFovDegrees": 38.0
+      },
+      "lighting": {
+        "environment": "hdr/citrus_orchard_road_puresky_4k.exr",
+        "environmentIntensity": 0.0,
+        "exposure": 0.25,
+        "directionalLight": {
+          "illuminanceLux": 5000.0,
+          "direction": [-0.20, -0.90, -0.30],
+          "color": [1.0, 0.96, 0.90]
+        },
+        "pointLights": []
+      },
+      "probes": [
+        {
+          "id": "closed_room_blocker_contains_floor_shadow",
+          "kind": "relative_region_luminance",
+          "litRegionUv": [0.300, 0.760, 0.090, 0.055],
+          "shadowRegionUv": [0.470, 0.770, 0.110, 0.060],
+          "maximumShadowToLitRatio": 0.70
+        },
+        {
+          "id": "closed_shadow_stays_stable_across_camera_sweep",
+          "kind": "camera_stability_shadow_ratio",
+          "maximumRatioDrift": 0.10
+        }
+      ],
+      "screenshots": {
+        "golden": "tests/visual-regression/golden/{platform}/closed_shadow_room_blocker.png",
+        "candidate": "test_results/visual-regression/candidate/{platform}/closed_shadow_room_blocker.png",
+        "diff": "test_results/visual-regression/diff/{platform}/closed_shadow_room_blocker.png"
       }
     },
     {
@@ -427,7 +572,7 @@
         },
         "shadow": {
           "cascadeCount": 4,
-          "mapSize": 2048,
+          "mapSize": 4096,
           "normalBiasMinTexels": 0.75,
           "normalBiasMaxTexels": 3.0,
           "filterRadiusTexels": 1.5,

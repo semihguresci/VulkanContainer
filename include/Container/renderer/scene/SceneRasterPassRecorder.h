@@ -1,0 +1,44 @@
+#pragma once
+
+#include "Container/common/CommonVulkan.h"
+#include "Container/renderer/scene/SceneDiagnosticCubeRecorder.h"
+#include "Container/renderer/scene/SceneOpaqueDrawRecorder.h"
+
+#include <array>
+#include <cstdint>
+
+namespace container::renderer {
+
+enum class SceneRasterPassKind : uint32_t {
+  DepthPrepass = 0,
+  GBuffer = 1,
+};
+
+struct SceneRasterPassClearValues {
+  std::array<VkClearValue, 6> values{};
+  uint32_t count{0};
+};
+
+struct SceneRasterPassRecordInputs {
+  VkRenderPass renderPass{VK_NULL_HANDLE};
+  VkFramebuffer framebuffer{VK_NULL_HANDLE};
+  VkExtent2D extent{};
+  SceneRasterPassClearValues clearValues{};
+  const SceneOpaqueDrawPlan *plan{nullptr};
+  SceneOpaqueDrawGeometryBinding geometry{};
+  SceneOpaqueDrawPipelineHandles pipelines{};
+  VkPipelineLayout pipelineLayout{VK_NULL_HANDLE};
+  container::gpu::BindlessPushConstants pushConstants{};
+  const DebugOverlayRenderer *debugOverlay{nullptr};
+  const GpuCullManager *gpuCullManager{nullptr};
+  SceneDiagnosticCubeRecordInputs diagnosticCube{};
+};
+
+[[nodiscard]] SceneRasterPassClearValues
+sceneRasterPassClearValues(SceneRasterPassKind kind);
+
+[[nodiscard]] bool
+recordSceneRasterPassCommands(VkCommandBuffer cmd,
+                              const SceneRasterPassRecordInputs &inputs);
+
+} // namespace container::renderer
