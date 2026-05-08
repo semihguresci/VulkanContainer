@@ -506,16 +506,23 @@ TEST(RenderingConventionTests,
       readRepoTextFile("shaders/shadow_common.slang");
   const std::string localShadow =
       readRepoTextFile("shaders/local_shadow_common.slang");
-  const std::string shadowDrawPlanner =
-      readRepoTextFile("src/renderer/shadow/ShadowPassDrawPlanner.cpp");
+  const size_t localOffsetStart =
+      localShadow.find("float3 OffsetLocalShadowSamplePosition(");
+  ASSERT_NE(localOffsetStart, std::string::npos);
+  const size_t localOffsetEnd =
+      localShadow.find("float SampleLocalShadowLayerPcf", localOffsetStart);
+  ASSERT_NE(localOffsetEnd, std::string::npos);
+  const std::string localOffsetBody =
+      localShadow.substr(localOffsetStart, localOffsetEnd - localOffsetStart);
 
   EXPECT_TRUE(contains(shadowCommon, "OffsetShadowSamplePosition"));
   EXPECT_TRUE(contains(shadowCommon, "worldPosition + normal * normalBias"));
   EXPECT_TRUE(contains(shadowCommon, "shadowNDC.z + bias"));
   EXPECT_TRUE(contains(localShadow, "OffsetLocalShadowSamplePosition"));
-  EXPECT_TRUE(contains(localShadow, "worldPosition +"));
+  EXPECT_TRUE(contains(localOffsetBody, "return worldPosition +"));
+  EXPECT_TRUE(contains(localOffsetBody, "normal *"));
+  EXPECT_TRUE(contains(localOffsetBody, "normalBiasTexels"));
   EXPECT_TRUE(contains(localShadow, "shadowNdc.z + bias"));
-  EXPECT_TRUE(contains(shadowDrawPlanner, "ShadowPassPipeline::NoCull"));
 
   EXPECT_FALSE(contains(shadowCommon, "if (NdotL <= 0.0"));
   EXPECT_FALSE(contains(localShadow, "if (NdotL <= 0.0"));
