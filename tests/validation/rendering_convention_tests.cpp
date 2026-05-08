@@ -470,6 +470,28 @@ TEST(RenderingConventionTests, ShadowViewportUsesPositiveHeightMapping) {
 }
 
 TEST(RenderingConventionTests,
+     ShadowDepthPassUsesPositiveViewportAndDynamicReverseZRasterBias) {
+  const std::string shadowRecorder =
+      readRepoTextFile("src/renderer/shadow/ShadowPassRecorder.cpp");
+  const std::string pipelineBuilder =
+      readRepoTextFile("src/renderer/pipeline/GraphicsPipelineBuilder.cpp");
+
+  EXPECT_TRUE(contains(shadowRecorder, "viewport.height = static_cast<float>"));
+  EXPECT_FALSE(
+      contains(shadowRecorder, "viewport.height = -static_cast<float>"));
+  EXPECT_TRUE(contains(shadowRecorder, "vkCmdSetDepthBias"));
+  EXPECT_TRUE(contains(shadowRecorder, "inputs.rasterConstantBias"));
+  EXPECT_TRUE(contains(shadowRecorder, "inputs.rasterSlopeBias"));
+
+  EXPECT_TRUE(contains(pipelineBuilder,
+                       "shadowRaster.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE"));
+  EXPECT_TRUE(contains(pipelineBuilder,
+                       "shadowRaster.cullMode = VK_CULL_MODE_BACK_BIT"));
+  EXPECT_TRUE(contains(pipelineBuilder,
+                       "shadowNoCullRaster.cullMode = VK_CULL_MODE_NONE"));
+  EXPECT_TRUE(contains(pipelineBuilder, "local_shadow_depth_no_cull_pipeline"));
+}
+TEST(RenderingConventionTests,
      ReverseZShadowCompareKeepsClearDepthLitAndCloserBlockersShadowed) {
   constexpr float kClearDepth = 0.0f;
   constexpr float kReceiverDepth = 0.55f;
