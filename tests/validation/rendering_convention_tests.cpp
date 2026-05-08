@@ -201,6 +201,21 @@ float pointLightAttenuation(float distanceSq, float radius) {
          std::max(distanceSq, 0.01f);
 }
 
+constexpr float reverseZShadowCompareVisibility(float compareDepth,
+                                                float storedDepth) {
+  return compareDepth >= storedDepth ? 1.0f : 0.0f;
+}
+
+constexpr float receiverNormalBiasTexels(float normalDotSurfaceToLight,
+                                         float minBiasTexels,
+                                         float maxBiasTexels) {
+  const float safeMin = std::max(minBiasTexels, 0.0f);
+  const float safeMax = std::max(maxBiasTexels, safeMin);
+  return std::lerp(
+      safeMin, safeMax,
+      std::clamp(1.0f - normalDotSurfaceToLight, 0.0f, 1.0f));
+}
+
 float encodeGBufferMaterialMetadata(uint32_t materialIndex, bool thinSurface) {
   return static_cast<float>(materialIndex) + (thinSurface ? 0.5f : 0.0f);
 }
@@ -452,6 +467,58 @@ TEST(RenderingConventionTests, ShadowViewportUsesPositiveHeightMapping) {
   const glm::vec2 shadowUv = shadowNdcToUv({0.25f, 0.75f});
   const glm::vec2 sceneUv = sceneNdcToUv({0.25f, 0.75f});
   EXPECT_GT(shadowUv.y, sceneUv.y);
+}
+
+TEST(RenderingConventionTests,
+     ReverseZShadowCompareKeepsClearDepthLitAndCloserBlockersShadowed) {
+  constexpr float kClearDepth = 0.0f;
+  constexpr float kReceiverDepth = 0.55f;
+  constexpr float kCloserBlockerDepth = 0.80f;
+  constexpr float kFartherDepth = 0.30f;
+
+  EXPECT_FLOAT_EQ(reverseZShadowCompareVisibility(kReceiverDepth, kClearDepth),
+                  1.0f);
+  EXPECT_FLOAT_EQ(
+      reverseZShadowCompareVisibility(kReceiverDepth, kCloserBlockerDepth),
+      0.0f);
+  EXPECT_FLOAT_EQ(reverseZShadowCompareVisibility(kReceiverDepth, kFartherDepth),
+                  1.0f);
+}
+
+TEST(RenderingConventionTests,
+     ReceiverNormalBiasChangesSamplePositionButNotCasterParticipation) {
+  constexpr float kTexelSizeWorld = 0.015625f;
+  constexpr float kFacingBiasTexels =
+      receiverNormalBiasTexels(1.0f, 1.5f, 3.5f);
+  constexpr float kGrazingBiasTexels =
+      receiverNormalBiasTexels(0.0f, 1.5f, 3.5f);
+
+  EXPECT_NEAR(kFacingBiasTexels * kTexelSizeWorld, 0.0234375f, 1e-7f);
+  EXPECT_NEAR(kGrazingBiasTexels * kTexelSizeWorld, 0.0546875f, 1e-7f);
+  EXPECT_FLOAT_EQ(reverseZShadowCompareVisibility(0.55f, 0.80f), 0.0f)
+      << "Normals may offset receiver sampling but must not remove blocker "
+         "depth.";
+}
+
+TEST(RenderingConventionTests,
+     ShadowShadersUseNormalsOnlyForReceiverBiasAndShading) {
+  const std::string shadowCommon =
+      readRepoTextFile("shaders/shadow_common.slang");
+  const std::string localShadow =
+      readRepoTextFile("shaders/local_shadow_common.slang");
+  const std::string shadowDrawPlanner =
+      readRepoTextFile("src/renderer/shadow/ShadowPassDrawPlanner.cpp");
+
+  EXPECT_TRUE(contains(shadowCommon, "OffsetShadowSamplePosition"));
+  EXPECT_TRUE(contains(shadowCommon, "worldPosition + normal * normalBias"));
+  EXPECT_TRUE(contains(shadowCommon, "shadowNDC.z + bias"));
+  EXPECT_TRUE(contains(localShadow, "OffsetLocalShadowSamplePosition"));
+  EXPECT_TRUE(contains(localShadow, "worldPosition +"));
+  EXPECT_TRUE(contains(localShadow, "shadowNdc.z + bias"));
+  EXPECT_TRUE(contains(shadowDrawPlanner, "ShadowPassPipeline::NoCull"));
+
+  EXPECT_FALSE(contains(shadowCommon, "if (NdotL <= 0.0"));
+  EXPECT_FALSE(contains(localShadow, "if (NdotL <= 0.0"));
 }
 
 TEST(RenderingConventionTests, NegativeSceneViewportFlipsFramebufferWinding) {
