@@ -18,10 +18,21 @@
 
 namespace container::gpu {
 
+enum class TextureAllocationLifetime : uint32_t {
+  Scene = 0,
+  Persistent = 1,
+};
+
+enum class TextureAllocationResetScope : uint32_t {
+  SceneOnly = 0,
+  All = 1,
+};
+
 struct TextureAllocation {
   VkImage image{VK_NULL_HANDLE};
   VkImageView imageView{VK_NULL_HANDLE};
   VmaAllocation allocation{nullptr};
+  TextureAllocationLifetime lifetime{TextureAllocationLifetime::Scene};
 };
 
 class AllocationManager {
@@ -54,8 +65,18 @@ class AllocationManager {
       const std::string& textureName,
       std::span<const std::byte> encodedBytes,
       VkFormat format = VK_FORMAT_R8G8B8A8_SRGB);
+  container::material::TextureArrayResource createTexture2DArrayFromRgbaPixels(
+      const std::string& textureName,
+      std::span<const std::byte> rgbaPixels,
+      uint32_t width,
+      uint32_t height,
+      uint32_t layerCount,
+      VkFormat format = VK_FORMAT_R8G8B8A8_UNORM,
+      TextureAllocationLifetime lifetime = TextureAllocationLifetime::Scene);
 
-  void resetTextureAllocations();
+  void resetTextureAllocations(
+      TextureAllocationResetScope scope =
+          TextureAllocationResetScope::SceneOnly);
 
   [[nodiscard]] VulkanMemoryManager* memoryManager() const { return memoryManager_.get(); }
 
@@ -67,12 +88,15 @@ class AllocationManager {
                   VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0);
 
   void transitionImageLayout(VkImage image, VkImageLayout oldLayout,
-                             VkImageLayout newLayout);
+                             VkImageLayout newLayout,
+                             uint32_t layerCount = 1u);
 
   void copyBufferToImage(VkBuffer buffer, VkImage image, uint32_t width,
-                         uint32_t height);
+                         uint32_t height, uint32_t layerCount = 1u);
 
-  VkImageView createImageView(VkImage image, VkFormat format);
+  VkImageView createImageView(VkImage image, VkFormat format,
+                              VkImageViewType viewType = VK_IMAGE_VIEW_TYPE_2D,
+                              uint32_t layerCount = 1u);
   container::material::TextureResource createTextureFromRgbaPixels(
       const std::string& textureName,
       std::span<const std::byte> rgbaPixels,

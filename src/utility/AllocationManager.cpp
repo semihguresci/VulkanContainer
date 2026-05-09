@@ -53,7 +53,7 @@ void AllocationManager::initialize(VkInstance instance,
 }
 
 void AllocationManager::cleanup() {
-  resetTextureAllocations();
+  resetTextureAllocations(TextureAllocationResetScope::All);
   indexArena_.reset();
   vertexArena_.reset();
   memoryManager_.reset();
@@ -287,13 +287,108 @@ AllocationManager::createTextureFromRgbaPixels(
   return resource;
 }
 
-void AllocationManager::resetTextureAllocations() {
+container::material::TextureArrayResource
+AllocationManager::createTexture2DArrayFromRgbaPixels(
+    const std::string& textureName,
+    std::span<const std::byte> rgbaPixels,
+    uint32_t width,
+    uint32_t height,
+    uint32_t layerCount,
+    VkFormat format,
+    TextureAllocationLifetime lifetime) {
+  if (width == 0u || height == 0u || layerCount == 0u) {
+    throw std::runtime_error("texture array dimensions are invalid: " +
+                             textureName);
+  }
+
+  const VkDeviceSize layerSize = static_cast<VkDeviceSize>(width) *
+                                 static_cast<VkDeviceSize>(height) * 4;
+  const VkDeviceSize imageSize =
+      layerSize * static_cast<VkDeviceSize>(layerCount);
+  if (rgbaPixels.size() < static_cast<size_t>(imageSize)) {
+    throw std::runtime_error("texture array pixel payload is truncated: " +
+                             textureName);
+  }
+
+  StagingBuffer stagingBuffer(*memoryManager_, imageSize);
+  stagingBuffer.upload(rgbaPixels.first(static_cast<size_t>(imageSize)));
+
+  VkImageCreateInfo imageInfo{};
+  imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+  imageInfo.imageType = VK_IMAGE_TYPE_2D;
+  imageInfo.format = format;
+  imageInfo.extent = {width, height, 1};
+  imageInfo.mipLevels = 1;
+  imageInfo.arrayLayers = layerCount;
+  imageInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+  imageInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+  imageInfo.usage =
+      VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+  VmaAllocationCreateInfo allocInfo{};
+  allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+
+  VkImage image = VK_NULL_HANDLE;
+  VmaAllocation allocation = nullptr;
+  if (vmaCreateImage(memoryManager_->allocator(), &imageInfo, &allocInfo,
+                     &image, &allocation, nullptr) != VK_SUCCESS) {
+    throw std::runtime_error("failed to create texture array image");
+  }
+
+  VkImageView imageView = VK_NULL_HANDLE;
+  bool registeredTexture = false;
+  try {
+    transitionImageLayout(image, VK_IMAGE_LAYOUT_UNDEFINED,
+                          VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, layerCount);
+    copyBufferToImage(stagingBuffer.buffer().buffer, image, width, height,
+                      layerCount);
+    transitionImageLayout(image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                          VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                          layerCount);
+    imageView = createImageView(image, format, VK_IMAGE_VIEW_TYPE_2D_ARRAY,
+                                layerCount);
+
+    textureAllocations_.push_back({image, imageView, allocation, lifetime});
+    registeredTexture = true;
+  } catch (...) {
+    if (imageView != VK_NULL_HANDLE) {
+      vkDestroyImageView(device_, imageView, nullptr);
+    }
+    if (!registeredTexture && image != VK_NULL_HANDLE) {
+      vmaDestroyImage(memoryManager_->allocator(), image, allocation);
+    }
+    throw;
+  }
+
+  container::material::TextureArrayResource resource{};
+  resource.name = textureName;
+  resource.image = image;
+  resource.imageView = imageView;
+  resource.width = width;
+  resource.height = height;
+  resource.layerCount = layerCount;
+  return resource;
+}
+
+void AllocationManager::resetTextureAllocations(
+    TextureAllocationResetScope scope) {
   if (!memoryManager_) {
     textureAllocations_.clear();
     return;
   }
 
+  const auto shouldReset = [scope](const TextureAllocation& texture) {
+    return scope == TextureAllocationResetScope::All ||
+           texture.lifetime == TextureAllocationLifetime::Scene;
+  };
+
   for (auto& texture : textureAllocations_) {
+    if (!shouldReset(texture)) {
+      continue;
+    }
+
     if (texture.imageView != VK_NULL_HANDLE) {
       vkDestroyImageView(device_, texture.imageView, nullptr);
       texture.imageView = VK_NULL_HANDLE;
@@ -307,7 +402,7 @@ void AllocationManager::resetTextureAllocations() {
     }
   }
 
-  textureAllocations_.clear();
+  std::erase_if(textureAllocations_, shouldReset);
 }
 
 /* ---------- Command helpers ---------- */
@@ -377,7 +472,8 @@ void AllocationManager::copyBuffer(VkBuffer src, VkBuffer dst,
 
 void AllocationManager::transitionImageLayout(VkImage image,
                                               VkImageLayout oldLayout,
-                                              VkImageLayout newLayout) {
+                                              VkImageLayout newLayout,
+                                              uint32_t layerCount) {
   VkCommandBuffer cmd = beginSingleTimeCommands();
 
   VkImageMemoryBarrier barrier{};
@@ -389,7 +485,7 @@ void AllocationManager::transitionImageLayout(VkImage image,
   barrier.image = image;
   barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   barrier.subresourceRange.levelCount = 1;
-  barrier.subresourceRange.layerCount = 1;
+  barrier.subresourceRange.layerCount = layerCount;
 
   VkPipelineStageFlags srcStage;
   VkPipelineStageFlags dstStage;
@@ -414,12 +510,13 @@ void AllocationManager::transitionImageLayout(VkImage image,
 }
 
 void AllocationManager::copyBufferToImage(VkBuffer buffer, VkImage image,
-                                          uint32_t width, uint32_t height) {
+                                          uint32_t width, uint32_t height,
+                                          uint32_t layerCount) {
   VkCommandBuffer cmd = beginSingleTimeCommands();
 
   VkBufferImageCopy region{};
   region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-  region.imageSubresource.layerCount = 1;
+  region.imageSubresource.layerCount = layerCount;
   region.imageExtent = {width, height, 1};
 
   vkCmdCopyBufferToImage(cmd, buffer, image,
@@ -428,15 +525,17 @@ void AllocationManager::copyBufferToImage(VkBuffer buffer, VkImage image,
   endSingleTimeCommands(cmd);
 }
 
-VkImageView AllocationManager::createImageView(VkImage image, VkFormat format) {
+VkImageView AllocationManager::createImageView(VkImage image, VkFormat format,
+                                               VkImageViewType viewType,
+                                               uint32_t layerCount) {
   VkImageViewCreateInfo info{};
   info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
   info.image = image;
-  info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+  info.viewType = viewType;
   info.format = format;
   info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
   info.subresourceRange.levelCount = 1;
-  info.subresourceRange.layerCount = 1;
+  info.subresourceRange.layerCount = layerCount;
 
   VkImageView view = VK_NULL_HANDLE;
   if (vkCreateImageView(device_, &info, nullptr, &view) != VK_SUCCESS) {

@@ -246,6 +246,11 @@ add_custom_test(deferred_light_gizmo_planner_tests
     VulkanSceneRenderer_renderer
 )
 
+add_custom_test(light_gizmo_icon_atlas_tests
+    ${TEST_RENDERER_DEFERRED_DIR}/light_gizmo_icon_atlas_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
 add_custom_test(deferred_light_gizmo_recorder_tests
     ${TEST_RENDERER_DEFERRED_DIR}/deferred_light_gizmo_recorder_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer

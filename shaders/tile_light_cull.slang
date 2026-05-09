@@ -154,6 +154,10 @@ void computeMain(
     {
         // AABB/sphere is conservative but cheap. The small radius inflation
         // avoids dropping lights near cluster boundaries after depth slicing.
+        if (!PointLightHasRenderableIntensity(uLights[i]))
+        {
+            continue;
+        }
         float3 lightPos = uLights[i].positionRadius.xyz;
         float lightRange = uLights[i].positionRadius.w;
         if (!all(isfinite(lightPos)) || !isfinite(lightRange) ||

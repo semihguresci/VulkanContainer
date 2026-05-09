@@ -9,30 +9,31 @@
 
 namespace container::renderer {
 
-bool hasDrawCommands(const std::vector<DrawCommand>* commands) {
+bool hasDrawCommands(const std::vector<DrawCommand> *commands) {
   return commands != nullptr && !commands->empty();
 }
 
-bool hasSplitOpaqueDrawCommands(const FrameDrawLists& draws) {
+bool hasSplitOpaqueDrawCommands(const FrameDrawLists &draws) {
   return hasDrawCommands(draws.opaqueSingleSidedDrawCommands) ||
          hasDrawCommands(draws.opaqueWindingFlippedDrawCommands) ||
          hasDrawCommands(draws.opaqueDoubleSidedDrawCommands);
 }
 
-bool hasOpaqueDrawCommands(const FrameDrawLists& draws) {
+bool hasOpaqueDrawCommands(const FrameDrawLists &draws) {
   return hasSplitOpaqueDrawCommands(draws) ||
          hasDrawCommands(draws.opaqueDrawCommands);
 }
 
-std::array<const FrameDrawLists*, 3> bimSurfaceDrawListSet(
-    const FrameBimResources& bim) {
+std::array<const FrameDrawLists *, 3>
+bimSurfaceDrawListSet(const FrameBimResources &bim) {
   // Surface passes consume mesh draws plus point/curve placeholder fallbacks.
-  // Native point/curve ranges are submitted by the dedicated point-list/line-list
-  // primitive passes instead of entering triangle G-buffer or shadow paths.
+  // Native point/curve ranges are submitted by the dedicated
+  // point-list/line-list primitive passes instead of entering triangle G-buffer
+  // or shadow paths.
   return {&bim.draws, &bim.pointDraws, &bim.curveDraws};
 }
 
-bool hasBimOpaqueDrawCommands(const FrameBimResources& bim) {
+bool hasBimOpaqueDrawCommands(const FrameBimResources &bim) {
   for (const FrameDrawLists* draws : bimSurfaceDrawListSet(bim)) {
     if (hasOpaqueDrawCommands(*draws)) {
       return true;
@@ -41,18 +42,18 @@ bool hasBimOpaqueDrawCommands(const FrameBimResources& bim) {
   return false;
 }
 
-bool hasTransparentDrawCommands(const FrameDrawLists& draws) {
+bool hasTransparentDrawCommands(const FrameDrawLists &draws) {
   return hasDrawCommands(draws.transparentSingleSidedDrawCommands) ||
          hasDrawCommands(draws.transparentWindingFlippedDrawCommands) ||
          hasDrawCommands(draws.transparentDoubleSidedDrawCommands) ||
          hasDrawCommands(draws.transparentDrawCommands);
 }
 
-bool hasTransparentDrawCommands(const FrameRecordParams& p) {
+bool hasTransparentDrawCommands(const FrameRecordParams &p) {
   if (hasTransparentDrawCommands(p.draws)) {
     return true;
   }
-  for (const FrameDrawLists* draws : bimSurfaceDrawListSet(p.bim)) {
+  for (const FrameDrawLists *draws : bimSurfaceDrawListSet(p.bim)) {
     if (hasTransparentDrawCommands(*draws)) {
       return true;
     }
@@ -60,10 +61,10 @@ bool hasTransparentDrawCommands(const FrameRecordParams& p) {
   return false;
 }
 
-bool hasBimTransparentGeometry(const FrameRecordParams& p) {
-  const auto& bimScene = p.bim.scene;
+bool hasBimTransparentGeometry(const FrameRecordParams &p) {
+  const auto &bimScene = p.bim.scene;
   bool hasTransparent = false;
-  for (const FrameDrawLists* draws : bimSurfaceDrawListSet(p.bim)) {
+  for (const FrameDrawLists *draws : bimSurfaceDrawListSet(p.bim)) {
     hasTransparent = hasTransparent || hasTransparentDrawCommands(*draws);
   }
   return deferredRasterDescriptorSet(
@@ -72,15 +73,15 @@ bool hasBimTransparentGeometry(const FrameRecordParams& p) {
          bimScene.indexSlice.buffer != VK_NULL_HANDLE && hasTransparent;
 }
 
-container::ui::GBufferViewMode currentDisplayMode(
-    const container::ui::GuiManager* guiManager) {
+container::ui::GBufferViewMode
+currentDisplayMode(const container::ui::GuiManager *guiManager) {
   return currentDisplayMode(guiManager,
                             container::ui::GBufferViewMode::Overview);
 }
 
-container::ui::GBufferViewMode currentDisplayMode(
-    const container::ui::GuiManager* guiManager,
-    container::ui::GBufferViewMode fallbackDisplayMode) {
+container::ui::GBufferViewMode
+currentDisplayMode(const container::ui::GuiManager *guiManager,
+                   container::ui::GBufferViewMode fallbackDisplayMode) {
   return guiManager ? guiManager->gBufferViewMode() : fallbackDisplayMode;
 }
 
@@ -116,10 +117,10 @@ float finiteOr(float value, float fallback) {
   return std::isfinite(value) ? value : fallback;
 }
 
-}  // namespace
+} // namespace
 
-container::gpu::ExposureSettings sanitizeExposureSettings(
-    container::gpu::ExposureSettings settings) {
+container::gpu::ExposureSettings
+sanitizeExposureSettings(container::gpu::ExposureSettings settings) {
   settings.mode = settings.mode == container::gpu::kExposureModeAuto
                       ? container::gpu::kExposureModeAuto
                       : container::gpu::kExposureModeManual;
@@ -134,24 +135,21 @@ container::gpu::ExposureSettings sanitizeExposureSettings(
   settings.adaptationRate =
       std::max(finiteOr(settings.adaptationRate, 1.5f), 0.0f);
   settings.meteringLowPercentile =
-      std::clamp(finiteOr(settings.meteringLowPercentile, 0.50f), 0.0f,
-                 0.99f);
+      std::clamp(finiteOr(settings.meteringLowPercentile, 0.50f), 0.0f, 0.99f);
   settings.meteringHighPercentile =
       std::clamp(finiteOr(settings.meteringHighPercentile, 0.95f),
                  settings.meteringLowPercentile + 0.01f, 1.0f);
   return settings;
 }
 
-bool shouldRecordTransparentOit(
-    const FrameRecordParams& p,
-    const container::ui::GuiManager* guiManager) {
-  return shouldRecordTransparentOit(
-      p, guiManager, container::ui::GBufferViewMode::Overview);
+bool shouldRecordTransparentOit(const FrameRecordParams &p,
+                                const container::ui::GuiManager *guiManager) {
+  return shouldRecordTransparentOit(p, guiManager,
+                                    container::ui::GBufferViewMode::Overview);
 }
 
 bool shouldRecordTransparentOit(
-    const FrameRecordParams& p,
-    const container::ui::GuiManager* guiManager,
+    const FrameRecordParams &p, const container::ui::GuiManager *guiManager,
     container::ui::GBufferViewMode fallbackDisplayMode) {
   if (!hasTransparentDrawCommands(p)) {
     return false;
@@ -165,15 +163,19 @@ bool shouldRecordTransparentOit(
     return false;
   }
 
-  const auto wireframeSettings =
-      guiManager ? guiManager->wireframeSettings()
-                 : container::ui::WireframeSettings{};
+  const auto wireframeSettings = guiManager
+                                     ? guiManager->wireframeSettings()
+                                     : container::ui::WireframeSettings{};
+  const bool editorOverlaysEnabled =
+      guiManager == nullptr || guiManager->editorOverlaysEnabled();
   const bool wireframeFullMode =
-      guiManager && guiManager->wireframeSupported() &&
+      guiManager && editorOverlaysEnabled && guiManager->wireframeSupported() &&
       wireframeSettings.enabled &&
       wireframeSettings.mode == container::ui::WireframeMode::Full &&
-      deferredRasterPipelineReady(p, DeferredRasterPipelineId::WireframeDepth) &&
-      deferredRasterPipelineReady(p, DeferredRasterPipelineId::WireframeNoDepth);
+      deferredRasterPipelineReady(p,
+                                  DeferredRasterPipelineId::WireframeDepth) &&
+      deferredRasterPipelineReady(p,
+                                  DeferredRasterPipelineId::WireframeNoDepth);
   return !wireframeFullMode;
 }
 
@@ -194,4 +196,4 @@ RenderPassReadiness renderPassMissingResource(RenderResourceId resource) {
   return readiness;
 }
 
-}  // namespace container::renderer
+} // namespace container::renderer

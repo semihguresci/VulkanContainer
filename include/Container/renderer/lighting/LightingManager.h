@@ -6,6 +6,7 @@
 #include "Container/renderer/lighting/LightPushConstants.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/SceneGraph.h"
+#include "Container/utility/TextureResource.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
 #include <array>
@@ -102,8 +103,15 @@ public:
   drawLightGizmos(VkCommandBuffer commandBuffer,
                   const std::array<VkDescriptorSet, 2> &lightingDescriptorSets,
                   VkPipeline lightGizmoPipeline,
+                  VkPipeline lightGizmoCoveragePipeline,
                   VkPipelineLayout lightingPipelineLayout,
                   const container::scene::BaseCamera *camera) const;
+  void drawLightGizmoPickIds(
+      VkCommandBuffer commandBuffer,
+      const std::array<VkDescriptorSet, 2> &lightingDescriptorSets,
+      VkPipeline lightGizmoPickPipeline,
+      VkPipelineLayout lightingPipelineLayout,
+      const container::scene::BaseCamera *camera) const;
 
   // ---- Accessors ----------------------------------------------------------
 
@@ -153,6 +161,13 @@ public:
     return tiledDescriptorSetLayout_;
   }
   VkDescriptorSet tiledDescriptorSet() const { return tiledDescriptorSet_; }
+  VkDescriptorSetLayout lightGizmoIconDescriptorSetLayout() const {
+    return lightGizmoIconDescriptorSetLayout_;
+  }
+  VkDescriptorSet lightGizmoIconDescriptorSet() const {
+    return lightGizmoIconDescriptorSet_;
+  }
+  bool lightGizmoIconsReady() const { return lightGizmoIconsReady_; }
 
   // Returns the point light SSBO contents.  Updated each frame by
   // updateLightingData().
@@ -206,6 +221,9 @@ private:
   void writeLightDescriptorStorageBuffers() const;
   void allocateClusterBuffers(VkExtent2D extent);
   void writeTiledResourceDescriptors() const;
+  void createLightGizmoIconDescriptorResources();
+  void loadLightGizmoIconResources(const std::filesystem::path &assetRoot);
+  void writeLightGizmoIconDescriptor() const;
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager &allocationManager_;
   container::gpu::PipelineManager &pipelineManager_;
@@ -274,6 +292,13 @@ private:
   VkDescriptorSetLayout tiledDescriptorSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool tiledDescriptorPool_{VK_NULL_HANDLE};
   VkDescriptorSet tiledDescriptorSet_{VK_NULL_HANDLE};
+
+  VkDescriptorSetLayout lightGizmoIconDescriptorSetLayout_{VK_NULL_HANDLE};
+  VkDescriptorPool lightGizmoIconDescriptorPool_{VK_NULL_HANDLE};
+  VkDescriptorSet lightGizmoIconDescriptorSet_{VK_NULL_HANDLE};
+  container::material::TextureArrayResource lightGizmoIconAtlas_{};
+  VkSampler lightGizmoIconSampler_{VK_NULL_HANDLE};
+  bool lightGizmoIconsReady_{false};
 
   uint32_t maxTileCount_{0};
   uint32_t maxClusterCount_{0};

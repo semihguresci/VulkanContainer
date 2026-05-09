@@ -57,14 +57,16 @@ enum class DeferredRasterPipelineId {
   ObjectNormalDebugFrontCull,
   ObjectNormalDebugNoCull,
   LightGizmo,
+  LightGizmoCoverage,
+  LightGizmoPick,
   TransformGizmo,
   TransformGizmoSolid,
   TransformGizmoOverlay,
   TransformGizmoSolidOverlay,
 };
 
-[[nodiscard]] inline std::string_view deferredRasterPipelineName(
-    DeferredRasterPipelineId id) {
+[[nodiscard]] inline std::string_view
+deferredRasterPipelineName(DeferredRasterPipelineId id) {
   switch (id) {
   case DeferredRasterPipelineId::DepthPrepass:
     return "depth-prepass";
@@ -166,6 +168,10 @@ enum class DeferredRasterPipelineId {
     return "object-normal-debug-no-cull";
   case DeferredRasterPipelineId::LightGizmo:
     return "light-gizmo";
+  case DeferredRasterPipelineId::LightGizmoCoverage:
+    return "light-gizmo-coverage";
+  case DeferredRasterPipelineId::LightGizmoPick:
+    return "light-gizmo-pick";
   case DeferredRasterPipelineId::TransformGizmo:
     return "transform-gizmo";
   case DeferredRasterPipelineId::TransformGizmoSolid:
@@ -182,6 +188,7 @@ enum class DeferredRasterPipelineLayoutId {
   Scene,
   Transparent,
   Lighting,
+  LightGizmo,
   TiledLighting,
   Shadow,
   PostProcess,
@@ -191,8 +198,8 @@ enum class DeferredRasterPipelineLayoutId {
   TransformGizmo,
 };
 
-[[nodiscard]] inline std::string_view deferredRasterPipelineLayoutName(
-    DeferredRasterPipelineLayoutId id) {
+[[nodiscard]] inline std::string_view
+deferredRasterPipelineLayoutName(DeferredRasterPipelineLayoutId id) {
   switch (id) {
   case DeferredRasterPipelineLayoutId::Scene:
     return "scene";
@@ -200,6 +207,8 @@ enum class DeferredRasterPipelineLayoutId {
     return "transparent";
   case DeferredRasterPipelineLayoutId::Lighting:
     return "lighting";
+  case DeferredRasterPipelineLayoutId::LightGizmo:
+    return "light-gizmo";
   case DeferredRasterPipelineLayoutId::TiledLighting:
     return "tiled-lighting";
   case DeferredRasterPipelineLayoutId::Shadow:
@@ -218,25 +227,29 @@ enum class DeferredRasterPipelineLayoutId {
   return {};
 }
 
-[[nodiscard]] inline VkPipelineLayout deferredRasterPipelineLayout(
-    const FrameRecordParams &p, DeferredRasterPipelineLayoutId id) {
+[[nodiscard]] inline VkPipelineLayout
+deferredRasterPipelineLayout(const FrameRecordParams &p,
+                             DeferredRasterPipelineLayoutId id) {
   return p.pipelineLayout(RenderTechniqueId::DeferredRaster,
                           deferredRasterPipelineLayoutName(id));
 }
 
-[[nodiscard]] inline bool deferredRasterPipelineLayoutReady(
-    const FrameRecordParams &p, DeferredRasterPipelineLayoutId id) {
+[[nodiscard]] inline bool
+deferredRasterPipelineLayoutReady(const FrameRecordParams &p,
+                                  DeferredRasterPipelineLayoutId id) {
   return deferredRasterPipelineLayout(p, id) != VK_NULL_HANDLE;
 }
 
-[[nodiscard]] inline VkPipeline deferredRasterPipelineHandle(
-    const FrameRecordParams &p, DeferredRasterPipelineId id) {
+[[nodiscard]] inline VkPipeline
+deferredRasterPipelineHandle(const FrameRecordParams &p,
+                             DeferredRasterPipelineId id) {
   return p.pipelineHandle(RenderTechniqueId::DeferredRaster,
                           deferredRasterPipelineName(id));
 }
 
-[[nodiscard]] inline bool deferredRasterPipelineReady(
-    const FrameRecordParams &p, DeferredRasterPipelineId id) {
+[[nodiscard]] inline bool
+deferredRasterPipelineReady(const FrameRecordParams &p,
+                            DeferredRasterPipelineId id) {
   return deferredRasterPipelineHandle(p, id) != VK_NULL_HANDLE;
 }
 

@@ -41,7 +41,8 @@ struct GpuTextureTransform {
 
 constexpr uint32_t kPickIdNone = 0u;
 constexpr uint32_t kPickIdBimMask = 0x80000000u;
-constexpr uint32_t kPickIdObjectMask = 0x7fffffffu;
+constexpr uint32_t kPickIdLightMask = 0x40000000u;
+constexpr uint32_t kPickIdObjectMask = 0x3fffffffu;
 
 struct GpuMaterial {
   alignas(16) glm::vec4 color{1.0f};
@@ -51,26 +52,43 @@ struct GpuMaterial {
   alignas(4) float alphaCutoff{0.5f};
   alignas(4) float normalTextureScale{1.0f};
   alignas(4) float occlusionStrength{1.0f};
-  alignas(4) uint32_t baseColorTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t baseColorTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
   alignas(4) uint32_t normalTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t occlusionTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t emissiveTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t metallicRoughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t roughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t metalnessTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t specularTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t occlusionTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t emissiveTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t metallicRoughnessTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t roughnessTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t metalnessTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t specularTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
   alignas(4) uint32_t heightTextureIndex{std::numeric_limits<uint32_t>::max()};
   alignas(4) uint32_t opacityTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t transmissionTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t specularColorTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t clearcoatTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t clearcoatRoughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t clearcoatNormalTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t thicknessTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t sheenColorTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t sheenRoughnessTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t iridescenceTextureIndex{std::numeric_limits<uint32_t>::max()};
-  alignas(4) uint32_t iridescenceThicknessTextureIndex{std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t transmissionTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t specularColorTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t clearcoatTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t clearcoatRoughnessTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t clearcoatNormalTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t thicknessTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t sheenColorTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t sheenRoughnessTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t iridescenceTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
+  alignas(4) uint32_t iridescenceThicknessTextureIndex{
+      std::numeric_limits<uint32_t>::max()};
   alignas(4) uint32_t flags{0};
   alignas(4) float opacityFactor{1.0f};
   alignas(4) float specularFactor{1.0f};
@@ -114,8 +132,7 @@ struct GpuMaterial {
   alignas(16) GpuTextureTransform iridescenceThicknessTextureTransform{};
 };
 
-struct NormalValidationSettings
-{
+struct NormalValidationSettings {
   bool enabled{false};
   bool showFaceFill{true};
   float lineLength{0.16f};
@@ -163,10 +180,10 @@ struct GpuTextureMetadata {
 };
 
 inline constexpr uint32_t kMaxDeferredPointLights = 12;
-inline constexpr uint32_t kMaxClusteredLights     = 8192;
-inline constexpr uint32_t kTileSize               = 16;   // pixels
-inline constexpr uint32_t kClusterDepthSlices     = 16;
-inline constexpr uint32_t kMaxLightsPerTile       = 128;
+inline constexpr uint32_t kMaxClusteredLights = 8192;
+inline constexpr uint32_t kTileSize = 16; // pixels
+inline constexpr uint32_t kClusterDepthSlices = 16;
+inline constexpr uint32_t kMaxLightsPerTile = 128;
 inline constexpr float kUnboundedPointLightRange = 0.0f;
 inline constexpr float kLightTypePoint = 0.0f;
 inline constexpr float kLightTypeSpot = 1.0f;
@@ -194,6 +211,7 @@ struct LightingSettings {
   float directionalIntensity{2.0f};
   float environmentIntensity{1.0f};
   float bounceIntensity{0.35f};
+  uint32_t localShadowPointBudget{1};
 };
 
 struct LightCullingStats {
@@ -222,10 +240,10 @@ struct ShadowSettings {
 
 struct ShadowCascadeData {
   alignas(16) glm::mat4 viewProj{1.0f};
-  alignas(4)  float     splitDepth{0.0f};
-  alignas(4)  float     texelSize{0.0f};
-  alignas(4)  float     worldRadius{0.0f};
-  alignas(4)  float     depthRange{0.0f};
+  alignas(4) float splitDepth{0.0f};
+  alignas(4) float texelSize{0.0f};
+  alignas(4) float worldRadius{0.0f};
+  alignas(4) float depthRange{0.0f};
 };
 
 struct ShadowData {
@@ -239,8 +257,7 @@ struct LocalShadowLayerData {
   // xyz = light/sample position, w = finite shadow range.
   alignas(16) glm::vec4 positionRange{0.0f, 0.0f, 0.0f, 10.0f};
   // xyz = layer forward direction, w = kLocalShadowType*.
-  alignas(16) glm::vec4 directionType{0.0f, 0.0f, -1.0f,
-                                      kLocalShadowTypePoint};
+  alignas(16) glm::vec4 directionType{0.0f, 0.0f, -1.0f, kLocalShadowTypePoint};
   // x = source light index, y = face/sample index, z = layer count for the
   // source light, w = enabled.
   alignas(16) glm::uvec4 meta{0u, 0u, 0u, 0u};
@@ -347,20 +364,20 @@ struct ExposureStateData {
 struct PostProcessPushConstants {
   uint32_t outputMode{0};
   uint32_t bloomEnabled{0};
-  float    bloomIntensity{0.3f};
-  float    exposure{0.25f};
-  float    cameraNear{0.1f};
-  float    cameraFar{100.0f};
-  float    cascadeSplits[kShadowCascadeCount]{};
+  float bloomIntensity{0.3f};
+  float exposure{0.25f};
+  float cameraNear{0.1f};
+  float cameraFar{100.0f};
+  float cascadeSplits[kShadowCascadeCount]{};
   uint32_t tileCountX{0};
   uint32_t totalLights{0};
   uint32_t depthSliceCount{kClusterDepthSlices};
   uint32_t oitEnabled{0};
   uint32_t exposureMode{kExposureModeManual};
-  float    targetLuminance{0.18f};
-  float    minExposure{0.03125f};
-  float    maxExposure{8.0f};
-  float    adaptationRate{1.5f};
+  float targetLuminance{0.18f};
+  float minExposure{0.03125f};
+  float maxExposure{8.0f};
+  float adaptationRate{1.5f};
 };
 
 struct LightingData {
@@ -410,8 +427,8 @@ struct GpuDrawIndexedIndirectCommand {
   uint32_t indexCount{0};
   uint32_t instanceCount{0};
   uint32_t firstIndex{0};
-  int32_t  vertexOffset{0};
-  uint32_t firstInstance{0};  // Encodes objectIndex.
+  int32_t vertexOffset{0};
+  uint32_t firstInstance{0}; // Encodes objectIndex.
 };
 static_assert(sizeof(GpuDrawIndexedIndirectCommand) == 20,
               "GpuDrawIndexedIndirectCommand size mismatch with "
@@ -459,8 +476,8 @@ struct BloomDownsamplePushConstants {
   uint32_t srcHeight{0};
   uint32_t dstWidth{0};
   uint32_t dstHeight{0};
-  float    threshold{1.0f};
-  float    knee{0.1f};
+  float threshold{1.0f};
+  float knee{0.1f};
   uint32_t mipLevel{0};
   uint32_t pad0{0};
 };
@@ -470,8 +487,8 @@ struct BloomUpsamplePushConstants {
   uint32_t srcHeight{0};
   uint32_t dstWidth{0};
   uint32_t dstHeight{0};
-  float    filterRadius{0.005f};
-  float    bloomIntensity{0.3f};
+  float filterRadius{0.005f};
+  float bloomIntensity{0.3f};
   uint32_t isFinalPass{0};
   uint32_t pad0{0};
 };
@@ -519,13 +536,13 @@ struct IrradiancePushConstants {
 struct PrefilterPushConstants {
   uint32_t faceIndex{0};
   uint32_t faceSize{0};
-  float    roughness{0.0f};
+  float roughness{0.0f};
   uint32_t sourceMipCount{1};
 };
 
 struct GtaoPushConstants {
-  float    aoRadius{1.5f};
-  float    aoIntensity{1.0f};
+  float aoRadius{1.5f};
+  float aoIntensity{1.0f};
   uint32_t sampleCount{16};
   uint32_t pad0{0};
   uint32_t fullWidth{0};
@@ -537,12 +554,12 @@ struct GtaoPushConstants {
 struct BlurPushConstants {
   uint32_t width{0};
   uint32_t height{0};
-  float    depthThreshold{0.08f};
-  float    cameraNear{0.1f};
-  float    cameraFar{100.0f};
-  float    pad0{0.0f};
-  float    pad1{0.0f};
-  float    pad2{0.0f};
+  float depthThreshold{0.08f};
+  float cameraNear{0.1f};
+  float cameraFar{100.0f};
+  float pad0{0.0f};
+  float pad1{0.0f};
+  float pad2{0.0f};
 };
 
 // ---------------------------------------------------------------------------
@@ -564,7 +581,8 @@ static_assert(sizeof(CameraData) == 160,
               "CameraData size mismatch with shaders/lighting_structs.slang "
               "CameraBuffer. Update shader layout in lockstep.");
 static_assert(alignof(CameraData) == 16, "CameraData must be 16-byte aligned.");
-static_assert(offsetof(CameraData, viewProj) == 0, "CameraData.viewProj offset");
+static_assert(offsetof(CameraData, viewProj) == 0,
+              "CameraData.viewProj offset");
 static_assert(offsetof(CameraData, inverseViewProj) == 64,
               "CameraData.inverseViewProj offset");
 static_assert(offsetof(CameraData, cameraWorldPosition) == 128,
@@ -672,7 +690,8 @@ static_assert(sizeof(ShadowData) == 80 * kShadowCascadeCount + 32,
               "ShadowData size mismatch with shaders/lighting_structs.slang "
               "ShadowBuffer. Update shader layout in lockstep.");
 static_assert(alignof(ShadowData) == 16, "ShadowData must be 16-byte aligned.");
-static_assert(offsetof(ShadowData, cascades) == 0, "ShadowData.cascades offset");
+static_assert(offsetof(ShadowData, cascades) == 0,
+              "ShadowData.cascades offset");
 static_assert(offsetof(ShadowData, biasSettings) == 320,
               "ShadowData.biasSettings offset");
 static_assert(offsetof(ShadowData, filterSettings) == 336,
@@ -694,8 +713,7 @@ static_assert(offsetof(LocalShadowLayerData, meta) == 96,
 static_assert(offsetof(LocalShadowLayerData, params) == 112,
               "LocalShadowLayerData.params offset");
 static_assert(sizeof(LocalShadowData) ==
-                  sizeof(LocalShadowLayerData) *
-                      kMaxShadowedLocalLightLayers +
+                  sizeof(LocalShadowLayerData) * kMaxShadowedLocalLightLayers +
                       sizeof(glm::uvec4) * kLocalShadowAreaRefPackedCount +
                       sizeof(glm::uvec4) + sizeof(glm::vec4) * 2,
               "LocalShadowData size mismatch with shader LocalShadowBuffer.");
@@ -704,12 +722,10 @@ static_assert(alignof(LocalShadowData) == 16,
 static_assert(offsetof(LocalShadowData, layers) == 0,
               "LocalShadowData.layers offset");
 static_assert(offsetof(LocalShadowData, areaLightRefs) ==
-                  sizeof(LocalShadowLayerData) *
-                      kMaxShadowedLocalLightLayers,
+                  sizeof(LocalShadowLayerData) * kMaxShadowedLocalLightLayers,
               "LocalShadowData.areaLightRefs offset");
 static_assert(offsetof(LocalShadowData, counts) ==
-                  sizeof(LocalShadowLayerData) *
-                      kMaxShadowedLocalLightLayers +
+                  sizeof(LocalShadowLayerData) * kMaxShadowedLocalLightLayers +
                       sizeof(glm::uvec4) * kLocalShadowAreaRefPackedCount,
               "LocalShadowData.counts offset");
 static_assert(offsetof(LocalShadowData, biasSettings) ==
@@ -719,9 +735,10 @@ static_assert(offsetof(LocalShadowData, filterSettings) ==
                   offsetof(LocalShadowData, biasSettings) + sizeof(glm::vec4),
               "LocalShadowData.filterSettings offset");
 
-static_assert(sizeof(ShadowCascadeCullData) == 192,
-              "ShadowCascadeCullData size mismatch with shaders/lighting_structs.slang "
-              "ShadowCascadeCullData. Update shader layout in lockstep.");
+static_assert(
+    sizeof(ShadowCascadeCullData) == 192,
+    "ShadowCascadeCullData size mismatch with shaders/lighting_structs.slang "
+    "ShadowCascadeCullData. Update shader layout in lockstep.");
 static_assert(alignof(ShadowCascadeCullData) == 16,
               "ShadowCascadeCullData must be 16-byte aligned.");
 static_assert(offsetof(ShadowCascadeCullData, viewProj) == 0,
@@ -737,9 +754,11 @@ static_assert(offsetof(ShadowCascadeCullData, casterMinBounds) == 160,
 static_assert(offsetof(ShadowCascadeCullData, casterMaxBounds) == 176,
               "ShadowCascadeCullData.casterMaxBounds offset");
 
-static_assert(sizeof(ShadowCullData) == sizeof(ShadowCascadeCullData) * kShadowCascadeCount,
-              "ShadowCullData size mismatch with shaders/lighting_structs.slang "
-              "ShadowCullData. Update shader layout in lockstep.");
+static_assert(
+    sizeof(ShadowCullData) ==
+        sizeof(ShadowCascadeCullData) * kShadowCascadeCount,
+    "ShadowCullData size mismatch with shaders/lighting_structs.slang "
+    "ShadowCullData. Update shader layout in lockstep.");
 static_assert(alignof(ShadowCullData) == 16,
               "ShadowCullData must be 16-byte aligned.");
 static_assert(sizeof(ShadowCullPushConstants) == 16,
@@ -752,8 +771,9 @@ static_assert(offsetof(ShadowCullPushConstants, outputOffset) == 8,
               "ShadowCullPushConstants.outputOffset offset");
 static_assert(offsetof(ShadowCullPushConstants, objectCount) == 12,
               "ShadowCullPushConstants.objectCount offset");
-static_assert(sizeof(ShadowCullCountData) == sizeof(uint32_t) * kShadowCascadeCount,
-              "ShadowCullCountData stores one visible count per shadow cascade.");
+static_assert(
+    sizeof(ShadowCullCountData) == sizeof(uint32_t) * kShadowCascadeCount,
+    "ShadowCullCountData stores one visible count per shadow cascade.");
 
 static_assert(sizeof(BindlessPushConstants) == 32,
               "BindlessPushConstants size mismatch with "
@@ -779,8 +799,9 @@ static_assert(offsetof(ShadowPushConstants, sectionPlaneEnabled) == 8,
 static_assert(offsetof(ShadowPushConstants, sectionPlane) == 16,
               "ShadowPushConstants.sectionPlane offset");
 
-static_assert(sizeof(ExposureSettings) == 32,
-              "ExposureSettings stores CPU-side post-process exposure controls.");
+static_assert(
+    sizeof(ExposureSettings) == 32,
+    "ExposureSettings stores CPU-side post-process exposure controls.");
 static_assert(offsetof(ExposureSettings, mode) == 0,
               "ExposureSettings.mode offset");
 static_assert(offsetof(ExposureSettings, manualExposure) == 4,
@@ -858,9 +879,10 @@ static_assert(offsetof(TileCullPushConstants, cameraNear) == 16,
 static_assert(offsetof(TileCullPushConstants, cameraFar) == 20,
               "TileCullPushConstants.cameraFar offset");
 
-static_assert(sizeof(TiledLightingPushConstants) == 32,
-              "TiledLightingPushConstants size mismatch with "
-              "shaders/push_constants_common.slang TiledLightingPushConstants.");
+static_assert(
+    sizeof(TiledLightingPushConstants) == 32,
+    "TiledLightingPushConstants size mismatch with "
+    "shaders/push_constants_common.slang TiledLightingPushConstants.");
 static_assert(offsetof(TiledLightingPushConstants, tileCountX) == 0,
               "TiledLightingPushConstants.tileCountX offset");
 static_assert(offsetof(TiledLightingPushConstants, tileCountY) == 4,
@@ -902,15 +924,17 @@ static_assert(offsetof(HiZPushConstants, dstMipLevel) == 8,
 static_assert(offsetof(HiZPushConstants, pad0) == 12,
               "HiZPushConstants.pad0 offset");
 
-static_assert(sizeof(GBufferCompositePushConstants) == 4,
-              "GBufferCompositePushConstants size mismatch with "
-              "shaders/push_constants_common.slang GBufferCompositePushConstants.");
+static_assert(
+    sizeof(GBufferCompositePushConstants) == 4,
+    "GBufferCompositePushConstants size mismatch with "
+    "shaders/push_constants_common.slang GBufferCompositePushConstants.");
 static_assert(offsetof(GBufferCompositePushConstants, outputMode) == 0,
               "GBufferCompositePushConstants.outputMode offset");
 
-static_assert(sizeof(BloomDownsamplePushConstants) == 32,
-              "BloomDownsamplePushConstants size mismatch with "
-              "shaders/push_constants_common.slang BloomDownsamplePushConstants.");
+static_assert(
+    sizeof(BloomDownsamplePushConstants) == 32,
+    "BloomDownsamplePushConstants size mismatch with "
+    "shaders/push_constants_common.slang BloomDownsamplePushConstants.");
 static_assert(offsetof(BloomDownsamplePushConstants, srcWidth) == 0,
               "BloomDownsamplePushConstants.srcWidth offset");
 static_assert(offsetof(BloomDownsamplePushConstants, srcHeight) == 4,
@@ -928,9 +952,10 @@ static_assert(offsetof(BloomDownsamplePushConstants, mipLevel) == 24,
 static_assert(offsetof(BloomDownsamplePushConstants, pad0) == 28,
               "BloomDownsamplePushConstants.pad0 offset");
 
-static_assert(sizeof(BloomUpsamplePushConstants) == 32,
-              "BloomUpsamplePushConstants size mismatch with "
-              "shaders/push_constants_common.slang BloomUpsamplePushConstants.");
+static_assert(
+    sizeof(BloomUpsamplePushConstants) == 32,
+    "BloomUpsamplePushConstants size mismatch with "
+    "shaders/push_constants_common.slang BloomUpsamplePushConstants.");
 static_assert(offsetof(BloomUpsamplePushConstants, srcWidth) == 0,
               "BloomUpsamplePushConstants.srcWidth offset");
 static_assert(offsetof(BloomUpsamplePushConstants, srcHeight) == 4,
@@ -948,9 +973,10 @@ static_assert(offsetof(BloomUpsamplePushConstants, isFinalPass) == 24,
 static_assert(offsetof(BloomUpsamplePushConstants, pad0) == 28,
               "BloomUpsamplePushConstants.pad0 offset");
 
-static_assert(sizeof(ExposureHistogramPushConstants) == 32,
-              "ExposureHistogramPushConstants size mismatch with "
-              "shaders/push_constants_common.slang ExposureHistogramPushConstants.");
+static_assert(
+    sizeof(ExposureHistogramPushConstants) == 32,
+    "ExposureHistogramPushConstants size mismatch with "
+    "shaders/push_constants_common.slang ExposureHistogramPushConstants.");
 static_assert(offsetof(ExposureHistogramPushConstants, width) == 0,
               "ExposureHistogramPushConstants.width offset");
 static_assert(offsetof(ExposureHistogramPushConstants, height) == 4,
@@ -994,29 +1020,25 @@ static_assert(offsetof(LocalShadowLayerData, meta) == 96,
 static_assert(offsetof(LocalShadowLayerData, params) == 112,
               "LocalShadowLayerData.params offset");
 static_assert(sizeof(LocalShadowData) ==
-                  sizeof(LocalShadowLayerData) *
-                      kMaxShadowedLocalLightLayers +
-                      sizeof(glm::uvec4) *
-                          kLocalShadowAreaRefPackedCount +
+                  sizeof(LocalShadowLayerData) * kMaxShadowedLocalLightLayers +
+                      sizeof(glm::uvec4) * kLocalShadowAreaRefPackedCount +
                       sizeof(glm::uvec4) + sizeof(glm::vec4) * 2,
               "LocalShadowData size mismatch with "
               "shaders/lighting_structs.slang LocalShadowBuffer.");
 static_assert(offsetof(LocalShadowData, layers) == 0,
               "LocalShadowData.layers offset");
 static_assert(offsetof(LocalShadowData, areaLightRefs) ==
-                  sizeof(LocalShadowLayerData) *
-                      kMaxShadowedLocalLightLayers,
+                  sizeof(LocalShadowLayerData) * kMaxShadowedLocalLightLayers,
               "LocalShadowData.areaLightRefs offset");
 static_assert(offsetof(LocalShadowData, counts) ==
-                  sizeof(LocalShadowLayerData) *
-                      kMaxShadowedLocalLightLayers +
-                      sizeof(glm::uvec4) *
-                          kLocalShadowAreaRefPackedCount,
+                  sizeof(LocalShadowLayerData) * kMaxShadowedLocalLightLayers +
+                      sizeof(glm::uvec4) * kLocalShadowAreaRefPackedCount,
               "LocalShadowData.counts offset");
 
-static_assert(sizeof(ExposureAdaptPushConstants) == 64,
-              "ExposureAdaptPushConstants size mismatch with "
-              "shaders/push_constants_common.slang ExposureAdaptPushConstants.");
+static_assert(
+    sizeof(ExposureAdaptPushConstants) == 64,
+    "ExposureAdaptPushConstants size mismatch with "
+    "shaders/push_constants_common.slang ExposureAdaptPushConstants.");
 static_assert(offsetof(ExposureAdaptPushConstants, binCount) == 0,
               "ExposureAdaptPushConstants.binCount offset");
 static_assert(offsetof(ExposureAdaptPushConstants, exposureMode) == 4,
@@ -1035,7 +1057,8 @@ static_assert(offsetof(ExposureAdaptPushConstants, adaptationRate) == 28,
               "ExposureAdaptPushConstants.adaptationRate offset");
 static_assert(offsetof(ExposureAdaptPushConstants, meteringLowPercentile) == 32,
               "ExposureAdaptPushConstants.meteringLowPercentile offset");
-static_assert(offsetof(ExposureAdaptPushConstants, meteringHighPercentile) == 36,
+static_assert(offsetof(ExposureAdaptPushConstants, meteringHighPercentile) ==
+                  36,
               "ExposureAdaptPushConstants.meteringHighPercentile offset");
 static_assert(offsetof(ExposureAdaptPushConstants, deltaSeconds) == 40,
               "ExposureAdaptPushConstants.deltaSeconds offset");
@@ -1113,8 +1136,7 @@ static_assert(offsetof(BlurPushConstants, pad2) == 28,
 static_assert(sizeof(ObjectData) == 144,
               "ObjectData size mismatch with shaders/object_data_common.slang. "
               "Update shader ObjectBuffer in lockstep.");
-static_assert(alignof(ObjectData) == 16,
-              "ObjectData must be 16-byte aligned.");
+static_assert(alignof(ObjectData) == 16, "ObjectData must be 16-byte aligned.");
 static_assert(offsetof(ObjectData, model) == 0, "ObjectData.model offset");
 static_assert(offsetof(ObjectData, normalMatrix0) == 64,
               "ObjectData.normalMatrix0 offset");
@@ -1127,8 +1149,9 @@ static_assert(offsetof(ObjectData, objectInfo) == 112,
 static_assert(offsetof(ObjectData, boundingSphere) == 128,
               "ObjectData.boundingSphere offset");
 
-static_assert(sizeof(SceneClipState) == 112,
-              "SceneClipState size mismatch with shaders/scene_clip_common.slang.");
+static_assert(
+    sizeof(SceneClipState) == 112,
+    "SceneClipState size mismatch with shaders/scene_clip_common.slang.");
 static_assert(alignof(SceneClipState) == 16,
               "SceneClipState must be 16-byte aligned.");
 static_assert(offsetof(SceneClipState, boxClipEnabled) == 0,
@@ -1207,8 +1230,7 @@ static_assert(offsetof(GpuMaterial, iridescenceTextureIndex) == 124,
               "GpuMaterial.iridescenceTextureIndex offset");
 static_assert(offsetof(GpuMaterial, iridescenceThicknessTextureIndex) == 128,
               "GpuMaterial.iridescenceThicknessTextureIndex offset");
-static_assert(offsetof(GpuMaterial, flags) == 132,
-              "GpuMaterial.flags offset");
+static_assert(offsetof(GpuMaterial, flags) == 132, "GpuMaterial.flags offset");
 static_assert(offsetof(GpuMaterial, opacityFactor) == 136,
               "GpuMaterial.opacityFactor offset");
 static_assert(offsetof(GpuMaterial, specularFactor) == 140,
@@ -1286,12 +1308,12 @@ static_assert(offsetof(GpuMaterial, sheenRoughnessTextureTransform) == 800,
               "GpuMaterial.sheenRoughnessTextureTransform offset");
 static_assert(offsetof(GpuMaterial, iridescenceTextureTransform) == 832,
               "GpuMaterial.iridescenceTextureTransform offset");
-static_assert(offsetof(GpuMaterial, iridescenceThicknessTextureTransform) == 864,
+static_assert(offsetof(GpuMaterial, iridescenceThicknessTextureTransform) ==
+                  864,
               "GpuMaterial.iridescenceThicknessTextureTransform offset");
 static_assert(kMaterialTextureDescriptorCapacity - 1u <=
                   kMaxExactGBufferMaterialMetadataIndex,
               "G-buffer float material metadata must round-trip all material "
               "indices and the thin-surface half-bit.");
 
-}  // namespace container::gpu
-
+} // namespace container::gpu

@@ -18,39 +18,39 @@
 
 #include "Container/app/AppConfig.h"
 #include "Container/ecs/World.h"
-#include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/bim/BimFrameDrawRoutingPlanner.h"
-#include "Container/renderer/effects/BloomManager.h"
-#include "Container/renderer/scene/CameraController.h"
-#include "Container/renderer/scene/ScenePrimitives.h"
-#include "Container/renderer/resources/CommandBufferManager.h"
-#include "Container/renderer/debug/DebugUiPresenter.h"
-#include "Container/renderer/lighting/EnvironmentManager.h"
-#include "Container/renderer/effects/ExposureManager.h"
+#include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/core/FrameConcurrencyPolicy.h"
 #include "Container/renderer/core/FrameRecorder.h"
+#include "Container/renderer/core/RenderExtraction.h"
+#include "Container/renderer/core/RenderPassGpuProfiler.h"
+#include "Container/renderer/core/RenderTechnique.h"
+#include "Container/renderer/core/RendererTelemetry.h"
 #include "Container/renderer/culling/GpuCullManager.h"
+#include "Container/renderer/debug/DebugUiPresenter.h"
 #include "Container/renderer/deferred/DeferredLightGizmoPlanner.h"
 #include "Container/renderer/deferred/DeferredRasterFrameGraphContext.h"
 #include "Container/renderer/deferred/DeferredRasterFrameState.h"
+#include "Container/renderer/effects/BloomManager.h"
+#include "Container/renderer/effects/ExposureManager.h"
+#include "Container/renderer/effects/OitManager.h"
+#include "Container/renderer/lighting/EnvironmentManager.h"
+#include "Container/renderer/lighting/LightingManager.h"
+#include "Container/renderer/picking/RenderSurfaceInteractionController.h"
 #include "Container/renderer/pipeline/GraphicsPipelineBuilder.h"
 #include "Container/renderer/pipeline/PipelineRegistry.h"
-#include "Container/renderer/lighting/LightingManager.h"
-#include "Container/renderer/effects/OitManager.h"
-#include "Container/renderer/core/RenderPassGpuProfiler.h"
-#include "Container/renderer/picking/RenderSurfaceInteractionController.h"
-#include "Container/renderer/core/RenderExtraction.h"
-#include "Container/renderer/core/RenderTechnique.h"
-#include "Container/renderer/core/RendererTelemetry.h"
+#include "Container/renderer/platform/VulkanContextInitializer.h"
+#include "Container/renderer/resources/CommandBufferManager.h"
 #include "Container/renderer/resources/FrameResourceManager.h"
 #include "Container/renderer/resources/FrameResourceRegistry.h"
+#include "Container/renderer/scene/CameraController.h"
 #include "Container/renderer/scene/SceneController.h"
+#include "Container/renderer/scene/ScenePrimitives.h"
 #include "Container/renderer/scene/SceneProviderSynchronizer.h"
 #include "Container/renderer/shadow/ShadowCullManager.h"
 #include "Container/renderer/shadow/ShadowManager.h"
 #include "Container/renderer/shadow/ShadowPipelineBridge.h"
 #include "Container/renderer/shadow/ShadowResourceBridge.h"
-#include "Container/renderer/platform/VulkanContextInitializer.h"
 #include "Container/scene/MeshSceneProviderAssetAdapter.h"
 #include "Container/scene/SceneProvider.h"
 #include "Container/utility/AllocationManager.h"
@@ -90,9 +90,9 @@ uint32_t saturatingU32(size_t value) {
 constexpr uint32_t kEditableLightTransformNode =
     std::numeric_limits<uint32_t>::max() - 1u;
 
-const FrameResourceBinding* deferredRasterRuntimeBinding(
-    const FrameResourceManager* manager, uint32_t imageIndex,
-    std::string_view name) {
+const FrameResourceBinding *
+deferredRasterRuntimeBinding(const FrameResourceManager *manager,
+                             uint32_t imageIndex, std::string_view name) {
   if (manager == nullptr || imageIndex >= manager->frameCount()) {
     return nullptr;
   }
@@ -102,37 +102,37 @@ const FrameResourceBinding* deferredRasterRuntimeBinding(
       imageIndex);
 }
 
-const FrameImageBinding* deferredRasterRuntimeImageBinding(
-    const FrameResourceManager* manager, uint32_t imageIndex,
-    std::string_view name) {
-  const FrameResourceBinding* binding =
+const FrameImageBinding *
+deferredRasterRuntimeImageBinding(const FrameResourceManager *manager,
+                                  uint32_t imageIndex, std::string_view name) {
+  const FrameResourceBinding *binding =
       deferredRasterRuntimeBinding(manager, imageIndex, name);
   return binding != nullptr && binding->kind == FrameResourceKind::Image
              ? &binding->image
              : nullptr;
 }
 
-VkImage deferredRasterRuntimeImage(const FrameResourceManager* manager,
-                                   uint32_t imageIndex,
-                                   std::string_view name) {
-  const FrameImageBinding* binding =
+VkImage deferredRasterRuntimeImage(const FrameResourceManager *manager,
+                                   uint32_t imageIndex, std::string_view name) {
+  const FrameImageBinding *binding =
       deferredRasterRuntimeImageBinding(manager, imageIndex, name);
   return binding != nullptr ? binding->image : VK_NULL_HANDLE;
 }
 
-const FrameBufferBinding* deferredRasterRuntimeBufferBinding(
-    const FrameResourceManager* manager, uint32_t imageIndex,
-    std::string_view name) {
-  const FrameResourceBinding* binding =
+const FrameBufferBinding *
+deferredRasterRuntimeBufferBinding(const FrameResourceManager *manager,
+                                   uint32_t imageIndex, std::string_view name) {
+  const FrameResourceBinding *binding =
       deferredRasterRuntimeBinding(manager, imageIndex, name);
   return binding != nullptr && binding->kind == FrameResourceKind::Buffer
              ? &binding->buffer
              : nullptr;
 }
 
-uint32_t deferredRasterRuntimeOitNodeCapacity(
-    const FrameResourceManager* manager, uint32_t imageIndex) {
-  const FrameBufferBinding* binding = deferredRasterRuntimeBufferBinding(
+uint32_t
+deferredRasterRuntimeOitNodeCapacity(const FrameResourceManager *manager,
+                                     uint32_t imageIndex) {
+  const FrameBufferBinding *binding = deferredRasterRuntimeBufferBinding(
       manager, imageIndex, "oit-node-buffer");
   if (binding == nullptr || binding->size == 0) {
     return 0;
@@ -347,7 +347,7 @@ bool hasTransparentGeometry(const BimGeometryDrawLists &draws) {
                                 draws.transparentDoubleSidedDrawCommands);
 }
 
-bool hasAnyGeometry(const BimGeometryDrawLists& draws) {
+bool hasAnyGeometry(const BimGeometryDrawLists &draws) {
   return !draws.opaqueDrawCommands.empty() ||
          !draws.opaqueSingleSidedDrawCommands.empty() ||
          !draws.opaqueWindingFlippedDrawCommands.empty() ||
@@ -366,12 +366,11 @@ bool hasTransparentGeometry(const BimDrawLists &draws, bool includePoints,
   return (includePoints && (hasTransparentGeometry(draws.points) ||
                             hasTransparentGeometry(draws.nativePoints))) ||
          (includeCurves && (hasTransparentGeometry(draws.curves) ||
-                             hasTransparentGeometry(draws.nativeCurves)));
+                            hasTransparentGeometry(draws.nativeCurves)));
 }
 
-bool hasTransparentBimSurfaceGeometry(const BimDrawLists& draws,
-                                      bool includePoints,
-                                      bool includeCurves) {
+bool hasTransparentBimSurfaceGeometry(const BimDrawLists &draws,
+                                      bool includePoints, bool includeCurves) {
   if (hasTransparentCommands(draws.transparentDrawCommands,
                              draws.transparentSingleSidedDrawCommands,
                              draws.transparentWindingFlippedDrawCommands,
@@ -382,35 +381,32 @@ bool hasTransparentBimSurfaceGeometry(const BimDrawLists& draws,
          (includeCurves && hasTransparentGeometry(draws.curves));
 }
 
-bool hasTransparentBimGeometry(const BimManager& bimManager,
-                               bool includePoints,
+bool hasTransparentBimGeometry(const BimManager &bimManager, bool includePoints,
                                bool includeCurves) {
-  if (hasTransparentCommands(
-          bimManager.transparentDrawCommands(),
-          bimManager.transparentSingleSidedDrawCommands(),
-          bimManager.transparentWindingFlippedDrawCommands(),
-          bimManager.transparentDoubleSidedDrawCommands())) {
+  if (hasTransparentCommands(bimManager.transparentDrawCommands(),
+                             bimManager.transparentSingleSidedDrawCommands(),
+                             bimManager.transparentWindingFlippedDrawCommands(),
+                             bimManager.transparentDoubleSidedDrawCommands())) {
     return true;
   }
   return (includePoints &&
           (hasTransparentGeometry(bimManager.pointDrawLists()) ||
            hasTransparentGeometry(bimManager.nativePointDrawLists()))) ||
-          (includeCurves &&
-           (hasTransparentGeometry(bimManager.curveDrawLists()) ||
-            hasTransparentGeometry(bimManager.nativeCurveDrawLists())));
+         (includeCurves &&
+          (hasTransparentGeometry(bimManager.curveDrawLists()) ||
+           hasTransparentGeometry(bimManager.nativeCurveDrawLists())));
 }
 
 bool hasTransparentBimSurfaceGeometry(const BimManager& bimManager,
-                                      bool includePoints,
-                                      bool includeCurves) {
-  if (hasTransparentCommands(
-          bimManager.transparentDrawCommands(),
-          bimManager.transparentSingleSidedDrawCommands(),
-          bimManager.transparentWindingFlippedDrawCommands(),
-          bimManager.transparentDoubleSidedDrawCommands())) {
+                                      bool includePoints, bool includeCurves) {
+  if (hasTransparentCommands(bimManager.transparentDrawCommands(),
+                             bimManager.transparentSingleSidedDrawCommands(),
+                             bimManager.transparentWindingFlippedDrawCommands(),
+                             bimManager.transparentDoubleSidedDrawCommands())) {
     return true;
   }
-  return (includePoints && hasTransparentGeometry(bimManager.pointDrawLists())) ||
+  return (includePoints &&
+          hasTransparentGeometry(bimManager.pointDrawLists())) ||
          (includeCurves && hasTransparentGeometry(bimManager.curveDrawLists()));
 }
 
@@ -442,10 +438,11 @@ BimFrameMeshDrawLists bimFrameMeshDrawLists(const BimManager &bimManager) {
               &bimManager.transparentDoubleSidedDrawCommands()};
 }
 
-BimFrameDrawRoutingInputs bimFrameDrawRoutingInputs(
-    const BimManager &bimManager, const BimDrawFilter &filter,
-    const container::ui::BimLayerVisibilityState &layers,
-    const BimDrawLists *cpuFilteredDraws) {
+BimFrameDrawRoutingInputs
+bimFrameDrawRoutingInputs(const BimManager &bimManager,
+                          const BimDrawFilter &filter,
+                          const container::ui::BimLayerVisibilityState &layers,
+                          const BimDrawLists *cpuFilteredDraws) {
   return {.gpuVisibility = bimFrameGpuVisibilityInputs(bimManager, filter),
           .pointCloudVisible = layers.pointCloudVisible,
           .curvesVisible = layers.curvesVisible,
@@ -473,8 +470,8 @@ void assignFrameDrawLists(FrameDrawLists &target,
       source.transparentDoubleSidedDrawCommands;
 }
 
-void assignFrameDrawLists(FrameDrawLists& target,
-                          const BimGeometryDrawLists& source) {
+void assignFrameDrawLists(FrameDrawLists &target,
+                          const BimGeometryDrawLists &source) {
   target.opaqueDrawCommands = &source.opaqueDrawCommands;
   target.opaqueSingleSidedDrawCommands = &source.opaqueSingleSidedDrawCommands;
   target.opaqueWindingFlippedDrawCommands =
@@ -510,7 +507,7 @@ sectionPlaneEquation(const container::ui::SectionPlaneState &sectionPlane) {
 }
 
 std::array<glm::vec4, 6>
-makeBoxClipPlanes(const container::ui::BimBoxClipUiState& boxClip) {
+makeBoxClipPlanes(const container::ui::BimBoxClipUiState &boxClip) {
   const glm::vec3 minBounds = glm::min(boxClip.min, boxClip.max);
   const glm::vec3 maxBounds = glm::max(boxClip.min, boxClip.max);
   return {{
@@ -592,8 +589,7 @@ std::optional<glm::vec2> projectToFramebuffer(const CameraData &cameraData,
     return std::nullopt;
   }
 
-  const glm::vec4 clip =
-      cameraData.viewProj * glm::vec4(worldPosition, 1.0f);
+  const glm::vec4 clip = cameraData.viewProj * glm::vec4(worldPosition, 1.0f);
   if (!std::isfinite(clip.x) || !std::isfinite(clip.y) ||
       !std::isfinite(clip.w) || clip.w <= 0.0001f) {
     return std::nullopt;
@@ -643,15 +639,25 @@ enum class GpuPickTargetKind {
   None,
   Scene,
   Bim,
+  Light,
 };
 
 struct GpuPickTarget {
   GpuPickTargetKind kind{GpuPickTargetKind::None};
   uint32_t objectIndex{std::numeric_limits<uint32_t>::max()};
+  EditableLightId editableLightId{};
 };
 
 GpuPickTarget decodeGpuPickId(uint32_t pickId) {
   if (pickId == container::gpu::kPickIdNone) {
+    return {};
+  }
+
+  if ((pickId & container::gpu::kPickIdLightMask) != 0u) {
+    if (auto lightId = decodeEditableLightPickId(pickId)) {
+      return GpuPickTarget{.kind = GpuPickTargetKind::Light,
+                           .editableLightId = *lightId};
+    }
     return {};
   }
 
@@ -667,9 +673,10 @@ GpuPickTarget decodeGpuPickId(uint32_t pickId) {
   };
 }
 
-std::optional<glm::vec3> unprojectDepthAtCursor(
-    const container::gpu::CameraData &cameraData, VkExtent2D viewportExtent,
-    double cursorX, double cursorY, float depth) {
+std::optional<glm::vec3>
+unprojectDepthAtCursor(const container::gpu::CameraData &cameraData,
+                       VkExtent2D viewportExtent, double cursorX,
+                       double cursorY, float depth) {
   if (viewportExtent.width == 0u || viewportExtent.height == 0u ||
       cursorX < 0.0 || cursorY < 0.0 ||
       cursorX >= static_cast<double>(viewportExtent.width) ||
@@ -678,14 +685,10 @@ std::optional<glm::vec3> unprojectDepthAtCursor(
     return std::nullopt;
   }
 
-  const float ndcX =
-      static_cast<float>((cursorX / static_cast<double>(viewportExtent.width)) *
-                             2.0 -
-                         1.0);
-  const float ndcY =
-      static_cast<float>(1.0 -
-                         (cursorY / static_cast<double>(viewportExtent.height)) *
-                             2.0);
+  const float ndcX = static_cast<float>(
+      (cursorX / static_cast<double>(viewportExtent.width)) * 2.0 - 1.0);
+  const float ndcY = static_cast<float>(
+      1.0 - (cursorY / static_cast<double>(viewportExtent.height)) * 2.0);
   glm::vec4 world = cameraData.inverseViewProj *
                     glm::vec4(ndcX, ndcY, std::clamp(depth, 0.0f, 1.0f), 1.0f);
   if (world.w == 0.0f) {
@@ -805,7 +808,7 @@ bool graphPassScheduled(const FrameRecorder *frameRecorder, RenderPassId id,
     return false;
   }
   if (preferPreparedFrame) {
-    for (const auto& status :
+    for (const auto &status :
          frameRecorder->graph().lastFrameExecutionStatuses()) {
       if (status.id == id) {
         return status.active;
@@ -824,8 +827,7 @@ bool anyShadowCascadeScheduled(const FrameRecorder *frameRecorder,
       });
 }
 
-bool deferredRasterLocalShadowSceneInputsReady(
-    const FrameRecordParams& p) {
+bool deferredRasterLocalShadowSceneInputsReady(const FrameRecordParams &p) {
   return shadowDescriptorSet(p, ShadowDescriptorSetId::Scene) !=
              VK_NULL_HANDLE &&
          p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
@@ -833,7 +835,7 @@ bool deferredRasterLocalShadowSceneInputsReady(
          hasOpaqueDrawCommands(p.draws);
 }
 
-bool deferredRasterLocalShadowBimInputsReady(const FrameRecordParams& p) {
+bool deferredRasterLocalShadowBimInputsReady(const FrameRecordParams &p) {
   return shadowDescriptorSet(p, ShadowDescriptorSetId::BimScene) !=
              VK_NULL_HANDLE &&
          p.bim.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
@@ -842,7 +844,7 @@ bool deferredRasterLocalShadowBimInputsReady(const FrameRecordParams& p) {
 }
 
 bool deferredRasterLocalShadowFrameInputsReady(
-    const FrameRecordParams& p, container::ui::GBufferViewMode displayMode) {
+    const FrameRecordParams &p, container::ui::GBufferViewMode displayMode) {
   if (!displayModeRecordsShadowAtlas(displayMode) ||
       p.shadows.renderPass == VK_NULL_HANDLE ||
       p.shadows.localShadowFramebuffers == nullptr ||
@@ -869,14 +871,12 @@ bool deferredRasterLocalShadowFrameInputsReady(
          deferredRasterLocalShadowBimInputsReady(p);
 }
 
-FrameFeatureReadiness
-evaluateFrameFeatureReadiness(container::ui::GBufferViewMode displayMode,
-                              const FrameRecorder *frameRecorder,
-                              const ShadowManager *shadowManager,
-                              const EnvironmentManager *environmentManager,
-                              const LightingManager *lightingManager,
-                              uint32_t imageIndex,
-                              const FrameRecordParams* preparedParams) {
+FrameFeatureReadiness evaluateFrameFeatureReadiness(
+    container::ui::GBufferViewMode displayMode,
+    const FrameRecorder *frameRecorder, const ShadowManager *shadowManager,
+    const EnvironmentManager *environmentManager,
+    const LightingManager *lightingManager, uint32_t imageIndex,
+    const FrameRecordParams *preparedParams) {
   const bool usePreparedFrame =
       frameRecorder != nullptr && preparedParams != nullptr;
   if (usePreparedFrame) {
@@ -884,10 +884,10 @@ evaluateFrameFeatureReadiness(container::ui::GBufferViewMode displayMode,
   }
 
   FrameFeatureReadiness readiness{};
-  readiness.shadowAtlas = displayModeRecordsShadowAtlas(displayMode) &&
-                          anyShadowCascadeScheduled(frameRecorder,
-                                                    usePreparedFrame) &&
-                          hasShadowAtlasResources(shadowManager);
+  readiness.shadowAtlas =
+      displayModeRecordsShadowAtlas(displayMode) &&
+      anyShadowCascadeScheduled(frameRecorder, usePreparedFrame) &&
+      hasShadowAtlasResources(shadowManager);
   readiness.localShadowAtlas =
       displayModeRecordsShadowAtlas(displayMode) &&
       graphPassScheduled(frameRecorder, RenderPassId::LocalShadowDepth,
@@ -895,15 +895,14 @@ evaluateFrameFeatureReadiness(container::ui::GBufferViewMode displayMode,
       (preparedParams == nullptr ||
        preparedParams->shadows.localShadowLayerCount > 0u) &&
       hasLocalShadowAtlasResources(shadowManager, imageIndex);
-  readiness.gtao = displayModeRecordsGtao(displayMode) &&
-                   graphPassScheduled(frameRecorder, RenderPassId::GTAO,
-                                      usePreparedFrame) &&
-                   hasGtaoResources(environmentManager);
-  readiness.tileCull =
-      displayModeRecordsTileCull(displayMode) &&
-      graphPassScheduled(frameRecorder, RenderPassId::TileCull,
-                         usePreparedFrame) &&
-      hasTileCullResources(lightingManager);
+  readiness.gtao =
+      displayModeRecordsGtao(displayMode) &&
+      graphPassScheduled(frameRecorder, RenderPassId::GTAO, usePreparedFrame) &&
+      hasGtaoResources(environmentManager);
+  readiness.tileCull = displayModeRecordsTileCull(displayMode) &&
+                       graphPassScheduled(frameRecorder, RenderPassId::TileCull,
+                                          usePreparedFrame) &&
+                       hasTileCullResources(lightingManager);
   return readiness;
 }
 
@@ -929,7 +928,7 @@ bool sameCameraData(const container::gpu::CameraData &lhs,
 }
 
 container::scene::SceneProviderBounds sceneProviderBoundsFromModelBounds(
-    const container::scene::ModelBounds& bounds) {
+    const container::scene::ModelBounds &bounds) {
   return {
       .min = bounds.min,
       .max = bounds.max,
@@ -937,10 +936,10 @@ container::scene::SceneProviderBounds sceneProviderBoundsFromModelBounds(
   };
 }
 
-container::scene::SceneProviderBounds sceneProviderBoundsFromBim(
-    const BimManager& bimManager) {
+container::scene::SceneProviderBounds
+sceneProviderBoundsFromBim(const BimManager &bimManager) {
   container::scene::SceneProviderBounds bounds{};
-  for (const BimElementMetadata& metadata : bimManager.elementMetadata()) {
+  for (const BimElementMetadata &metadata : bimManager.elementMetadata()) {
     if (!metadata.bounds.valid) {
       continue;
     }
@@ -1080,8 +1079,7 @@ void RendererFrontend::initialize() {
   subs_.bloomManager->createResources(container::util::executableDirectory());
   if (svc_.config.hasBloomEnabledOverride) {
     subs_.bloomManager->enabled() = svc_.config.bloomEnabled;
-  } else if (container::app::IsDefaultAuthoredLocalLightScene(
-                 svc_.config.modelPath)) {
+  } else if (container::app::IsDefaultAuthoredLocalLightScene(svc_.config.modelPath)) {
     subs_.bloomManager->enabled() =
         container::app::kDefaultAuthoredLocalLightBloomEnabled;
   }
@@ -1662,11 +1660,6 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
     }
   };
 
-  if (const auto id = pickEditableLightAtCursor(cursorX, cursorY)) {
-    selectEditableLight(*id);
-    return;
-  }
-
   auto selectBimObject = [&](uint32_t objectIndex,
                              std::optional<glm::vec3> anchorPoint =
                                  std::nullopt) {
@@ -1743,17 +1736,21 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
   uint32_t gpuPickId = container::gpu::kPickIdNone;
   const bool hasGpuPick = samplePickIdAtCursor(cursorX, cursorY, gpuPickId);
   if (hasGpuPick) {
+    const GpuPickTarget target = decodeGpuPickId(gpuPickId);
+    if (target.kind == GpuPickTargetKind::Light) {
+      selectEditableLight(target.editableLightId);
+      return;
+    }
+
     std::optional<glm::vec3> gpuPickWorldPoint;
     float gpuPickDepth = 0.0f;
     if (samplePickDepthAtCursor(cursorX, cursorY, gpuPickDepth) ||
         sampleDepthAtCursor(cursorX, cursorY, gpuPickDepth)) {
-      gpuPickWorldPoint =
-          unprojectDepthAtCursor(depthVisibility_.cameraData,
-                                 depthVisibility_.extent, cursorX, cursorY,
-                                 gpuPickDepth);
+      gpuPickWorldPoint = unprojectDepthAtCursor(
+          depthVisibility_.cameraData, depthVisibility_.extent, cursorX,
+          cursorY, gpuPickDepth);
     }
 
-    const GpuPickTarget target = decodeGpuPickId(gpuPickId);
     if (target.kind == GpuPickTargetKind::Bim && subs_.bimManager &&
         target.objectIndex < subs_.bimManager->objectData().size() &&
         subs_.bimManager->objectMatchesFilter(target.objectIndex, bimFilter) &&
@@ -1818,44 +1815,6 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
                       : std::nullopt);
 }
 
-std::optional<EditableLightId>
-RendererFrontend::pickEditableLightAtCursor(double cursorX,
-                                            double cursorY) const {
-  if (!subs_.lightingManager) {
-    return std::nullopt;
-  }
-  if (subs_.guiManager && !subs_.guiManager->showLightGizmos()) {
-    return std::nullopt;
-  }
-
-  const auto &editableLights = subs_.lightingManager->editableLights();
-  if (editableLights.empty()) {
-    return std::nullopt;
-  }
-
-  const VkExtent2D extent = svc_.swapChainManager.extent();
-  if (extent.width == 0u || extent.height == 0u) {
-    return std::nullopt;
-  }
-
-  const DeferredLightGizmoPlan gizmoPlan = buildDeferredLightGizmoPlan(
-      {.cameraPosition = glm::vec3(buffers_.cameraData.cameraWorldPosition),
-       .editableLights = std::span<const EditableLightEntity>(
-           editableLights.data(), editableLights.size())});
-
-  const auto hit = pickDeferredLightGizmoAtCursor(
-      {.visuals = std::span<const DeferredLightGizmoVisual>(
-           gizmoPlan.visuals.data(), gizmoPlan.visualCount),
-       .cameraData = buffers_.cameraData,
-       .framebufferExtent = {extent.width, extent.height},
-       .cursor = {static_cast<float>(cursorX), static_cast<float>(cursorY)},
-       .hitRadiusPixels = 18.0f});
-  if (!hit) {
-    return std::nullopt;
-  }
-  return hit->editableLightId;
-}
-
 void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
   if (!subs_.sceneController) {
     clearHoveredMeshNode();
@@ -1882,8 +1841,7 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
       hoverPickCache_.bimObjectDataRevision == bimObjectRevision &&
       hoverPickCache_.bimTypeFilterEnabled == bimFilter.typeFilterEnabled &&
       hoverPickCache_.bimFilterType == bimFilter.type &&
-      hoverPickCache_.bimStoreyFilterEnabled ==
-          bimFilter.storeyFilterEnabled &&
+      hoverPickCache_.bimStoreyFilterEnabled == bimFilter.storeyFilterEnabled &&
       hoverPickCache_.bimFilterStorey == bimFilter.storey &&
       hoverPickCache_.bimMaterialFilterEnabled ==
           bimFilter.materialFilterEnabled &&
@@ -1899,8 +1857,7 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
       hoverPickCache_.bimLoadBearingFilterEnabled ==
           bimFilter.loadBearingFilterEnabled &&
       hoverPickCache_.bimFilterLoadBearing == bimFilter.loadBearing &&
-      hoverPickCache_.bimStatusFilterEnabled ==
-          bimFilter.statusFilterEnabled &&
+      hoverPickCache_.bimStatusFilterEnabled == bimFilter.statusFilterEnabled &&
       hoverPickCache_.bimFilterStatus == bimFilter.status &&
       hoverPickCache_.bimDrawBudgetEnabled == bimFilter.drawBudgetEnabled &&
       hoverPickCache_.bimDrawBudgetMaxObjects ==
@@ -1979,11 +1936,12 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
                   buffers_.cameraData, svc_.swapChainManager.extent(), cursorX,
                   cursorY, sectionPlaneEnabled, activeSectionPlane)
             : BimPickHit{};
-  if (bimHit.hit && subs_.bimManager &&
-      (!subs_.bimManager->objectMatchesFilter(bimHit.objectIndex, bimFilter) ||
-       !bimObjectVisibleByLayer(bimHit.objectIndex))) {
-    bimHit.hit = false;
-  }
+    if (bimHit.hit && subs_.bimManager &&
+        (!subs_.bimManager->objectMatchesFilter(bimHit.objectIndex,
+                                                bimFilter) ||
+         !bimObjectVisibleByLayer(bimHit.objectIndex))) {
+      bimHit.hit = false;
+    }
 
     if (bimHit.hit && (!sceneHit.hit || bimHit.distance < sceneHit.distance)) {
       hoveredBimObject = bimHit.objectIndex;
@@ -1998,9 +1956,9 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
   if (hoveredBimObject != std::numeric_limits<uint32_t>::max() &&
       selectedBimObjectIndex_ != std::numeric_limits<uint32_t>::max() &&
       subs_.bimManager) {
-    const auto* selectedMetadata =
+    const auto *selectedMetadata =
         subs_.bimManager->metadataForObject(selectedBimObjectIndex_);
-    const auto* hoveredMetadata =
+    const auto *hoveredMetadata =
         subs_.bimManager->metadataForObject(hoveredBimObject);
     if (selectedMetadata != nullptr && hoveredMetadata != nullptr &&
         sameBimProductIdentity(*selectedMetadata, *hoveredMetadata)) {
@@ -2088,11 +2046,12 @@ void RendererFrontend::transformSelectedNodeByDrag(
                                     : sceneState_.selectedMeshNode;
   auto currentControls =
       transformingEditableLight
-          ? container::ui::TransformControls{
-                .position = selectedEditableLight->position,
-                .rotationDegrees = glm::vec3(0.0f),
-                .scale = glm::vec3(std::max(selectedEditableLight->range,
-                                            1.0f))}
+          ? container::ui::TransformControls{.position = selectedEditableLight
+                                                             ->position,
+                                             .rotationDegrees = glm::vec3(0.0f),
+                                             .scale = glm::vec3(std::max(
+                                                 selectedEditableLight->range,
+                                                 1.0f))}
           : subs_.cameraController->nodeTransformControls(
                 sceneState_.selectedMeshNode);
   if (!transformDragSession_.active ||
@@ -2142,12 +2101,12 @@ void RendererFrontend::transformSelectedNodeByDrag(
   auto projectedAxisDragAmount = [&](const glm::vec3 &axisVector,
                                      float fallbackScale) {
     const VkExtent2D extent = svc_.swapChainManager.extent();
-    const auto startScreen = projectToFramebuffer(
-        buffers_.cameraData, extent, transformDragSession_.origin);
-    const auto endScreen = projectToFramebuffer(
-        buffers_.cameraData, extent,
-        transformDragSession_.origin +
-            axisVector * transformDragSession_.gizmoScale);
+    const auto startScreen = projectToFramebuffer(buffers_.cameraData, extent,
+                                                  transformDragSession_.origin);
+    const auto endScreen =
+        projectToFramebuffer(buffers_.cameraData, extent,
+                             transformDragSession_.origin +
+                                 axisVector * transformDragSession_.gizmoScale);
     if (!startScreen || !endScreen) {
       return static_cast<float>(dragDeltaX - dragDeltaY) * fallbackScale;
     }
@@ -2160,10 +2119,9 @@ void RendererFrontend::transformSelectedNodeByDrag(
 
     const glm::vec2 mouseScreenDelta{static_cast<float>(dragDeltaX),
                                      static_cast<float>(-dragDeltaY)};
-    const float screenPixels = glm::dot(mouseScreenDelta,
-                                        screenAxis / screenAxisLength);
-    return screenPixels *
-           (transformDragSession_.gizmoScale / screenAxisLength);
+    const float screenPixels =
+        glm::dot(mouseScreenDelta, screenAxis / screenAxisLength);
+    return screenPixels * (transformDragSession_.gizmoScale / screenAxisLength);
   };
 
   switch (tool) {
@@ -2191,7 +2149,8 @@ void RendererFrontend::transformSelectedNodeByDrag(
       vertical = up;
     }
 
-    controls.position += horizontal * static_cast<float>(dragDeltaX) * dragScale;
+    controls.position +=
+        horizontal * static_cast<float>(dragDeltaX) * dragScale;
     controls.position += vertical * static_cast<float>(dragDeltaY) * dragScale;
     break;
   }
@@ -2246,20 +2205,20 @@ void RendererFrontend::transformSelectedNodeByDrag(
   if (snapEnabled) {
     switch (tool) {
     case container::ui::ViewportTool::Translate:
-      controls.position = snapRelativeVec3(
-          transformDragSession_.startControls.position, controls.position,
-          0.25f);
+      controls.position =
+          snapRelativeVec3(transformDragSession_.startControls.position,
+                           controls.position, 0.25f);
       break;
     case container::ui::ViewportTool::Rotate:
-      controls.rotationDegrees = snapRelativeVec3(
-          transformDragSession_.startControls.rotationDegrees,
-          controls.rotationDegrees, 15.0f);
+      controls.rotationDegrees =
+          snapRelativeVec3(transformDragSession_.startControls.rotationDegrees,
+                           controls.rotationDegrees, 15.0f);
       break;
     case container::ui::ViewportTool::Scale:
-      controls.scale = glm::clamp(
-          snapRelativeVec3(transformDragSession_.startControls.scale,
-                           controls.scale, 0.1f),
-          glm::vec3(0.001f), glm::vec3(1000.0f));
+      controls.scale =
+          glm::clamp(snapRelativeVec3(transformDragSession_.startControls.scale,
+                                      controls.scale, 0.1f),
+                     glm::vec3(0.001f), glm::vec3(1000.0f));
       break;
     case container::ui::ViewportTool::Select:
       break;
@@ -2286,9 +2245,8 @@ void RendererFrontend::transformSelectedNodeByDrag(
           transformDragSession_.startControls.rotationDegrees;
       auto rotateAxis = [&](const glm::vec3 &axisVector, float degrees) {
         if (std::abs(degrees) > 1.0e-4f) {
-          lightChanged |=
-              subs_.lightingManager->rotateSelectedEditableLight(axisVector,
-                                                                 degrees);
+          lightChanged |= subs_.lightingManager->rotateSelectedEditableLight(
+              axisVector, degrees);
         }
       };
       switch (axis) {
@@ -2309,19 +2267,18 @@ void RendererFrontend::transformSelectedNodeByDrag(
       break;
     }
     case container::ui::ViewportTool::Scale: {
-      const float startScale = std::max(
-          (transformDragSession_.startControls.scale.x +
-           transformDragSession_.startControls.scale.y +
-           transformDragSession_.startControls.scale.z) *
-              0.33333334f,
-          0.001f);
+      const float startScale =
+          std::max((transformDragSession_.startControls.scale.x +
+                    transformDragSession_.startControls.scale.y +
+                    transformDragSession_.startControls.scale.z) *
+                       0.33333334f,
+                   0.001f);
       const float newScale =
           std::max((controls.scale.x + controls.scale.y + controls.scale.z) *
                        0.33333334f,
                    0.001f);
-      lightChanged =
-          subs_.lightingManager->scaleSelectedEditableLight(newScale /
-                                                            startScale);
+      lightChanged = subs_.lightingManager->scaleSelectedEditableLight(
+          newScale / startScale);
       break;
     }
     }
@@ -2345,6 +2302,11 @@ void RendererFrontend::transformSelectedNodeByDrag(
 std::optional<container::ui::TransformAxis>
 RendererFrontend::pickTransformGizmoAxisAtCursor(double cursorX,
                                                  double cursorY) const {
+  if (subs_.guiManager != nullptr &&
+      !subs_.guiManager->editorOverlaysEnabled()) {
+    return std::nullopt;
+  }
+
   const bool hasSelectedEditableLight =
       subs_.lightingManager &&
       subs_.lightingManager->selectedEditableLight().has_value();
@@ -2355,8 +2317,7 @@ RendererFrontend::pickTransformGizmoAxisAtCursor(double cursorX,
   }
 
   const FrameTransformGizmoState gizmo = buildTransformGizmoState();
-  if (!gizmo.visible ||
-      gizmo.tool == container::ui::ViewportTool::Select) {
+  if (!gizmo.visible || gizmo.tool == container::ui::ViewportTool::Select) {
     return std::nullopt;
   }
 
@@ -2406,8 +2367,8 @@ RendererFrontend::pickTransformGizmoAxisAtCursor(double cursorX,
     return glm::vec3{1.0f, 0.0f, 0.0f};
   };
 
-  auto axisSideBasis = [&](container::ui::TransformAxis axis,
-                           glm::vec3 &sideA, glm::vec3 &sideB) {
+  auto axisSideBasis = [&](container::ui::TransformAxis axis, glm::vec3 &sideA,
+                           glm::vec3 &sideB) {
     if (axis == container::ui::TransformAxis::X) {
       sideA = axisDirection(container::ui::TransformAxis::Y);
       sideB = axisDirection(container::ui::TransformAxis::Z);
@@ -2421,12 +2382,12 @@ RendererFrontend::pickTransformGizmoAxisAtCursor(double cursorX,
   };
 
   auto considerSegment = [&](container::ui::TransformAxis axis,
-                             const glm::vec3 &start,
-                             const glm::vec3 &end,
+                             const glm::vec3 &start, const glm::vec3 &end,
                              float thresholdPx) {
     const auto startScreen =
         projectToFramebuffer(buffers_.cameraData, extent, start);
-    const auto endScreen = projectToFramebuffer(buffers_.cameraData, extent, end);
+    const auto endScreen =
+        projectToFramebuffer(buffers_.cameraData, extent, end);
     if (!startScreen || !endScreen) {
       return;
     }
@@ -2459,20 +2420,16 @@ RendererFrontend::pickTransformGizmoAxisAtCursor(double cursorX,
       glm::vec3 sideB{0.0f};
       axisSideBasis(axis, sideA, sideB);
       for (uint32_t segment = 0u; segment < kRingSegments; ++segment) {
-        const float angle0 =
-            static_cast<float>(segment) *
-            (2.0f * kPi / static_cast<float>(kRingSegments));
-        const float angle1 =
-            static_cast<float>(segment + 1u) *
-            (2.0f * kPi / static_cast<float>(kRingSegments));
+        const float angle0 = static_cast<float>(segment) *
+                             (2.0f * kPi / static_cast<float>(kRingSegments));
+        const float angle1 = static_cast<float>(segment + 1u) *
+                             (2.0f * kPi / static_cast<float>(kRingSegments));
         const glm::vec3 start =
             gizmo.origin +
-            (std::cos(angle0) * sideA + std::sin(angle0) * sideB) *
-                gizmo.scale;
+            (std::cos(angle0) * sideA + std::sin(angle0) * sideB) * gizmo.scale;
         const glm::vec3 end =
             gizmo.origin +
-            (std::cos(angle1) * sideA + std::sin(angle1) * sideB) *
-                gizmo.scale;
+            (std::cos(angle1) * sideA + std::sin(angle1) * sideB) * gizmo.scale;
         considerSegment(axis, start, end, kRotateRingHitRadiusPx);
       }
     }
@@ -2560,8 +2517,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     (void)reloadPrimary("", 1.0f);
     if (!subs_.bimManager) {
       subs_.bimManager = std::make_unique<BimManager>(
-          svc_.ctx.deviceWrapper, svc_.allocationManager,
-          svc_.pipelineManager);
+          svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
       subs_.bimManager->createMeshletResidencyResources(
           container::util::executableDirectory());
     }
@@ -2611,9 +2567,9 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     }
     if (!svc_.config.bimModelPath.empty()) {
       if (!subs_.bimManager) {
-        subs_.bimManager = std::make_unique<BimManager>(
-            svc_.ctx.deviceWrapper, svc_.allocationManager,
-            svc_.pipelineManager);
+        subs_.bimManager = std::make_unique<BimManager>(svc_.ctx.deviceWrapper,
+                                                        svc_.allocationManager,
+                                                        svc_.pipelineManager);
         subs_.bimManager->createMeshletResidencyResources(
             container::util::executableDirectory());
       }
@@ -2716,6 +2672,7 @@ void RendererFrontend::createGraphicsPipelines() {
       subs_.sceneManager->descriptorSetLayout(),
       subs_.frameResourceManager->lightingLayout(),
       subs_.lightingManager->lightDescriptorSetLayout(),
+      subs_.lightingManager->lightGizmoIconDescriptorSetLayout(),
       // Some tests or fallback configurations may not create tiled lighting
       // resources. Reuse the regular light layout so pipeline layout creation
       // stays well-formed even when the tiled path is unavailable.
@@ -2764,7 +2721,8 @@ void RendererFrontend::syncCameraSelectionPivotOverride() {
   constexpr uint32_t invalidObjectIndex = std::numeric_limits<uint32_t>::max();
   const bool anchorMatchesScene =
       selectionNavigationAnchor_.valid &&
-      sceneState_.selectedMeshNode != container::scene::SceneGraph::kInvalidNode &&
+      sceneState_.selectedMeshNode !=
+          container::scene::SceneGraph::kInvalidNode &&
       selectionNavigationAnchor_.sceneNode == sceneState_.selectedMeshNode;
   const bool anchorMatchesBim =
       selectionNavigationAnchor_.valid &&
@@ -2793,9 +2751,8 @@ void RendererFrontend::syncCameraSelectionPivotOverride() {
   }
 
   subs_.cameraController->setSelectionPivotOverride(
-      CameraController::NavigationPivot{.center = bounds.center,
-                                        .radius = bounds.radius,
-                                        .valid = true});
+      CameraController::NavigationPivot{
+          .center = bounds.center, .radius = bounds.radius, .valid = true});
 }
 
 void RendererFrontend::initializeScene() {
@@ -2926,8 +2883,7 @@ void RendererFrontend::updateObjectBuffer() {
 }
 
 void RendererFrontend::applyBimSemanticColorMode() {
-  if (!subs_.bimManager || !subs_.bimManager->hasScene() ||
-      !subs_.guiManager) {
+  if (!subs_.bimManager || !subs_.bimManager->hasScene() || !subs_.guiManager) {
     return;
   }
   subs_.bimManager->setSemanticColorMode(
@@ -2935,7 +2891,7 @@ void RendererFrontend::applyBimSemanticColorMode() {
 }
 
 void RendererFrontend::updateFrameDescriptorSets(
-    uint32_t imageIndex, const FrameRecordParams* preparedParams) {
+    uint32_t imageIndex, const FrameRecordParams *preparedParams) {
   if (subs_.frameResourceManager) {
     const auto displayMode = frontendDisplayMode(
         subs_.guiManager.get(), configuredDisplayMode(svc_.config));
@@ -3019,9 +2975,10 @@ void RendererFrontend::updateFrameDescriptorSets(
     subs_.frameResourceManager->updateDescriptorSets(
         buffers_.cameras, buffers_.object, shadowView, shadowSampler,
         shadowUbos, localShadowView, localShadowSampler, localShadowUbos,
-        irradianceView, prefilteredView, brdfLutView, envSampler, brdfLutSampler,
-        aoTextureView, aoSampler, bloomTextureView, bloomSampler, tileGridBuffer,
-        tileGridBufferSize, exposureStateBuffer, exposureStateBufferSize);
+        irradianceView, prefilteredView, brdfLutView, envSampler,
+        brdfLutSampler, aoTextureView, aoSampler, bloomTextureView,
+        bloomSampler, tileGridBuffer, tileGridBufferSize, exposureStateBuffer,
+        exposureStateBufferSize);
   }
 }
 
@@ -3209,7 +3166,7 @@ void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex) {
   depthVisibility_.bimIsolateSelection = bimFilter.isolateSelection;
   depthVisibility_.bimHideSelection = bimFilter.hideSelection;
   if (subs_.guiManager) {
-    const auto& layers = subs_.guiManager->bimLayerVisibilityState();
+    const auto &layers = subs_.guiManager->bimLayerVisibilityState();
     depthVisibility_.bimPointCloudVisible = layers.pointCloudVisible;
     depthVisibility_.bimCurvesVisible = layers.curvesVisible;
   } else {
@@ -3229,15 +3186,15 @@ void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex) {
       subs_.bimManager->hasScene()) {
     // Transparent-pick depth only records mesh and placeholder point/curve
     // surface paths. Native point/curve primitive passes render later in the
-    // lighting pass, so they should not force a filteredDrawLists() lookup here.
+    // lighting pass, so they should not force a filteredDrawLists() lookup
+    // here.
     const bool transparentPickSurfaceGeometry =
         hasTransparentBimSurfaceGeometry(*subs_.bimManager,
                                          depthVisibility_.bimPointCloudVisible,
                                          depthVisibility_.bimCurvesVisible);
     if (bimFilter.active()) {
-      const bool gpuOpaqueFiltering =
-          bimFrameGpuVisibilityAvailable(
-              bimFrameGpuVisibilityInputs(*subs_.bimManager, bimFilter));
+      const bool gpuOpaqueFiltering = bimFrameGpuVisibilityAvailable(
+          bimFrameGpuVisibilityInputs(*subs_.bimManager, bimFilter));
       if (gpuOpaqueFiltering &&
           hasTransparentBimSurfaceGeometry(*subs_.bimManager, false, false)) {
         // GPU-compacted transparent mesh draws are filtered by the visibility
@@ -3292,8 +3249,8 @@ bool RendererFrontend::depthVisibilityFrameMatchesCurrentState() const {
     return false;
   }
   glm::vec4 currentSectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
-  const bool currentSectionPlaneEnabled = currentSectionPlaneEquation(
-      subs_.guiManager.get(), currentSectionPlane);
+  const bool currentSectionPlaneEnabled =
+      currentSectionPlaneEquation(subs_.guiManager.get(), currentSectionPlane);
   if (depthVisibility_.sectionPlaneEnabled != currentSectionPlaneEnabled) {
     return false;
   }
@@ -3339,7 +3296,7 @@ bool RendererFrontend::depthVisibilityFrameMatchesCurrentState() const {
     return false;
   }
   if (subs_.guiManager) {
-    const auto& layers = subs_.guiManager->bimLayerVisibilityState();
+    const auto &layers = subs_.guiManager->bimLayerVisibilityState();
     if (depthVisibility_.bimPointCloudVisible != layers.pointCloudVisible ||
         depthVisibility_.bimCurvesVisible != layers.curvesVisible) {
       return false;
@@ -3390,7 +3347,7 @@ bool RendererFrontend::bimObjectVisibleByLayer(uint32_t objectIndex) const {
   if (!subs_.bimManager) {
     return false;
   }
-  const BimElementMetadata* metadata =
+  const BimElementMetadata *metadata =
       subs_.bimManager->metadataForObject(objectIndex);
   if (metadata == nullptr) {
     return false;
@@ -3398,7 +3355,7 @@ bool RendererFrontend::bimObjectVisibleByLayer(uint32_t objectIndex) const {
   if (!subs_.guiManager) {
     return true;
   }
-  const auto& layerState = subs_.guiManager->bimLayerVisibilityState();
+  const auto &layerState = subs_.guiManager->bimLayerVisibilityState();
   switch (metadata->geometryKind) {
   case BimGeometryKind::Points:
     return layerState.pointCloudVisible;
@@ -3647,10 +3604,9 @@ bool RendererFrontend::sampleDepthAtCursor(double cursorX, double cursorY,
   copyRegion.imageOffset = {static_cast<int32_t>(x), static_cast<int32_t>(y),
                             0};
   copyRegion.imageExtent = {1u, 1u, 1u};
-  vkCmdCopyImageToBuffer(commandBuffer, depthImage,
-                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                         depthVisibility_.readbackBuffer.buffer, 1,
-                         &copyRegion);
+  vkCmdCopyImageToBuffer(
+      commandBuffer, depthImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      depthVisibility_.readbackBuffer.buffer, 1, &copyRegion);
 
   VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
   hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -3727,10 +3683,8 @@ bool RendererFrontend::samplePickIdAtCursor(double cursorX, double cursorY,
   }
 
   const VkImage pickIdImage = deferredRasterRuntimeImage(
-      subs_.frameResourceManager.get(), depthVisibility_.imageIndex,
-      "pick-id");
-  if (pickIdImage == VK_NULL_HANDLE || cursorX < 0.0 ||
-      cursorY < 0.0 ||
+      subs_.frameResourceManager.get(), depthVisibility_.imageIndex, "pick-id");
+  if (pickIdImage == VK_NULL_HANDLE || cursorX < 0.0 || cursorY < 0.0 ||
       cursorX >= static_cast<double>(depthVisibility_.extent.width) ||
       cursorY >= static_cast<double>(depthVisibility_.extent.height)) {
     return false;
@@ -3805,10 +3759,9 @@ bool RendererFrontend::samplePickIdAtCursor(double cursorX, double cursorY,
   copyRegion.imageOffset = {static_cast<int32_t>(x), static_cast<int32_t>(y),
                             0};
   copyRegion.imageExtent = {1u, 1u, 1u};
-  vkCmdCopyImageToBuffer(commandBuffer, pickIdImage,
-                         VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
-                         depthVisibility_.readbackBuffer.buffer, 1,
-                         &copyRegion);
+  vkCmdCopyImageToBuffer(
+      commandBuffer, pickIdImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      depthVisibility_.readbackBuffer.buffer, 1, &copyRegion);
 
   VkBufferMemoryBarrier hostRead{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
   hostRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
@@ -3921,13 +3874,12 @@ void RendererFrontend::presentSceneControls() {
                                    ? subs_.lightingManager->editableLights()
                                    : emptyEditableLights;
   const auto selectedEditableLight =
-      subs_.lightingManager
-          ? subs_.lightingManager->selectedEditableLightId()
-          : container::renderer::EditableLightId{};
+      subs_.lightingManager ? subs_.lightingManager->selectedEditableLightId()
+                            : container::renderer::EditableLightId{};
   container::ui::BimInspectionState bimInspection{};
   if (subs_.bimManager && subs_.bimManager->hasScene()) {
     const BimSceneStats stats = subs_.bimManager->sceneStats();
-    const BimOptimizedModelMetadata& optimizedMetadata =
+    const BimOptimizedModelMetadata &optimizedMetadata =
         subs_.bimManager->optimizedModelMetadata();
     const BimDrawBudgetLodStats drawBudgetLodStats =
         subs_.bimManager->drawBudgetLodStats(currentBimDrawFilter());
@@ -3940,8 +3892,7 @@ void RendererFrontend::presentSceneControls() {
     const auto &elementLoadBearingValues =
         subs_.bimManager->elementLoadBearingValues();
     const auto &elementStatuses = subs_.bimManager->elementStatuses();
-    const auto &elementStoreyRanges =
-        subs_.bimManager->elementStoreyRanges();
+    const auto &elementStoreyRanges = subs_.bimManager->elementStoreyRanges();
     bimInspection.hasScene = true;
     bimInspection.modelPath = subs_.bimManager->modelPath();
     bimInspection.objectCount = stats.objectCount;
@@ -3954,12 +3905,10 @@ void RendererFrontend::presentSceneControls() {
     bimInspection.pointTransparentDrawCount = stats.pointTransparentDrawCount;
     bimInspection.curveOpaqueDrawCount = stats.curveOpaqueDrawCount;
     bimInspection.curveTransparentDrawCount = stats.curveTransparentDrawCount;
-    bimInspection.nativePointOpaqueDrawCount =
-        stats.nativePointOpaqueDrawCount;
+    bimInspection.nativePointOpaqueDrawCount = stats.nativePointOpaqueDrawCount;
     bimInspection.nativePointTransparentDrawCount =
         stats.nativePointTransparentDrawCount;
-    bimInspection.nativeCurveOpaqueDrawCount =
-        stats.nativeCurveOpaqueDrawCount;
+    bimInspection.nativeCurveOpaqueDrawCount = stats.nativeCurveOpaqueDrawCount;
     bimInspection.nativeCurveTransparentDrawCount =
         stats.nativeCurveTransparentDrawCount;
     bimInspection.meshletClusterCount = stats.meshletClusterCount;
@@ -3974,8 +3923,7 @@ void RendererFrontend::presentSceneControls() {
         stats.meshletGpuResidentClusterCount;
     bimInspection.meshletGpuBufferBytes = stats.meshletGpuBufferBytes;
     bimInspection.meshletGpuComputeReady = stats.meshletGpuComputeReady;
-    bimInspection.meshletGpuDispatchPending =
-        stats.meshletGpuDispatchPending;
+    bimInspection.meshletGpuDispatchPending = stats.meshletGpuDispatchPending;
     bimInspection.meshletMaxLodLevel = stats.meshletMaxLodLevel;
     bimInspection.optimizedModelMetadataCacheable =
         stats.optimizedModelMetadataCacheable;
@@ -3985,10 +3933,8 @@ void RendererFrontend::presentSceneControls() {
         stats.optimizedModelMetadataCacheStale;
     bimInspection.optimizedModelMetadataCacheWritten =
         stats.optimizedModelMetadataCacheWriteSucceeded;
-    bimInspection.optimizedModelMetadataCacheKey =
-        optimizedMetadata.cacheKey;
-    bimInspection.optimizedModelMetadataCachePath =
-        optimizedMetadata.cachePath;
+    bimInspection.optimizedModelMetadataCacheKey = optimizedMetadata.cacheKey;
+    bimInspection.optimizedModelMetadataCachePath = optimizedMetadata.cachePath;
     bimInspection.optimizedModelMetadataCacheStatus =
         optimizedMetadata.cacheStatus;
     bimInspection.drawBudgetVisibleObjectCount =
@@ -4019,7 +3965,7 @@ void RendererFrontend::presentSceneControls() {
     bimInspection.hasEffectiveImportScale =
         unitMetadata.hasEffectiveImportScale;
     bimInspection.effectiveImportScale = unitMetadata.effectiveImportScale;
-    const BimModelGeoreferenceMetadata& georeferenceMetadata =
+    const BimModelGeoreferenceMetadata &georeferenceMetadata =
         subs_.bimManager->modelGeoreferenceMetadata();
     bimInspection.hasSourceUpAxis = georeferenceMetadata.hasSourceUpAxis;
     bimInspection.sourceUpAxis = georeferenceMetadata.sourceUpAxis;
@@ -4034,30 +3980,22 @@ void RendererFrontend::presentSceneControls() {
     bimInspection.mapConversionName = georeferenceMetadata.mapConversionName;
     bimInspection.elementTypes =
         std::span<const std::string>(elementTypes.data(), elementTypes.size());
-    bimInspection.elementStoreys =
-        std::span<const std::string>(elementStoreys.data(),
-                                     elementStoreys.size());
-    bimInspection.elementMaterials =
-        std::span<const std::string>(elementMaterials.data(),
-                                     elementMaterials.size());
-    bimInspection.elementDisciplines =
-        std::span<const std::string>(elementDisciplines.data(),
-                                     elementDisciplines.size());
-    bimInspection.elementPhases =
-        std::span<const std::string>(elementPhases.data(),
-                                     elementPhases.size());
-    bimInspection.elementFireRatings =
-        std::span<const std::string>(elementFireRatings.data(),
-                                     elementFireRatings.size());
-    bimInspection.elementLoadBearingValues =
-        std::span<const std::string>(elementLoadBearingValues.data(),
-                                     elementLoadBearingValues.size());
-    bimInspection.elementStatuses =
-        std::span<const std::string>(elementStatuses.data(),
-                                     elementStatuses.size());
-    bimInspection.elementStoreyRanges =
-        std::span<const BimStoreyRange>(elementStoreyRanges.data(),
-                                        elementStoreyRanges.size());
+    bimInspection.elementStoreys = std::span<const std::string>(
+        elementStoreys.data(), elementStoreys.size());
+    bimInspection.elementMaterials = std::span<const std::string>(
+        elementMaterials.data(), elementMaterials.size());
+    bimInspection.elementDisciplines = std::span<const std::string>(
+        elementDisciplines.data(), elementDisciplines.size());
+    bimInspection.elementPhases = std::span<const std::string>(
+        elementPhases.data(), elementPhases.size());
+    bimInspection.elementFireRatings = std::span<const std::string>(
+        elementFireRatings.data(), elementFireRatings.size());
+    bimInspection.elementLoadBearingValues = std::span<const std::string>(
+        elementLoadBearingValues.data(), elementLoadBearingValues.size());
+    bimInspection.elementStatuses = std::span<const std::string>(
+        elementStatuses.data(), elementStatuses.size());
+    bimInspection.elementStoreyRanges = std::span<const BimStoreyRange>(
+        elementStoreyRanges.data(), elementStoreyRanges.size());
     if (const auto *metadata =
             subs_.bimManager->metadataForObject(selectedBimObjectIndex_)) {
       bimInspection.hasSelection = true;
@@ -4083,9 +4021,8 @@ void RendererFrontend::presentSceneControls() {
       bimInspection.status = metadata->status;
       bimInspection.sourceId = metadata->sourceId;
       bimInspection.geometryKind = bimGeometryKindLabel(metadata->geometryKind);
-      bimInspection.properties =
-          std::span<const BimElementProperty>(metadata->properties.data(),
-                                              metadata->properties.size());
+      bimInspection.properties = std::span<const BimElementProperty>(
+          metadata->properties.data(), metadata->properties.size());
       bimInspection.transparent = metadata->transparent;
       bimInspection.doubleSided = metadata->doubleSided;
       const BimElementBounds elementBounds =
@@ -4111,34 +4048,33 @@ void RendererFrontend::presentSceneControls() {
     }
   };
   const std::function<void(container::renderer::ScenePrimitiveKind)>
-      addScenePrimitive =
-          [this](container::renderer::ScenePrimitiveKind kind) {
-            if (!subs_.sceneController) {
-              return;
-            }
-            const uint32_t node = subs_.sceneController->addScenePrimitive(
-                kind, glm::mat4(1.0f), sceneState_.rootNode);
-            if (node == container::scene::SceneGraph::kInvalidNode) {
-              return;
-            }
-            if (subs_.cameraController) {
-              subs_.cameraController->selectMeshNode(
-                  node, sceneState_.selectedMeshNode);
-            } else {
-              sceneState_.selectedMeshNode = node;
-            }
-            if (subs_.lightingManager) {
-              subs_.lightingManager->selectEditableLight({});
-            }
-            syncSceneStateFromController();
-            selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
-            selectionNavigationAnchor_ = {};
-            clearHoveredMeshNode();
-            selectedDrawCommands_.clear();
-            selectedBimDrawCommands_.clear();
-            updateObjectBuffer();
-            syncSceneProviders();
-          };
+      addScenePrimitive = [this](container::renderer::ScenePrimitiveKind kind) {
+        if (!subs_.sceneController) {
+          return;
+        }
+        const uint32_t node = subs_.sceneController->addScenePrimitive(
+            kind, glm::mat4(1.0f), sceneState_.rootNode);
+        if (node == container::scene::SceneGraph::kInvalidNode) {
+          return;
+        }
+        if (subs_.cameraController) {
+          subs_.cameraController->selectMeshNode(node,
+                                                 sceneState_.selectedMeshNode);
+        } else {
+          sceneState_.selectedMeshNode = node;
+        }
+        if (subs_.lightingManager) {
+          subs_.lightingManager->selectEditableLight({});
+        }
+        syncSceneStateFromController();
+        selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
+        selectionNavigationAnchor_ = {};
+        clearHoveredMeshNode();
+        selectedDrawCommands_.clear();
+        selectedBimDrawCommands_.clear();
+        updateObjectBuffer();
+        syncSceneProviders();
+      };
   subs_.guiManager->drawSceneControls(
       sceneGraph_,
       [this](const std::string &modelPath, float importScale) {
@@ -4151,8 +4087,8 @@ void RendererFrontend::presentSceneControls() {
       addScenePrimitive,
       subs_.cameraController ? subs_.cameraController->cameraTransformControls()
                              : container::ui::TransformControls{},
-      [this, uploadCameraBuffers](
-          const container::ui::TransformControls &controls) {
+      [this,
+       uploadCameraBuffers](const container::ui::TransformControls &controls) {
         if (subs_.cameraController)
           subs_.cameraController->applyCameraTransform(
               controls, buffers_.cameraData,
@@ -4181,7 +4117,8 @@ void RendererFrontend::presentSceneControls() {
           return;
         }
         subs_.lightingManager->selectEditableLight(id);
-        sceneState_.selectedMeshNode = container::scene::SceneGraph::kInvalidNode;
+        sceneState_.selectedMeshNode =
+            container::scene::SceneGraph::kInvalidNode;
         selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
         selectionNavigationAnchor_ = {};
         clearHoveredMeshNode();
@@ -4197,7 +4134,8 @@ void RendererFrontend::presentSceneControls() {
             !subs_.lightingManager->updateEditableLight(light)) {
           return;
         }
-        sceneState_.selectedMeshNode = container::scene::SceneGraph::kInvalidNode;
+        sceneState_.selectedMeshNode =
+            container::scene::SceneGraph::kInvalidNode;
         selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
         selectionNavigationAnchor_ = {};
         subs_.lightingManager->updateLightingData();
@@ -4210,7 +4148,8 @@ void RendererFrontend::presentSceneControls() {
         const auto id = subs_.lightingManager->addManualEditableLight(type);
         subs_.lightingManager->updateLightingData();
         subs_.lightingManager->selectEditableLight(id);
-        sceneState_.selectedMeshNode = container::scene::SceneGraph::kInvalidNode;
+        sceneState_.selectedMeshNode =
+            container::scene::SceneGraph::kInvalidNode;
         selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
         selectionNavigationAnchor_ = {};
         selectedDrawCommands_.clear();
@@ -4220,8 +4159,7 @@ void RendererFrontend::presentSceneControls() {
           subs_.guiManager->setStatusMessage("Selected editable light");
         }
       },
-      sceneState_.selectedMeshNode, bimInspection,
-      currentViewpoint,
+      sceneState_.selectedMeshNode, bimInspection, currentViewpoint,
       [this](const container::ui::ViewpointSnapshotState &snapshot) {
         return restoreViewpointSnapshot(snapshot);
       },
@@ -4369,7 +4307,9 @@ void RendererFrontend::presentSceneControls() {
         guiLightingSettings.environmentIntensity !=
             currentLightingSettings.environmentIntensity ||
         guiLightingSettings.bounceIntensity !=
-            currentLightingSettings.bounceIntensity;
+            currentLightingSettings.bounceIntensity ||
+        guiLightingSettings.localShadowPointBudget !=
+            currentLightingSettings.localShadowPointBudget;
     if (lightingSettingsChanged) {
       subs_.lightingManager->setLightingSettings(guiLightingSettings);
       subs_.lightingManager->updateLightingData();
@@ -4394,10 +4334,9 @@ void RendererFrontend::presentSceneControls() {
   }
 }
 
-void RendererFrontend::recordCommandBuffer(VkCommandBuffer commandBuffer,
-                                           uint32_t imageIndex,
-                                           const FrameRecordParams*
-                                               preparedParams) {
+void RendererFrontend::recordCommandBuffer(
+    VkCommandBuffer commandBuffer, uint32_t imageIndex,
+    const FrameRecordParams *preparedParams) {
   if (!subs_.frameRecorder || !subs_.frameResourceManager) {
     throw std::runtime_error(
         "frameRecorder not initialized or image index out of range");
@@ -4419,12 +4358,18 @@ void RendererFrontend::recordCommandBuffer(VkCommandBuffer commandBuffer,
 
 FrameTransformGizmoState RendererFrontend::buildTransformGizmoState() const {
   FrameTransformGizmoState gizmo{};
+  if (subs_.guiManager != nullptr &&
+      !subs_.guiManager->editorOverlaysEnabled()) {
+    return gizmo;
+  }
+
   const auto &interaction = interactionController_.state();
   gizmo.tool = interaction.tool;
   gizmo.transformSpace = interaction.transformSpace;
   gizmo.activeAxis =
       interaction.transformAxis != container::ui::TransformAxis::Free ||
-              interaction.gesture == container::ui::ViewportGesture::TransformDrag
+              interaction.gesture ==
+                  container::ui::ViewportGesture::TransformDrag
           ? interaction.transformAxis
           : interaction.hoverTransformAxis;
 
@@ -4510,10 +4455,9 @@ FrameTransformGizmoState RendererFrontend::buildTransformGizmoState() const {
     const EditableLightEntity &light = *selectedEditableLightForGizmo;
     gizmo.axisY = normalizedOr(-light.direction, {0.0f, 1.0f, 0.0f});
     gizmo.axisX = normalizedOr(light.tangent, {1.0f, 0.0f, 0.0f});
-    gizmo.axisZ = normalizedOr(light.bitangent,
-                               normalizedOr(glm::cross(gizmo.axisX,
-                                                       gizmo.axisY),
-                                            {0.0f, 0.0f, 1.0f}));
+    gizmo.axisZ = normalizedOr(
+        light.bitangent,
+        normalizedOr(glm::cross(gizmo.axisX, gizmo.axisY), {0.0f, 0.0f, 1.0f}));
   }
   gizmo.visible = true;
   return gizmo;
@@ -4521,14 +4465,14 @@ FrameTransformGizmoState RendererFrontend::buildTransformGizmoState() const {
 
 void RendererFrontend::publishFrameRuntimeResourceBindings(
     uint32_t imageIndex) {
-  FrameResourceRegistry* runtime = subs_.frameRuntimeResourceRegistry.get();
+  FrameResourceRegistry *runtime = subs_.frameRuntimeResourceRegistry.get();
   if (runtime == nullptr) {
     return;
   }
 
   runtime->clearBindings();
 
-  auto copyBinding = [runtime](const FrameResourceBinding& binding) {
+  auto copyBinding = [runtime](const FrameResourceBinding &binding) {
     switch (binding.kind) {
     case FrameResourceKind::Image:
       runtime->bindImage(binding.key.technique, binding.key.name,
@@ -4556,7 +4500,7 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
   };
 
   if (subs_.frameResourceManager != nullptr) {
-    for (const FrameResourceBinding* binding :
+    for (const FrameResourceBinding *binding :
          subs_.frameResourceManager->resourceRegistry().bindingsForFrame(
              RenderTechniqueId::DeferredRaster, imageIndex)) {
       if (binding != nullptr) {
@@ -4607,13 +4551,13 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
       subs_.frameResourceManager->gBufferSampler() != VK_NULL_HANDLE) {
     runtime->bindSampler(
         RenderTechniqueId::DeferredRaster, "g-buffer-sampler", imageIndex,
-        FrameSamplerBinding{
-            .sampler = subs_.frameResourceManager->gBufferSampler()});
+        FrameSamplerBinding{.sampler =
+                                subs_.frameResourceManager->gBufferSampler()});
   }
 
-  const VkBuffer cameraBuffer =
-      imageIndex < buffers_.cameras.size() ? buffers_.cameras[imageIndex].buffer
-                                           : VK_NULL_HANDLE;
+  const VkBuffer cameraBuffer = imageIndex < buffers_.cameras.size()
+                                    ? buffers_.cameras[imageIndex].buffer
+                                    : VK_NULL_HANDLE;
   if (cameraBuffer != VK_NULL_HANDLE) {
     runtime->bindBuffer(
         RenderTechniqueId::DeferredRaster, "camera-buffer", imageIndex,
@@ -4624,10 +4568,10 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
   if (buffers_.object.buffer != VK_NULL_HANDLE && buffers_.objectCapacity > 0) {
     runtime->bindBuffer(
         RenderTechniqueId::DeferredRaster, "scene-object-buffer", imageIndex,
-        FrameBufferBinding{
-            .buffer = buffers_.object.buffer,
-            .size = buffers_.objectCapacity * sizeof(container::gpu::ObjectData),
-            .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
+        FrameBufferBinding{.buffer = buffers_.object.buffer,
+                           .size = buffers_.objectCapacity *
+                                   sizeof(container::gpu::ObjectData),
+                           .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});
   }
 }
 
@@ -4676,7 +4620,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     residencySettings.viewportHeightPixels =
         static_cast<float>(std::max(svc_.swapChainManager.extent().height, 1u));
     if (subs_.guiManager != nullptr) {
-      const auto& lodUi = subs_.guiManager->bimLodStreamingUiState();
+      const auto &lodUi = subs_.guiManager->bimLodStreamingUiState();
       residencySettings.autoLod = lodUi.autoLod;
       residencySettings.pauseStreaming = lodUi.pauseStreamingRequest;
       residencySettings.keepSelectedResident = true;
@@ -4686,12 +4630,11 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     }
     subs_.bimManager->updateMeshletResidencySettings(residencySettings);
     subs_.bimManager->updateVisibilityFilterSettings(bimFilter);
-    const auto bimLayers =
-        subs_.guiManager ? subs_.guiManager->bimLayerVisibilityState()
-                         : container::ui::BimLayerVisibilityState{};
-    BimFrameDrawRoutingInputs bimRoutingInputs =
-        bimFrameDrawRoutingInputs(*subs_.bimManager, bimFilter, bimLayers,
-                                  nullptr);
+    const auto bimLayers = subs_.guiManager
+                               ? subs_.guiManager->bimLayerVisibilityState()
+                               : container::ui::BimLayerVisibilityState{};
+    BimFrameDrawRoutingInputs bimRoutingInputs = bimFrameDrawRoutingInputs(
+        *subs_.bimManager, bimFilter, bimLayers, nullptr);
     BimFrameDrawRoutingPlan bimRouting =
         buildBimFrameDrawRoutingPlan(bimRoutingInputs);
     const BimDrawLists *filteredDraws = nullptr;
@@ -4794,9 +4737,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
                   container::ui::BimFloorPlanElevationMode::SourceElevation
               ? &subs_.bimManager->floorPlanSourceElevationDrawCommands()
               : &subs_.bimManager->floorPlanGroundDrawCommands();
-      p.bim.floorPlan.enabled =
-          floorPlan.enabled && p.bim.floorPlanDrawCommands != nullptr &&
-          !p.bim.floorPlanDrawCommands->empty();
+      p.bim.floorPlan.enabled = floorPlan.enabled &&
+                                p.bim.floorPlanDrawCommands != nullptr &&
+                                !p.bim.floorPlanDrawCommands->empty();
       p.bim.floorPlan.depthTest = floorPlan.depthTest;
       p.bim.floorPlan.color = floorPlan.color;
       p.bim.floorPlan.opacity = floorPlan.opacity;
@@ -4842,7 +4785,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       pushConstants_.bindless.sectionPlaneEnabled = 1u;
       pushConstants_.bindless.sectionPlane = activeSectionPlane;
     }
-    const auto& boxClip = subs_.guiManager->bimBoxClipState();
+    const auto &boxClip = subs_.guiManager->bimBoxClipState();
     if (boxClip.enabled) {
       boxClipActive = true;
       activeBoxClipPlanes = makeBoxClipPlanes(boxClip);
@@ -4859,7 +4802,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     subs_.sceneManager->updateSceneClipState(sceneClipState);
   }
   if (subs_.bimManager != nullptr && subs_.guiManager != nullptr) {
-    const auto& capUi = subs_.guiManager->bimClipCapHatchingUiState();
+    const auto &capUi = subs_.guiManager->bimClipCapHatchingUiState();
     const bool technicalCapsEnabled =
         p.bim.technicalElevation.enabled &&
         p.bim.technicalElevation.sectionCapsEnabled;
@@ -4888,10 +4831,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         std::clamp(capUi.hatchAngleDegrees, 0.0f, 180.0f) *
         0.017453292519943295f;
     p.bim.sectionClipCaps.boxClip.enabled = boxClipActive;
-    p.bim.sectionClipCaps.boxClip.invert =
-        sceneClipState.boxClipInvert != 0u;
-    p.bim.sectionClipCaps.boxClip.planeCount =
-        sceneClipState.boxClipPlaneCount;
+    p.bim.sectionClipCaps.boxClip.invert = sceneClipState.boxClipInvert != 0u;
+    p.bim.sectionClipCaps.boxClip.planeCount = sceneClipState.boxClipPlaneCount;
     p.bim.sectionClipCaps.boxClip.planes = activeBoxClipPlanes;
     if (capStyleEnabled) {
       BimSectionCapBuildOptions capOptions{};
@@ -4902,11 +4843,10 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         capOptions.clipPlanes = activeBoxClipPlanes;
       }
       capOptions.hatchSpacing = p.bim.sectionClipCaps.hatchSpacing;
-      capOptions.hatchAngleRadians =
-          p.bim.sectionClipCaps.hatchAngleRadians;
+      capOptions.hatchAngleRadians = p.bim.sectionClipCaps.hatchAngleRadians;
       capOptions.capOffset = p.bim.sectionClipCaps.capOffset;
       if (subs_.bimManager->rebuildSectionClipCapGeometry(capOptions)) {
-        const auto& capData = subs_.bimManager->sectionClipCapDrawData();
+        const auto &capData = subs_.bimManager->sectionClipCapDrawData();
         p.bim.sectionClipCapGeometry.scene.vertexSlice = capData.vertexSlice;
         p.bim.sectionClipCapGeometry.scene.indexSlice = capData.indexSlice;
         p.bim.sectionClipCapGeometry.scene.indexType = capData.indexType;
@@ -4985,8 +4925,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
                        : exposureSettingsFromConfig(svc_.config);
   p.postProcess.renderPass = resources_.renderPasses.postProcess;
   if (subs_.sceneProviderRegistry) {
-    p.sceneExtraction = extractProviderSceneFrameInputs(
-        *subs_.sceneProviderRegistry);
+    p.sceneExtraction =
+        extractProviderSceneFrameInputs(*subs_.sceneProviderRegistry);
   }
   p.scene.objectBuffer = buffers_.object.buffer;
   p.scene.objectBufferSize =
@@ -5012,7 +4952,7 @@ void RendererFrontend::syncSceneProviders() {
   SceneProviderSyncInput syncInput{};
 
   if (subs_.sceneManager) {
-    const auto& sceneManager = *subs_.sceneManager;
+    const auto &sceneManager = *subs_.sceneManager;
     const auto meshBounds =
         sceneProviderBoundsFromModelBounds(sceneManager.modelBounds());
     const std::size_t meshInstanceCount =
@@ -5045,9 +4985,8 @@ void RendererFrontend::syncSceneProviders() {
         .bounds = meshAsset.bounds,
         .geometryRevision = objectRevision,
         .instanceRevision = objectRevision,
-        .displayName =
-            sceneProviderDisplayName(activePrimaryModelPath_,
-                                     "Primary mesh scene"),
+        .displayName = sceneProviderDisplayName(activePrimaryModelPath_,
+                                                "Primary mesh scene"),
     };
   }
 
@@ -5057,8 +4996,8 @@ void RendererFrontend::syncSceneProviders() {
     syncInput.bim = BimSceneProviderSyncInput{
         .available = true,
         .elementCount = stats.objectCount,
-        .meshPrimitiveCount = stats.opaqueDrawCount +
-                              stats.transparentDrawCount,
+        .meshPrimitiveCount =
+            stats.opaqueDrawCount + stats.transparentDrawCount,
         .meshOpaqueBatchCount = stats.opaqueDrawCount,
         .meshTransparentBatchCount = stats.transparentDrawCount,
         .nativePointRangeCount = stats.nativePointOpaqueDrawCount +

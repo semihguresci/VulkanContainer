@@ -27,6 +27,11 @@ bool recordDeferredLightGizmoCommands(
       inputs.pushConstants.empty() || inputs.vertexCount == 0u) {
     return false;
   }
+  if (!inputs.coveragePushConstants.empty() &&
+      (inputs.coveragePipeline == VK_NULL_HANDLE ||
+       inputs.coverageVertexCount == 0u)) {
+    return false;
+  }
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, inputs.pipeline);
   vkCmdBindDescriptorSets(
@@ -38,6 +43,16 @@ bool recordDeferredLightGizmoCommands(
     vkCmdPushConstants(cmd, inputs.pipelineLayout, kLightGizmoPushStages, 0,
                        sizeof(LightPushConstants), &pushConstants);
     vkCmdDraw(cmd, inputs.vertexCount, 1, 0, 0);
+  }
+  if (!inputs.coveragePushConstants.empty()) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                      inputs.coveragePipeline);
+    for (const LightPushConstants &pushConstants :
+         inputs.coveragePushConstants) {
+      vkCmdPushConstants(cmd, inputs.pipelineLayout, kLightGizmoPushStages, 0,
+                         sizeof(LightPushConstants), &pushConstants);
+      vkCmdDraw(cmd, inputs.coverageVertexCount, 1, 0, 0);
+    }
   }
   return true;
 }

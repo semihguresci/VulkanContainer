@@ -12,7 +12,6 @@ DeferredLightingDescriptorPlan buildDeferredLightingDescriptorPlan(
   plan.tiledLightingDescriptorSets = {inputs.frameLightingDescriptorSet,
                                       inputs.tiledDescriptorSet,
                                       inputs.sceneDescriptorSet};
-  plan.lightGizmoDescriptorSets = inputs.lightingDescriptorSets;
   return plan;
 }
 

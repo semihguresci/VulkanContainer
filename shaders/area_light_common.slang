@@ -4,7 +4,7 @@
 #include "lighting_structs.slang"
 #include "brdf_common.slang"
 
-static const uint AREA_LIGHT_INTEGRATION_SAMPLE_COUNT = 4u;
+static const uint AREA_LIGHT_INTEGRATION_SAMPLE_COUNT = 25u;
 static const float AREA_LIGHT_MIN_DISTANCE_SQ = 0.01;
 
 struct AreaLightFrame
@@ -64,25 +64,81 @@ AreaLightFrame BuildAreaLightFrame(AreaLightData light)
 
 float2 AreaLightRectSampleOffset(uint sampleIndex)
 {
-    static const float kGauss = 0.57735026919;
-    static const float2 offsets[4] = {
-        float2(-kGauss, -kGauss),
-        float2( kGauss, -kGauss),
-        float2(-kGauss,  kGauss),
-        float2( kGauss,  kGauss),
-    };
-    return offsets[sampleIndex & 3u];
+    uint index = sampleIndex % AREA_LIGHT_INTEGRATION_SAMPLE_COUNT;
+    return float2(AreaLightGauss5Node(index % 5u),
+                  AreaLightGauss5Node(index / 5u));
 }
 
 float2 AreaLightDiskSampleOffset(uint sampleIndex)
 {
-    static const float2 offsets[4] = {
-        float2(-0.5, -0.5),
-        float2( 0.5, -0.5),
-        float2(-0.5,  0.5),
-        float2( 0.5,  0.5),
+    static const float2 offsets[25] = {
+        float2(0.0, 0.0),
+        float2(0.230000, 0.000000),
+        float2(0.000000, 0.230000),
+        float2(-0.230000, 0.000000),
+        float2(0.000000, -0.230000),
+        float2(0.310000, 0.310000),
+        float2(-0.310000, 0.310000),
+        float2(0.310000, -0.310000),
+        float2(-0.310000, -0.310000),
+        float2(0.540000, 0.000000),
+        float2(0.000000, 0.540000),
+        float2(-0.540000, 0.000000),
+        float2(0.000000, -0.540000),
+        float2(0.515000, 0.305000),
+        float2(-0.305000, 0.515000),
+        float2(-0.515000, -0.305000),
+        float2(0.305000, -0.515000),
+        float2(0.750000, 0.000000),
+        float2(0.000000, 0.750000),
+        float2(-0.750000, 0.000000),
+        float2(0.000000, -0.750000),
+        float2(0.612000, 0.612000),
+        float2(-0.612000, 0.612000),
+        float2(0.612000, -0.612000),
+        float2(-0.612000, -0.612000),
     };
-    return offsets[sampleIndex & 3u];
+    return offsets[sampleIndex % AREA_LIGHT_INTEGRATION_SAMPLE_COUNT];
+}
+
+float AreaLightGauss5Node(uint index)
+{
+    static const float nodes[5] = {
+        -0.90617984594,
+        -0.53846931010,
+         0.0,
+         0.53846931010,
+         0.90617984594,
+    };
+    return nodes[min(index, 4u)];
+}
+
+float AreaLightGauss5Weight(uint index)
+{
+    static const float weights[5] = {
+        0.23692688506,
+        0.47862867050,
+        0.56888888889,
+        0.47862867050,
+        0.23692688506,
+    };
+    return weights[min(index, 4u)];
+}
+
+float AreaLightRectSampleWeight(uint sampleIndex)
+{
+    uint index = sampleIndex % AREA_LIGHT_INTEGRATION_SAMPLE_COUNT;
+    return 0.25 * AreaLightGauss5Weight(index % 5u) *
+        AreaLightGauss5Weight(index / 5u);
+}
+
+float AreaLightSampleWeight(AreaLightFrame frame, uint sampleIndex)
+{
+    if (abs(frame.type - AREA_LIGHT_TYPE_DISK) < 0.5)
+    {
+        return 1.0 / float(AREA_LIGHT_INTEGRATION_SAMPLE_COUNT);
+    }
+    return AreaLightRectSampleWeight(sampleIndex);
 }
 
 float3 AreaLightSamplePosition(AreaLightFrame frame, uint sampleIndex)
@@ -123,7 +179,7 @@ float3 EvaluateAreaLightSampleRadiance(AreaLightData light,
 
     float attenuation =
         SmoothRangeAttenuation(distanceSq, range) * sourceFacing *
-        frame.area / (float(AREA_LIGHT_INTEGRATION_SAMPLE_COUNT) *
-                      max(distanceSq, AREA_LIGHT_MIN_DISTANCE_SQ));
+        frame.area * AreaLightSampleWeight(frame, sampleIndex) /
+        max(distanceSq, AREA_LIGHT_MIN_DISTANCE_SQ);
     return light.colorIntensity.rgb * light.colorIntensity.a * attenuation;
 }

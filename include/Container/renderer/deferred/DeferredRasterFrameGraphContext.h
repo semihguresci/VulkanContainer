@@ -67,10 +67,11 @@ public:
   [[nodiscard]] ExposureManager *exposureManager() const;
   [[nodiscard]] const EnvironmentManager *environmentManager() const;
   [[nodiscard]] const LightingManager *lightingManager() const;
+  [[nodiscard]] container::ui::GuiManager *guiManager() const;
+  [[nodiscard]] const container::scene::BaseCamera *camera() const;
   [[nodiscard]] const SceneController *sceneController() const;
   [[nodiscard]] const DebugOverlayRenderer *debugOverlay() const;
-  [[nodiscard]] DeferredRasterLightingPassRecorder
-  lightingPassRecorder() const;
+  [[nodiscard]] DeferredRasterLightingPassRecorder lightingPassRecorder() const;
 
   void recordShadowPass(VkCommandBuffer cmd, const FrameRecordParams &p,
                         uint32_t cascadeIndex) const;

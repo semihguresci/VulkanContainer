@@ -14,6 +14,7 @@ struct PipelineLayouts {
   VkPipelineLayout scene{VK_NULL_HANDLE};
   VkPipelineLayout transparent{VK_NULL_HANDLE};
   VkPipelineLayout lighting{VK_NULL_HANDLE};
+  VkPipelineLayout lightGizmo{VK_NULL_HANDLE};
   VkPipelineLayout tiledLighting{VK_NULL_HANDLE};
   VkPipelineLayout shadow{VK_NULL_HANDLE};
   VkPipelineLayout postProcess{VK_NULL_HANDLE};
@@ -24,7 +25,7 @@ struct PipelineLayouts {
 };
 
 [[nodiscard]] std::shared_ptr<const PipelineRegistry>
-buildGraphicsPipelineLayoutRegistry(const PipelineLayouts& layouts);
+buildGraphicsPipelineLayoutRegistry(const PipelineLayouts &layouts);
 
 // All Vulkan pipelines created by GraphicsPipelineBuilder.
 struct GraphicsPipelines {
@@ -87,6 +88,8 @@ struct GraphicsPipelines {
   VkPipeline objectNormalDebugFrontCull{VK_NULL_HANDLE};
   VkPipeline objectNormalDebugNoCull{VK_NULL_HANDLE};
   VkPipeline lightGizmo{VK_NULL_HANDLE};
+  VkPipeline lightGizmoCoverage{VK_NULL_HANDLE};
+  VkPipeline lightGizmoPick{VK_NULL_HANDLE};
   VkPipeline transformGizmo{VK_NULL_HANDLE};
   VkPipeline transformGizmoSolid{VK_NULL_HANDLE};
   VkPipeline transformGizmoOverlay{VK_NULL_HANDLE};
@@ -94,13 +97,14 @@ struct GraphicsPipelines {
 };
 
 [[nodiscard]] std::shared_ptr<const PipelineRegistry>
-buildGraphicsPipelineHandleRegistry(const GraphicsPipelines& pipelines);
+buildGraphicsPipelineHandleRegistry(const GraphicsPipelines &pipelines);
 
 // Input descriptor-set layouts required to build the pipeline layouts.
 struct PipelineDescriptorLayouts {
   VkDescriptorSetLayout scene{VK_NULL_HANDLE};
   VkDescriptorSetLayout lighting{VK_NULL_HANDLE};
   VkDescriptorSetLayout light{VK_NULL_HANDLE};
+  VkDescriptorSetLayout lightGizmo{VK_NULL_HANDLE};
   VkDescriptorSetLayout tiled{VK_NULL_HANDLE};
   VkDescriptorSetLayout shadow{VK_NULL_HANDLE};
   VkDescriptorSetLayout postProcess{VK_NULL_HANDLE};
@@ -122,8 +126,8 @@ struct PipelineRenderPasses {
 
 // All outputs returned by a single build() call.
 struct PipelineBuildResult {
-  PipelineLayouts   layouts;
+  PipelineLayouts layouts;
   GraphicsPipelines pipelines;
 };
 
-}  // namespace container::renderer
+} // namespace container::renderer

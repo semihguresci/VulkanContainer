@@ -464,8 +464,8 @@ float TelemetryPhaseMs(const GuiRendererTelemetrySnapshot &snapshot,
   return snapshot.timing.cpuMs[TelemetryPhaseIndex(phase)];
 }
 
-constexpr GuiRendererTelemetryPhase GuiTelemetryPhase(
-    container::renderer::RendererTelemetryPhase phase) {
+constexpr GuiRendererTelemetryPhase
+GuiTelemetryPhase(container::renderer::RendererTelemetryPhase phase) {
   switch (phase) {
   case container::renderer::RendererTelemetryPhase::Frame:
     return GuiRendererTelemetryPhase::Frame;
@@ -502,23 +502,20 @@ constexpr GuiRendererTelemetryPhase GuiTelemetryPhase(
 GuiRendererTelemetryView GuiRendererTelemetry(
     const container::renderer::RendererTelemetryView &telemetry) {
   GuiRendererTelemetryView uiTelemetry{};
-  uiTelemetry.summary = {.frameCount = telemetry.summary.frameCount,
-                         .averageCpuFrameMs =
-                             telemetry.summary.averageCpuFrameMs,
-                         .p95CpuFrameMs = telemetry.summary.p95CpuFrameMs,
-                         .maxCpuFrameMs = telemetry.summary.maxCpuFrameMs,
-                         .averageGpuKnownMs =
-                             telemetry.summary.averageGpuKnownMs,
-                         .maxGpuKnownMs =
-                             telemetry.summary.maxGpuKnownMs};
+  uiTelemetry.summary = {
+      .frameCount = telemetry.summary.frameCount,
+      .averageCpuFrameMs = telemetry.summary.averageCpuFrameMs,
+      .p95CpuFrameMs = telemetry.summary.p95CpuFrameMs,
+      .maxCpuFrameMs = telemetry.summary.maxCpuFrameMs,
+      .averageGpuKnownMs = telemetry.summary.averageGpuKnownMs,
+      .maxGpuKnownMs = telemetry.summary.maxGpuKnownMs};
   uiTelemetry.history.reserve(telemetry.history.size());
   for (const auto &sample : telemetry.history) {
-    uiTelemetry.history.push_back(
-        {.frameIndex = sample.frameIndex,
-         .cpuFrameMs = sample.cpuFrameMs,
-         .gpuKnownMs = sample.gpuKnownMs,
-         .waitForFrameMs = sample.waitForFrameMs,
-         .presentMs = sample.presentMs});
+    uiTelemetry.history.push_back({.frameIndex = sample.frameIndex,
+                                   .cpuFrameMs = sample.cpuFrameMs,
+                                   .gpuKnownMs = sample.gpuKnownMs,
+                                   .waitForFrameMs = sample.waitForFrameMs,
+                                   .presentMs = sample.presentMs});
   }
 
   const auto &source = telemetry.latest;
@@ -538,8 +535,7 @@ GuiRendererTelemetryView GuiRendererTelemetry(
       std::string(container::renderer::rendererGpuTimingSourceName(
           source.timing.gpuSource));
   latest.culling = {.inputCount = source.culling.inputCount,
-                    .frustumPassedCount =
-                        source.culling.frustumPassedCount,
+                    .frustumPassedCount = source.culling.frustumPassedCount,
                     .occlusionPassedCount =
                         source.culling.occlusionPassedCount};
   latest.lightCulling = {
@@ -556,22 +552,18 @@ GuiRendererTelemetryView GuiRendererTelemetry(
                          source.workload.transparentDrawCount,
                      .totalDrawCount = source.workload.totalDrawCount,
                      .submittedLights = source.workload.submittedLights};
-  latest.resources = {.swapchainWidth = source.resources.swapchainWidth,
-                      .swapchainHeight = source.resources.swapchainHeight,
-                      .swapchainImageCount =
-                          source.resources.swapchainImageCount,
-                      .cameraBufferCount =
-                          source.resources.cameraBufferCount,
-                      .objectBufferCapacity =
-                          source.resources.objectBufferCapacity,
-                      .oitNodeCapacity = source.resources.oitNodeCapacity};
+  latest.resources = {
+      .swapchainWidth = source.resources.swapchainWidth,
+      .swapchainHeight = source.resources.swapchainHeight,
+      .swapchainImageCount = source.resources.swapchainImageCount,
+      .cameraBufferCount = source.resources.cameraBufferCount,
+      .objectBufferCapacity = source.resources.objectBufferCapacity,
+      .oitNodeCapacity = source.resources.oitNodeCapacity};
   latest.sync = {.frameSlot = source.sync.frameSlot,
                  .maxFramesInFlight = source.sync.maxFramesInFlight,
-                 .serializedConcurrency =
-                     source.sync.serializedConcurrency,
+                 .serializedConcurrency = source.sync.serializedConcurrency,
                  .concurrencyReason = source.sync.concurrencyReason,
-                 .swapchainRecreateCount =
-                     source.sync.swapchainRecreateCount,
+                 .swapchainRecreateCount = source.sync.swapchainRecreateCount,
                  .deviceWaitIdleCount = source.sync.deviceWaitIdleCount};
   latest.graph = {.totalPasses = source.graph.totalPasses,
                   .enabledPasses = source.graph.enabledPasses,
@@ -629,13 +621,14 @@ bool DrawEditableLightInspector(EditableLightEntity &light) {
               container::renderer::editableLightTypeLabel(light.type));
 
   if (light.source == EditableLightSource::Generated) {
-    ImGui::TextDisabled("Live generated light; generator changes may overwrite edits");
+    ImGui::TextDisabled(
+        "Live generated light; generator changes may overwrite edits");
   }
 
   if (light.type != EditableLightType::Directional) {
     changed |= ImGui::DragFloat3("Position", &light.position.x, 0.05f);
-    changed |= ImGui::DragFloat("Range", &light.range, 0.05f, 0.0f,
-                                100000.0f, "%.3f");
+    changed |=
+        ImGui::DragFloat("Range", &light.range, 0.05f, 0.0f, 100000.0f, "%.3f");
   }
 
   if (light.type == EditableLightType::Directional) {
@@ -663,9 +656,8 @@ bool DrawEditableLightInspector(EditableLightEntity &light) {
 
   if (light.type == EditableLightType::Area) {
     static constexpr const char *kAreaShapeLabels[] = {"Rectangle", "Disk"};
-    int shape = light.areaShape >= (container::gpu::kAreaLightTypeDisk - 0.5f)
-                    ? 1
-                    : 0;
+    int shape =
+        light.areaShape >= (container::gpu::kAreaLightTypeDisk - 0.5f) ? 1 : 0;
     if (ImGui::Combo("Area shape", &shape, kAreaShapeLabels,
                      IM_ARRAYSIZE(kAreaShapeLabels))) {
       light.areaShape = shape == 1 ? container::gpu::kAreaLightTypeDisk
@@ -885,8 +877,7 @@ float BimMeasurementVolume(const glm::vec3 &dimensions) {
   return dimensions.x * dimensions.y * dimensions.z;
 }
 
-std::string BimMeasurementSelectionLabel(
-    const BimInspectionState &inspection) {
+std::string BimMeasurementSelectionLabel(const BimInspectionState &inspection) {
   if (!inspection.displayName.empty()) {
     return inspection.displayName;
   }
@@ -914,12 +905,11 @@ struct BimMeasurementDistanceStats {
   float elevationAxisAngleDegrees{0.0f};
 };
 
-BimMeasurementDistanceStats BimMeasurementBetweenCenters(
-    const glm::vec3 &a, const glm::vec3 &b) {
+BimMeasurementDistanceStats BimMeasurementBetweenCenters(const glm::vec3 &a,
+                                                         const glm::vec3 &b) {
   constexpr float kRadiansToDegrees = 57.29577951308232f;
   const glm::vec3 delta = b - a;
-  const float horizontal =
-      std::sqrt(delta.x * delta.x + delta.z * delta.z);
+  const float horizontal = std::sqrt(delta.x * delta.x + delta.z * delta.z);
   const float distance =
       std::sqrt(delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
 
@@ -939,9 +929,8 @@ BimMeasurementDistanceStats BimMeasurementBetweenCenters(
   return stats;
 }
 
-ImVec4 BimSemanticLegendColor(
-    container::renderer::BimSemanticColorMode mode,
-    size_t valueIndex) {
+ImVec4 BimSemanticLegendColor(container::renderer::BimSemanticColorMode mode,
+                              size_t valueIndex) {
   static constexpr std::array<ImVec4, 14> kBimSemanticLegendPalette{{
       {0.16f, 0.47f, 0.86f, 1.0f},
       {0.86f, 0.29f, 0.24f, 1.0f},
@@ -959,18 +948,17 @@ ImVec4 BimSemanticLegendColor(
       {0.34f, 0.68f, 0.51f, 1.0f},
   }};
 
-  const uint32_t semanticId =
-      static_cast<uint32_t>(std::min<size_t>(
-          valueIndex + 1u, std::numeric_limits<uint32_t>::max()));
+  const uint32_t semanticId = static_cast<uint32_t>(
+      std::min<size_t>(valueIndex + 1u, std::numeric_limits<uint32_t>::max()));
   const uint32_t paletteIndex =
       (semanticId - 1u + static_cast<uint32_t>(mode) * 3u) %
       static_cast<uint32_t>(kBimSemanticLegendPalette.size());
   return kBimSemanticLegendPalette[paletteIndex];
 }
 
-std::span<const std::string> BimSemanticLegendValues(
-    container::renderer::BimSemanticColorMode mode,
-    const BimInspectionState &inspection) {
+std::span<const std::string>
+BimSemanticLegendValues(container::renderer::BimSemanticColorMode mode,
+                        const BimInspectionState &inspection) {
   switch (mode) {
   case container::renderer::BimSemanticColorMode::Type:
     return inspection.elementTypes;
@@ -990,9 +978,9 @@ std::span<const std::string> BimSemanticLegendValues(
   return {};
 }
 
-std::string BimSemanticSelectionValue(
-    container::renderer::BimSemanticColorMode mode,
-    const BimInspectionState &inspection) {
+std::string
+BimSemanticSelectionValue(container::renderer::BimSemanticColorMode mode,
+                          const BimInspectionState &inspection) {
   switch (mode) {
   case container::renderer::BimSemanticColorMode::Type:
     return inspection.type;
@@ -1044,10 +1032,8 @@ bool PropertyMatchesSearch(
          ContainsCaseInsensitive(property.category, search);
 }
 
-void DrawSemanticLegendEntry(
-    container::renderer::BimSemanticColorMode mode,
-    size_t valueIndex,
-    const std::string &label) {
+void DrawSemanticLegendEntry(container::renderer::BimSemanticColorMode mode,
+                             size_t valueIndex, const std::string &label) {
   ImGui::PushID(static_cast<int>(valueIndex));
   const ImVec4 color = BimSemanticLegendColor(mode, valueIndex);
   ImGui::ColorButton("##SemanticLegendSwatch", color,
@@ -1333,10 +1319,9 @@ void GuiManager::drawViewportInteractionControls(
     setNavigationStyle(static_cast<ViewportNavigationStyle>(navigationStyle));
   }
   if (ImGui::IsItemHovered()) {
-    ImGui::SetTooltip(
-        state.navigationStyle == ViewportNavigationStyle::Revit
-            ? "Revit: middle drag pans, Shift+middle orbits."
-            : "Blender: middle drag orbits, Shift+middle pans.");
+    ImGui::SetTooltip(state.navigationStyle == ViewportNavigationStyle::Revit
+                          ? "Revit: middle drag pans, Shift+middle orbits."
+                          : "Blender: middle drag orbits, Shift+middle pans.");
   }
 
   bool transformSnapEnabled = state.transformSnapEnabled;
@@ -1385,18 +1370,15 @@ void GuiManager::drawViewportNavigationOverlay(
   if (ImGui::Begin("Viewport Navigation", nullptr, flags)) {
     ImDrawList *drawList = ImGui::GetWindowDrawList();
     const ImVec2 origin = ImGui::GetCursorScreenPos();
-    const ImVec2 center{origin.x + widgetSize.x * 0.5f,
-                        origin.y + 126.0f};
+    const ImVec2 center{origin.x + widgetSize.x * 0.5f, origin.y + 126.0f};
     const bool orthographic =
         state.projectionMode == CameraProjectionMode::Orthographic;
-    const glm::vec3 right =
-        glm::normalize(glm::length(state.cameraRight) > 0.0001f
-                           ? state.cameraRight
-                           : glm::vec3{1.0f, 0.0f, 0.0f});
-    const glm::vec3 up =
-        glm::normalize(glm::length(state.cameraUp) > 0.0001f
-                           ? state.cameraUp
-                           : glm::vec3{0.0f, 1.0f, 0.0f});
+    const glm::vec3 right = glm::normalize(
+        glm::length(state.cameraRight) > 0.0001f ? state.cameraRight
+                                                 : glm::vec3{1.0f, 0.0f, 0.0f});
+    const glm::vec3 up = glm::normalize(glm::length(state.cameraUp) > 0.0001f
+                                            ? state.cameraUp
+                                            : glm::vec3{0.0f, 1.0f, 0.0f});
     const glm::vec3 forward =
         glm::normalize(glm::length(state.cameraForward) > 0.0001f
                            ? state.cameraForward
@@ -1431,24 +1413,66 @@ void GuiManager::drawViewportNavigationOverlay(
     };
 
     std::array<AxisEndpoint, 6> endpoints{{
-        {"##nav-axis-x-pos", "X", "Right view (+X)", {1.0f, 0.0f, 0.0f},
-         IM_COL32(255, 78, 91, 255), CameraViewPreset::Right, true, 0.0f,
-         {}, 15.0f},
-        {"##nav-axis-x-neg", "", "Left view (-X)", {-1.0f, 0.0f, 0.0f},
-         IM_COL32(255, 78, 91, 255), CameraViewPreset::Left, false, 0.0f,
-         {}, 13.0f},
-        {"##nav-axis-y-pos", "Y", "Top view (+Y)", {0.0f, 1.0f, 0.0f},
-         IM_COL32(126, 220, 56, 255), CameraViewPreset::Top, true, 0.0f,
-         {}, 15.0f},
-        {"##nav-axis-y-neg", "", "Bottom view (-Y)", {0.0f, -1.0f, 0.0f},
-         IM_COL32(126, 220, 56, 255), CameraViewPreset::Bottom, false, 0.0f,
-         {}, 13.0f},
-        {"##nav-axis-z-pos", "Z", "Front view (+Z)", {0.0f, 0.0f, 1.0f},
-         IM_COL32(67, 140, 255, 255), CameraViewPreset::Front, true, 0.0f,
-         {}, 15.0f},
-        {"##nav-axis-z-neg", "", "Back view (-Z)", {0.0f, 0.0f, -1.0f},
-         IM_COL32(67, 140, 255, 255), CameraViewPreset::Back, false, 0.0f,
-         {}, 13.0f},
+        {"##nav-axis-x-pos",
+         "X",
+         "Right view (+X)",
+         {1.0f, 0.0f, 0.0f},
+         IM_COL32(255, 78, 91, 255),
+         CameraViewPreset::Right,
+         true,
+         0.0f,
+         {},
+         15.0f},
+        {"##nav-axis-x-neg",
+         "",
+         "Left view (-X)",
+         {-1.0f, 0.0f, 0.0f},
+         IM_COL32(255, 78, 91, 255),
+         CameraViewPreset::Left,
+         false,
+         0.0f,
+         {},
+         13.0f},
+        {"##nav-axis-y-pos",
+         "Y",
+         "Top view (+Y)",
+         {0.0f, 1.0f, 0.0f},
+         IM_COL32(126, 220, 56, 255),
+         CameraViewPreset::Top,
+         true,
+         0.0f,
+         {},
+         15.0f},
+        {"##nav-axis-y-neg",
+         "",
+         "Bottom view (-Y)",
+         {0.0f, -1.0f, 0.0f},
+         IM_COL32(126, 220, 56, 255),
+         CameraViewPreset::Bottom,
+         false,
+         0.0f,
+         {},
+         13.0f},
+        {"##nav-axis-z-pos",
+         "Z",
+         "Front view (+Z)",
+         {0.0f, 0.0f, 1.0f},
+         IM_COL32(67, 140, 255, 255),
+         CameraViewPreset::Front,
+         true,
+         0.0f,
+         {},
+         15.0f},
+        {"##nav-axis-z-neg",
+         "",
+         "Back view (-Z)",
+         {0.0f, 0.0f, -1.0f},
+         IM_COL32(67, 140, 255, 255),
+         CameraViewPreset::Back,
+         false,
+         0.0f,
+         {},
+         13.0f},
     }};
 
     for (auto &endpoint : endpoints) {
@@ -1456,10 +1480,10 @@ void GuiManager::drawViewportNavigationOverlay(
       endpoint.position = projectAxis(endpoint.axis);
     }
 
-    std::ranges::sort(endpoints, [](const AxisEndpoint &lhs,
-                                    const AxisEndpoint &rhs) {
-      return lhs.depth > rhs.depth;
-    });
+    std::ranges::sort(endpoints,
+                      [](const AxisEndpoint &lhs, const AxisEndpoint &rhs) {
+                        return lhs.depth > rhs.depth;
+                      });
 
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const auto distanceSquared = [](const ImVec2 &a, const ImVec2 &b) {
@@ -1473,15 +1497,14 @@ void GuiManager::drawViewportNavigationOverlay(
     bool axisHovered = false;
     for (const auto &endpoint : endpoints) {
       const float hoverRadius = endpoint.radius + 5.0f;
-      axisHovered = axisHovered ||
-                    distanceSquared(mouse, endpoint.position) <=
-                        hoverRadius * hoverRadius;
+      axisHovered = axisHovered || distanceSquared(mouse, endpoint.position) <=
+                                       hoverRadius * hoverRadius;
     }
 
     if (!axisHovered && diskHovered) {
       constexpr float kDiskDragRadius = 78.0f;
-      ImGui::SetCursorScreenPos(ImVec2(center.x - kDiskDragRadius,
-                                       center.y - kDiskDragRadius));
+      ImGui::SetCursorScreenPos(
+          ImVec2(center.x - kDiskDragRadius, center.y - kDiskDragRadius));
       ImGui::InvisibleButton(
           "##viewport-nav-disk-drag",
           ImVec2(kDiskDragRadius * 2.0f, kDiskDragRadius * 2.0f),
@@ -1524,14 +1547,13 @@ void GuiManager::drawViewportNavigationOverlay(
 
     if (diskHovered || axisHovered || viewportNavFreeRotateActive_ ||
         viewportNavPanActive_) {
-      drawList->AddCircleFilled(
-          center, 78.0f,
-          viewportNavPanActive_ ? IM_COL32(220, 224, 230, 118)
-                                : IM_COL32(220, 224, 230, 86),
-          72);
+      drawList->AddCircleFilled(center, 78.0f,
+                                viewportNavPanActive_
+                                    ? IM_COL32(220, 224, 230, 118)
+                                    : IM_COL32(220, 224, 230, 86),
+                                72);
     }
-    drawList->AddCircle(center, 66.0f, IM_COL32(236, 240, 245, 116), 72,
-                        1.7f);
+    drawList->AddCircle(center, 66.0f, IM_COL32(236, 240, 245, 116), 72, 1.7f);
     drawList->AddCircle(center, 4.0f, IM_COL32(238, 242, 247, 210), 16, 1.5f);
 
     ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(24, 27, 32, 228));
@@ -1560,12 +1582,10 @@ void GuiManager::drawViewportNavigationOverlay(
       const float depth = glm::dot(point, forward);
       const float projectionScale =
           orthographic ? 1.0f
-                       : 1.0f /
-                             std::clamp(1.0f - depth * 0.18f, 0.74f, 1.26f);
-      return ImVec2(center.x + glm::dot(point, right) * kCubeScale *
-                                   projectionScale,
-                    center.y - glm::dot(point, up) * kCubeScale *
-                                   projectionScale);
+                       : 1.0f / std::clamp(1.0f - depth * 0.18f, 0.74f, 1.26f);
+      return ImVec2(
+          center.x + glm::dot(point, right) * kCubeScale * projectionScale,
+          center.y - glm::dot(point, up) * kCubeScale * projectionScale);
     };
 
     const std::array<glm::vec3, 8> cubeCorners{{
@@ -1619,8 +1639,7 @@ void GuiManager::drawViewportNavigationOverlay(
       cubeFaces[closestFaceIndex].visible = true;
     }
 
-    std::ranges::sort(cubeFaces, [](const CubeFace &lhs,
-                                    const CubeFace &rhs) {
+    std::ranges::sort(cubeFaces, [](const CubeFace &lhs, const CubeFace &rhs) {
       return lhs.depth > rhs.depth;
     });
 
@@ -1631,7 +1650,8 @@ void GuiManager::drawViewportNavigationOverlay(
       std::array<ImVec2, 4> points{};
       ImVec2 faceCenter{0.0f, 0.0f};
       for (size_t corner = 0; corner < points.size(); ++corner) {
-        points[corner] = projectCubePoint(cubeCorners[face.cornerIndices[corner]]);
+        points[corner] =
+            projectCubePoint(cubeCorners[face.cornerIndices[corner]]);
         faceCenter.x += points[corner].x;
         faceCenter.y += points[corner].y;
       }
@@ -1643,10 +1663,9 @@ void GuiManager::drawViewportNavigationOverlay(
       const auto channel = [shade](float value) {
         return static_cast<int>(std::clamp(value * shade, 0.0f, 255.0f));
       };
-      const ImU32 fill = IM_COL32(channel(118.0f), channel(128.0f),
-                                  channel(142.0f), 226);
-      drawList->AddQuadFilled(points[0], points[1], points[2], points[3],
-                              fill);
+      const ImU32 fill =
+          IM_COL32(channel(118.0f), channel(128.0f), channel(142.0f), 226);
+      drawList->AddQuadFilled(points[0], points[1], points[2], points[3], fill);
       drawList->AddQuad(points[0], points[1], points[2], points[3],
                         IM_COL32(232, 236, 242, 225), 1.2f);
 
@@ -1670,7 +1689,8 @@ void GuiManager::drawViewportNavigationOverlay(
         setViewPreset(endpoint.preset);
       }
 
-      const float drawRadius = endpoint.radius + (endpoint.hovered ? 2.0f : 0.0f);
+      const float drawRadius =
+          endpoint.radius + (endpoint.hovered ? 2.0f : 0.0f);
       if (endpoint.positive) {
         drawList->AddCircleFilled(endpoint.position, drawRadius, endpoint.color,
                                   32);
@@ -1679,16 +1699,15 @@ void GuiManager::drawViewportNavigationOverlay(
                               IM_COL32(255, 255, 255, 240), 32, 2.0f);
         }
         const ImVec2 textSize = ImGui::CalcTextSize(endpoint.label);
-        drawList->AddText(
-            ImVec2(endpoint.position.x - textSize.x * 0.5f,
-                   endpoint.position.y - textSize.y * 0.5f),
-            endpoint.hovered ? IM_COL32(255, 255, 255, 255)
-                             : IM_COL32(8, 10, 14, 255),
-            endpoint.label);
+        drawList->AddText(ImVec2(endpoint.position.x - textSize.x * 0.5f,
+                                 endpoint.position.y - textSize.y * 0.5f),
+                          endpoint.hovered ? IM_COL32(255, 255, 255, 255)
+                                           : IM_COL32(8, 10, 14, 255),
+                          endpoint.label);
       } else {
-        drawList->AddCircleFilled(endpoint.position, drawRadius,
-                                  IM_COL32(28, 32, 38, endpoint.hovered ? 170 : 82),
-                                  32);
+        drawList->AddCircleFilled(
+            endpoint.position, drawRadius,
+            IM_COL32(28, 32, 38, endpoint.hovered ? 170 : 82), 32);
         drawList->AddCircle(endpoint.position, drawRadius, endpoint.color, 32,
                             endpoint.hovered ? 2.8f : 2.0f);
       }
@@ -1840,6 +1859,16 @@ void GuiManager::drawSceneControls(
                    IM_ARRAYSIZE(kGBufferViewLabels))) {
     gBufferViewMode_ = static_cast<GBufferViewMode>(gBufferView);
   }
+  static constexpr const char *kSceneViewportModeLabels[] = {"Editor",
+                                                             "Render Preview"};
+  int sceneViewportMode = static_cast<int>(sceneViewportMode_);
+  if (ImGui::Combo("Viewport Mode", &sceneViewportMode,
+                   kSceneViewportModeLabels,
+                   IM_ARRAYSIZE(kSceneViewportModeLabels))) {
+    sceneViewportMode_ = static_cast<SceneViewportMode>(sceneViewportMode);
+  }
+
+  ImGui::BeginDisabled(!editorOverlaysEnabled());
   ImGui::Checkbox("Overlay vertices", &showGeometryOverlay_);
   ImGui::Checkbox("Overlay lights", &showLightGizmos_);
   ImGui::Checkbox("Normal validation", &normalValidationSettings_.enabled);
@@ -1898,6 +1927,7 @@ void GuiManager::drawSceneControls(
     ImGui::EndDisabled();
     ImGui::TextDisabled("Wireframe unavailable: fillModeNonSolid unsupported");
   }
+  ImGui::EndDisabled();
   ImGui::Text("Scene nodes: %zu", sceneGraph.nodeCount());
   ImGui::Text("Renderable primitives: %zu",
               sceneGraph.renderableNodes().size());
@@ -1916,11 +1946,10 @@ void GuiManager::drawSceneControls(
     selectedBimSelectionSetIndex_ = -1;
     nextBimSelectionSetId_ = 1u;
   } else {
-    const float effectiveScale = bimInspection.hasEffectiveImportScale
-                                     ? bimInspection.effectiveImportScale
-                                     : (bimInspection.hasImportScale
-                                            ? bimInspection.importScale
-                                            : 1.0f);
+    const float effectiveScale =
+        bimInspection.hasEffectiveImportScale
+            ? bimInspection.effectiveImportScale
+            : (bimInspection.hasImportScale ? bimInspection.importScale : 1.0f);
     const bool measurementSourceChanged =
         bimMeasurementModelPath_ != bimInspection.modelPath ||
         std::abs(bimMeasurementEffectiveImportScale_ - effectiveScale) >
@@ -1947,8 +1976,7 @@ void GuiManager::drawSceneControls(
     if (ImGui::TreeNode("BIM")) {
       ImGui::Text("Objects: %zu", bimInspection.objectCount);
       ImGui::Text("Objects by geometry: %zu mesh, %zu point-cloud, %zu curve",
-                  bimInspection.meshObjectCount,
-                  bimInspection.pointObjectCount,
+                  bimInspection.meshObjectCount, bimInspection.pointObjectCount,
                   bimInspection.curveObjectCount);
       ImGui::Text("Mesh draws: %zu opaque, %zu transparent",
                   bimInspection.opaqueDrawCount,
@@ -1972,25 +2000,23 @@ void GuiManager::drawSceneControls(
       ImGui::Text("Cluster references: %zu object refs, max LOD %u",
                   bimInspection.meshletObjectReferenceCount,
                   bimInspection.meshletMaxLodLevel);
-      ImGui::Text(
-          "GPU meshlet residency: %zu objects, %zu clusters, %.2f MB, compute %s%s",
+      ImGui::Text("GPU meshlet residency: %zu objects, %zu clusters, %.2f MB, "
+                  "compute %s%s",
                   bimInspection.meshletGpuResidentObjectCount,
                   bimInspection.meshletGpuResidentClusterCount,
                   static_cast<double>(bimInspection.meshletGpuBufferBytes) /
                       (1024.0 * 1024.0),
-          bimInspection.meshletGpuComputeReady ? "ready" : "offline",
-          bimInspection.meshletGpuDispatchPending ? ", pending" : "");
+                  bimInspection.meshletGpuComputeReady ? "ready" : "offline",
+                  bimInspection.meshletGpuDispatchPending ? ", pending" : "");
       ImGui::Text("Optimized metadata cacheable: %s",
-                  bimInspection.optimizedModelMetadataCacheable ? "yes"
-                                                               : "no");
+                  bimInspection.optimizedModelMetadataCacheable ? "yes" : "no");
       ImGui::Text("Optimized metadata cache: %s",
                   !bimInspection.optimizedModelMetadataCacheStatus.empty()
                       ? bimInspection.optimizedModelMetadataCacheStatus.c_str()
-                      : bimInspection.optimizedModelMetadataCacheHit
-                            ? "hit"
-                        : bimInspection.optimizedModelMetadataCacheWritten
-                            ? "written"
-                            : "not written");
+                  : bimInspection.optimizedModelMetadataCacheHit ? "hit"
+                  : bimInspection.optimizedModelMetadataCacheWritten
+                      ? "written"
+                      : "not written");
       ImGui::Text("Floor-plan overlays: %zu", bimInspection.floorPlanDrawCount);
       ImGui::Text("Types: %zu", bimInspection.uniqueTypeCount);
       ImGui::Text("Storeys: %zu", bimInspection.uniqueStoreyCount);
@@ -2055,8 +2081,7 @@ void GuiManager::drawSceneControls(
                            bimInspection.mapConversionName.c_str());
       }
       if (ImGui::TreeNode("Georeference and Units")) {
-        auto drawMetadataRow = [](const char *label,
-                                  const std::string &value) {
+        auto drawMetadataRow = [](const char *label, const std::string &value) {
           ImGui::TableNextRow();
           ImGui::TableNextColumn();
           ImGui::TextDisabled("%s", label);
@@ -2099,8 +2124,7 @@ void GuiManager::drawSceneControls(
           ImGui::TextDisabled("Coordinate offset");
           ImGui::TableNextColumn();
           if (bimInspection.hasCoordinateOffset) {
-            ImGui::Text("%.3f, %.3f, %.3f",
-                        bimInspection.coordinateOffset.x,
+            ImGui::Text("%.3f, %.3f, %.3f", bimInspection.coordinateOffset.x,
                         bimInspection.coordinateOffset.y,
                         bimInspection.coordinateOffset.z);
           } else {
@@ -2125,8 +2149,7 @@ void GuiManager::drawSceneControls(
       const std::string semanticColorLabel(
           container::renderer::bimSemanticColorModeLabel(
               bimSemanticColorMode_));
-      if (ImGui::BeginCombo("Semantic color",
-                            semanticColorLabel.c_str())) {
+      if (ImGui::BeginCombo("Semantic color", semanticColorLabel.c_str())) {
         for (container::renderer::BimSemanticColorMode mode :
              container::renderer::kBimSemanticColorModes) {
           const std::string label(
@@ -2157,26 +2180,25 @@ void GuiManager::drawSceneControls(
               BimSemanticLegendValues(bimSemanticColorMode_, bimInspection);
           if (bimInspection.hasSelection) {
             const std::string selectedSemanticValue =
-                BimSemanticSelectionValue(bimSemanticColorMode_,
-                                          bimInspection);
-            ImGui::TextWrapped(
-                "Selected semantic value: %s",
-                selectedSemanticValue.empty() ? "not assigned"
-                                              : selectedSemanticValue.c_str());
+                BimSemanticSelectionValue(bimSemanticColorMode_, bimInspection);
+            ImGui::TextWrapped("Selected semantic value: %s",
+                               selectedSemanticValue.empty()
+                                   ? "not assigned"
+                                   : selectedSemanticValue.c_str());
             if (const auto selectedLegendIndex =
                     FindStringIndex(legendValues, selectedSemanticValue)) {
-              ImGui::ColorButton(
-                  "Selected semantic color",
-                  BimSemanticLegendColor(bimSemanticColorMode_,
-                                         *selectedLegendIndex),
-                  ImGuiColorEditFlags_NoTooltip |
-                      ImGuiColorEditFlags_NoDragDrop,
-                  ImVec2(18.0f, 18.0f));
+              ImGui::ColorButton("Selected semantic color",
+                                 BimSemanticLegendColor(bimSemanticColorMode_,
+                                                        *selectedLegendIndex),
+                                 ImGuiColorEditFlags_NoTooltip |
+                                     ImGuiColorEditFlags_NoDragDrop,
+                                 ImVec2(18.0f, 18.0f));
               ImGui::SameLine();
               ImGui::Text("Semantic ID: %u",
                           static_cast<uint32_t>(*selectedLegendIndex + 1u));
             } else if (!selectedSemanticValue.empty()) {
-              ImGui::TextDisabled("Selected value is not in the exposed legend");
+              ImGui::TextDisabled(
+                  "Selected value is not in the exposed legend");
             }
           }
           if (legendValues.empty()) {
@@ -2198,8 +2220,7 @@ void GuiManager::drawSceneControls(
         ImGui::TreePop();
       }
 
-      auto drawStringFilterCombo = [](const char *label,
-                                      const char *allLabel,
+      auto drawStringFilterCombo = [](const char *label, const char *allLabel,
                                       std::span<const std::string> values,
                                       bool &filterEnabled,
                                       std::string &filterValue) {
@@ -2302,19 +2323,16 @@ void GuiManager::drawSceneControls(
           sectionPlaneAxis_ = -1;
           sectionPlaneState_.normal = elevationNormalForPreset(preset);
         }
-        bimElevationViewRequest_ =
-            BimElevationViewRequest{.preset = preset,
-                                    .style = bimElevationViewState_.style,
-                                    .forceOrthographic =
-                                        bimElevationViewState_.forceOrthographic,
-                                    .syncSectionPlaneToView =
-                                        bimElevationViewState_
-                                            .syncSectionPlaneToView};
-        statusMessage_ = std::string("Applied BIM ") +
-                         CameraViewPresetLabel(preset) + " elevation (" +
-                         BimElevationTechnicalStyleLabel(
-                             bimElevationViewState_.style) +
-                         ")";
+        bimElevationViewRequest_ = BimElevationViewRequest{
+            .preset = preset,
+            .style = bimElevationViewState_.style,
+            .forceOrthographic = bimElevationViewState_.forceOrthographic,
+            .syncSectionPlaneToView =
+                bimElevationViewState_.syncSectionPlaneToView};
+        statusMessage_ =
+            std::string("Applied BIM ") + CameraViewPresetLabel(preset) +
+            " elevation (" +
+            BimElevationTechnicalStyleLabel(bimElevationViewState_.style) + ")";
       };
 
       if (ImGui::TreeNode("BIM Elevation View")) {
@@ -2342,12 +2360,10 @@ void GuiManager::drawSceneControls(
           static constexpr std::array kElevationPresets{
               CameraViewPreset::Front, CameraViewPreset::Back,
               CameraViewPreset::Right, CameraViewPreset::Left};
-          bimElevationViewState_.preset =
-              kElevationPresets[static_cast<size_t>(
-                  std::clamp(elevationPresetIndex, 0, 3))];
+          bimElevationViewState_.preset = kElevationPresets[static_cast<size_t>(
+              std::clamp(elevationPresetIndex, 0, 3))];
         }
-        int elevationStyle =
-            static_cast<int>(bimElevationViewState_.style);
+        int elevationStyle = static_cast<int>(bimElevationViewState_.style);
         static constexpr const char *kElevationStyleLabels[] = {
             "Shaded", "Technical", "Hidden line"};
         if (ImGui::Combo("Technical style", &elevationStyle,
@@ -2387,10 +2403,10 @@ void GuiManager::drawSceneControls(
           }
           ImGui::EndTable();
         }
-        ImGui::Text("Active style: %s, %s lines",
-                    BimElevationTechnicalStyleLabel(
-                        bimElevationViewState_.style),
-                    wireframeSettings_.depthTest ? "hidden" : "x-ray");
+        ImGui::Text(
+            "Active style: %s, %s lines",
+            BimElevationTechnicalStyleLabel(bimElevationViewState_.style),
+            wireframeSettings_.depthTest ? "hidden" : "x-ray");
         ImGui::TreePop();
       }
 
@@ -2426,9 +2442,9 @@ void GuiManager::drawSceneControls(
             bimFilterState_.type = bimInspection.type;
           }
           ImGui::SameLine();
-          const std::string selectedStorey =
-              !bimInspection.storeyName.empty() ? bimInspection.storeyName
-                                                : bimInspection.storeyId;
+          const std::string selectedStorey = !bimInspection.storeyName.empty()
+                                                 ? bimInspection.storeyName
+                                                 : bimInspection.storeyId;
           if (ImGui::SmallButton("Use selected storey") &&
               !selectedStorey.empty()) {
             bimFilterState_.storeyFilterEnabled = true;
@@ -2447,8 +2463,8 @@ void GuiManager::drawSceneControls(
         }
 
         if (bimQuickFilterSearch_.empty()) {
-          ImGui::TextDisabled(
-              "Type to search exposed BIM type, storey, material, phase, and status values");
+          ImGui::TextDisabled("Type to search exposed BIM type, storey, "
+                              "material, phase, and status values");
         } else if (ImGui::BeginTable("BimQuickFilterMatches", 3,
                                      ImGuiTableFlags_Borders |
                                          ImGuiTableFlags_RowBg |
@@ -2517,8 +2533,8 @@ void GuiManager::drawSceneControls(
           if (totalMatches == 0u) {
             ImGui::TextDisabled("No filter values match the search");
           } else if (visibleMatches < totalMatches) {
-            ImGui::TextDisabled("%zu more matches", totalMatches -
-                                                   visibleMatches);
+            ImGui::TextDisabled("%zu more matches",
+                                totalMatches - visibleMatches);
           }
         }
         ImGui::TreePop();
@@ -2537,8 +2553,8 @@ void GuiManager::drawSceneControls(
           member.label = BimMeasurementSelectionLabel(bimInspection);
           member.type = bimInspection.type;
           member.storey = !bimInspection.storeyName.empty()
-                             ? bimInspection.storeyName
-                             : bimInspection.storeyId;
+                              ? bimInspection.storeyName
+                              : bimInspection.storeyId;
           member.material = !bimInspection.materialName.empty()
                                 ? bimInspection.materialName
                                 : bimInspection.materialCategory;
@@ -2606,7 +2622,7 @@ void GuiManager::drawSceneControls(
                          static_cast<int>(bimSelectionSets_.size()) - 1);
           const std::string preview =
               bimSelectionSets_[static_cast<size_t>(
-                                   selectedBimSelectionSetIndex_)]
+                                    selectedBimSelectionSetIndex_)]
                   .label;
           if (ImGui::BeginCombo("Active selection set", preview.c_str())) {
             for (size_t i = 0; i < bimSelectionSets_.size(); ++i) {
@@ -2623,9 +2639,8 @@ void GuiManager::drawSceneControls(
             ImGui::EndCombo();
           }
 
-          BimSelectionSetState &set =
-              bimSelectionSets_[static_cast<size_t>(
-                  selectedBimSelectionSetIndex_)];
+          BimSelectionSetState &set = bimSelectionSets_[static_cast<size_t>(
+              selectedBimSelectionSetIndex_)];
           ImGui::Text("Members: %zu", set.members.size());
           if (bimInspection.hasSelection) {
             if (ImGui::SmallButton("Add selection to set")) {
@@ -2648,9 +2663,9 @@ void GuiManager::drawSceneControls(
             if (bimSelectionSets_.empty()) {
               selectedBimSelectionSetIndex_ = -1;
             } else {
-              selectedBimSelectionSetIndex_ = std::min<int>(
-                  selectedBimSelectionSetIndex_,
-                  static_cast<int>(bimSelectionSets_.size()) - 1);
+              selectedBimSelectionSetIndex_ =
+                  std::min<int>(selectedBimSelectionSetIndex_,
+                                static_cast<int>(bimSelectionSets_.size()) - 1);
             }
           }
 
@@ -2681,9 +2696,9 @@ void GuiManager::drawSceneControls(
               ImGui::TextWrapped("%s", member.material.c_str());
               ImGui::TableNextColumn();
               if (ImGui::SmallButton("Restore")) {
-                const bool restored =
-                    restoreViewpoint ? restoreViewpoint(member.snapshot)
-                                     : false;
+                const bool restored = restoreViewpoint
+                                          ? restoreViewpoint(member.snapshot)
+                                          : false;
                 statusMessage_ =
                     restored ? "Restored BIM selection set member"
                              : "Failed to restore BIM selection set member";
@@ -2700,8 +2715,8 @@ void GuiManager::drawSceneControls(
             set.members.erase(set.members.begin() + removeMemberIndex);
           }
         }
-        ImGui::TextDisabled(
-            "Selection sets are stored in UI memory; multi-select rendering is not connected");
+        ImGui::TextDisabled("Selection sets are stored in UI memory; "
+                            "multi-select rendering is not connected");
         ImGui::TreePop();
       }
 
@@ -2757,8 +2772,7 @@ void GuiManager::drawSceneControls(
                                  bimInspection.sourceMaterialIndex);
             drawPropertyIndexRow("Render material",
                                  bimInspection.materialIndex);
-            drawPropertyIndexRow("Semantic type",
-                                 bimInspection.semanticTypeId);
+            drawPropertyIndexRow("Semantic type", bimInspection.semanticTypeId);
             ImGui::EndTable();
           }
           if (ImGui::TreeNode("Extended properties")) {
@@ -2771,11 +2785,11 @@ void GuiManager::drawSceneControls(
               if (ImGui::SmallButton("Clear property search")) {
                 bimPropertySearch_.clear();
               }
-              if (ImGui::BeginTable(
-                      "BimExtendedProperties", 4,
-                      ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                          ImGuiTableFlags_SizingStretchProp,
-                      ImVec2(0.0f, 220.0f))) {
+              if (ImGui::BeginTable("BimExtendedProperties", 4,
+                                    ImGuiTableFlags_Borders |
+                                        ImGuiTableFlags_RowBg |
+                                        ImGuiTableFlags_SizingStretchProp,
+                                    ImVec2(0.0f, 220.0f))) {
                 ImGui::TableSetupColumn("Set");
                 ImGui::TableSetupColumn("Name");
                 ImGui::TableSetupColumn("Value");
@@ -2850,16 +2864,16 @@ void GuiManager::drawSceneControls(
                   ImGui::EndDisabled();
                 }
               };
-          const std::string selectedStorey =
-              !bimInspection.storeyName.empty() ? bimInspection.storeyName
-                                                : bimInspection.storeyId;
+          const std::string selectedStorey = !bimInspection.storeyName.empty()
+                                                 ? bimInspection.storeyName
+                                                 : bimInspection.storeyId;
           const std::string selectedMaterial =
               !bimInspection.materialName.empty()
                   ? bimInspection.materialName
                   : bimInspection.materialCategory;
-          const std::string selectedType =
-              !bimInspection.objectType.empty() ? bimInspection.objectType
-                                                : bimInspection.type;
+          const std::string selectedType = !bimInspection.objectType.empty()
+                                               ? bimInspection.objectType
+                                               : bimInspection.type;
           if (ImGui::BeginTable("BimIfcRelationshipBrowser", 3,
                                 ImGuiTableFlags_Borders |
                                     ImGuiTableFlags_RowBg |
@@ -2868,35 +2882,34 @@ void GuiManager::drawSceneControls(
             ImGui::TableSetupColumn("Current element");
             ImGui::TableSetupColumn("Action");
             ImGui::TableHeadersRow();
+            drawRelationshipRow("Spatial containment", selectedStorey,
+                                "Filter related storey", [&]() {
+                                  bimFilterState_.storeyFilterEnabled = true;
+                                  bimFilterState_.storey = selectedStorey;
+                                  statusMessage_ =
+                                      "Filtered BIM relationship storey: " +
+                                      selectedStorey;
+                                });
+            drawRelationshipRow("Material assignment", selectedMaterial,
+                                "Filter related material", [&]() {
+                                  bimFilterState_.materialFilterEnabled = true;
+                                  bimFilterState_.material = selectedMaterial;
+                                  statusMessage_ =
+                                      "Filtered BIM relationship material: " +
+                                      selectedMaterial;
+                                });
+            drawRelationshipRow("Type/classification", selectedType,
+                                "Filter related type", [&]() {
+                                  bimFilterState_.typeFilterEnabled = true;
+                                  bimFilterState_.type = selectedType;
+                                  statusMessage_ =
+                                      "Filtered BIM relationship type: " +
+                                      selectedType;
+                                });
             drawRelationshipRow(
-                "Spatial containment", selectedStorey,
-                "Filter related storey", [&]() {
-                  bimFilterState_.storeyFilterEnabled = true;
-                  bimFilterState_.storey = selectedStorey;
-                  statusMessage_ =
-                      "Filtered BIM relationship storey: " + selectedStorey;
-                });
-            drawRelationshipRow(
-                "Material assignment", selectedMaterial,
-                "Filter related material", [&]() {
-                  bimFilterState_.materialFilterEnabled = true;
-                  bimFilterState_.material = selectedMaterial;
-                  statusMessage_ =
-                      "Filtered BIM relationship material: " +
-                      selectedMaterial;
-                });
-            drawRelationshipRow(
-                "Type/classification", selectedType, "Filter related type",
-                [&]() {
-                  bimFilterState_.typeFilterEnabled = true;
-                  bimFilterState_.type = selectedType;
-                  statusMessage_ =
-                      "Filtered BIM relationship type: " + selectedType;
-                });
-            drawRelationshipRow(
-                "Identity", !bimInspection.guid.empty()
-                                ? bimInspection.guid
-                                : bimInspection.sourceId,
+                "Identity",
+                !bimInspection.guid.empty() ? bimInspection.guid
+                                            : bimInspection.sourceId,
                 "Copy via selection set", [&]() {
                   BimSelectionSetState set{};
                   set.id = nextBimSelectionSetId_++;
@@ -2913,26 +2926,24 @@ void GuiManager::drawSceneControls(
                       bimInspection.selectedObjectIndex;
                   member.snapshot.selectedBimGuid = bimInspection.guid;
                   member.snapshot.selectedBimType = bimInspection.type;
-                  member.snapshot.selectedBimSourceId =
-                      bimInspection.sourceId;
+                  member.snapshot.selectedBimSourceId = bimInspection.sourceId;
                   member.snapshot.bimFilter = bimFilterState_;
                   set.members.push_back(std::move(member));
                   bimSelectionSets_.push_back(std::move(set));
                   selectedBimSelectionSetIndex_ =
                       static_cast<int>(bimSelectionSets_.size()) - 1;
-                  statusMessage_ =
-                      "Created IFC relationship selection set";
+                  statusMessage_ = "Created IFC relationship selection set";
                 });
             ImGui::EndTable();
           }
           if (bimInspection.properties.empty()) {
             ImGui::TextDisabled(
                 "No property-set relationships are exposed for this element");
-          } else if (ImGui::BeginTable(
-                         "BimIfcPropertySetSummary", 3,
-                         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                             ImGuiTableFlags_SizingStretchProp,
-                         ImVec2(0.0f, 160.0f))) {
+          } else if (ImGui::BeginTable("BimIfcPropertySetSummary", 3,
+                                       ImGuiTableFlags_Borders |
+                                           ImGuiTableFlags_RowBg |
+                                           ImGuiTableFlags_SizingStretchProp,
+                                       ImVec2(0.0f, 160.0f))) {
             ImGui::TableSetupColumn("Property set");
             ImGui::TableSetupColumn("Category");
             ImGui::TableSetupColumn("Properties");
@@ -2943,9 +2954,9 @@ void GuiManager::drawSceneControls(
                  bimInspection.properties) {
               const std::string setName =
                   !property.set.empty() ? property.set : "(unassigned set)";
-              const std::string categoryName =
-                  !property.category.empty() ? property.category
-                                             : "(unassigned category)";
+              const std::string categoryName = !property.category.empty()
+                                                   ? property.category
+                                                   : "(unassigned category)";
               const std::string key = setName + "\n" + categoryName;
               if (std::ranges::contains(visiblePropertySetKeys, key)) {
                 continue;
@@ -2954,8 +2965,7 @@ void GuiManager::drawSceneControls(
               for (const container::renderer::BimElementProperty &candidate :
                    bimInspection.properties) {
                 const std::string candidateSet =
-                    !candidate.set.empty() ? candidate.set
-                                           : "(unassigned set)";
+                    !candidate.set.empty() ? candidate.set : "(unassigned set)";
                 const std::string candidateCategory =
                     !candidate.category.empty() ? candidate.category
                                                 : "(unassigned category)";
@@ -3022,13 +3032,12 @@ void GuiManager::drawSceneControls(
               return;
             }
             if (selectedBimStoreyRangeIndex_ < 0) {
-              selectedBimStoreyRangeIndex_ = delta < 0 ? storeyRangeCount - 1
-                                                       : 0;
+              selectedBimStoreyRangeIndex_ =
+                  delta < 0 ? storeyRangeCount - 1 : 0;
               return;
             }
             selectedBimStoreyRangeIndex_ = std::clamp(
-                selectedBimStoreyRangeIndex_ + delta, 0,
-                storeyRangeCount - 1);
+                selectedBimStoreyRangeIndex_ + delta, 0, storeyRangeCount - 1);
           };
           const char *planStoreyPreview =
               selectedBimStoreyRangeIndex_ >= 0
@@ -3048,8 +3057,7 @@ void GuiManager::drawSceneControls(
               const bool selected = selectedBimStoreyRangeIndex_ == i;
               char label[256]{};
               std::snprintf(label, sizeof(label), "%s (%.2f..%.2f)",
-                            storeyRange.label.c_str(),
-                            storeyRange.minElevation,
+                            storeyRange.label.c_str(), storeyRange.minElevation,
                             storeyRange.maxElevation);
               if (ImGui::Selectable(label, selected)) {
                 selectedBimStoreyRangeIndex_ = i;
@@ -3068,9 +3076,9 @@ void GuiManager::drawSceneControls(
             selectRelativePlanStorey(1);
           }
 
-          const bool hasPlanStorey = selectedBimStoreyRangeIndex_ >= 0 &&
-                                     selectedBimStoreyRangeIndex_ <
-                                         storeyRangeCount;
+          const bool hasPlanStorey =
+              selectedBimStoreyRangeIndex_ >= 0 &&
+              selectedBimStoreyRangeIndex_ < storeyRangeCount;
           if (hasPlanStorey) {
             const auto &storeyRange =
                 bimInspection.elementStoreyRanges[static_cast<size_t>(
@@ -3087,8 +3095,8 @@ void GuiManager::drawSceneControls(
                 bimInspection.elementStoreyRanges[static_cast<size_t>(
                     selectedBimStoreyRangeIndex_)];
             applyStoreyFilter(storeyRange);
-            statusMessage_ = "Applied storey visibility preset: " +
-                             storeyRange.label;
+            statusMessage_ =
+                "Applied storey visibility preset: " + storeyRange.label;
           }
           ImGui::SameLine();
           if (ImGui::SmallButton("Plan slice preset")) {
@@ -3096,8 +3104,7 @@ void GuiManager::drawSceneControls(
                 bimInspection.elementStoreyRanges[static_cast<size_t>(
                     selectedBimStoreyRangeIndex_)];
             applyStoreyPlanSlice(storeyRange, true);
-            statusMessage_ = "Applied storey plan preset: " +
-                             storeyRange.label;
+            statusMessage_ = "Applied storey plan preset: " + storeyRange.label;
           }
           if (!hasPlanStorey) {
             ImGui::EndDisabled();
@@ -3208,8 +3215,7 @@ void GuiManager::drawSceneControls(
         ImGui::EndCombo();
       }
       std::string currentStoreyLabel =
-          bimFilterState_.storeyFilterEnabled &&
-                  !bimFilterState_.storey.empty()
+          bimFilterState_.storeyFilterEnabled && !bimFilterState_.storey.empty()
               ? bimFilterState_.storey
               : "All storeys";
       const bool currentStoreyKnown =
@@ -3260,8 +3266,7 @@ void GuiManager::drawSceneControls(
             !bimFilterState_.storey.empty()) {
           currentFloorSliceLabel = bimFilterState_.storey;
         }
-        if (ImGui::BeginCombo("Floor slice",
-                              currentFloorSliceLabel.c_str())) {
+        if (ImGui::BeginCombo("Floor slice", currentFloorSliceLabel.c_str())) {
           const bool noSliceSelected = !sectionPlaneState_.enabled ||
                                        sectionPlaneAxis_ != 1 ||
                                        sectionPlaneState_.normal.y >= 0.0f;
@@ -3275,8 +3280,7 @@ void GuiManager::drawSceneControls(
                bimInspection.elementStoreyRanges) {
             char label[256]{};
             std::snprintf(label, sizeof(label), "%s (%.2f..%.2f)",
-                          storeyRange.label.c_str(),
-                          storeyRange.minElevation,
+                          storeyRange.label.c_str(), storeyRange.minElevation,
                           storeyRange.maxElevation);
             const bool selected = sectionPlaneState_.enabled &&
                                   sectionPlaneAxis_ == 1 &&
@@ -3292,8 +3296,7 @@ void GuiManager::drawSceneControls(
               sectionPlaneState_.enabled = true;
               sectionPlaneAxis_ = 1;
               sectionPlaneState_.normal = {0.0f, -1.0f, 0.0f};
-              sectionPlaneState_.offset =
-                  -(storeyRange.maxElevation + margin);
+              sectionPlaneState_.offset = -(storeyRange.maxElevation + margin);
             }
             if (selected) {
               ImGui::SetItemDefaultFocus();
@@ -3342,10 +3345,9 @@ void GuiManager::drawSceneControls(
                             bimInspection.elementDisciplines,
                             bimFilterState_.disciplineFilterEnabled,
                             bimFilterState_.discipline);
-      drawStringFilterCombo("Phase filter", "All phases",
-                            bimInspection.elementPhases,
-                            bimFilterState_.phaseFilterEnabled,
-                            bimFilterState_.phase);
+      drawStringFilterCombo(
+          "Phase filter", "All phases", bimInspection.elementPhases,
+          bimFilterState_.phaseFilterEnabled, bimFilterState_.phase);
       drawStringFilterCombo("Fire rating filter", "All fire ratings",
                             bimInspection.elementFireRatings,
                             bimFilterState_.fireRatingFilterEnabled,
@@ -3354,10 +3356,9 @@ void GuiManager::drawSceneControls(
                             bimInspection.elementLoadBearingValues,
                             bimFilterState_.loadBearingFilterEnabled,
                             bimFilterState_.loadBearing);
-      drawStringFilterCombo("Status filter", "All statuses",
-                            bimInspection.elementStatuses,
-                            bimFilterState_.statusFilterEnabled,
-                            bimFilterState_.status);
+      drawStringFilterCombo(
+          "Status filter", "All statuses", bimInspection.elementStatuses,
+          bimFilterState_.statusFilterEnabled, bimFilterState_.status);
       if (!bimInspection.hasSelection) {
         ImGui::BeginDisabled();
       }
@@ -3384,9 +3385,9 @@ void GuiManager::drawSceneControls(
             bimFilterState_.type = bimInspection.type;
           }
         }
-        const std::string selectedStorey =
-            !bimInspection.storeyName.empty() ? bimInspection.storeyName
-                                              : bimInspection.storeyId;
+        const std::string selectedStorey = !bimInspection.storeyName.empty()
+                                               ? bimInspection.storeyName
+                                               : bimInspection.storeyId;
         if (bimFilterState_.storeyFilterEnabled &&
             bimFilterState_.storey != selectedStorey) {
           if (selectedStorey.empty()) {
@@ -3472,22 +3473,21 @@ void GuiManager::drawSceneControls(
 
       if (ImGui::TreeNode("Layer Visibility")) {
         bool layerStateChanged = false;
+        layerStateChanged |=
+            ImGui::Checkbox("Point-cloud visibility",
+                            &bimLayerVisibilityState_.pointCloudVisible);
         layerStateChanged |= ImGui::Checkbox(
-            "Point-cloud visibility",
-            &bimLayerVisibilityState_.pointCloudVisible);
-        layerStateChanged |= ImGui::Checkbox(
-            "Curve visibility",
-            &bimLayerVisibilityState_.curvesVisible);
+            "Curve visibility", &bimLayerVisibilityState_.curvesVisible);
         ImGui::Separator();
-        layerStateChanged |= ImGui::Checkbox(
-            "X-ray layer (placeholder)",
-            &bimLayerVisibilityState_.xrayLayerVisible);
-        layerStateChanged |= ImGui::Checkbox(
-            "Clash layer (placeholder)",
-            &bimLayerVisibilityState_.clashLayerVisible);
-        layerStateChanged |= ImGui::Checkbox(
-            "Markup layer (placeholder)",
-            &bimLayerVisibilityState_.markupLayerVisible);
+        layerStateChanged |=
+            ImGui::Checkbox("X-ray layer (placeholder)",
+                            &bimLayerVisibilityState_.xrayLayerVisible);
+        layerStateChanged |=
+            ImGui::Checkbox("Clash layer (placeholder)",
+                            &bimLayerVisibilityState_.clashLayerVisible);
+        layerStateChanged |=
+            ImGui::Checkbox("Markup layer (placeholder)",
+                            &bimLayerVisibilityState_.markupLayerVisible);
         if (layerStateChanged) {
           statusMessage_ = "Layer visibility updated";
         }
@@ -3526,36 +3526,35 @@ void GuiManager::drawSceneControls(
                     bimInspection.meshletMaxLodLevel);
         ImGui::Text(
             "GPU residency: %zu objects, %zu clusters, %.2f MB, compute %s%s",
-                    bimInspection.meshletGpuResidentObjectCount,
-                    bimInspection.meshletGpuResidentClusterCount,
-                    static_cast<double>(bimInspection.meshletGpuBufferBytes) /
-                        (1024.0 * 1024.0),
+            bimInspection.meshletGpuResidentObjectCount,
+            bimInspection.meshletGpuResidentClusterCount,
+            static_cast<double>(bimInspection.meshletGpuBufferBytes) /
+                (1024.0 * 1024.0),
             bimInspection.meshletGpuComputeReady ? "ready" : "offline",
             bimInspection.meshletGpuDispatchPending ? ", pending" : "");
         ImGui::Text("Optimized metadata cacheable: %s",
                     bimInspection.optimizedModelMetadataCacheable ? "yes"
-                                                                 : "no");
-        ImGui::Text("Optimized metadata cache: %s",
-                    !bimInspection.optimizedModelMetadataCacheStatus.empty()
-                        ? bimInspection.optimizedModelMetadataCacheStatus.c_str()
-                        : bimInspection.optimizedModelMetadataCacheHit
-                              ? "hit"
-                          : bimInspection.optimizedModelMetadataCacheWritten
-                              ? "written"
-                              : "not written");
+                                                                  : "no");
+        ImGui::Text(
+            "Optimized metadata cache: %s",
+            !bimInspection.optimizedModelMetadataCacheStatus.empty()
+                ? bimInspection.optimizedModelMetadataCacheStatus.c_str()
+            : bimInspection.optimizedModelMetadataCacheHit     ? "hit"
+            : bimInspection.optimizedModelMetadataCacheWritten ? "written"
+                                                               : "not written");
         if (!bimInspection.optimizedModelMetadataCacheKey.empty()) {
-          ImGui::TextWrapped("Cache key: %s",
-                             bimInspection.optimizedModelMetadataCacheKey.c_str());
+          ImGui::TextWrapped(
+              "Cache key: %s",
+              bimInspection.optimizedModelMetadataCacheKey.c_str());
         }
         if (!bimInspection.optimizedModelMetadataCachePath.empty()) {
-          ImGui::TextWrapped("Cache path: %s",
-                             bimInspection.optimizedModelMetadataCachePath.c_str());
+          ImGui::TextWrapped(
+              "Cache path: %s",
+              bimInspection.optimizedModelMetadataCachePath.c_str());
         }
-        ImGui::Text("Floor plan draws: %zu",
-                    bimInspection.floorPlanDrawCount);
+        ImGui::Text("Floor plan draws: %zu", bimInspection.floorPlanDrawCount);
         ImGui::Separator();
-        ImGui::Checkbox("Auto LOD request",
-                        &bimLodStreamingUiState_.autoLod);
+        ImGui::Checkbox("Auto LOD request", &bimLodStreamingUiState_.autoLod);
         ImGui::Checkbox("Draw budget enabled",
                         &bimLodStreamingUiState_.drawBudgetEnabled);
         if (!bimLodStreamingUiState_.drawBudgetEnabled) {
@@ -3575,9 +3574,8 @@ void GuiManager::drawSceneControls(
                         &bimLodStreamingUiState_.pauseStreamingRequest);
         ImGui::Checkbox("Keep visible storeys resident",
                         &bimLodStreamingUiState_.keepVisibleStoreysResident);
-        bimLodStreamingUiState_.drawBudgetMaxObjects =
-            std::clamp(bimLodStreamingUiState_.drawBudgetMaxObjects, 100,
-                       200000);
+        bimLodStreamingUiState_.drawBudgetMaxObjects = std::clamp(
+            bimLodStreamingUiState_.drawBudgetMaxObjects, 100, 200000);
         bimFilterState_.drawBudgetEnabled =
             bimLodStreamingUiState_.drawBudgetEnabled;
         bimFilterState_.drawBudgetMaxObjects =
@@ -3597,8 +3595,7 @@ void GuiManager::drawSceneControls(
       }
 
       ImGui::Separator();
-      ImGui::Checkbox("Floor plan overlay",
-                      &bimFloorPlanOverlayState_.enabled);
+      ImGui::Checkbox("Floor plan overlay", &bimFloorPlanOverlayState_.enabled);
       if (bimFloorPlanOverlayState_.enabled) {
         static constexpr const char *kFloorPlanElevationModeLabels[] = {
             "Projected on ground", "Source elevation"};
@@ -3642,8 +3639,7 @@ void GuiManager::drawSceneControls(
         static constexpr const char *kSectionAxisLabels[] = {"X", "Y", "Z",
                                                              "Custom"};
         int sectionAxisCombo = sectionPlaneAxis_ < 0 ? 3 : sectionPlaneAxis_;
-        if (ImGui::Combo("Section axis", &sectionAxisCombo,
-                         kSectionAxisLabels,
+        if (ImGui::Combo("Section axis", &sectionAxisCombo, kSectionAxisLabels,
                          IM_ARRAYSIZE(kSectionAxisLabels))) {
           switch (sectionAxisCombo) {
           case 0:
@@ -3664,13 +3660,12 @@ void GuiManager::drawSceneControls(
           }
         }
         if (sectionPlaneAxis_ < 0) {
-          if (ImGui::DragFloat3("Section normal",
-                                &sectionPlaneState_.normal.x, 0.01f, -1.0f,
-                                1.0f, "%.3f")) {
+          if (ImGui::DragFloat3("Section normal", &sectionPlaneState_.normal.x,
+                                0.01f, -1.0f, 1.0f, "%.3f")) {
             const float length = glm::length(sectionPlaneState_.normal);
-            sectionPlaneState_.normal =
-                length > 0.0001f ? sectionPlaneState_.normal / length
-                                  : glm::vec3{0.0f, 1.0f, 0.0f};
+            sectionPlaneState_.normal = length > 0.0001f
+                                            ? sectionPlaneState_.normal / length
+                                            : glm::vec3{0.0f, 1.0f, 0.0f};
           }
         }
         ImGui::SliderFloat("Section offset", &sectionPlaneState_.offset,
@@ -3688,14 +3683,13 @@ void GuiManager::drawSceneControls(
         ImGui::Checkbox("Box clip", &bimBoxClipState_.enabled);
         if (bimBoxClipState_.enabled) {
           ImGui::Checkbox("Invert box clip", &bimBoxClipState_.invert);
-          ImGui::DragFloat3("Box min", &bimBoxClipState_.min.x, 0.1f,
-                            -10000.0f, 10000.0f, "%.3f");
-          ImGui::DragFloat3("Box max", &bimBoxClipState_.max.x, 0.1f,
-                            -10000.0f, 10000.0f, "%.3f");
+          ImGui::DragFloat3("Box min", &bimBoxClipState_.min.x, 0.1f, -10000.0f,
+                            10000.0f, "%.3f");
+          ImGui::DragFloat3("Box max", &bimBoxClipState_.max.x, 0.1f, -10000.0f,
+                            10000.0f, "%.3f");
           for (int axis = 0; axis < 3; ++axis) {
             if (bimBoxClipState_.min[axis] > bimBoxClipState_.max[axis]) {
-              std::swap(bimBoxClipState_.min[axis],
-                        bimBoxClipState_.max[axis]);
+              std::swap(bimBoxClipState_.min[axis], bimBoxClipState_.max[axis]);
             }
           }
           if (ImGui::SmallButton("Reset box clip")) {
@@ -3711,8 +3705,8 @@ void GuiManager::drawSceneControls(
         ImGui::ColorEdit3("Cap fill color",
                           &bimClipCapHatchingUiState_.capColor.x);
         ImGui::SliderFloat("Cap fill opacity",
-                           &bimClipCapHatchingUiState_.capOpacity, 0.05f,
-                           1.0f, "%.2f");
+                           &bimClipCapHatchingUiState_.capOpacity, 0.05f, 1.0f,
+                           "%.2f");
         if (!bimClipCapHatchingUiState_.capPreview) {
           ImGui::EndDisabled();
         }
@@ -3725,8 +3719,8 @@ void GuiManager::drawSceneControls(
                            &bimClipCapHatchingUiState_.hatchSpacing, 0.05f,
                            5.0f, "%.2f");
         ImGui::SliderFloat("Hatch angle degrees",
-                           &bimClipCapHatchingUiState_.hatchAngleDegrees,
-                           0.0f, 180.0f, "%.1f");
+                           &bimClipCapHatchingUiState_.hatchAngleDegrees, 0.0f,
+                           180.0f, "%.1f");
         ImGui::SliderFloat("Hatch line width",
                            &bimClipCapHatchingUiState_.hatchLineWidth, 1.0f,
                            8.0f, "%.1f");
@@ -3737,15 +3731,14 @@ void GuiManager::drawSceneControls(
         }
         bimClipCapHatchingUiState_.hatchSpacing =
             std::clamp(bimClipCapHatchingUiState_.hatchSpacing, 0.05f, 5.0f);
-        bimClipCapHatchingUiState_.hatchAngleDegrees =
-            std::clamp(bimClipCapHatchingUiState_.hatchAngleDegrees, 0.0f,
-                       180.0f);
+        bimClipCapHatchingUiState_.hatchAngleDegrees = std::clamp(
+            bimClipCapHatchingUiState_.hatchAngleDegrees, 0.0f, 180.0f);
         bimClipCapHatchingUiState_.capOpacity =
             std::clamp(bimClipCapHatchingUiState_.capOpacity, 0.05f, 1.0f);
         bimClipCapHatchingUiState_.hatchLineWidth =
             std::clamp(bimClipCapHatchingUiState_.hatchLineWidth, 1.0f, 8.0f);
-        ImGui::TextDisabled(
-            "Section caps rebuild when the section plane or hatch style changes");
+        ImGui::TextDisabled("Section caps rebuild when the section plane or "
+                            "hatch style changes");
         ImGui::TreePop();
       }
 
@@ -3755,8 +3748,8 @@ void GuiManager::drawSceneControls(
           const glm::vec3 dimensions =
               BimMeasurementDimensions(bimInspection.selectionBoundsSize);
           ImGui::TextUnformatted("Selected element");
-          ImGui::Text("Dimensions (X/Y/Z): %.3f / %.3f / %.3f",
-                      dimensions.x, dimensions.y, dimensions.z);
+          ImGui::Text("Dimensions (X/Y/Z): %.3f / %.3f / %.3f", dimensions.x,
+                      dimensions.y, dimensions.z);
           ImGui::Text("Footprint (X*Z): %.3f",
                       BimMeasurementFootprintArea(dimensions));
           ImGui::Text("Volume (bounds): %.3f",
@@ -3815,28 +3808,26 @@ void GuiManager::drawSceneControls(
           ImGui::EndDisabled();
         }
 
-        auto drawMeasurementPoint =
-            [](const char *name, const BimMeasurementPointState &point) {
-              if (!point.captured) {
-                ImGui::TextDisabled("%s: not set", name);
-                return;
-              }
-              ImGui::TextWrapped("%s: %s", name, point.label.c_str());
-              ImGui::Text("  Object: %u  Center: %.3f, %.3f, %.3f",
-                          point.objectIndex, point.center.x, point.center.y,
-                          point.center.z);
-            };
+        auto drawMeasurementPoint = [](const char *name,
+                                       const BimMeasurementPointState &point) {
+          if (!point.captured) {
+            ImGui::TextDisabled("%s: not set", name);
+            return;
+          }
+          ImGui::TextWrapped("%s: %s", name, point.label.c_str());
+          ImGui::Text("  Object: %u  Center: %.3f, %.3f, %.3f",
+                      point.objectIndex, point.center.x, point.center.y,
+                      point.center.z);
+        };
         drawMeasurementPoint("A", bimMeasurementPointA_);
         drawMeasurementPoint("B", bimMeasurementPointB_);
 
-        if (bimMeasurementPointA_.captured &&
-            bimMeasurementPointB_.captured) {
+        if (bimMeasurementPointA_.captured && bimMeasurementPointB_.captured) {
           const BimMeasurementDistanceStats stats =
               BimMeasurementBetweenCenters(bimMeasurementPointA_.center,
                                            bimMeasurementPointB_.center);
           ImGui::Text("Distance: %.3f", stats.distance);
-          ImGui::Text("Horizontal distance: %.3f",
-                      stats.horizontalDistance);
+          ImGui::Text("Horizontal distance: %.3f", stats.horizontalDistance);
           ImGui::Text("Elevation delta: %.3f", stats.elevationDelta);
           ImGui::Text("Slope angle: %.2f deg", stats.slopeAngleDegrees);
           ImGui::Text("Angle to elevation axis: %.2f deg",
@@ -3844,8 +3835,7 @@ void GuiManager::drawSceneControls(
           if (ImGui::SmallButton("Save measurement annotation")) {
             BimMeasurementAnnotationState annotation{};
             annotation.id = nextBimMeasurementAnnotationId_++;
-            annotation.label =
-                "Measurement " + std::to_string(annotation.id);
+            annotation.label = "Measurement " + std::to_string(annotation.id);
             annotation.pointA = bimMeasurementPointA_;
             annotation.pointB = bimMeasurementPointB_;
             annotation.distance = stats.distance;
@@ -3900,15 +3890,13 @@ void GuiManager::drawSceneControls(
               ImGui::TableNextRow();
               ImGui::TableNextColumn();
               const bool selected =
-                  selectedBimMeasurementAnnotationIndex_ ==
-                  static_cast<int>(i);
+                  selectedBimMeasurementAnnotationIndex_ == static_cast<int>(i);
               if (ImGui::Selectable(annotation.label.c_str(), selected,
                                     ImGuiSelectableFlags_SpanAllColumns)) {
                 selectedBimMeasurementAnnotationIndex_ = static_cast<int>(i);
               }
               if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("%s to %s",
-                                  annotation.pointA.label.c_str(),
+                ImGui::SetTooltip("%s to %s", annotation.pointA.label.c_str(),
                                   annotation.pointB.label.c_str());
               }
               ImGui::TableNextColumn();
@@ -3918,8 +3906,7 @@ void GuiManager::drawSceneControls(
               ImGui::TableNextColumn();
               ImGui::Text("%.3f", annotation.elevationDelta);
               ImGui::TableNextColumn();
-              ImGui::Text("%.2f deg",
-                          annotation.elevationAxisAngleDegrees);
+              ImGui::Text("%.2f deg", annotation.elevationAxisAngleDegrees);
               ImGui::TableNextColumn();
               if (ImGui::SmallButton("Delete")) {
                 eraseAnnotationIndex = static_cast<int>(i);
@@ -3961,7 +3948,7 @@ void GuiManager::drawSceneControls(
               static_cast<int>(viewpointSnapshots_.size()) - 1;
           statusMessage_ = "Captured " + ViewpointSnapshotDisplayName(
                                              viewpointSnapshots_.back(),
-                                              viewpointSnapshots_.size() - 1u);
+                                             viewpointSnapshots_.size() - 1u);
         }
 
         auto normalizedCurrentViewpoint = [&]() {
@@ -3985,66 +3972,59 @@ void GuiManager::drawSceneControls(
               return;
             }
           }
-          statusMessage_ = bcf::SaveVisualizationInfo(snapshot, path)
-                               ? "Exported BCF viewpoint: " + path.string()
-                               : "Failed to export BCF viewpoint: " +
-                                     path.string();
+          statusMessage_ =
+              bcf::SaveVisualizationInfo(snapshot, path)
+                  ? "Exported BCF viewpoint: " + path.string()
+                  : "Failed to export BCF viewpoint: " + path.string();
         };
-        auto makeBcfTopicFolder =
-            [&](const ViewpointSnapshotState &snapshot,
-                uint32_t topicId) {
-              bcf::BcfTopicFolder topic{};
-              const std::string topicGuid =
-                  "container-topic-" + std::to_string(topicId);
-              const std::string viewpointGuid =
-                  "container-viewpoint-" + std::to_string(topicId);
-              topic.markup.topic.guid = topicGuid;
-              topic.markup.topic.title =
-                  TrimAscii(bcfTopicTitleInput_).empty()
-                      ? "BIM issue"
-                      : TrimAscii(bcfTopicTitleInput_);
-              topic.markup.topic.status =
-                  TrimAscii(bcfTopicStatusInput_).empty()
-                      ? "Open"
-                      : TrimAscii(bcfTopicStatusInput_);
-              topic.markup.topic.priority = TrimAscii(bcfTopicPriorityInput_);
-              topic.markup.topic.labels =
-                  SplitBcfTopicLabels(bcfTopicLabelsInput_);
-              topic.markup.topic.tags = {"Container"};
+        auto makeBcfTopicFolder = [&](const ViewpointSnapshotState &snapshot,
+                                      uint32_t topicId) {
+          bcf::BcfTopicFolder topic{};
+          const std::string topicGuid =
+              "container-topic-" + std::to_string(topicId);
+          const std::string viewpointGuid =
+              "container-viewpoint-" + std::to_string(topicId);
+          topic.markup.topic.guid = topicGuid;
+          topic.markup.topic.title = TrimAscii(bcfTopicTitleInput_).empty()
+                                         ? "BIM issue"
+                                         : TrimAscii(bcfTopicTitleInput_);
+          topic.markup.topic.status = TrimAscii(bcfTopicStatusInput_).empty()
+                                          ? "Open"
+                                          : TrimAscii(bcfTopicStatusInput_);
+          topic.markup.topic.priority = TrimAscii(bcfTopicPriorityInput_);
+          topic.markup.topic.labels = SplitBcfTopicLabels(bcfTopicLabelsInput_);
+          topic.markup.topic.tags = {"Container"};
 
-              bcf::BcfTopicViewpoint viewpoint{};
-              viewpoint.markup.guid = viewpointGuid;
-              viewpoint.markup.viewpointFile = "viewpoint-0001.bcfv";
-              viewpoint.snapshot = snapshot;
-              if (bimInspection.hasSelection) {
-                bcf::BcfPin pin{};
-                pin.guid = bcf::StablePinGuid(bimInspection.guid,
-                                              bimInspection.sourceId,
-                                              topicGuid);
-                pin.label = BimMeasurementSelectionLabel(bimInspection);
-                pin.location = bimInspection.hasSelectionBounds
-                                   ? bimInspection.selectionBoundsCenter
-                                   : snapshot.camera.position;
-                pin.ifcGuid = bimInspection.guid;
-                pin.sourceId = bimInspection.sourceId;
-                viewpoint.markup.pins.push_back(std::move(pin));
-              }
-              topic.markup.viewpoints.push_back(viewpoint.markup);
-              topic.viewpoints.push_back(std::move(viewpoint));
+          bcf::BcfTopicViewpoint viewpoint{};
+          viewpoint.markup.guid = viewpointGuid;
+          viewpoint.markup.viewpointFile = "viewpoint-0001.bcfv";
+          viewpoint.snapshot = snapshot;
+          if (bimInspection.hasSelection) {
+            bcf::BcfPin pin{};
+            pin.guid = bcf::StablePinGuid(bimInspection.guid,
+                                          bimInspection.sourceId, topicGuid);
+            pin.label = BimMeasurementSelectionLabel(bimInspection);
+            pin.location = bimInspection.hasSelectionBounds
+                               ? bimInspection.selectionBoundsCenter
+                               : snapshot.camera.position;
+            pin.ifcGuid = bimInspection.guid;
+            pin.sourceId = bimInspection.sourceId;
+            viewpoint.markup.pins.push_back(std::move(pin));
+          }
+          topic.markup.viewpoints.push_back(viewpoint.markup);
+          topic.viewpoints.push_back(std::move(viewpoint));
 
-              const std::string commentText =
-                  TrimAscii(bcfTopicCommentInput_);
-              if (!commentText.empty()) {
-                bcf::BcfComment comment{};
-                comment.guid =
-                    "container-comment-" + std::to_string(topicId);
-                comment.author = "Container";
-                comment.text = commentText;
-                comment.viewpointGuid = viewpointGuid;
-                topic.markup.comments.push_back(std::move(comment));
-              }
-              return topic;
-            };
+          const std::string commentText = TrimAscii(bcfTopicCommentInput_);
+          if (!commentText.empty()) {
+            bcf::BcfComment comment{};
+            comment.guid = "container-comment-" + std::to_string(topicId);
+            comment.author = "Container";
+            comment.text = commentText;
+            comment.viewpointGuid = viewpointGuid;
+            topic.markup.comments.push_back(std::move(comment));
+          }
+          return topic;
+        };
         auto storeBcfTopicArchiveEntry =
             [&](const bcf::BcfTopicFolder &topic,
                 const std::filesystem::path &path) {
@@ -4099,8 +4079,7 @@ void GuiManager::drawSceneControls(
 
         if (ImGui::TreeNode("BCF Topics")) {
           ImGui::InputText("BCF topic folder", &bcfTopicFolderPath_);
-          ImGui::InputText("BCF topic archive file",
-                           &bcfTopicArchivePath_);
+          ImGui::InputText("BCF topic archive file", &bcfTopicArchivePath_);
           ImGui::InputText("Topic title", &bcfTopicTitleInput_);
           ImGui::InputText("Topic status", &bcfTopicStatusInput_);
           ImGui::InputText("Topic priority", &bcfTopicPriorityInput_);
@@ -4110,18 +4089,17 @@ void GuiManager::drawSceneControls(
           auto makeCurrentBcfTopic = [&]() {
             ViewpointSnapshotState snapshot = normalizedCurrentViewpoint();
             snapshot.selectedBimObjectIndex =
-                bimInspection.hasSelection
-                    ? bimInspection.selectedObjectIndex
-                    : snapshot.selectedBimObjectIndex;
-            snapshot.selectedBimGuid =
-                bimInspection.hasSelection ? bimInspection.guid
+                bimInspection.hasSelection ? bimInspection.selectedObjectIndex
+                                           : snapshot.selectedBimObjectIndex;
+            snapshot.selectedBimGuid = bimInspection.hasSelection
+                                           ? bimInspection.guid
                                            : snapshot.selectedBimGuid;
-            snapshot.selectedBimType =
-                bimInspection.hasSelection ? bimInspection.type
+            snapshot.selectedBimType = bimInspection.hasSelection
+                                           ? bimInspection.type
                                            : snapshot.selectedBimType;
-            snapshot.selectedBimSourceId =
-                bimInspection.hasSelection ? bimInspection.sourceId
-                                           : snapshot.selectedBimSourceId;
+            snapshot.selectedBimSourceId = bimInspection.hasSelection
+                                               ? bimInspection.sourceId
+                                               : snapshot.selectedBimSourceId;
             return makeBcfTopicFolder(snapshot, nextBcfTopicArchiveId_);
           };
           if (ImGui::SmallButton("Archive current topic")) {
@@ -4194,10 +4172,9 @@ void GuiManager::drawSceneControls(
             selectedBcfTopicArchiveIndex_ = -1;
             ImGui::TextDisabled("No archived BCF topics");
           } else {
-            selectedBcfTopicArchiveIndex_ =
-                std::clamp(selectedBcfTopicArchiveIndex_, 0,
-                           static_cast<int>(bcfTopicArchiveEntries_.size()) -
-                               1);
+            selectedBcfTopicArchiveIndex_ = std::clamp(
+                selectedBcfTopicArchiveIndex_, 0,
+                static_cast<int>(bcfTopicArchiveEntries_.size()) - 1);
             const BcfTopicArchiveEntryState &selectedTopic =
                 bcfTopicArchiveEntries_[static_cast<size_t>(
                     selectedBcfTopicArchiveIndex_)];
@@ -4227,13 +4204,12 @@ void GuiManager::drawSceneControls(
             const BcfTopicArchiveEntryState &entry =
                 bcfTopicArchiveEntries_[static_cast<size_t>(
                     selectedBcfTopicArchiveIndex_)];
-            ImGui::TextWrapped("Topic status: %s",
-                               entry.status.empty() ? "not specified"
-                                                    : entry.status.c_str());
+            ImGui::TextWrapped("Topic status: %s", entry.status.empty()
+                                                       ? "not specified"
+                                                       : entry.status.c_str());
             ImGui::TextWrapped("Topic priority: %s",
-                               entry.priority.empty()
-                                   ? "not specified"
-                                   : entry.priority.c_str());
+                               entry.priority.empty() ? "not specified"
+                                                      : entry.priority.c_str());
             if (!entry.path.empty()) {
               ImGui::TextWrapped("Topic path: %s", entry.path.c_str());
             }
@@ -4330,11 +4306,11 @@ void GuiManager::drawSceneControls(
                 selectedSnapshot,
                 static_cast<size_t>(selectedViewpointSnapshotIndex_));
             statusMessage_ =
-                restored ? (modelMismatch
-                                ? "Restored camera from " + restoredName +
-                                      "; kept current BIM filters"
-                                : "Restored " + restoredName)
-                         : "Failed to restore viewpoint";
+                restored
+                    ? (modelMismatch ? "Restored camera from " + restoredName +
+                                           "; kept current BIM filters"
+                                     : "Restored " + restoredName)
+                    : "Failed to restore viewpoint";
           }
           ImGui::SameLine();
           if (!hasBcfPath) {
@@ -4396,8 +4372,7 @@ void GuiManager::drawSceneControls(
           }
         };
         auto drawVec3Line = [](const char *label, const glm::vec3 &value) {
-          ImGui::Text("%s: %.3f, %.3f, %.3f", label, value.x, value.y,
-                      value.z);
+          ImGui::Text("%s: %.3f, %.3f, %.3f", label, value.x, value.y, value.z);
         };
         ImGui::Text("Selected BIM Object: %u",
                     bimInspection.selectedObjectIndex);
@@ -4591,6 +4566,13 @@ void GuiManager::drawSceneControls(
                        -8.0f, 0.0f, "%.2f");
     ImGui::Checkbox("Local contact visibility",
                     &shadowSettings_.localContactVisibility);
+    int localShadowPointBudget =
+        static_cast<int>(lightingSettings_.localShadowPointBudget);
+    if (ImGui::SliderInt("Shadowed Point Light Budget",
+                         &localShadowPointBudget, 0, 4)) {
+      lightingSettings_.localShadowPointBudget =
+          static_cast<uint32_t>(std::max(localShadowPointBudget, 0));
+    }
     ImGui::TreePop();
   }
 
@@ -4641,11 +4623,10 @@ void GuiManager::drawSceneControls(
           selectEditableLight(light.id);
         }
         if (ImGui::IsItemHovered()) {
-          ImGui::SetTooltip("%s %s",
-                            container::renderer::editableLightSourceLabel(
-                                light.source),
-                            container::renderer::editableLightTypeLabel(
-                                light.type));
+          ImGui::SetTooltip(
+              "%s %s",
+              container::renderer::editableLightSourceLabel(light.source),
+              container::renderer::editableLightTypeLabel(light.type));
         }
         if (selected) {
           ImGui::SetItemDefaultFocus();
@@ -4663,24 +4644,15 @@ void GuiManager::drawSceneControls(
       ImGui::TextDisabled("No editable lights");
     }
 
-    if (ImGui::TreeNode("Generated Light Settings")) {
-      ImGui::SliderFloat("Light Density", &lightingSettings_.density, 0.1f,
-                         16.0f, "%.2f");
-      ImGui::SliderFloat("Light Radius Scale",
-                         &lightingSettings_.radiusScale, 0.05f, 8.0f,
-                         "%.2f");
-      ImGui::SliderFloat("Point Intensity Scale",
-                         &lightingSettings_.intensityScale, 0.0f, 16.0f,
-                         "%.2f");
+    if (ImGui::TreeNode("Lighting Settings")) {
       ImGui::SliderFloat("Directional Intensity",
                          &lightingSettings_.directionalIntensity, 0.0f, 16.0f,
                          "%.2f");
       ImGui::SliderFloat("Environment Intensity",
                          &lightingSettings_.environmentIntensity, 0.0f, 16.0f,
                          "%.2f");
-      ImGui::SliderFloat("Bounce Intensity",
-                         &lightingSettings_.bounceIntensity, 0.0f, 2.0f,
-                         "%.2f");
+      ImGui::SliderFloat("Bounce Intensity", &lightingSettings_.bounceIntensity,
+                         0.0f, 2.0f, "%.2f");
       ImGui::TreePop();
     }
 
@@ -4694,6 +4666,13 @@ void GuiManager::drawSceneControls(
                         lightCullingStats_.maxLightsPerCluster);
       ImGui::BulletText("Dropped light refs: %u",
                         lightCullingStats_.droppedLightReferences);
+      if (lightCullingStats_.droppedLightReferences > 0u ||
+          lightCullingStats_.maxLightsPerCluster >=
+              container::gpu::kMaxLightsPerTile) {
+        ImGui::TextColored(ImVec4(1.0f, 0.82f, 0.32f, 1.0f),
+                           "Cluster saturated: reduce imported/manual light "
+                           "ranges.");
+      }
       ImGui::BulletText("Cluster cull GPU: %.3f ms",
                         lightCullingStats_.clusterCullMs);
       ImGui::BulletText("Clustered lighting GPU: %.3f ms",
@@ -5040,9 +5019,8 @@ void GuiManager::drawRendererTelemetryWindow() {
     ImGui::Text(
         "Acquire image: %.3f ms",
         TelemetryPhaseMs(latest, GuiRendererTelemetryPhase::AcquireImage));
-    ImGui::Text(
-        "Present: %.3f ms",
-        TelemetryPhaseMs(latest, GuiRendererTelemetryPhase::Present));
+    ImGui::Text("Present: %.3f ms",
+                TelemetryPhaseMs(latest, GuiRendererTelemetryPhase::Present));
     ImGui::Text(
         "Swapchain recreates: %llu",
         static_cast<unsigned long long>(latest.sync.swapchainRecreateCount));
