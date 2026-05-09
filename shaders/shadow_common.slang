@@ -4,6 +4,8 @@
 
 #include "lighting_structs.slang"
 
+static const float SHADOW_PCF_KERNEL_RADIUS = 2.0;
+
 float ShadowFiniteOr(float value, float fallback)
 {
     return isfinite(value) ? value : fallback;
@@ -108,7 +110,9 @@ float SampleWeightedPcf(
     float cascadeExtent =
         max(ShadowFiniteOr(cascade.worldRadius, 0.0) * 2.0, 1e-4);
     float cascadeTexelSize = max(ShadowFiniteOr(cascade.texelSize, 0.0), 0.0);
-    float2 texelSize = (cascadeTexelSize * filterRadiusTexels / cascadeExtent).xx;
+    float filterStepTexels =
+        filterRadiusTexels / SHADOW_PCF_KERNEL_RADIUS;
+    float2 texelSize = (filterStepTexels * cascadeTexelSize / cascadeExtent).xx;
     float shadow = 0.0;
     float totalWeight = 0.0;
 

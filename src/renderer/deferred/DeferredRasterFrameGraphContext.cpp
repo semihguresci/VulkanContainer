@@ -102,6 +102,15 @@ DeferredRasterFrameGraphContext::lightingManager() const {
   return services_.lightingManager;
 }
 
+container::ui::GuiManager *DeferredRasterFrameGraphContext::guiManager() const {
+  return services_.guiManager;
+}
+
+const container::scene::BaseCamera *
+DeferredRasterFrameGraphContext::camera() const {
+  return services_.camera;
+}
+
 const SceneController *
 DeferredRasterFrameGraphContext::sceneController() const {
   return services_.sceneController;
@@ -145,9 +154,7 @@ bool DeferredRasterFrameGraphContext::canRecordShadowPass(
 ShadowCascadeFramePassContext
 DeferredRasterFrameGraphContext::shadowCascadeFramePassContext() const {
   return {.shadowAtlasVisible = displayModeRecordsShadowAtlas(displayMode()),
-          .isPassActive = [this](RenderPassId id) {
-            return isPassActive(id);
-          }};
+          .isPassActive = [this](RenderPassId id) { return isPassActive(id); }};
 }
 
 void DeferredRasterFrameGraphContext::beforePrepareFrame(
@@ -159,8 +166,8 @@ void DeferredRasterFrameGraphContext::beforePrepareFrame(
 
 void DeferredRasterFrameGraphContext::afterPrepareFrame(
     const FrameRecordParams &p, const RenderGraph &) const {
-  shadowCascadeFramePassRecorder_.prepareFrame(
-      p, shadowCascadeFramePassContext());
+  shadowCascadeFramePassRecorder_.prepareFrame(p,
+                                               shadowCascadeFramePassContext());
   prepareBimFrameGpuVisibility(p.services.bimManager);
 }
 
@@ -168,17 +175,16 @@ void DeferredRasterFrameGraphContext::afterCommandBufferBegin(
     VkCommandBuffer cmd, const FrameRecordParams &p) const {
   if (services_.lightingManager != nullptr) {
     services_.lightingManager->resetGpuTimers(cmd, p.runtime.imageIndex);
-    }
-    static_cast<void>(recordBimFrameGpuVisibilityCommands(
-        {.manager = p.services.bimManager,
-         .commandBuffer = cmd,
-         .cameraBuffer =
-             deferredRasterBuffer(p, DeferredRasterBufferId::Camera),
-         .cameraBufferSize =
-             deferredRasterBufferSize(p, DeferredRasterBufferId::Camera),
-         .objectBuffer = p.bim.scene.objectBuffer,
-         .objectBufferSize = p.bim.scene.objectBufferSize}));
   }
+  static_cast<void>(recordBimFrameGpuVisibilityCommands(
+      {.manager = p.services.bimManager,
+       .commandBuffer = cmd,
+       .cameraBuffer = deferredRasterBuffer(p, DeferredRasterBufferId::Camera),
+       .cameraBufferSize =
+           deferredRasterBufferSize(p, DeferredRasterBufferId::Camera),
+       .objectBuffer = p.bim.scene.objectBuffer,
+       .objectBufferSize = p.bim.scene.objectBufferSize}));
+}
 
 void DeferredRasterFrameGraphContext::afterGraphExecution(
     VkCommandBuffer cmd, const FrameRecordParams &p) const {

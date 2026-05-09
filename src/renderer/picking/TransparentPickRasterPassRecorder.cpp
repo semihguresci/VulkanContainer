@@ -18,16 +18,16 @@ namespace {
          inputs.extent.height > 0u;
 }
 
-[[nodiscard]] bool hasTransparentPickGeometry(
-    const TransparentPickPassGeometryBinding &geometry) {
+[[nodiscard]] bool
+hasTransparentPickGeometry(const TransparentPickPassGeometryBinding &geometry) {
   return geometry.descriptorSet != VK_NULL_HANDLE &&
          geometry.vertexSlice.buffer != VK_NULL_HANDLE &&
          geometry.indexSlice.buffer != VK_NULL_HANDLE;
 }
 
-[[nodiscard]] BimSurfacePassGeometryBinding bimSurfacePickGeometry(
-    std::span<const VkDescriptorSet> descriptorSets,
-    const TransparentPickPassGeometryBinding &geometry) {
+[[nodiscard]] BimSurfacePassGeometryBinding
+bimSurfacePickGeometry(std::span<const VkDescriptorSet> descriptorSets,
+                       const TransparentPickPassGeometryBinding &geometry) {
   return {.descriptorSets = descriptorSets,
           .vertexSlice = geometry.vertexSlice,
           .indexSlice = geometry.indexSlice,
@@ -52,6 +52,9 @@ bool recordTransparentPickRasterPassCommands(
   vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
   recordSceneViewportAndScissor(cmd, inputs.extent);
   static_cast<void>(recordTransparentPickPassCommands(cmd, inputs.pass));
+  if (inputs.extraPassWorkActive && inputs.recordAfterGeometry) {
+    inputs.recordAfterGeometry(cmd);
+  }
   vkCmdEndRenderPass(cmd);
   return true;
 }
@@ -63,34 +66,39 @@ bool recordTransparentPickFramePassCommands(
       inputs.framebuffer == VK_NULL_HANDLE ||
       inputs.sourceDepthStencilImage == VK_NULL_HANDLE ||
       inputs.pickDepthImage == VK_NULL_HANDLE ||
-      inputs.pickIdImage == VK_NULL_HANDLE ||
-      inputs.pipelineLayout == VK_NULL_HANDLE ||
-      inputs.pipelines.primary == VK_NULL_HANDLE ||
-      inputs.pushConstants == nullptr || inputs.debugOverlay == nullptr) {
+      inputs.pickIdImage == VK_NULL_HANDLE) {
     return false;
   }
 
-  const bool sceneRecordReady =
-      inputs.scenePassReady && hasTransparentPickGeometry(inputs.scene);
+  const bool transparentPickStateReady =
+      inputs.pipelineLayout != VK_NULL_HANDLE &&
+      inputs.pipelines.primary != VK_NULL_HANDLE &&
+      inputs.pushConstants != nullptr && inputs.debugOverlay != nullptr;
+  const bool sceneRecordReady = transparentPickStateReady &&
+                                inputs.scenePassReady &&
+                                hasTransparentPickGeometry(inputs.scene);
   const SceneTransparentDrawPlan transparentPlan =
       sceneRecordReady ? buildSceneTransparentDrawPlan(inputs.sceneDraws)
                        : SceneTransparentDrawPlan{};
 
   const std::array<VkDescriptorSet, 1> bimDescriptorSets = {
       inputs.bim.descriptorSet};
+  const container::gpu::BindlessPushConstants pushConstants =
+      inputs.pushConstants != nullptr ? *inputs.pushConstants
+                                      : container::gpu::BindlessPushConstants{};
   const BimSurfacePassPlan bimTransparentPickPlan =
       buildBimSurfaceFramePassPlan(
           {.kind = BimSurfacePassKind::TransparentPick,
-           .passReady =
-               inputs.bimPassReady && hasTransparentPickGeometry(inputs.bim),
+           .passReady = transparentPickStateReady && inputs.bimPassReady &&
+                        hasTransparentPickGeometry(inputs.bim),
            .draws = inputs.bimDraws,
-           .geometry =
-               bimSurfacePickGeometry(bimDescriptorSets, inputs.bim),
+           .geometry = bimSurfacePickGeometry(bimDescriptorSets, inputs.bim),
            .pipelines = {.singleSided = inputs.pipelines.primary},
-           .pushConstants = inputs.pushConstants,
+           .pushConstants = &pushConstants,
            .semanticColorMode = inputs.bimSemanticColorMode});
 
-  if (transparentPlan.routeCount == 0u && !bimTransparentPickPlan.active) {
+  if (transparentPlan.routeCount == 0u && !bimTransparentPickPlan.active &&
+      !inputs.extraPassWorkActive) {
     return false;
   }
 
@@ -114,9 +122,11 @@ bool recordTransparentPickFramePassCommands(
                      .bim = inputs.bim,
                      .pipelines = inputs.pipelines,
                      .pipelineLayout = inputs.pipelineLayout,
-                     .pushConstants = *inputs.pushConstants,
+                     .pushConstants = pushConstants,
                      .debugOverlay = inputs.debugOverlay,
-                     .bimManager = inputs.bimManager}});
+                     .bimManager = inputs.bimManager},
+            .extraPassWorkActive = inputs.extraPassWorkActive,
+            .recordAfterGeometry = inputs.recordAfterGeometry});
 }
 
 } // namespace container::renderer

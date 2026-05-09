@@ -50,6 +50,11 @@ enum class GBufferViewMode : uint32_t {
   ShadowTexelDensity = 13,
 };
 
+enum class SceneViewportMode : uint32_t {
+  Editor = 0,
+  RenderPreview = 1,
+};
+
 enum class WireframeMode : uint32_t {
   Overlay = 0,
   Full = 1,
@@ -408,9 +413,8 @@ public:
       container::renderer::EditableLightId selectedEditableLight,
       const std::function<void(container::renderer::EditableLightId)>
           &selectEditableLight,
-      const std::function<void(
-          const container::renderer::EditableLightEntity &)>
-          &updateEditableLight,
+      const std::function<void(const container::renderer::EditableLightEntity
+                                   &)> &updateEditableLight,
       const std::function<void(container::renderer::EditableLightType)>
           &addManualEditableLight,
       uint32_t selectedMeshNode, const BimInspectionState &bimInspection,
@@ -425,13 +429,30 @@ public:
   [[nodiscard]] bool isCapturingInput() const;
   [[nodiscard]] bool isCapturingMouse() const;
   [[nodiscard]] bool isCapturingKeyboard() const;
-  [[nodiscard]] bool showGeometryOverlay() const {
-    return showGeometryOverlay_;
+  [[nodiscard]] SceneViewportMode sceneViewportMode() const {
+    return sceneViewportMode_;
   }
-  [[nodiscard]] bool showLightGizmos() const { return showLightGizmos_; }
-  [[nodiscard]] bool showNormalDiagCube() const { return showNormalDiagCube_; }
+  void setSceneViewportMode(SceneViewportMode mode) {
+    sceneViewportMode_ = mode;
+  }
+  [[nodiscard]] bool renderPreviewMode() const {
+    return sceneViewportMode_ == SceneViewportMode::RenderPreview;
+  }
+  [[nodiscard]] bool editorOverlaysEnabled() const {
+    return sceneViewportMode_ == SceneViewportMode::Editor &&
+           !renderPreviewMode();
+  }
+  [[nodiscard]] bool showGeometryOverlay() const {
+    return editorOverlaysEnabled() && showGeometryOverlay_;
+  }
+  [[nodiscard]] bool showLightGizmos() const {
+    return editorOverlaysEnabled() && showLightGizmos_;
+  }
+  [[nodiscard]] bool showNormalDiagCube() const {
+    return editorOverlaysEnabled() && showNormalDiagCube_;
+  }
   [[nodiscard]] bool showNormalValidation() const {
-    return normalValidationSettings_.enabled;
+    return editorOverlaysEnabled() && normalValidationSettings_.enabled;
   }
   [[nodiscard]] const container::gpu::NormalValidationSettings &
   normalValidationSettings() const {
@@ -446,8 +467,8 @@ public:
   [[nodiscard]] const BimFilterState &bimFilterState() const {
     return bimFilterState_;
   }
-  [[nodiscard]] const BimFloorPlanOverlayState &bimFloorPlanOverlayState()
-      const {
+  [[nodiscard]] const BimFloorPlanOverlayState &
+  bimFloorPlanOverlayState() const {
     return bimFloorPlanOverlayState_;
   }
   [[nodiscard]] const BimElevationViewState &bimElevationViewState() const {
@@ -459,8 +480,7 @@ public:
     bimElevationViewRequest_.reset();
     return request;
   }
-  [[nodiscard]] const BimLayerVisibilityState &bimLayerVisibilityState()
-      const {
+  [[nodiscard]] const BimLayerVisibilityState &bimLayerVisibilityState() const {
     return bimLayerVisibilityState_;
   }
   [[nodiscard]] container::renderer::BimSemanticColorMode
@@ -470,13 +490,13 @@ public:
   [[nodiscard]] const SectionPlaneState &sectionPlaneState() const {
     return sectionPlaneState_;
   }
-  [[nodiscard]] const BimBoxClipUiState& bimBoxClipState() const {
+  [[nodiscard]] const BimBoxClipUiState &bimBoxClipState() const {
     return bimBoxClipState_;
   }
-  [[nodiscard]] const BimLodStreamingUiState& bimLodStreamingUiState() const {
+  [[nodiscard]] const BimLodStreamingUiState &bimLodStreamingUiState() const {
     return bimLodStreamingUiState_;
   }
-  [[nodiscard]] const BimClipCapHatchingUiState&
+  [[nodiscard]] const BimClipCapHatchingUiState &
   bimClipCapHatchingUiState() const {
     return bimClipCapHatchingUiState_;
   }
@@ -602,6 +622,7 @@ private:
   bool wireframeRasterModeSupported_{false};
   bool wireframeWideLineSupported_{false};
   GBufferViewMode gBufferViewMode_{GBufferViewMode::Overview};
+  SceneViewportMode sceneViewportMode_{SceneViewportMode::Editor};
   WireframeSettings wireframeSettings_{};
   container::gpu::NormalValidationSettings normalValidationSettings_{};
   std::string modelPathInput_{};

@@ -58,15 +58,16 @@ VkDescriptorSet deferredRasterSceneDescriptorSet(const FrameRecordParams &p) {
   return deferredRasterDescriptorSet(p, DeferredRasterDescriptorSetId::Scene);
 }
 
-VkDescriptorSet deferredRasterBimSceneDescriptorSet(
-    const FrameRecordParams &p) {
-  return deferredRasterDescriptorSet(p, DeferredRasterDescriptorSetId::BimScene);
+VkDescriptorSet
+deferredRasterBimSceneDescriptorSet(const FrameRecordParams &p) {
+  return deferredRasterDescriptorSet(p,
+                                     DeferredRasterDescriptorSetId::BimScene);
 }
 
-VkDescriptorSet deferredRasterTiledLightingDescriptorSet(
-    const FrameRecordParams &p) {
-  return deferredRasterDescriptorSet(p,
-                                     DeferredRasterDescriptorSetId::TiledLighting);
+VkDescriptorSet
+deferredRasterTiledLightingDescriptorSet(const FrameRecordParams &p) {
+  return deferredRasterDescriptorSet(
+      p, DeferredRasterDescriptorSetId::TiledLighting);
 }
 
 DeferredLightingWireframeSettings deferredLightingWireframeSettings(
@@ -81,26 +82,28 @@ DeferredLightingWireframeSettings deferredLightingWireframeSettings(
           .overlayIntensity = settings.overlayIntensity};
 }
 
-DeferredLightingFrameInputs
-deferredLightingFrameInputs(const FrameRecordParams &p,
-                            const container::ui::GuiManager *guiManager,
-                            container::ui::GBufferViewMode fallbackDisplayMode,
-                            bool tileCullPassActive, bool tiledLightingReady,
-                            uint32_t pointLightCount) {
+DeferredLightingFrameInputs deferredLightingFrameInputs(
+    const FrameRecordParams &p, const container::ui::GuiManager *guiManager,
+    container::ui::GBufferViewMode fallbackDisplayMode, bool tileCullPassActive,
+    bool tiledLightingReady, uint32_t pointLightCount) {
   DeferredLightingFrameInputs inputs{};
-  inputs.displayMode =
-      deferredLightingDisplayMode(
-          currentDisplayMode(guiManager, fallbackDisplayMode));
+  inputs.displayMode = deferredLightingDisplayMode(
+      currentDisplayMode(guiManager, fallbackDisplayMode));
   inputs.guiAvailable = guiManager != nullptr;
-  inputs.wireframeSupported =
-      guiManager != nullptr && guiManager->wireframeSupported();
+  inputs.wireframeSupported = guiManager != nullptr &&
+                              guiManager->editorOverlaysEnabled() &&
+                              guiManager->wireframeSupported();
   inputs.wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported;
   if (guiManager != nullptr) {
     inputs.wireframeSettings =
         deferredLightingWireframeSettings(guiManager->wireframeSettings());
     inputs.normalValidationSettings = guiManager->normalValidationSettings();
     inputs.geometryOverlayRequested = guiManager->showGeometryOverlay();
-    inputs.lightGizmosRequested = guiManager->showLightGizmos();
+    if (!guiManager->editorOverlaysEnabled()) {
+      inputs.wireframeSettings.enabled = false;
+      inputs.normalValidationSettings.enabled = false;
+      inputs.geometryOverlayRequested = false;
+    }
   }
   inputs.bimTechnicalElevation = {
       .enabled = p.bim.technicalElevation.enabled,
@@ -112,6 +115,9 @@ deferredLightingFrameInputs(const FrameRecordParams &p,
   inputs.debugDirectionalOnly = p.debug.debugDirectionalOnly;
   inputs.debugVisualizePointLightStencil =
       p.debug.debugVisualizePointLightStencil;
+  if (guiManager != nullptr && !guiManager->editorOverlaysEnabled()) {
+    inputs.debugVisualizePointLightStencil = false;
+  }
   inputs.tileCullPassActive = tileCullPassActive;
   inputs.tiledLightingReady = tiledLightingReady;
   inputs.depthSamplingReady =
@@ -120,31 +126,28 @@ deferredLightingFrameInputs(const FrameRecordParams &p,
       deferredRasterTiledLightingDescriptorSet(p) != VK_NULL_HANDLE;
   inputs.transparentDrawCommandsAvailable = hasTransparentDrawCommands(p);
   inputs.pointLightCount = pointLightCount;
-  inputs.pipelines = {
-      .directionalLight = deferredRasterPipelineReady(
-          p, DeferredRasterPipelineId::DirectionalLight),
-      .wireframeDepth = deferredRasterPipelineReady(
-          p, DeferredRasterPipelineId::WireframeDepth),
-      .wireframeNoDepth = deferredRasterPipelineReady(
-          p, DeferredRasterPipelineId::WireframeNoDepth),
-      .objectNormalDebug = deferredRasterPipelineReady(
-          p, DeferredRasterPipelineId::ObjectNormalDebug),
-      .normalValidation = deferredRasterPipelineReady(
-          p, DeferredRasterPipelineId::NormalValidation),
-      .surfaceNormalLine = deferredRasterPipelineReady(
-          p, DeferredRasterPipelineId::SurfaceNormalLine),
-      .geometryDebug = deferredRasterPipelineReady(
-          p, DeferredRasterPipelineId::GeometryDebug),
-      .tiledPointLight = deferredRasterPipelineReady(
-          p, DeferredRasterPipelineId::TiledPointLight),
-      .pointLight = deferredRasterPipelineReady(
-          p, DeferredRasterPipelineId::PointLight),
-      .pointLightStencilDebug = deferredRasterPipelineReady(
-          p, DeferredRasterPipelineId::PointLightStencilDebug),
-      .stencilVolume = deferredRasterPipelineReady(
-          p, DeferredRasterPipelineId::StencilVolume),
-      .lightGizmo = deferredRasterPipelineReady(
-          p, DeferredRasterPipelineId::LightGizmo)};
+  inputs.pipelines = {.directionalLight = deferredRasterPipelineReady(
+                          p, DeferredRasterPipelineId::DirectionalLight),
+                      .wireframeDepth = deferredRasterPipelineReady(
+                          p, DeferredRasterPipelineId::WireframeDepth),
+                      .wireframeNoDepth = deferredRasterPipelineReady(
+                          p, DeferredRasterPipelineId::WireframeNoDepth),
+                      .objectNormalDebug = deferredRasterPipelineReady(
+                          p, DeferredRasterPipelineId::ObjectNormalDebug),
+                      .normalValidation = deferredRasterPipelineReady(
+                          p, DeferredRasterPipelineId::NormalValidation),
+                      .surfaceNormalLine = deferredRasterPipelineReady(
+                          p, DeferredRasterPipelineId::SurfaceNormalLine),
+                      .geometryDebug = deferredRasterPipelineReady(
+                          p, DeferredRasterPipelineId::GeometryDebug),
+                      .tiledPointLight = deferredRasterPipelineReady(
+                          p, DeferredRasterPipelineId::TiledPointLight),
+                      .pointLight = deferredRasterPipelineReady(
+                          p, DeferredRasterPipelineId::PointLight),
+                      .pointLightStencilDebug = deferredRasterPipelineReady(
+                          p, DeferredRasterPipelineId::PointLightStencilDebug),
+                      .stencilVolume = deferredRasterPipelineReady(
+                          p, DeferredRasterPipelineId::StencilVolume)};
   return inputs;
 }
 
@@ -272,8 +275,7 @@ bimSectionClipCapFramePassStyle(const FrameRecordParams &p) {
           .hatchColor = style.hatchColor,
           .hatchLineWidth =
               technicalCapsEnabled
-                  ? std::max(style.hatchLineWidth,
-                             technicalElevation.lineWidth)
+                  ? std::max(style.hatchLineWidth, technicalElevation.lineWidth)
                   : style.hatchLineWidth,
           .fillDrawCommands = p.bim.sectionClipCapGeometry.fillDrawCommands,
           .hatchDrawCommands = p.bim.sectionClipCapGeometry.hatchDrawCommands};
@@ -578,12 +580,14 @@ void DeferredRasterLightingPassRecorder::record(
           : 0u;
   const auto fallbackDisplayMode = services_.fallbackDisplayMode.value_or(
       container::ui::GBufferViewMode::Overview);
+  const DeferredLightingFrameInputs lightingInputs =
+      deferredLightingFrameInputs(p, services_.guiManager, fallbackDisplayMode,
+                                  services_.tileCullPassActive,
+                                  lightingManager &&
+                                      lightingManager->isTiledLightingReady(),
+                                  pointLightCount);
   const DeferredLightingFrameState lightingState =
-      buildDeferredLightingFrameState(deferredLightingFrameInputs(
-          p, services_.guiManager, fallbackDisplayMode,
-          services_.tileCullPassActive,
-          lightingManager && lightingManager->isTiledLightingReady(),
-          pointLightCount));
+      buildDeferredLightingFrameState(lightingInputs);
   const auto &wireframeSettings = lightingState.wireframeSettings;
   const auto &normalValidationSettings = lightingState.normalValidationSettings;
   const bool transparentOitEnabled = lightingState.transparentOitEnabled;
@@ -651,7 +655,7 @@ void DeferredRasterLightingPassRecorder::record(
         cmd, debugOverlayRecordInputs);
   } else if (lightingState.directionalLightingEnabled) {
     (void)recordDeferredDirectionalLightingCommands(
-      cmd, {.pipeline = deferredRasterPipelineHandle(
+        cmd, {.pipeline = deferredRasterPipelineHandle(
                   p, DeferredRasterPipelineId::DirectionalLight),
               .pipelineLayout = deferredRasterPipelineLayout(
                   p, DeferredRasterPipelineLayoutId::Lighting),
@@ -676,7 +680,7 @@ void DeferredRasterLightingPassRecorder::record(
       buildDeferredPointLightingDrawPlan(
           {.state = lightingState.pointLighting,
            .debugVisualizePointLightStencil =
-               p.debug.debugVisualizePointLightStencil,
+               lightingInputs.debugVisualizePointLightStencil,
            .framebufferWidth = lightingExtent.width,
            .framebufferHeight = lightingExtent.height,
            .cameraNear = p.camera.nearPlane,
@@ -721,19 +725,18 @@ void DeferredRasterLightingPassRecorder::record(
     const bool drawBimTransparent = hasBimTransparentGeometry(p);
     const std::array<VkDescriptorSet, 1> bimDescriptorSets = {
         deferredRasterBimSceneDescriptorSet(p)};
-    const BimSurfacePassPlan bimTransparentPlan =
-        buildBimSurfaceFramePassPlan(
-            {.kind = BimSurfacePassKind::TransparentLighting,
-             .passReady = drawBimTransparent,
-             .draws = bimSurfaceFramePassDrawSources(p.bim),
-             .geometry = {.descriptorSets = bimDescriptorSets,
-                          .vertexSlice = p.bim.scene.vertexSlice,
-                          .indexSlice = p.bim.scene.indexSlice,
-                          .indexType = p.bim.scene.indexType},
-             .pipelines = {.singleSided = deferredRasterPipelineHandle(
-                               p, DeferredRasterPipelineId::Transparent)},
-             .pushConstants = p.pushConstants.bindless,
-             .semanticColorMode = p.bim.semanticColorMode});
+    const BimSurfacePassPlan bimTransparentPlan = buildBimSurfaceFramePassPlan(
+        {.kind = BimSurfacePassKind::TransparentLighting,
+         .passReady = drawBimTransparent,
+         .draws = bimSurfaceFramePassDrawSources(p.bim),
+         .geometry = {.descriptorSets = bimDescriptorSets,
+                      .vertexSlice = p.bim.scene.vertexSlice,
+                      .indexSlice = p.bim.scene.indexSlice,
+                      .indexType = p.bim.scene.indexType},
+         .pipelines = {.singleSided = deferredRasterPipelineHandle(
+                           p, DeferredRasterPipelineId::Transparent)},
+         .pushConstants = p.pushConstants.bindless,
+         .semanticColorMode = p.bim.semanticColorMode});
     const SceneTransparentDrawPlan transparentPlan =
         buildSceneTransparentDrawPlan(sceneTransparentDrawLists(p.draws));
     (void)recordDeferredTransparentOitCommands(
@@ -751,14 +754,14 @@ void DeferredRasterLightingPassRecorder::record(
                  .indexType = p.bim.scene.indexType},
          .pipelines = {.primary = deferredRasterPipelineHandle(
                            p, DeferredRasterPipelineId::Transparent),
-                        .frontCull = deferredRasterPipelineHandle(
-                            p, DeferredRasterPipelineId::TransparentFrontCull),
-                        .noCull = deferredRasterPipelineHandle(
-                            p, DeferredRasterPipelineId::TransparentNoCull)},
-          .pipelineLayout = deferredRasterPipelineLayout(
-              p, DeferredRasterPipelineLayoutId::Transparent),
-          .pushConstants = *p.pushConstants.bindless,
-          .debugOverlay = services_.debugOverlay,
+                       .frontCull = deferredRasterPipelineHandle(
+                           p, DeferredRasterPipelineId::TransparentFrontCull),
+                       .noCull = deferredRasterPipelineHandle(
+                           p, DeferredRasterPipelineId::TransparentNoCull)},
+         .pipelineLayout = deferredRasterPipelineLayout(
+             p, DeferredRasterPipelineLayoutId::Transparent),
+         .pushConstants = *p.pushConstants.bindless,
+         .debugOverlay = services_.debugOverlay,
          .bimManager = p.services.bimManager});
   }
 
@@ -785,20 +788,20 @@ void DeferredRasterLightingPassRecorder::record(
             .pushConstants = p.pushConstants.wireframe,
             .debugOverlay = services_.debugOverlay});
   (void)recordBimPrimitiveFramePassCommands(
-      cmd, {.style = bimPointCloudPrimitivePassStyle(p),
-            .placeholderDraws = primitivePassDrawLists(p.bim.pointDraws),
-            .nativeDraws = primitivePassDrawLists(p.bim.nativePointDraws),
-            .geometry = bimPrimitivePassGeometryBinding(p),
-            .pipelines = {
-                .depth = deferredRasterPipelineHandle(
-                    p, DeferredRasterPipelineId::BimPointCloudDepth),
-                .noDepth = deferredRasterPipelineHandle(
-                    p, DeferredRasterPipelineId::BimPointCloudNoDepth)},
-            .wireframeLayout = deferredRasterPipelineLayout(
-                p, DeferredRasterPipelineLayoutId::Wireframe),
-            .pushConstants = p.pushConstants.wireframe,
-            .debugOverlay = services_.debugOverlay,
-            .bimManager = p.services.bimManager});
+      cmd,
+      {.style = bimPointCloudPrimitivePassStyle(p),
+       .placeholderDraws = primitivePassDrawLists(p.bim.pointDraws),
+       .nativeDraws = primitivePassDrawLists(p.bim.nativePointDraws),
+       .geometry = bimPrimitivePassGeometryBinding(p),
+       .pipelines = {.depth = deferredRasterPipelineHandle(
+                         p, DeferredRasterPipelineId::BimPointCloudDepth),
+                     .noDepth = deferredRasterPipelineHandle(
+                         p, DeferredRasterPipelineId::BimPointCloudNoDepth)},
+       .wireframeLayout = deferredRasterPipelineLayout(
+           p, DeferredRasterPipelineLayoutId::Wireframe),
+       .pushConstants = p.pushConstants.wireframe,
+       .debugOverlay = services_.debugOverlay,
+       .bimManager = p.services.bimManager});
   (void)recordBimPrimitiveFramePassCommands(
       cmd, {.style = bimCurvePrimitivePassStyle(p),
             .placeholderDraws = primitivePassDrawLists(p.bim.curveDraws),
@@ -823,12 +826,12 @@ void DeferredRasterLightingPassRecorder::record(
        .floorPlan = bimLightingOverlayFloorPlanFrameStyle(p),
        .draws = bimLightingOverlayFrameDrawSources(p),
        .nativePointSize = p.bim.primitivePasses.pointCloud.pointSize,
-        .nativeCurveLineWidth = p.bim.primitivePasses.curves.lineWidth,
-        .pipelines = bimLightingOverlayPipelineHandles(p),
-        .wireframeLayout = deferredRasterPipelineLayout(
-            p, DeferredRasterPipelineLayoutId::Wireframe),
-        .scene = bimLightingOverlayGeometryBinding(
-            deferredRasterSceneDescriptorSet(p), p.scene),
+       .nativeCurveLineWidth = p.bim.primitivePasses.curves.lineWidth,
+       .pipelines = bimLightingOverlayPipelineHandles(p),
+       .wireframeLayout = deferredRasterPipelineLayout(
+           p, DeferredRasterPipelineLayoutId::Wireframe),
+       .scene = bimLightingOverlayGeometryBinding(
+           deferredRasterSceneDescriptorSet(p), p.scene),
        .bim = bimLightingOverlayGeometryBinding(
            deferredRasterBimSceneDescriptorSet(p), p.bim.scene),
        .selectionStencilClearAttachment =
@@ -838,15 +841,6 @@ void DeferredRasterLightingPassRecorder::record(
        .debugOverlay = services_.debugOverlay,
        .wireframeRasterModeSupported = p.debug.wireframeRasterModeSupported,
        .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported});
-
-  if (lightingState.lightGizmosEnabled && lightingManager) {
-    lightingManager->drawLightGizmos(
-        cmd, lightingDescriptorPlan.lightGizmoDescriptorSets,
-        deferredRasterPipelineHandle(p, DeferredRasterPipelineId::LightGizmo),
-        deferredRasterPipelineLayout(
-            p, DeferredRasterPipelineLayoutId::Lighting),
-        services_.camera);
-  }
 
   static_cast<void>(recordRenderPassEndCommands(cmd));
 }

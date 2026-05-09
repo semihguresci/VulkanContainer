@@ -51,15 +51,6 @@ TEST(DeferredLightingDescriptorPlannerTests,
   EXPECT_EQ(plan.tiledLightingDescriptorSets[2], inputs.sceneDescriptorSet);
 }
 
-TEST(DeferredLightingDescriptorPlannerTests,
-     LightGizmosPreserveOriginalLightingSets) {
-  const auto inputs = descriptorInputs();
-
-  const auto plan = buildDeferredLightingDescriptorPlan(inputs);
-
-  EXPECT_EQ(plan.lightGizmoDescriptorSets, inputs.lightingDescriptorSets);
-}
-
 TEST(DeferredLightingDescriptorPlannerTests, NullHandlesArePropagated) {
   const DeferredLightingDescriptorPlanInputs inputs{};
 
@@ -70,9 +61,6 @@ TEST(DeferredLightingDescriptorPlannerTests, NullHandlesArePropagated) {
     EXPECT_EQ(descriptorSet, VK_NULL_HANDLE);
   }
   for (VkDescriptorSet descriptorSet : plan.tiledLightingDescriptorSets) {
-    EXPECT_EQ(descriptorSet, VK_NULL_HANDLE);
-  }
-  for (VkDescriptorSet descriptorSet : plan.lightGizmoDescriptorSets) {
     EXPECT_EQ(descriptorSet, VK_NULL_HANDLE);
   }
 }

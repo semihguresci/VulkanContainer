@@ -10,9 +10,9 @@
 
 #include <glm/vec3.hpp>
 
-#include "Container/renderer/debug/DebugRenderState.h"
 #include "Container/renderer/core/PushConstantBlock.h"
 #include "Container/renderer/core/RendererDeviceCapabilities.h"
+#include "Container/renderer/debug/DebugRenderState.h"
 #include "Container/renderer/lighting/EditableLight.h"
 #include "Container/renderer/picking/RenderSurfaceInteractionController.h"
 #include "Container/renderer/resources/RenderResources.h"
@@ -25,7 +25,7 @@ struct GLFWwindow;
 // Forward declarations — full headers are only needed in RendererFrontend.cpp.
 namespace container::app {
 struct AppConfig;
-}  // namespace container::app
+} // namespace container::app
 
 namespace container::renderer {
 class BloomManager;
@@ -54,61 +54,61 @@ class SceneProviderSynchronizer;
 class ShadowCullManager;
 class ShadowManager;
 struct VulkanContextResult;
-}  // namespace container::renderer
+} // namespace container::renderer
 
 namespace container::gpu {
 class AllocationManager;
 class FrameSyncManager;
 class PipelineManager;
 class SwapChainManager;
-}  // namespace container::gpu
+} // namespace container::gpu
 
 namespace container::scene {
 class SceneGraph;
 class SceneManager;
 class SceneProviderRegistry;
-}  // namespace container::scene
+} // namespace container::scene
 
 namespace container::ui {
 class GuiManager;
 struct ViewpointSnapshotState;
-}
+} // namespace container::ui
 
 namespace container::window {
 class InputManager;
-}  // namespace container::window
+} // namespace container::window
 
 namespace container::renderer {
 
 // Groups all construction parameters for RendererFrontend.
 struct RendererFrontendCreateInfo {
-  VulkanContextResult* ctx{nullptr};
-  container::gpu::PipelineManager* pipelineManager{nullptr};
-  container::gpu::AllocationManager* allocationManager{nullptr};
-  container::gpu::SwapChainManager* swapChainManager{nullptr};
-  CommandBufferManager* commandBufferManager{nullptr};
-  const container::app::AppConfig* config{nullptr};
-  GLFWwindow* nativeWindow{nullptr};
-  container::window::InputManager* inputManager{nullptr};
+  VulkanContextResult *ctx{nullptr};
+  container::gpu::PipelineManager *pipelineManager{nullptr};
+  container::gpu::AllocationManager *allocationManager{nullptr};
+  container::gpu::SwapChainManager *swapChainManager{nullptr};
+  CommandBufferManager *commandBufferManager{nullptr};
+  const container::app::AppConfig *config{nullptr};
+  GLFWwindow *nativeWindow{nullptr};
+  container::window::InputManager *inputManager{nullptr};
 };
 
 // RendererFrontend owns the renderer-facing lifetime graph. The application
 // handles window/input setup, while this class creates render passes, frame
 // resources, scene systems, pipelines, and per-frame submission state.
 class RendererFrontend {
- public:
+public:
   explicit RendererFrontend(RendererFrontendCreateInfo info);
 
   ~RendererFrontend();
-  RendererFrontend(const RendererFrontend&) = delete;
-  RendererFrontend& operator=(const RendererFrontend&) = delete;
+  RendererFrontend(const RendererFrontend &) = delete;
+  RendererFrontend &operator=(const RendererFrontend &) = delete;
 
   // Full initialization: render passes → pipelines → scene → sync primitives.
   void initialize();
 
   // Submit one frame. Returns false if swap chain needs recreation (caller
   // should set framebufferResized = false and call handleResize()).
-  bool drawFrame(bool& framebufferResized);
+  bool drawFrame(bool &framebufferResized);
 
   // Handle window resize / suboptimal swapchain.
   void handleResize();
@@ -120,18 +120,18 @@ class RendererFrontend {
   void requestScreenshot(std::filesystem::path outputPath);
 
   // Scene operations forwarded from the application.
-  bool reloadSceneModel(const std::string& path, float importScale = 1.0f);
+  bool reloadSceneModel(const std::string &path, float importScale = 1.0f);
 
   // Shutdown: wait idle and release all Vulkan resources in dependency order.
   void shutdown();
 
   // Access debug state (allows the application to expose toggles if needed).
-  DebugRenderState& debugState() { return debugState_; }
-  const DebugRenderState& debugState() const { return debugState_; }
+  DebugRenderState &debugState() { return debugState_; }
+  const DebugRenderState &debugState() const { return debugState_; }
 
-  const SceneState& sceneState() const { return sceneState_; }
+  const SceneState &sceneState() const { return sceneState_; }
 
- private:
+private:
   // Owned subsystems are listed roughly in construction/use order. shutdown()
   // releases them in dependency-aware order because many destructors touch
   // Vulkan objects owned by earlier services.
@@ -163,7 +163,7 @@ class RendererFrontend {
     RendererDeviceCapabilities deviceCapabilities{
         RendererDeviceCapabilities::rasterOnly()};
     std::unique_ptr<RenderTechniqueRegistry> techniqueRegistry;
-    RenderTechnique* activeTechnique{nullptr};
+    RenderTechnique *activeTechnique{nullptr};
     std::unique_ptr<RenderPassGpuProfiler> renderPassGpuProfiler;
     std::unique_ptr<RendererTelemetry> rendererTelemetry;
     std::unique_ptr<container::ui::GuiManager> guiManager;
@@ -174,14 +174,14 @@ class RendererFrontend {
   // frontend; they wrap the device, swapchain, allocator, command pool, and
   // app configuration supplied by the application layer.
   struct BorrowedServices {
-    VulkanContextResult& ctx;
-    container::gpu::PipelineManager& pipelineManager;
-    container::gpu::AllocationManager& allocationManager;
-    container::gpu::SwapChainManager& swapChainManager;
-    CommandBufferManager& commandBufferManager;
-    const container::app::AppConfig& config;
-    GLFWwindow* nativeWindow{nullptr};
-    container::window::InputManager& inputManager;
+    VulkanContextResult &ctx;
+    container::gpu::PipelineManager &pipelineManager;
+    container::gpu::AllocationManager &allocationManager;
+    container::gpu::SwapChainManager &swapChainManager;
+    CommandBufferManager &commandBufferManager;
+    const container::app::AppConfig &config;
+    GLFWwindow *nativeWindow{nullptr};
+    container::window::InputManager &inputManager;
   };
 
   OwnedSubsystems subs_;
@@ -360,38 +360,31 @@ class RendererFrontend {
   void updateCameraBuffer(uint32_t imageIndex);
   void updateObjectBuffer();
   void applyBimSemanticColorMode();
-  void updateFrameDescriptorSets(
-      uint32_t imageIndex = UINT32_MAX,
-      const FrameRecordParams* preparedParams = nullptr);
+  void
+  updateFrameDescriptorSets(uint32_t imageIndex = UINT32_MAX,
+                            const FrameRecordParams *preparedParams = nullptr);
   void destroyGBufferResources();
   bool growExactOitNodePoolIfNeeded(uint32_t imageIndex);
   void ensureScreenshotReadbackBuffer(VkExtent2D extent, VkFormat format);
   void writePendingScreenshotPng();
   void ensureDepthVisibilityReadbackBuffer();
   void markDepthVisibilityFrameComplete(uint32_t imageIndex);
-  [[nodiscard]] bool sampleDepthAtCursor(double cursorX,
-                                         double cursorY,
-                                         float& outDepth);
-  [[nodiscard]] bool samplePickDepthAtCursor(double cursorX,
-                                             double cursorY,
-                                             float& outDepth);
-  [[nodiscard]] bool sampleDepthAtCursor(double cursorX,
-                                         double cursorY,
-                                         float& outDepth,
-                                         bool pickDepth);
-  [[nodiscard]] bool samplePickIdAtCursor(double cursorX,
-                                          double cursorY,
-                                          uint32_t& outPickId);
+  [[nodiscard]] bool sampleDepthAtCursor(double cursorX, double cursorY,
+                                         float &outDepth);
+  [[nodiscard]] bool samplePickDepthAtCursor(double cursorX, double cursorY,
+                                             float &outDepth);
+  [[nodiscard]] bool sampleDepthAtCursor(double cursorX, double cursorY,
+                                         float &outDepth, bool pickDepth);
+  [[nodiscard]] bool samplePickIdAtCursor(double cursorX, double cursorY,
+                                          uint32_t &outPickId);
   [[nodiscard]] bool depthVisibilityFrameMatchesCurrentState() const;
   [[nodiscard]] BimDrawFilter currentBimDrawFilter() const;
   [[nodiscard]] bool bimObjectVisibleByLayer(uint32_t objectIndex) const;
   [[nodiscard]] container::ui::ViewpointSnapshotState
   currentViewpointSnapshot() const;
   bool restoreViewpointSnapshot(
-      const container::ui::ViewpointSnapshotState& snapshot);
+      const container::ui::ViewpointSnapshotState &snapshot);
   void presentSceneControls();
-  [[nodiscard]] std::optional<EditableLightId>
-  pickEditableLightAtCursor(double cursorX, double cursorY) const;
   void selectMeshNodeAtCursor(double cursorX, double cursorY);
   void hoverMeshNodeAtCursor(double cursorX, double cursorY);
   void clearHoveredMeshNode();
@@ -399,12 +392,12 @@ class RendererFrontend {
   void transformSelectedNodeByDrag(container::ui::ViewportTool tool,
                                    container::ui::TransformSpace space,
                                    container::ui::TransformAxis axis,
-                                   bool snapEnabled,
-                                   double deltaX, double deltaY);
+                                   bool snapEnabled, double deltaX,
+                                   double deltaY);
   [[nodiscard]] std::optional<container::ui::TransformAxis>
   pickTransformGizmoAxisAtCursor(double cursorX, double cursorY) const;
   void recordCommandBuffer(VkCommandBuffer commandBuffer, uint32_t imageIndex,
-                           const FrameRecordParams* preparedParams = nullptr);
+                           const FrameRecordParams *preparedParams = nullptr);
   [[nodiscard]] FrameRecordParams buildFrameRecordParams(uint32_t imageIndex);
   void publishFrameRuntimeResourceBindings(uint32_t imageIndex);
   [[nodiscard]] FrameTransformGizmoState buildTransformGizmoState() const;
@@ -414,4 +407,4 @@ class RendererFrontend {
   void syncSceneStateFromController();
 };
 
-}  // namespace container::renderer
+} // namespace container::renderer

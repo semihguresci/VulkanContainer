@@ -141,6 +141,10 @@ float4 fragMain(VSOutput input) : SV_Target0
     {
         uint lightIdx = uLightIndexList[tile.offset + i];
         PointLightData light = uLights[lightIdx];
+        if (!PointLightHasRenderableIntensity(light))
+        {
+            continue;
+        }
 
         float3 lightVector = light.positionRadius.xyz - worldPosition;
         float lightRadius = light.positionRadius.w;

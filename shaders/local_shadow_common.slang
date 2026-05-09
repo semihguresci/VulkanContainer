@@ -7,6 +7,9 @@
 #include "lighting_structs.slang"
 #include "brdf_common.slang"
 
+static const uint LOCAL_SHADOW_POISSON_SAMPLE_COUNT = 32u;
+static const float LOCAL_SHADOW_PCF_KERNEL_RADIUS = 1.0;
+
 float LocalShadowFiniteOr(float value, float fallback)
 {
     return isfinite(value) ? value : fallback;
@@ -146,6 +149,60 @@ float LocalShadowSoftFilterRadiusTexels(
                  maxSoftRadiusTexels);
 }
 
+float2 LocalShadowPoissonOffset(uint sampleIndex)
+{
+    static const float2 offsets[32] = {
+        float2(0.000000, 0.000000),
+        float2(0.130526, 0.321439),
+        float2(-0.363221, 0.225041),
+        float2(0.392938, -0.177877),
+        float2(-0.086824, -0.492404),
+        float2(0.572062, 0.205212),
+        float2(-0.576713, -0.112348),
+        float2(0.213938, -0.681998),
+        float2(-0.231052, 0.666525),
+        float2(0.746285, -0.443145),
+        float2(-0.748956, 0.398171),
+        float2(0.521132, 0.612118),
+        float2(-0.469846, -0.671010),
+        float2(0.033328, 0.845572),
+        float2(-0.054318, -0.838721),
+        float2(0.859472, 0.077016),
+        float2(-0.881298, -0.061628),
+        float2(0.315178, 0.911571),
+        float2(-0.344774, 0.861288),
+        float2(0.589778, -0.742762),
+        float2(-0.604023, -0.721308),
+        float2(0.935302, -0.256183),
+        float2(-0.923125, 0.225019),
+        float2(0.103689, -0.962455),
+        float2(-0.123415, 0.953126),
+        float2(0.726911, 0.609110),
+        float2(-0.713281, -0.640237),
+        float2(0.437944, -0.887671),
+        float2(-0.442079, 0.879304),
+        float2(0.958230, 0.284005),
+        float2(-0.946223, -0.294604),
+        float2(0.005117, 0.998930),
+    };
+    return offsets[sampleIndex % LOCAL_SHADOW_POISSON_SAMPLE_COUNT];
+}
+
+float LocalShadowStableRotation(float2 shadowUv, uint layerIndex)
+{
+    float seed = dot(shadowUv, float2(127.1, 311.7)) +
+        float(layerIndex) * 17.17;
+    return frac(sin(seed) * 43758.5453123) * 6.28318530718;
+}
+
+float2 RotateLocalShadowPoissonOffset(float2 offset, float angle)
+{
+    float s = sin(angle);
+    float c = cos(angle);
+    return float2(offset.x * c - offset.y * s,
+                  offset.x * s + offset.y * c);
+}
+
 float3 OffsetLocalShadowSamplePosition(
     float3 worldPosition,
     float3 normal,
@@ -187,33 +244,35 @@ float SampleLocalShadowLayerPcf(
         1.0 / max(LocalShadowFiniteOr(float(localShadow.counts.z),
                                       float(LOCAL_SHADOW_MAP_RESOLUTION)),
                   float(LOCAL_SHADOW_MAP_RESOLUTION));
-    float2 texelSize = (filterRadiusTexels * invResolution).xx;
+    float filterStepTexels =
+        filterRadiusTexels / LOCAL_SHADOW_PCF_KERNEL_RADIUS;
+    float2 texelSize = (filterStepTexels * invResolution).xx;
+    float rotation = LocalShadowStableRotation(shadowUv, layerIndex);
     float shadow = 0.0;
     float totalWeight = 0.0;
 
     [unroll]
-    for (int y = -3; y <= 3; ++y)
+    for (uint sampleIndex = 0u;
+         sampleIndex < LOCAL_SHADOW_POISSON_SAMPLE_COUNT;
+         ++sampleIndex)
     {
-        [unroll]
-        for (int x = -3; x <= 3; ++x)
+        float2 o = RotateLocalShadowPoissonOffset(
+            LocalShadowPoissonOffset(sampleIndex), rotation);
+        float weight = exp2(-dot(o, o) * 0.70);
+        float2 tapUv = shadowUv + o * texelSize;
+        if (all(isfinite(tapUv)) &&
+            all(tapUv >= 0.0.xx) && all(tapUv <= 1.0.xx))
         {
-            float2 o = float2(float(x), float(y));
-            float weight = exp2(-dot(o, o) * 0.28);
-            float2 tapUv = shadowUv + o * texelSize;
-            if (all(isfinite(tapUv)) &&
-                all(tapUv >= 0.0.xx) && all(tapUv <= 1.0.xx))
-            {
-                shadow += localShadowAtlas.SampleCmpLevelZero(
-                    localShadowSampler,
-                    float3(tapUv, float(layerIndex)),
-                    compareDepth) * weight;
-            }
-            else
-            {
-                shadow += weight;
-            }
-            totalWeight += weight;
+            shadow += localShadowAtlas.SampleCmpLevelZero(
+                localShadowSampler,
+                float3(tapUv, float(layerIndex)),
+                compareDepth) * weight;
         }
+        else
+        {
+            shadow += weight;
+        }
+        totalWeight += weight;
     }
 
     return shadow / max(totalWeight, 1e-4);

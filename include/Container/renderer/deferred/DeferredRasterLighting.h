@@ -38,7 +38,6 @@ struct DeferredLightingPipelineReadiness {
   bool pointLight{false};
   bool pointLightStencilDebug{false};
   bool stencilVolume{false};
-  bool lightGizmo{false};
 };
 
 struct DeferredLightingWireframeSettings {
@@ -68,7 +67,6 @@ struct DeferredLightingFrameInputs {
   DeferredLightingBimTechnicalElevationSettings bimTechnicalElevation{};
   container::gpu::NormalValidationSettings normalValidationSettings{};
   bool geometryOverlayRequested{false};
-  bool lightGizmosRequested{false};
   bool debugDirectionalOnly{false};
   bool debugVisualizePointLightStencil{false};
   bool tileCullPassActive{false};
@@ -99,7 +97,6 @@ struct DeferredLightingFrameState {
   bool surfaceNormalLinesEnabled{false};
   bool geometryOverlayEnabled{false};
   bool transparentOitEnabled{false};
-  bool lightGizmosEnabled{false};
   float wireframeIntensity{0.0f};
   float surfaceNormalLineWidth{1.0f};
   DeferredPointLightingState pointLighting{};

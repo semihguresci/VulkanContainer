@@ -29,6 +29,7 @@ add_library(VulkanSceneRenderer_renderer
 
     renderer/lighting/EnvironmentManager.cpp
     renderer/lighting/EditableLight.cpp
+    renderer/lighting/LightGizmoIconAtlas.cpp
     renderer/lighting/LightingManager.cpp
     renderer/lighting/TinyExrImpl.cpp
 

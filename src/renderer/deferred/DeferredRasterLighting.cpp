@@ -138,9 +138,6 @@ DeferredLightingFrameState buildDeferredLightingFrameState(
       inputs.wireframeWideLinesSupported
           ? state.normalValidationSettings.lineWidth
           : 1.0f;
-  state.lightGizmosEnabled =
-      inputs.guiAvailable && inputs.lightGizmosRequested &&
-      inputs.pipelines.lightGizmo;
   return state;
 }
 

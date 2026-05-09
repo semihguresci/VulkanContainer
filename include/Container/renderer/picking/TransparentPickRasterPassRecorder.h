@@ -4,6 +4,8 @@
 #include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
 #include "Container/renderer/picking/TransparentPickPassRecorder.h"
 
+#include <functional>
+
 namespace container::renderer {
 
 struct TransparentPickRasterPassRecordInputs {
@@ -12,6 +14,8 @@ struct TransparentPickRasterPassRecordInputs {
   VkFramebuffer framebuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
   TransparentPickPassRecordInputs pass{};
+  bool extraPassWorkActive{false};
+  std::function<void(VkCommandBuffer)> recordAfterGeometry{};
 };
 
 struct TransparentPickFramePassRecordInputs {
@@ -33,6 +37,8 @@ struct TransparentPickFramePassRecordInputs {
   uint32_t bimSemanticColorMode{0};
   const DebugOverlayRenderer *debugOverlay{nullptr};
   BimManager *bimManager{nullptr};
+  bool extraPassWorkActive{false};
+  std::function<void(VkCommandBuffer)> recordAfterGeometry{};
 };
 
 [[nodiscard]] bool recordTransparentPickRasterPassCommands(

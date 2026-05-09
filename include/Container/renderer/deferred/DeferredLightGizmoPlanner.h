@@ -6,13 +6,24 @@
 
 #include <array>
 #include <cstdint>
-#include <limits>
 #include <optional>
 #include <span>
 
 namespace container::renderer {
 
 inline constexpr uint32_t kMaxDeferredLightGizmos = 256u;
+inline constexpr uint32_t kLightGizmoCoverageVertexCount = 192u;
+inline constexpr uint32_t kLightGizmoCoveragePoint = 1u;
+inline constexpr uint32_t kLightGizmoCoverageSpot = 2u;
+inline constexpr uint32_t kLightGizmoCoverageArea = 3u;
+inline constexpr uint32_t kLightGizmoCoverageDirectional = 4u;
+inline constexpr float kLightGizmoMinIconExtent = 0.07f;
+inline constexpr float kLightGizmoMaxIconExtent = 1.1f;
+inline constexpr float kLightGizmoCoverageSceneRadiusScale = 0.14f;
+inline constexpr float kLightGizmoDirectionalCoverageSceneRadiusScale = 0.16f;
+inline constexpr uint32_t kEditableLightPickTypeShift = 28u;
+inline constexpr uint32_t kEditableLightPickSourceShift = 26u;
+inline constexpr uint32_t kEditableLightPickIndexMask = 0x03ffffffu;
 
 struct DeferredLightGizmoPlanInputs {
   glm::vec3 sceneCenter{0.0f, 0.0f, 0.0f};
@@ -24,42 +35,19 @@ struct DeferredLightGizmoPlanInputs {
   std::span<const container::gpu::PointLightData> pointLights{};
 };
 
-struct DeferredLightGizmoVisual {
-  EditableLightId editableLightId{};
-  EditableLightType lightType{EditableLightType::Point};
-  glm::vec3 worldPosition{0.0f};
-  float worldRadius{0.25f};
-  bool selected{false};
-  bool selectable{false};
-};
-
 struct DeferredLightGizmoPlan {
+  std::array<LightPushConstants, kMaxDeferredLightGizmos + 1u> pushConstants{};
   std::array<LightPushConstants, kMaxDeferredLightGizmos + 1u>
-      pushConstants{};
-  std::array<DeferredLightGizmoVisual, kMaxDeferredLightGizmos + 1u> visuals{};
+      coveragePushConstants{};
   uint32_t pushConstantCount{0u};
-  uint32_t visualCount{0u};
-};
-
-struct DeferredLightGizmoPickInputs {
-  std::span<const DeferredLightGizmoVisual> visuals{};
-  container::gpu::CameraData cameraData{};
-  glm::uvec2 framebufferExtent{0u, 0u};
-  glm::vec2 cursor{0.0f, 0.0f};
-  float hitRadiusPixels{18.0f};
-};
-
-struct DeferredLightGizmoPickResult {
-  EditableLightId editableLightId{};
-  uint32_t visualIndex{std::numeric_limits<uint32_t>::max()};
-  float distancePixels{0.0f};
-  float cameraDistance{0.0f};
+  uint32_t coveragePushConstantCount{0u};
 };
 
 [[nodiscard]] DeferredLightGizmoPlan
 buildDeferredLightGizmoPlan(const DeferredLightGizmoPlanInputs &inputs);
 
-[[nodiscard]] std::optional<DeferredLightGizmoPickResult>
-pickDeferredLightGizmoAtCursor(const DeferredLightGizmoPickInputs &inputs);
+[[nodiscard]] uint32_t encodeEditableLightPickId(EditableLightId id);
+[[nodiscard]] std::optional<EditableLightId>
+decodeEditableLightPickId(uint32_t pickId);
 
 } // namespace container::renderer

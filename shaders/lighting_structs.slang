@@ -56,6 +56,13 @@ bool PointLightHasFiniteRange(float radius)
     return isfinite(radius) && radius > UNBOUNDED_POINT_LIGHT_RANGE;
 }
 
+bool PointLightHasRenderableIntensity(PointLightData light)
+{
+    return all(isfinite(light.colorIntensity)) &&
+           light.colorIntensity.a > 0.0 &&
+           any(light.colorIntensity.rgb > 0.0.xxx);
+}
+
 static const float LIGHT_TYPE_SPOT = 1.0;
 
 float3 SafeNormalizeLightDirection(float3 value, float3 fallback)
