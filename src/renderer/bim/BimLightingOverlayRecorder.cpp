@@ -170,9 +170,13 @@ bool drawOverlayPlan(VkCommandBuffer cmd,
       vkCmdSetLineWidth(cmd, plan.rasterLineWidth);
     }
   }
+  WireframePushConstants drawPushConstants = pushConstants;
+  if (plan.kind == BimLightingOverlayKind::SectionPlaneVisual) {
+    drawPushConstants.sectionPlaneEnabled = 0u;
+  }
   inputs.debugOverlay->drawWireframe(cmd, inputs.wireframeLayout,
                                      *plan.commands, plan.color, plan.opacity,
-                                     plan.drawLineWidth, pushConstants);
+                                     plan.drawLineWidth, drawPushConstants);
   return true;
 }
 
@@ -233,8 +237,23 @@ BimLightingOverlayInputs buildBimLightingOverlayFramePlanInputs(
       .nativeCurveHoverCommands = inputs.draws.nativeCurveHover,
       .nativePointSelectionCommands = inputs.draws.nativePointSelection,
       .nativeCurveSelectionCommands = inputs.draws.nativeCurveSelection,
+      .coordinationIssueMarkerCommands =
+          inputs.draws.coordinationIssueMarkers,
+      .coordinationClashMarkerCommands =
+          inputs.draws.coordinationClashMarkers,
+      .sectionPlaneVisualCommands = inputs.draws.sectionPlaneVisual,
       .nativePointSize = inputs.nativePointSize,
-      .nativeCurveLineWidth = inputs.nativeCurveLineWidth};
+      .nativeCurveLineWidth = inputs.nativeCurveLineWidth,
+      .coordinationMarkerGeometryReady =
+          inputs.coordinationMarkerGeometryReady,
+      .sectionPlaneVisualGeometryReady =
+          inputs.sectionPlaneVisualGeometryReady,
+      .coordinationIssueMarkers = bimLightingOverlayStyleInputs(
+          inputs.coordinationIssueMarkers, {}),
+      .coordinationClashMarkers = bimLightingOverlayStyleInputs(
+          inputs.coordinationClashMarkers, {}),
+      .sectionPlaneVisual = bimLightingOverlayStyleInputs(
+          inputs.sectionPlaneVisual, {})};
 }
 
 BimLightingOverlayPlan buildBimLightingOverlayFramePlan(
@@ -262,6 +281,15 @@ bool recordBimLightingOverlayCommands(
   }
 
   recorded |= drawOverlayPlan(cmd, inputs.bim, plan.floorPlan, false, inputs,
+                              pushConstants);
+  recorded |= drawOverlayPlan(cmd, inputs.coordinationMarkers,
+                              plan.coordinationIssueMarkers, true, inputs,
+                              pushConstants);
+  recorded |= drawOverlayPlan(cmd, inputs.coordinationMarkers,
+                              plan.coordinationClashMarkers, true, inputs,
+                              pushConstants);
+  recorded |= drawOverlayPlan(cmd, inputs.sectionPlaneVisual,
+                              plan.sectionPlaneVisual, true, inputs,
                               pushConstants);
   recorded |= drawOverlayPlan(cmd, inputs.scene, plan.sceneHover, true, inputs,
                               pushConstants);
@@ -299,6 +327,8 @@ bool recordBimLightingOverlayFrameCommands(
             .wireframeLayout = inputs.wireframeLayout,
             .scene = inputs.scene,
             .bim = inputs.bim,
+            .coordinationMarkers = inputs.coordinationMarkers,
+            .sectionPlaneVisual = inputs.sectionPlaneVisualGeometry,
             .selectionStencilClearAttachment =
                 inputs.selectionStencilClearAttachment,
             .selectionStencilClearRect = inputs.selectionStencilClearRect,

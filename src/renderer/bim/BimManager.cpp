@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <initializer_list>
 #include <iterator>
@@ -36,6 +37,7 @@
 #include <unordered_set>
 #include <utility>
 
+#include <glm/gtc/matrix_inverse.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <nlohmann/json.hpp>
 
@@ -337,10 +339,20 @@ bool sameSectionCapBuildOptions(const BimSectionCapBuildOptions &lhs,
   constexpr float kEpsilon = 1.0e-5f;
   if (glm::length(lhs.sectionPlane - rhs.sectionPlane) > kEpsilon ||
       lhs.clipPlaneCount != rhs.clipPlaneCount ||
+      glm::length(lhs.fillColor - rhs.fillColor) > kEpsilon ||
+      std::abs(lhs.fillOpacity - rhs.fillOpacity) > kEpsilon ||
+      glm::length(lhs.hatchColor - rhs.hatchColor) > kEpsilon ||
       std::abs(lhs.hatchSpacing - rhs.hatchSpacing) > kEpsilon ||
       std::abs(lhs.hatchAngleRadians - rhs.hatchAngleRadians) > kEpsilon ||
       std::abs(lhs.capOffset - rhs.capOffset) > kEpsilon ||
-      lhs.crossHatch != rhs.crossHatch) {
+      lhs.crossHatch != rhs.crossHatch ||
+      lhs.invertedBoxClip != rhs.invertedBoxClip ||
+      lhs.sectionMarkersEnabled != rhs.sectionMarkersEnabled ||
+      glm::length(lhs.sectionMarkerColor - rhs.sectionMarkerColor) >
+          kEpsilon ||
+      std::abs(lhs.sectionMarkerLineWidth - rhs.sectionMarkerLineWidth) >
+          kEpsilon ||
+      lhs.materialStyles.size() != rhs.materialStyles.size()) {
     return false;
   }
 
@@ -349,6 +361,22 @@ bool sameSectionCapBuildOptions(const BimSectionCapBuildOptions &lhs,
   for (uint32_t planeIndex = 0; planeIndex < clipPlaneCount; ++planeIndex) {
     if (glm::length(lhs.clipPlanes[planeIndex] - rhs.clipPlanes[planeIndex]) >
         kEpsilon) {
+      return false;
+    }
+  }
+  for (size_t styleIndex = 0; styleIndex < lhs.materialStyles.size();
+       ++styleIndex) {
+    const BimSectionCapMaterialStyle &lhsStyle =
+        lhs.materialStyles[styleIndex];
+    const BimSectionCapMaterialStyle &rhsStyle =
+        rhs.materialStyles[styleIndex];
+    if (lhsStyle.materialIndex != rhsStyle.materialIndex ||
+        glm::length(lhsStyle.fillColor - rhsStyle.fillColor) > kEpsilon ||
+        std::abs(lhsStyle.fillOpacity - rhsStyle.fillOpacity) > kEpsilon ||
+        std::abs(lhsStyle.hatchSpacing - rhsStyle.hatchSpacing) > kEpsilon ||
+        std::abs(lhsStyle.hatchAngleRadians - rhsStyle.hatchAngleRadians) >
+            kEpsilon ||
+        glm::length(lhsStyle.hatchColor - rhsStyle.hatchColor) > kEpsilon) {
       return false;
     }
   }
@@ -1052,6 +1080,65 @@ struct FloorPlanEdgeKeyHash {
          std::isfinite(value.z);
 }
 
+[[nodiscard]] bool isFiniteMat4(const glm::mat4 &value) {
+  for (int column = 0; column < 4; ++column) {
+    for (int row = 0; row < 4; ++row) {
+      if (!std::isfinite(value[column][row])) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+void hashCombine(size_t &seed, size_t value) {
+  seed ^= value + 0x9e3779b97f4a7c15ull + (seed << 6u) + (seed >> 2u);
+}
+
+[[nodiscard]] size_t quantizedFloatHash(float value) {
+  return std::hash<int>{}(static_cast<int>(std::round(value * 1000.0f)));
+}
+
+[[nodiscard]] size_t coordinationMarkerGeometrySignature(
+    const BimCoordinationOverlayResult &overlay, float markerRadius,
+    uint64_t objectDataRevision) {
+  size_t signature = std::hash<size_t>{}(overlay.markers.size());
+  hashCombine(signature, std::hash<uint64_t>{}(objectDataRevision));
+  hashCombine(signature, quantizedFloatHash(markerRadius));
+  for (const BimCoordinationOverlayMarker &marker : overlay.markers) {
+    hashCombine(signature,
+                std::hash<uint32_t>{}(static_cast<uint32_t>(marker.kind)));
+    hashCombine(signature, quantizedFloatHash(marker.position.x));
+    hashCombine(signature, quantizedFloatHash(marker.position.y));
+    hashCombine(signature, quantizedFloatHash(marker.position.z));
+    hashCombine(signature, quantizedFloatHash(marker.color.x));
+    hashCombine(signature, quantizedFloatHash(marker.color.y));
+    hashCombine(signature, quantizedFloatHash(marker.color.z));
+    hashCombine(signature, std::hash<uint32_t>{}(marker.primaryObjectIndex));
+    hashCombine(signature, std::hash<uint32_t>{}(marker.secondaryObjectIndex));
+    hashCombine(signature, std::hash<std::string>{}(marker.label));
+    hashCombine(signature, std::hash<std::string>{}(marker.ifcGuid));
+    hashCombine(signature, std::hash<std::string>{}(marker.sourceId));
+  }
+  return signature;
+}
+
+[[nodiscard]] size_t sectionPlaneVisualGeometrySignature(
+    const glm::vec4 &plane, float size, const glm::vec3 &color,
+    uint64_t objectDataRevision) {
+  size_t signature = 0u;
+  hashCombine(signature, std::hash<uint64_t>{}(objectDataRevision));
+  hashCombine(signature, quantizedFloatHash(plane.x));
+  hashCombine(signature, quantizedFloatHash(plane.y));
+  hashCombine(signature, quantizedFloatHash(plane.z));
+  hashCombine(signature, quantizedFloatHash(plane.w));
+  hashCombine(signature, quantizedFloatHash(size));
+  hashCombine(signature, quantizedFloatHash(color.x));
+  hashCombine(signature, quantizedFloatHash(color.y));
+  hashCombine(signature, quantizedFloatHash(color.z));
+  return signature;
+}
+
 void includeBoundsPoint(const glm::vec3 &point, glm::vec3 &boundsMin,
                         glm::vec3 &boundsMax, bool &hasBounds) {
   if (!isFiniteVec3(point)) {
@@ -1344,6 +1431,24 @@ BimFloorPlanBuildResult appendFloorPlanOverlayGeometry(
 
 } // namespace
 
+namespace detail {
+
+[[nodiscard]] size_t bimCoordinationMarkerGeometrySignatureForTesting(
+    const BimCoordinationOverlayResult &overlay, float markerRadius,
+    uint64_t objectDataRevision) {
+  return coordinationMarkerGeometrySignature(overlay, markerRadius,
+                                             objectDataRevision);
+}
+
+[[nodiscard]] size_t bimSectionPlaneVisualGeometrySignatureForTesting(
+    const glm::vec4 &plane, float size, const glm::vec3 &color,
+    uint64_t objectDataRevision) {
+  return sectionPlaneVisualGeometrySignature(plane, size, color,
+                                             objectDataRevision);
+}
+
+} // namespace detail
+
 BimManager::BimManager(std::shared_ptr<container::gpu::VulkanDevice> device,
                        container::gpu::AllocationManager &allocationManager,
                        container::gpu::PipelineManager &pipelineManager)
@@ -1371,6 +1476,8 @@ void BimManager::clear() {
     allocationManager_.destroyBuffer(objectBuffer_);
   }
   clearSectionClipCapGeometry();
+  clearCoordinationMarkerGeometry();
+  clearSectionPlaneVisualGeometry();
   objectBufferCapacity_ = 0;
   vertexSlice_ = {};
   indexSlice_ = {};
@@ -1378,6 +1485,7 @@ void BimManager::clear() {
   indices_.clear();
   objectData_.clear();
   elementMetadata_.clear();
+  relationshipGraph_.clear();
   objectDrawCommands_.clear();
   objectDrawCommandOffsets_.clear();
   objectDrawCommandCounts_.clear();
@@ -1447,6 +1555,272 @@ void BimManager::clearSectionClipCapGeometry() {
   sectionClipCapBuildOptionsValid_ = false;
 }
 
+void BimManager::clearCoordinationMarkerGeometry() {
+  if (coordinationMarkerVertexBuffer_.buffer != VK_NULL_HANDLE) {
+    allocationManager_.destroyBuffer(coordinationMarkerVertexBuffer_);
+  }
+  if (coordinationMarkerIndexBuffer_.buffer != VK_NULL_HANDLE) {
+    allocationManager_.destroyBuffer(coordinationMarkerIndexBuffer_);
+  }
+  coordinationMarkerDrawData_ = {};
+  coordinationMarkerVertices_.clear();
+  coordinationMarkerIndices_.clear();
+  coordinationMarkerGeometrySignature_ = 0u;
+}
+
+void BimManager::clearSectionPlaneVisualGeometry() {
+  if (sectionPlaneVisualVertexBuffer_.buffer != VK_NULL_HANDLE) {
+    allocationManager_.destroyBuffer(sectionPlaneVisualVertexBuffer_);
+  }
+  if (sectionPlaneVisualIndexBuffer_.buffer != VK_NULL_HANDLE) {
+    allocationManager_.destroyBuffer(sectionPlaneVisualIndexBuffer_);
+  }
+  sectionPlaneVisualDrawData_ = {};
+  sectionPlaneVisualVertices_.clear();
+  sectionPlaneVisualIndices_.clear();
+  sectionPlaneVisualGeometrySignature_ = 0u;
+}
+
+bool BimManager::rebuildCoordinationMarkerGeometry(
+    const BimCoordinationOverlayResult &overlay, float markerRadius) {
+  if (overlay.markers.empty() || objectData_.empty()) {
+    clearCoordinationMarkerGeometry();
+    return false;
+  }
+
+  const size_t signature =
+      coordinationMarkerGeometrySignature(overlay, markerRadius,
+                                          objectDataRevision_);
+  if (coordinationMarkerGeometrySignature_ == signature &&
+      coordinationMarkerDrawData_.valid()) {
+    return true;
+  }
+
+  clearCoordinationMarkerGeometry();
+
+  const auto primitives =
+      buildBimCoordinationOverlayMarkerWirePrimitives(overlay.markers,
+                                                      markerRadius);
+  auto markerObjectIndex =
+      [this](const BimCoordinationOverlayMarkerWirePrimitive &primitive) {
+        if (primitive.primaryObjectIndex < objectData_.size()) {
+          return primitive.primaryObjectIndex;
+        }
+        if (primitive.secondaryObjectIndex < objectData_.size()) {
+          return primitive.secondaryObjectIndex;
+        }
+        return 0u;
+      };
+  auto transformToObjectLocal = [this](uint32_t objectIndex,
+                                       const glm::vec3 &worldPosition) {
+    if (objectIndex >= objectData_.size()) {
+      return std::optional<glm::vec3>{};
+    }
+    const glm::mat4 inverseModel = glm::inverse(objectData_[objectIndex].model);
+    if (!isFiniteMat4(inverseModel)) {
+      return std::optional<glm::vec3>{};
+    }
+    const glm::vec3 localPosition =
+        glm::vec3(inverseModel * glm::vec4(worldPosition, 1.0f));
+    if (!isFiniteVec3(localPosition)) {
+      return std::optional<glm::vec3>{};
+    }
+    return std::optional<glm::vec3>{localPosition};
+  };
+
+  for (const BimCoordinationOverlayMarkerWirePrimitive &primitive :
+       primitives) {
+    const uint32_t objectIndex = markerObjectIndex(primitive);
+    const uint32_t baseVertex = static_cast<uint32_t>(std::min<size_t>(
+        coordinationMarkerVertices_.size(),
+        std::numeric_limits<uint32_t>::max()));
+    const uint32_t baseIndex = static_cast<uint32_t>(std::min<size_t>(
+        coordinationMarkerIndices_.size(),
+        std::numeric_limits<uint32_t>::max()));
+
+    bool primitiveValid = !primitive.positions.empty() &&
+                          !primitive.indices.empty();
+    for (const glm::vec3 &worldPosition : primitive.positions) {
+      const std::optional<glm::vec3> localPosition =
+          transformToObjectLocal(objectIndex, worldPosition);
+      if (!localPosition) {
+        primitiveValid = false;
+        break;
+      }
+      container::geometry::Vertex vertex{};
+      vertex.position = *localPosition;
+      vertex.color = primitive.color;
+      coordinationMarkerVertices_.push_back(vertex);
+    }
+    if (!primitiveValid) {
+      coordinationMarkerVertices_.resize(baseVertex);
+      continue;
+    }
+
+    for (uint32_t index : primitive.indices) {
+      coordinationMarkerIndices_.push_back(baseVertex + index);
+    }
+    DrawCommand command{.objectIndex = objectIndex,
+                        .firstIndex = baseIndex,
+                        .indexCount = static_cast<uint32_t>(
+                            coordinationMarkerIndices_.size() - baseIndex),
+                        .instanceCount = 1u};
+    if (primitive.kind == BimCoordinationOverlayKind::Clash) {
+      coordinationMarkerDrawData_.clashDrawCommands.push_back(command);
+    } else if (primitive.kind == BimCoordinationOverlayKind::IssuePin) {
+      coordinationMarkerDrawData_.issuePinDrawCommands.push_back(command);
+    }
+  }
+
+  if (coordinationMarkerVertices_.empty() ||
+      coordinationMarkerIndices_.empty()) {
+    clearCoordinationMarkerGeometry();
+    return false;
+  }
+
+  const VkDeviceSize vertexBufferSize = static_cast<VkDeviceSize>(
+      sizeof(container::geometry::Vertex) * coordinationMarkerVertices_.size());
+  const VkDeviceSize indexBufferSize = static_cast<VkDeviceSize>(
+      sizeof(uint32_t) * coordinationMarkerIndices_.size());
+  coordinationMarkerVertexBuffer_ = allocationManager_.uploadBuffer(
+      {reinterpret_cast<const std::byte *>(coordinationMarkerVertices_.data()),
+       static_cast<size_t>(vertexBufferSize)},
+      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+  coordinationMarkerIndexBuffer_ = allocationManager_.uploadBuffer(
+      {reinterpret_cast<const std::byte *>(coordinationMarkerIndices_.data()),
+       static_cast<size_t>(indexBufferSize)},
+      VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+  coordinationMarkerDrawData_.vertexSlice = container::gpu::BufferSlice{
+      coordinationMarkerVertexBuffer_.buffer, 0, vertexBufferSize};
+  coordinationMarkerDrawData_.indexSlice = container::gpu::BufferSlice{
+      coordinationMarkerIndexBuffer_.buffer, 0, indexBufferSize};
+  coordinationMarkerDrawData_.indexType = VK_INDEX_TYPE_UINT32;
+  coordinationMarkerGeometrySignature_ = signature;
+  return coordinationMarkerDrawData_.valid();
+}
+
+bool BimManager::rebuildSectionPlaneVisualGeometry(glm::vec4 plane, float size,
+                                                   glm::vec3 color) {
+  if (objectData_.empty()) {
+    clearSectionPlaneVisualGeometry();
+    return false;
+  }
+
+  glm::vec3 normal{plane.x, plane.y, plane.z};
+  const float normalLength = glm::length(normal);
+  if (!std::isfinite(normalLength) || normalLength <= 0.0001f ||
+      !std::isfinite(plane.w)) {
+    clearSectionPlaneVisualGeometry();
+    return false;
+  }
+  normal /= normalLength;
+  plane = glm::vec4(normal, plane.w / normalLength);
+  size = std::clamp(size, 0.1f, 100000.0f);
+  if (!isFiniteVec3(color)) {
+    color = {0.12f, 0.62f, 1.0f};
+  }
+
+  const size_t signature =
+      sectionPlaneVisualGeometrySignature(plane, size, color,
+                                          objectDataRevision_);
+  if (sectionPlaneVisualGeometrySignature_ == signature &&
+      sectionPlaneVisualDrawData_.valid()) {
+    return true;
+  }
+
+  clearSectionPlaneVisualGeometry();
+
+  const glm::vec3 center = -normal * plane.w;
+  const glm::vec3 helper =
+      std::abs(normal.y) < 0.9f ? glm::vec3{0.0f, 1.0f, 0.0f}
+                                : glm::vec3{1.0f, 0.0f, 0.0f};
+  const glm::vec3 tangent = glm::normalize(glm::cross(helper, normal));
+  const glm::vec3 bitangent = glm::normalize(glm::cross(normal, tangent));
+  if (!isFiniteVec3(center) || !isFiniteVec3(tangent) ||
+      !isFiniteVec3(bitangent)) {
+    clearSectionPlaneVisualGeometry();
+    return false;
+  }
+
+  const uint32_t objectIndex = 0u;
+  const glm::mat4 inverseModel = glm::inverse(objectData_[objectIndex].model);
+  if (!isFiniteMat4(inverseModel)) {
+    clearSectionPlaneVisualGeometry();
+    return false;
+  }
+
+  constexpr uint32_t kGridSegments = 12u;
+  sectionPlaneVisualVertices_.reserve(
+      static_cast<size_t>(kGridSegments + 1u) *
+      static_cast<size_t>(kGridSegments + 1u));
+  sectionPlaneVisualIndices_.reserve(static_cast<size_t>(kGridSegments) *
+                                     static_cast<size_t>(kGridSegments) * 6u);
+  const float halfSize = size * 0.5f;
+  for (uint32_t y = 0u; y <= kGridSegments; ++y) {
+    const float v = static_cast<float>(y) / static_cast<float>(kGridSegments);
+    for (uint32_t x = 0u; x <= kGridSegments; ++x) {
+      const float u = static_cast<float>(x) / static_cast<float>(kGridSegments);
+      const glm::vec3 worldPosition =
+          center + tangent * ((u * 2.0f - 1.0f) * halfSize) +
+          bitangent * ((v * 2.0f - 1.0f) * halfSize);
+      const glm::vec3 localPosition =
+          glm::vec3(inverseModel * glm::vec4(worldPosition, 1.0f));
+      if (!isFiniteVec3(localPosition)) {
+        clearSectionPlaneVisualGeometry();
+        return false;
+      }
+      container::geometry::Vertex vertex{};
+      vertex.position = localPosition;
+      vertex.normal = normal;
+      vertex.color = color;
+      sectionPlaneVisualVertices_.push_back(vertex);
+    }
+  }
+
+  const uint32_t rowStride = kGridSegments + 1u;
+  for (uint32_t y = 0u; y < kGridSegments; ++y) {
+    for (uint32_t x = 0u; x < kGridSegments; ++x) {
+      const uint32_t i0 = y * rowStride + x;
+      const uint32_t i1 = i0 + 1u;
+      const uint32_t i2 = i0 + rowStride;
+      const uint32_t i3 = i2 + 1u;
+      sectionPlaneVisualIndices_.push_back(i0);
+      sectionPlaneVisualIndices_.push_back(i2);
+      sectionPlaneVisualIndices_.push_back(i1);
+      sectionPlaneVisualIndices_.push_back(i1);
+      sectionPlaneVisualIndices_.push_back(i2);
+      sectionPlaneVisualIndices_.push_back(i3);
+    }
+  }
+
+  const VkDeviceSize vertexBufferSize = static_cast<VkDeviceSize>(
+      sizeof(container::geometry::Vertex) * sectionPlaneVisualVertices_.size());
+  const VkDeviceSize indexBufferSize = static_cast<VkDeviceSize>(
+      sizeof(uint32_t) * sectionPlaneVisualIndices_.size());
+  sectionPlaneVisualVertexBuffer_ = allocationManager_.uploadBuffer(
+      {reinterpret_cast<const std::byte *>(sectionPlaneVisualVertices_.data()),
+       static_cast<size_t>(vertexBufferSize)},
+      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+  sectionPlaneVisualIndexBuffer_ = allocationManager_.uploadBuffer(
+      {reinterpret_cast<const std::byte *>(sectionPlaneVisualIndices_.data()),
+       static_cast<size_t>(indexBufferSize)},
+      VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+  sectionPlaneVisualDrawData_.vertexSlice = container::gpu::BufferSlice{
+      sectionPlaneVisualVertexBuffer_.buffer, 0, vertexBufferSize};
+  sectionPlaneVisualDrawData_.indexSlice = container::gpu::BufferSlice{
+      sectionPlaneVisualIndexBuffer_.buffer, 0, indexBufferSize};
+  sectionPlaneVisualDrawData_.indexType = VK_INDEX_TYPE_UINT32;
+  sectionPlaneVisualDrawData_.drawCommands.push_back(
+      DrawCommand{.objectIndex = objectIndex,
+                  .firstIndex = 0u,
+                  .indexCount = static_cast<uint32_t>(
+                      std::min<size_t>(sectionPlaneVisualIndices_.size(),
+                                       std::numeric_limits<uint32_t>::max())),
+                  .instanceCount = 1u});
+  sectionPlaneVisualGeometrySignature_ = signature;
+  return sectionPlaneVisualDrawData_.valid();
+}
+
 bool BimManager::rebuildSectionClipCapGeometry(
     const BimSectionCapBuildOptions &options) {
   if (sectionClipCapBuildOptionsValid_ &&
@@ -1460,7 +1834,8 @@ bool BimManager::rebuildSectionClipCapGeometry(
     return false;
   }
 
-  auto appendGeneratedMesh = [this](const BimSectionCapGeneratedMesh &mesh) {
+  auto appendGeneratedMesh = [this](const BimSectionCapGeneratedMesh &mesh,
+                                    uint32_t objectIndex) {
     const uint32_t baseVertex = static_cast<uint32_t>(std::min<size_t>(
         sectionClipCapVertices_.size(), std::numeric_limits<uint32_t>::max()));
     const uint32_t baseIndex = static_cast<uint32_t>(std::min<size_t>(
@@ -1484,6 +1859,107 @@ bool BimManager::rebuildSectionClipCapGeometry(
                    sectionClipCapDrawData_.fillDrawCommands);
     appendCommands(mesh.hatchDrawCommands,
                    sectionClipCapDrawData_.hatchDrawCommands);
+    sectionClipCapDrawData_.fillDrawStyles.insert(
+        sectionClipCapDrawData_.fillDrawStyles.end(),
+        mesh.fillDrawStyles.begin(), mesh.fillDrawStyles.end());
+    sectionClipCapDrawData_.hatchDrawStyles.insert(
+        sectionClipCapDrawData_.hatchDrawStyles.end(),
+        mesh.hatchDrawStyles.begin(), mesh.hatchDrawStyles.end());
+    sectionClipCapDrawData_.sectionMarkerLines.insert(
+        sectionClipCapDrawData_.sectionMarkerLines.end(),
+        mesh.sectionMarkerLines.begin(), mesh.sectionMarkerLines.end());
+    auto appendSectionMarkerGeometry =
+        [this, objectIndex](const BimSectionMarkerLine &marker) {
+          if (objectIndex >= objectData_.size() || !isFiniteVec3(marker.a) ||
+              !isFiniteVec3(marker.b) || !isFiniteVec3(marker.color)) {
+            return;
+          }
+
+          const glm::vec3 line = marker.b - marker.a;
+          const float lineLength = glm::length(line);
+          if (!std::isfinite(lineLength) || lineLength <= 0.0001f) {
+            return;
+          }
+
+          const uint32_t baseVertex = static_cast<uint32_t>(std::min<size_t>(
+              sectionClipCapVertices_.size(),
+              std::numeric_limits<uint32_t>::max()));
+          const uint32_t firstIndex = static_cast<uint32_t>(std::min<size_t>(
+              sectionClipCapIndices_.size(),
+              std::numeric_limits<uint32_t>::max()));
+
+          auto pushVertex = [&](const glm::vec3 &position) {
+            container::geometry::Vertex vertex{};
+            vertex.position = position;
+            vertex.color = marker.color;
+            sectionClipCapVertices_.push_back(vertex);
+            return static_cast<uint32_t>(
+                sectionClipCapVertices_.size() - 1u);
+          };
+          auto pushSegment = [&](const glm::vec3 &a, const glm::vec3 &b) {
+            const uint32_t ia = pushVertex(a);
+            const uint32_t ib = pushVertex(b);
+            sectionClipCapIndices_.push_back(ia);
+            sectionClipCapIndices_.push_back(ib);
+          };
+
+          pushSegment(marker.a, marker.b);
+
+          const glm::vec3 direction = line / lineLength;
+          const glm::vec3 reference =
+              std::abs(direction.y) < 0.9f ? glm::vec3{0.0f, 1.0f, 0.0f}
+                                           : glm::vec3{1.0f, 0.0f, 0.0f};
+          glm::vec3 side = glm::cross(direction, reference);
+          const float sideLength = glm::length(side);
+          if (std::isfinite(sideLength) && sideLength > 0.0001f) {
+            side /= sideLength;
+          } else {
+            side = {0.0f, 0.0f, 1.0f};
+          }
+          const float arrowLength =
+              std::clamp(lineLength * 0.08f, 0.05f, 1.0f);
+          const float arrowWidth = arrowLength * 0.45f;
+          auto pushArrow = [&](const glm::vec3 &tip,
+                               const glm::vec3 &inwardDirection) {
+            const glm::vec3 wingCenter = tip + inwardDirection * arrowLength;
+            pushSegment(tip, wingCenter + side * arrowWidth);
+            pushSegment(tip, wingCenter - side * arrowWidth);
+          };
+          if (marker.startArrow) {
+            pushArrow(marker.a, direction);
+          }
+          if (marker.endArrow) {
+            pushArrow(marker.b, -direction);
+          }
+
+          const uint32_t indexCount = static_cast<uint32_t>(
+              sectionClipCapIndices_.size() - firstIndex);
+          if (indexCount == 0u) {
+            sectionClipCapVertices_.resize(baseVertex);
+            return;
+          }
+
+          sectionClipCapDrawData_.hatchDrawCommands.push_back(DrawCommand{
+              .objectIndex = objectIndex,
+              .firstIndex = firstIndex,
+              .indexCount = indexCount,
+              .instanceCount = 1u,
+          });
+          sectionClipCapDrawData_.hatchDrawStyles.push_back(
+              BimSectionCapDrawStyle{
+                  .objectIndex = objectIndex,
+                  .materialIndex = kInvalidBimSectionCapMaterialIndex,
+                  .fillColor = marker.color,
+                  .fillOpacity = 1.0f,
+                  .hatchSpacing = 0.0f,
+                  .hatchAngleRadians = 0.0f,
+                  .hatchColor = marker.color,
+                  .lineWidth = marker.lineWidth,
+              });
+        };
+    for (const BimSectionMarkerLine &marker : mesh.sectionMarkerLines) {
+      appendSectionMarkerGeometry(marker);
+    }
   };
 
   BimSectionCapBuilder sectionCapBuilder;
@@ -1535,6 +2011,7 @@ bool BimManager::rebuildSectionClipCapGeometry(
         }
         triangles.push_back(BimSectionCapTriangle{
             .objectIndex = objectIndex,
+            .materialIndex = metadata.materialIndex,
             .p0 = vertices_[i0].position,
             .p1 = vertices_[i1].position,
             .p2 = vertices_[i2].position,
@@ -1545,7 +2022,7 @@ bool BimManager::rebuildSectionClipCapGeometry(
     const BimSectionCapGeneratedMesh generated =
         sectionCapBuilder.build(triangles, localOptions);
     if (generated.valid()) {
-      appendGeneratedMesh(generated);
+      appendGeneratedMesh(generated, objectIndex);
     }
   }
 
@@ -1581,6 +2058,72 @@ BimManager::metadataForObject(uint32_t objectIndex) const {
     return nullptr;
   }
   return &elementMetadata_[objectIndex];
+}
+
+BimCoordinationOverlayResult BimManager::buildCoordinationOverlay(
+    const BimCoordinationOverlayBuildOptions &options,
+    std::span<const BimCoordinationOverlayClashPair> clashPairs,
+    std::span<const BimCoordinationOverlayIssuePin> issuePins) const {
+  std::vector<BimCoordinationOverlayElement> elements;
+  elements.reserve(elementMetadata_.size());
+  for (const BimElementMetadata &metadata : elementMetadata_) {
+    BimCoordinationOverlayBounds bounds{};
+    if (metadata.bounds.valid) {
+      bounds = {.min = metadata.bounds.min,
+                .max = metadata.bounds.max,
+                .valid = true};
+    }
+    elements.push_back({.objectIndex = metadata.objectIndex,
+                        .ifcClass = metadata.type,
+                        .type = metadata.objectType,
+                        .name = metadata.displayName,
+                        .guid = metadata.guid,
+                        .bounds = bounds});
+  }
+
+  auto firstValidObjectIndex = [this](std::span<const uint32_t> objectIndices) {
+    for (uint32_t objectIndex : objectIndices) {
+      if (objectIndex < objectData_.size()) {
+        return objectIndex;
+      }
+    }
+    return kInvalidBimCoordinationOverlayObjectIndex;
+  };
+  auto resolveIssuePinObjectIndex =
+      [&](const BimCoordinationOverlayIssuePin &pin) {
+        if (pin.primaryObjectIndex < objectData_.size()) {
+          return pin.primaryObjectIndex;
+        }
+        if (!pin.ifcGuid.empty()) {
+          const uint32_t objectIndex =
+              firstValidObjectIndex(objectIndicesForGuid(pin.ifcGuid));
+          if (objectIndex != kInvalidBimCoordinationOverlayObjectIndex) {
+            return objectIndex;
+          }
+        }
+        if (!pin.sourceId.empty()) {
+          const uint32_t objectIndex =
+              firstValidObjectIndex(objectIndicesForSourceId(pin.sourceId));
+          if (objectIndex != kInvalidBimCoordinationOverlayObjectIndex) {
+            return objectIndex;
+          }
+        }
+        return pin.primaryObjectIndex;
+      };
+  std::vector<BimCoordinationOverlayIssuePin> resolvedIssuePins;
+  resolvedIssuePins.reserve(issuePins.size());
+  for (const BimCoordinationOverlayIssuePin &pin : issuePins) {
+    BimCoordinationOverlayIssuePin resolved = pin;
+    if (resolved.primaryObjectIndex >= objectData_.size()) {
+      resolved.primaryObjectIndex = resolveIssuePinObjectIndex(pin);
+    }
+    resolvedIssuePins.push_back(std::move(resolved));
+  }
+
+  return buildBimCoordinationOverlay({.elements = elements,
+                                      .clashPairs = clashPairs,
+                                      .issuePins = resolvedIssuePins,
+                                      .options = options});
 }
 
 std::span<const uint32_t>
@@ -1737,6 +2280,42 @@ const BimModelUnitMetadata &BimManager::modelUnitMetadata() const {
 const BimModelGeoreferenceMetadata &
 BimManager::modelGeoreferenceMetadata() const {
   return metadataCatalog_->modelGeoreferenceMetadata();
+}
+
+std::vector<BimDrawingExportLine> BimManager::floorPlanDrawingExportLines(
+    bool sourceElevation, glm::vec3 color, float lineWidthMm) const {
+  const BimFloorPlanOverlayData &overlay =
+      sourceElevation ? floorPlanSourceElevation_ : floorPlanGround_;
+  if (!overlay.valid() || overlay.firstIndex >= indices_.size()) {
+    return {};
+  }
+
+  const size_t firstIndex = overlay.firstIndex;
+  const size_t endIndex = std::min(
+      indices_.size(), firstIndex + static_cast<size_t>(overlay.indexCount));
+  std::vector<BimDrawingExportLine> lines;
+  lines.reserve((endIndex - firstIndex) / 2u);
+
+  const char *layer = sourceElevation ? "floor-plan-source-elevation"
+                                      : "floor-plan-ground";
+  for (size_t index = firstIndex; index + 1u < endIndex; index += 2u) {
+    const uint32_t ia = indices_[index];
+    const uint32_t ib = indices_[index + 1u];
+    if (ia >= vertices_.size() || ib >= vertices_.size()) {
+      continue;
+    }
+    const glm::vec3 a = vertices_[ia].position;
+    const glm::vec3 b = vertices_[ib].position;
+    if (!isFiniteVec3(a) || !isFiniteVec3(b)) {
+      continue;
+    }
+    lines.push_back(BimDrawingExportLine{.a = a,
+                                         .b = b,
+                                         .color = color,
+                                         .lineWidthMm = lineWidthMm,
+                                         .layer = layer});
+  }
+  return lines;
 }
 
 bool BimManager::setSemanticColorMode(BimSemanticColorMode mode) {
@@ -1955,6 +2534,7 @@ BimDrawFilterStateInputs BimManager::drawFilterStateInputs() const {
       .revision = objectDataRevision_,
       .objectCount = objectData_.size(),
       .metadata = {elementMetadata_.data(), elementMetadata_.size()},
+      .phaseOrder = metadataCatalog_->phases(),
       .opaqueDrawCommands = &opaqueDrawCommands_,
       .opaqueSingleSidedDrawCommands = &opaqueSingleSidedDrawCommands_,
       .opaqueWindingFlippedDrawCommands = &opaqueWindingFlippedDrawCommands_,
@@ -2435,6 +3015,7 @@ void BimManager::loadPreparedModel(
 
   uploadGeometry(uploadVertices, uploadIndices);
   buildDrawDataFromModel(model, sceneManager);
+  relationshipGraph_.build(elementMetadata_, model.relationships);
   uploadMeshletResidencyBuffers();
   if (!hasScene()) {
     clear();
@@ -2967,6 +3548,7 @@ void BimManager::loadGltfFallback(
   }
   objectDrawCommandCounts_.push_back(objectDrawCommandCount);
 
+  relationshipGraph_.build(elementMetadata_);
   uploadObjects();
   uploadVisibilityFilterBuffers();
   if (!hasScene()) {

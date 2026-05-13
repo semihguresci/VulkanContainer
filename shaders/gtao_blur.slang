@@ -27,19 +27,27 @@ bool ValidReverseZDepth(float depth)
     return isfinite(depth) && depth > 0.0 && depth <= 1.0;
 }
 
-float LinearizeReverseZDepth(float depth)
+float SanitizedNearPlane()
 {
-    float n = max(isfinite(pc.cameraNear) ? pc.cameraNear : 0.01, 1e-4);
-    float f = max(isfinite(pc.cameraFar) ? pc.cameraFar : n + 1e-3,
-                  n + 1e-3);
-    return (n * f) / (saturate(depth) * (f - n) + n);
+    return max(isfinite(pc.cameraNear) ? pc.cameraNear : 0.01, 1e-4);
 }
 
 float SanitizedFarPlane()
 {
-    float n = max(isfinite(pc.cameraNear) ? pc.cameraNear : 0.01, 1e-4);
+    float n = SanitizedNearPlane();
     return max(isfinite(pc.cameraFar) ? pc.cameraFar : n + 1e-3,
                n + 1e-3);
+}
+
+float LinearizeDepthForProjection(float depth)
+{
+    float n = SanitizedNearPlane();
+    float f = SanitizedFarPlane();
+    if (pc.orthographicDepth != 0u)
+    {
+        return lerp(f, n, saturate(depth));
+    }
+    return (n * f) / (saturate(depth) * (f - n) + n);
 }
 
 uint2 ClampPixel(uint2 pixel, uint2 dimensions)
@@ -97,7 +105,7 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
         return;
     }
 
-    float centerLinearDepth = LinearizeReverseZDepth(centerDepth);
+    float centerLinearDepth = LinearizeDepthForProjection(centerDepth);
 
     float totalWeight = 0.0;
     float totalAO = 0.0;
@@ -118,7 +126,7 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
 
             float sampleLinearDepth =
                 ValidReverseZDepth(sampleDepth) ?
-                    LinearizeReverseZDepth(sampleDepth) :
+                    LinearizeDepthForProjection(sampleDepth) :
                     SanitizedFarPlane();
             float depthDiff = abs(centerLinearDepth - sampleLinearDepth);
             float depthThreshold =

@@ -490,25 +490,52 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         {
             AreaLightData light = uAreaLights[i];
             AreaLightFrame frame = BuildAreaLightFrame(light);
+            float areaShadowVisibility = 1.0;
+            if (LocalShadowMapsEnabled(uLighting, uLocalShadow))
+            {
+                // The local-shadow PCF radius already models finite source
+                // size; a reduced weighted shadow estimate avoids a full PCF
+                // for every lighting integration sample.
+                areaShadowVisibility = 0.0;
+                float visibilityWeightSum = 0.0;
+                [unroll]
+                for (uint visibilitySample = 0u;
+                     visibilitySample < AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT;
+                     ++visibilitySample)
+                {
+                    uint areaSampleIndex =
+                        AreaLightShadowVisibilitySampleIndex(visibilitySample);
+                    float3 visibilitySurfaceToLight;
+                    float weight = AreaLightSampleContributionWeight(
+                        light, frame, vertIn.worldPos, areaSampleIndex,
+                        visibilitySurfaceToLight);
+                    if (weight <= 0.0)
+                    {
+                        continue;
+                    }
+                    float3 samplePosition =
+                        AreaLightSamplePosition(frame, areaSampleIndex);
+                    areaShadowVisibility += weight * LocalAreaLightShadowVisibility(
+                        i, vertIn.worldPos, surfaceNormal.geometricNormal,
+                        samplePosition, uLocalShadow, gLocalShadowAtlas,
+                        gLocalShadowSampler);
+                    visibilityWeightSum += weight;
+                }
+                areaShadowVisibility =
+                    visibilityWeightSum > 1.0e-4
+                        ? areaShadowVisibility / visibilityWeightSum
+                        : 1.0;
+            }
             [unroll]
             for (uint sampleIndex = 0u;
                  sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT;
                  ++sampleIndex)
             {
                 float3 L;
-                float3 samplePosition =
-                    AreaLightSamplePosition(frame, sampleIndex);
                 float3 radiance = EvaluateAreaLightSampleRadiance(
                     light, frame, vertIn.worldPos, sampleIndex, L);
-                float lightVisibility = 1.0;
-                if (LocalShadowMapsEnabled(uLighting, uLocalShadow))
-                {
-                    lightVisibility = LocalAreaLightShadowVisibility(
-                        i, vertIn.worldPos, surfaceNormal.geometricNormal,
-                        samplePosition, uLocalShadow, gLocalShadowAtlas,
-                        gLocalShadowSampler);
-                    radiance *= lightVisibility;
-                }
+                float lightVisibility = areaShadowVisibility;
+                radiance *= lightVisibility;
                 lighting += EvaluatePbrDirectLight(
                     baseColor, F0, metallic, roughness,
                     surfaceNormal.shadingNormal, V, L, radiance);

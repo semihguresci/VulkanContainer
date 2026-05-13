@@ -121,6 +121,34 @@ TEST(ECS_World, SyncCreatesOneEntityPerRenderableNode) {
   EXPECT_EQ(world.entityCount(), 2u);
 }
 
+TEST(ECS_World, SyncSkipsEffectivelyHiddenRenderableNodes) {
+  container::scene::SceneGraph graph;
+  const uint32_t visibleRoot = graph.createNode(glm::mat4(1.0f), 0);
+  const uint32_t hiddenRoot = graph.createNode(glm::mat4(1.0f), 0);
+  const uint32_t visibleChild =
+      graph.createNode(glm::mat4(1.0f), 0, true, 0);
+  const uint32_t hiddenChild =
+      graph.createNode(glm::mat4(1.0f), 0, true, 1);
+  graph.setParent(visibleChild, visibleRoot);
+  graph.setParent(hiddenChild, hiddenRoot);
+  graph.setVisible(hiddenRoot, false);
+
+  container::ecs::World world;
+  world.syncFromSceneGraph(graph);
+
+  EXPECT_EQ(world.renderableCount(), 1u);
+  std::vector<uint32_t> visitedNodes;
+  world.forEachRenderableWithNode(
+      [&](const container::ecs::TransformComponent &,
+          const container::ecs::MeshComponent &,
+          const container::ecs::MaterialComponent &,
+          const container::ecs::SceneNodeRef &node) {
+        visitedNodes.push_back(node.nodeIndex);
+      });
+  ASSERT_EQ(visitedNodes.size(), 1u);
+  EXPECT_EQ(visitedNodes[0], visibleChild);
+}
+
 TEST(ECS_World, SyncPreservesTransforms) {
   container::scene::SceneGraph graph;
   const glm::mat4 transform =

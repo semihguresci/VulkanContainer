@@ -8,6 +8,8 @@
 
 namespace container::renderer {
 
+struct BimSectionCapDrawStyle;
+struct BimSectionMarkerLine;
 struct DrawCommand;
 
 enum class BimSectionClipCapPassPipeline : uint32_t {
@@ -30,6 +32,9 @@ struct BimSectionClipCapPassInputs {
   float hatchLineWidth{1.0f};
   const std::vector<DrawCommand> *fillDrawCommands{nullptr};
   const std::vector<DrawCommand> *hatchDrawCommands{nullptr};
+  const std::vector<BimSectionCapDrawStyle> *fillDrawStyles{nullptr};
+  const std::vector<BimSectionCapDrawStyle> *hatchDrawStyles{nullptr};
+  const std::vector<BimSectionMarkerLine> *sectionMarkerLines{nullptr};
 };
 
 struct BimSectionClipCapPassRoute {
@@ -41,12 +46,15 @@ struct BimSectionClipCapPassRoute {
   float rasterLineWidth{1.0f};
   bool rasterLineWidthApplies{false};
   bool resetRasterLineWidth{false};
+  bool markerCommandsOnly{false};
+  const std::vector<BimSectionCapDrawStyle> *drawStyles{nullptr};
 };
 
 struct BimSectionClipCapPassPlan {
   bool active{false};
   std::array<BimSectionClipCapPassRoute, 2> routes{};
   uint32_t routeCount{0};
+  const std::vector<BimSectionMarkerLine> *sectionMarkerLines{nullptr};
 };
 
 class BimSectionClipCapPassPlanner {

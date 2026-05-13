@@ -1,5 +1,8 @@
 #include "Container/utility/BcfViewpoint.h"
 
+#include "Container/renderer/bim/BimCoordinationOverlay.h"
+#include "Container/renderer/bim/BimManager.h"
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -125,6 +128,53 @@ glm::vec3 cameraUp(const glm::vec3& forward) {
   return glm::normalize(glm::cross(right, forward));
 }
 
+bool finiteVector(const glm::vec3& value) {
+  return std::isfinite(value.x) && std::isfinite(value.y) &&
+         std::isfinite(value.z);
+}
+
+bool nonDefaultVector(const glm::vec3& value) {
+  return value.x != 0.0f || value.y != 0.0f || value.z != 0.0f;
+}
+
+std::string lowerAscii(std::string_view value) {
+  std::string lowered(value);
+  std::ranges::transform(lowered, lowered.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return lowered;
+}
+
+std::string_view disciplinePresetName(
+    container::renderer::BimDisciplinePreset preset) {
+  switch (preset) {
+  case container::renderer::BimDisciplinePreset::None:
+    return "None";
+  case container::renderer::BimDisciplinePreset::Architecture:
+    return "Architecture";
+  case container::renderer::BimDisciplinePreset::MepXray:
+    return "MepXray";
+  }
+  return "None";
+}
+
+container::renderer::BimDisciplinePreset disciplinePresetFromString(
+    std::string_view value,
+    container::renderer::BimDisciplinePreset fallback) {
+  const std::string lowered = lowerAscii(value);
+  if (lowered == "none" || lowered == "0") {
+    return container::renderer::BimDisciplinePreset::None;
+  }
+  if (lowered == "architecture" || lowered == "1") {
+    return container::renderer::BimDisciplinePreset::Architecture;
+  }
+  if (lowered == "mepxray" || lowered == "mep-xray" ||
+      lowered == "mep_xray" || lowered == "2") {
+    return container::renderer::BimDisciplinePreset::MepXray;
+  }
+  return fallback;
+}
+
 void writeVector(std::ostringstream& stream, std::string_view tag,
                  const glm::vec3& value, int indent) {
   const std::string spaces(static_cast<size_t>(indent), ' ');
@@ -183,22 +233,45 @@ void writeAttribute(std::ostringstream& stream, std::string_view name,
   writeAttribute(stream, name, scalar(value));
 }
 
-bool hasPinMarkup(const BcfViewpointMarkup& markup) {
+bool hasContainerMarkup(const BcfViewpointMarkup& markup) {
   return !markup.guid.empty() || !markup.viewpointFile.empty() ||
-         !markup.snapshotFile.empty() || !markup.pins.empty();
+         !markup.snapshotFile.empty() || !markup.pins.empty() ||
+         !markup.lines.empty();
 }
 
 void writePin(std::ostringstream& stream, const BcfPin& pin, int indent,
               std::string_view topicGuid) {
   const std::string spaces(static_cast<size_t>(indent), ' ');
+  const bool writeLocation =
+      finiteVector(pin.location) &&
+      (pin.hasLocation || nonDefaultVector(pin.location));
   stream << spaces << "<Pin";
   writeOptionalAttribute(stream, "Guid", pinGuid(pin, topicGuid));
   writeOptionalAttribute(stream, "Label", pin.label);
   writeOptionalAttribute(stream, "IfcGuid", pin.ifcGuid);
   writeOptionalAttribute(stream, "AuthoringToolId", pin.sourceId);
+  if (!writeLocation) {
+    stream << "/>\n";
+    return;
+  }
   stream << ">\n";
   writeVector(stream, "Location", pin.location, indent + 2);
   stream << spaces << "</Pin>\n";
+}
+
+void writeMarkupLine(std::ostringstream& stream, const BcfMarkupLine& line,
+                     int indent) {
+  const std::string spaces(static_cast<size_t>(indent), ' ');
+  stream << spaces << "<MarkupLine";
+  writeOptionalAttribute(stream, "Guid", line.guid);
+  writeOptionalAttribute(stream, "Label", line.label);
+  writeAttribute(stream, "ColorR", line.color.r);
+  writeAttribute(stream, "ColorG", line.color.g);
+  writeAttribute(stream, "ColorB", line.color.b);
+  stream << ">\n";
+  writeVector(stream, "Start", line.start, indent + 2);
+  writeVector(stream, "End", line.end, indent + 2);
+  stream << spaces << "</MarkupLine>\n";
 }
 
 void writeContainerMarkup(std::ostringstream& stream,
@@ -209,13 +282,16 @@ void writeContainerMarkup(std::ostringstream& stream,
   writeOptionalAttribute(stream, "Guid", markup.guid);
   writeOptionalAttribute(stream, "Viewpoint", markup.viewpointFile);
   writeOptionalAttribute(stream, "Snapshot", markup.snapshotFile);
-  if (markup.pins.empty()) {
+  if (markup.pins.empty() && markup.lines.empty()) {
     stream << "/>\n";
     return;
   }
   stream << ">\n";
   for (const BcfPin& pin : markup.pins) {
     writePin(stream, pin, indent + 2, topicGuid);
+  }
+  for (const BcfMarkupLine& line : markup.lines) {
+    writeMarkupLine(stream, line, indent + 2);
   }
   stream << spaces << "</ContainerMarkup>\n";
 }
@@ -230,6 +306,8 @@ void writeFilter(std::ostringstream& stream, const BimFilterState& filter) {
   writeAttribute(stream, "Material", filter.material);
   writeAttribute(stream, "DisciplineEnabled", filter.disciplineFilterEnabled);
   writeAttribute(stream, "Discipline", filter.discipline);
+  writeAttribute(stream, "DisciplinePreset",
+                 disciplinePresetName(filter.disciplinePreset));
   writeAttribute(stream, "PhaseEnabled", filter.phaseFilterEnabled);
   writeAttribute(stream, "Phase", filter.phase);
   writeAttribute(stream, "FireRatingEnabled", filter.fireRatingFilterEnabled);
@@ -240,6 +318,18 @@ void writeFilter(std::ostringstream& stream, const BimFilterState& filter) {
   writeAttribute(stream, "Status", filter.status);
   writeAttribute(stream, "IsolateSelection", filter.isolateSelection);
   writeAttribute(stream, "HideSelection", filter.hideSelection);
+  stream << "/>\n";
+}
+
+void writePhaseTimeline(std::ostringstream& stream,
+                        const BimPhaseTimelineUiState& timeline) {
+  stream << "    <PhaseTimeline";
+  writeAttribute(stream, "Enabled", timeline.enabled);
+  writeAttribute(stream, "ActivePhaseIndex", timeline.activePhaseIndex);
+  writeAttribute(stream, "ShowExisting", timeline.showExisting);
+  writeAttribute(stream, "ShowNew", timeline.showNew);
+  writeAttribute(stream, "ShowDemolished", timeline.showDemolished);
+  writeAttribute(stream, "GhostFuture", timeline.ghostFuture);
   stream << "/>\n";
 }
 
@@ -280,10 +370,17 @@ std::string trim(std::string_view value) {
 std::optional<std::string> attribute(std::string_view tag,
                                      std::string_view name) {
   const std::string pattern = std::string(name) + "=\"";
-  const size_t begin = tag.find(pattern);
-  if (begin == std::string_view::npos) {
-    return std::nullopt;
+  size_t begin = tag.find(pattern);
+  while (begin != std::string_view::npos) {
+    if (begin == 0u ||
+        std::isspace(static_cast<unsigned char>(tag[begin - 1u])) != 0 ||
+        tag[begin - 1u] == '<') {
+      break;
+    }
+    begin = tag.find(pattern, begin + 1u);
   }
+  if (begin == std::string_view::npos) return std::nullopt;
+
   const size_t valueBegin = begin + pattern.size();
   const size_t valueEnd = tag.find('"', valueBegin);
   if (valueEnd == std::string_view::npos) {
@@ -365,6 +462,8 @@ void readFilter(std::string_view tag, BimFilterState& filter) {
   filter.disciplineFilterEnabled =
       boolAttribute(tag, "DisciplineEnabled", false);
   filter.discipline = stringAttribute(tag, "Discipline");
+  filter.disciplinePreset = disciplinePresetFromString(
+      stringAttribute(tag, "DisciplinePreset"), filter.disciplinePreset);
   filter.phaseFilterEnabled = boolAttribute(tag, "PhaseEnabled", false);
   filter.phase = stringAttribute(tag, "Phase");
   filter.fireRatingFilterEnabled =
@@ -377,6 +476,17 @@ void readFilter(std::string_view tag, BimFilterState& filter) {
   filter.status = stringAttribute(tag, "Status");
   filter.isolateSelection = boolAttribute(tag, "IsolateSelection", false);
   filter.hideSelection = boolAttribute(tag, "HideSelection", false);
+}
+
+void readPhaseTimeline(std::string_view tag,
+                       BimPhaseTimelineUiState& timeline) {
+  timeline.enabled = boolAttribute(tag, "Enabled", false);
+  timeline.activePhaseIndex =
+      uintAttribute(tag, "ActivePhaseIndex", timeline.activePhaseIndex);
+  timeline.showExisting = boolAttribute(tag, "ShowExisting", true);
+  timeline.showNew = boolAttribute(tag, "ShowNew", true);
+  timeline.showDemolished = boolAttribute(tag, "ShowDemolished", false);
+  timeline.ghostFuture = boolAttribute(tag, "GhostFuture", false);
 }
 
 std::optional<std::string_view> tagBody(std::string_view xml,
@@ -509,13 +619,37 @@ std::vector<BcfPin> readPins(std::string_view xml) {
     pin.sourceId = firstStringAttribute(
         pinElement.tag, {"AuthoringToolId", "SourceId", "OriginatingSystem"});
     if (const auto location = vectorElement(pinElement.body, "Location")) {
+      pin.hasLocation = true;
       pin.location = *location;
     } else if (const auto point = vectorElement(pinElement.body, "Point")) {
+      pin.hasLocation = true;
       pin.location = *point;
     }
     pins.push_back(std::move(pin));
   }
   return pins;
+}
+
+std::vector<BcfMarkupLine> readMarkupLines(std::string_view xml) {
+  std::vector<BcfMarkupLine> lines;
+  for (const XmlElementView lineElement : elements(xml, "MarkupLine")) {
+    const auto start = vectorElement(lineElement.body, "Start");
+    const auto end = vectorElement(lineElement.body, "End");
+    if (!start || !end) {
+      continue;
+    }
+
+    BcfMarkupLine line{};
+    line.guid = stringAttribute(lineElement.tag, "Guid");
+    line.label = stringAttribute(lineElement.tag, "Label");
+    line.start = *start;
+    line.end = *end;
+    line.color.r = floatAttribute(lineElement.tag, "ColorR", 1.0f);
+    line.color.g = floatAttribute(lineElement.tag, "ColorG", 1.0f);
+    line.color.b = floatAttribute(lineElement.tag, "ColorB", 1.0f);
+    lines.push_back(std::move(line));
+  }
+  return lines;
 }
 
 BcfViewpointMarkup readViewpointMarkup(std::string_view tag,
@@ -537,8 +671,10 @@ BcfViewpointMarkup readViewpointMarkup(std::string_view tag,
       }
     }
     markup.pins = readPins(*containerBody);
+    markup.lines = readMarkupLines(*containerBody);
   } else {
     markup.pins = readPins(body);
+    markup.lines = readMarkupLines(body);
   }
   return markup;
 }
@@ -697,6 +833,9 @@ BcfViewpointMarkup mergedViewpointMarkup(const BcfViewpointMarkup& markup,
   if (result.pins.empty()) {
     result.pins = fallback.pins;
   }
+  if (result.lines.empty()) {
+    result.lines = fallback.lines;
+  }
   return result;
 }
 
@@ -742,7 +881,10 @@ std::string archiveTopicFolderName(std::string_view topicGuid) {
       folder.push_back('_');
     }
   }
-  return folder.empty() ? "topic" : folder;
+  if (folder.empty() || folder == "." || folder == "..") {
+    return "topic";
+  }
+  return folder;
 }
 
 std::string archiveJoin(std::string_view folder, std::string_view relativePath) {
@@ -918,7 +1060,7 @@ std::string ExportVisualizationInfo(const ViewpointSnapshotState& snapshot,
   stream << "    </Selection>\n";
   stream << "    <Visibility DefaultVisibility=\"true\"/>\n";
   stream << "  </Components>\n";
-  if (hasPinMarkup(markup)) {
+  if (hasContainerMarkup(markup)) {
     writeContainerMarkup(stream, markup, 2);
   }
   stream << "  <ContainerSnapshot>\n";
@@ -943,6 +1085,7 @@ std::string ExportVisualizationInfo(const ViewpointSnapshotState& snapshot,
   writeAttribute(stream, "BimModelPath", snapshot.bimModelPath);
   stream << "/>\n";
   writeFilter(stream, snapshot.bimFilter);
+  writePhaseTimeline(stream, snapshot.phaseTimeline);
   stream << "  </ContainerSnapshot>\n";
   stream << "</VisualizationInfo>\n";
   return stream.str();
@@ -988,11 +1131,19 @@ std::optional<ViewpointSnapshotState> ImportVisualizationInfo(
   if (const auto tag = openTag(xml, "BimFilter")) {
     readFilter(*tag, snapshot.bimFilter);
   }
+  if (const auto tag = openTag(xml, "PhaseTimeline")) {
+    readPhaseTimeline(*tag, snapshot.phaseTimeline);
+  }
   return snapshot;
 }
 
 std::optional<BcfViewpointMarkup> ImportVisualizationInfoMarkup(
     std::string_view xml) {
+  return ImportVisualizationInfoMarkup(xml, std::string_view{});
+}
+
+std::optional<BcfViewpointMarkup> ImportVisualizationInfoMarkup(
+    std::string_view xml, std::string_view topicGuid) {
   if (xml.find("<VisualizationInfo") == std::string_view::npos) {
     return std::nullopt;
   }
@@ -1007,7 +1158,7 @@ std::optional<BcfViewpointMarkup> ImportVisualizationInfoMarkup(
       *markupTag, markupBody ? *markupBody : std::string_view{});
   for (BcfPin& pin : markup.pins) {
     if (pin.guid.empty()) {
-      pin.guid = StablePinGuid(pin.ifcGuid, pin.sourceId);
+      pin.guid = StablePinGuid(pin.ifcGuid, pin.sourceId, topicGuid);
     }
   }
   return markup;
@@ -1076,7 +1227,7 @@ std::string ExportMarkup(const BcfMarkup& markup) {
       writeOptionalAttribute(stream, "Guid", viewpoint.guid);
       writeOptionalAttribute(stream, "Viewpoint", viewpoint.viewpointFile);
       writeOptionalAttribute(stream, "Snapshot", viewpoint.snapshotFile);
-      if (viewpoint.pins.empty()) {
+      if (viewpoint.pins.empty() && viewpoint.lines.empty()) {
         stream << "/>\n";
       } else {
         stream << ">\n";
@@ -1237,7 +1388,8 @@ std::optional<BcfTopicFolder> LoadTopicFolder(
           folder / entry.markup.viewpointFile;
       if (const auto text = readTextFile(viewpointPath)) {
         entry.snapshot = ImportVisualizationInfo(*text);
-        if (auto viewpointMarkup = ImportVisualizationInfoMarkup(*text)) {
+        if (auto viewpointMarkup =
+                ImportVisualizationInfoMarkup(*text, topic.markup.topic.guid)) {
           entry.markup = mergedViewpointMarkup(entry.markup, *viewpointMarkup,
                                                topic.viewpoints.size());
         }
@@ -1336,7 +1488,8 @@ std::optional<BcfTopicFolder> LoadBcfArchive(
         if (const auto viewpointIndex = findArchiveEntry(zip, entryName)) {
           if (const auto text = extractArchiveText(zip, *viewpointIndex)) {
             entry.snapshot = ImportVisualizationInfo(*text);
-            if (auto viewpointMarkup = ImportVisualizationInfoMarkup(*text)) {
+            if (auto viewpointMarkup = ImportVisualizationInfoMarkup(
+                    *text, topic.markup.topic.guid)) {
               entry.markup = mergedViewpointMarkup(
                   entry.markup, *viewpointMarkup, topic.viewpoints.size());
             }
@@ -1362,3 +1515,39 @@ std::optional<BcfTopicFolder> LoadBcfArchive(
 }
 
 }  // namespace container::ui::bcf
+
+namespace container::renderer {
+namespace {
+
+[[nodiscard]] bool finiteIssuePinPosition(glm::vec3 position) {
+  return std::isfinite(position.x) && std::isfinite(position.y) &&
+         std::isfinite(position.z);
+}
+
+} // namespace
+
+std::vector<BimCoordinationOverlayIssuePin>
+exportBcfPinsAsIssueOverlayMarkers(
+    const container::ui::bcf::BcfMarkup &markup) {
+  std::vector<BimCoordinationOverlayIssuePin> issuePins;
+  for (const container::ui::bcf::BcfViewpointMarkup &viewpoint :
+       markup.viewpoints) {
+    issuePins.reserve(issuePins.size() + viewpoint.pins.size());
+    for (const container::ui::bcf::BcfPin &pin : viewpoint.pins) {
+      if (!pin.hasLocation || !finiteIssuePinPosition(pin.location)) {
+        continue;
+      }
+      issuePins.push_back({.position = pin.location,
+                           .label = pin.label,
+                           .ifcGuid = pin.ifcGuid,
+                           .sourceId = pin.sourceId,
+                           .primaryObjectIndex =
+                               kInvalidBimCoordinationOverlayObjectIndex,
+                           .secondaryObjectIndex =
+                               kInvalidBimCoordinationOverlayObjectIndex});
+    }
+  }
+  return issuePins;
+}
+
+} // namespace container::renderer

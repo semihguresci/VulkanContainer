@@ -1334,7 +1334,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
           deferredRasterGBufferSampler(p));
       deferred->environmentManager()->dispatchGtaoBlur(
           cmd, depthSamplingView, deferredRasterGBufferSampler(p),
-          p.camera.nearPlane, p.camera.farPlane);
+          p.camera.nearPlane, p.camera.farPlane, p.camera.orthographic);
     }
   });
 

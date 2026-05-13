@@ -33,6 +33,8 @@ struct BimLightingOverlayRecordInputs {
   VkPipelineLayout wireframeLayout{VK_NULL_HANDLE};
   BimLightingOverlayGeometryBinding scene{};
   BimLightingOverlayGeometryBinding bim{};
+  BimLightingOverlayGeometryBinding coordinationMarkers{};
+  BimLightingOverlayGeometryBinding sectionPlaneVisual{};
   VkClearAttachment selectionStencilClearAttachment{};
   VkClearRect selectionStencilClearRect{};
   const WireframePushConstants *wireframePushConstants{nullptr};
@@ -61,6 +63,9 @@ struct BimLightingOverlayFrameDrawSources {
   const std::vector<DrawCommand> *nativeCurveHover{nullptr};
   const std::vector<DrawCommand> *nativePointSelection{nullptr};
   const std::vector<DrawCommand> *nativeCurveSelection{nullptr};
+  const std::vector<DrawCommand> *coordinationIssueMarkers{nullptr};
+  const std::vector<DrawCommand> *coordinationClashMarkers{nullptr};
+  const std::vector<DrawCommand> *sectionPlaneVisual{nullptr};
 };
 
 struct BimLightingOverlayFrameRecordInputs {
@@ -69,13 +74,20 @@ struct BimLightingOverlayFrameRecordInputs {
   BimLightingOverlayFrameStyleState points{};
   BimLightingOverlayFrameStyleState curves{};
   BimLightingOverlayFrameStyleState floorPlan{};
+  BimLightingOverlayFrameStyleState coordinationIssueMarkers{};
+  BimLightingOverlayFrameStyleState coordinationClashMarkers{};
+  BimLightingOverlayFrameStyleState sectionPlaneVisual{};
   BimLightingOverlayFrameDrawSources draws{};
   float nativePointSize{1.0f};
   float nativeCurveLineWidth{1.0f};
+  bool coordinationMarkerGeometryReady{false};
+  bool sectionPlaneVisualGeometryReady{false};
   BimLightingOverlayPipelineHandles pipelines{};
   VkPipelineLayout wireframeLayout{VK_NULL_HANDLE};
   BimLightingOverlayGeometryBinding scene{};
   BimLightingOverlayGeometryBinding bim{};
+  BimLightingOverlayGeometryBinding coordinationMarkers{};
+  BimLightingOverlayGeometryBinding sectionPlaneVisualGeometry{};
   VkClearAttachment selectionStencilClearAttachment{};
   VkClearRect selectionStencilClearRect{};
   const WireframePushConstants *wireframePushConstants{nullptr};

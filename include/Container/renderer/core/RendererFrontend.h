@@ -30,6 +30,7 @@ struct AppConfig;
 namespace container::renderer {
 class BloomManager;
 class BimManager;
+enum class BimDisciplinePreset : uint32_t;
 struct BimDrawFilter;
 class CameraController;
 class CommandBufferManager;
@@ -233,8 +234,16 @@ private:
     std::string bimFilterMaterial{};
     bool bimDisciplineFilterEnabled{false};
     std::string bimFilterDiscipline{};
+    BimDisciplinePreset bimDisciplinePreset{
+        static_cast<BimDisciplinePreset>(0u)};
     bool bimPhaseFilterEnabled{false};
     std::string bimFilterPhase{};
+    bool bimPhaseTimelineEnabled{false};
+    uint32_t bimPhaseTimelineActiveIndex{0};
+    bool bimPhaseTimelineShowExisting{true};
+    bool bimPhaseTimelineShowNew{true};
+    bool bimPhaseTimelineShowDemolished{false};
+    bool bimPhaseTimelineGhostFuture{false};
     bool bimFireRatingFilterEnabled{false};
     std::string bimFilterFireRating{};
     bool bimLoadBearingFilterEnabled{false};
@@ -302,8 +311,16 @@ private:
     std::string bimFilterMaterial{};
     bool bimDisciplineFilterEnabled{false};
     std::string bimFilterDiscipline{};
+    BimDisciplinePreset bimDisciplinePreset{
+        static_cast<BimDisciplinePreset>(0u)};
     bool bimPhaseFilterEnabled{false};
     std::string bimFilterPhase{};
+    bool bimPhaseTimelineEnabled{false};
+    uint32_t bimPhaseTimelineActiveIndex{0};
+    bool bimPhaseTimelineShowExisting{true};
+    bool bimPhaseTimelineShowNew{true};
+    bool bimPhaseTimelineShowDemolished{false};
+    bool bimPhaseTimelineGhostFuture{false};
     bool bimFireRatingFilterEnabled{false};
     std::string bimFilterFireRating{};
     bool bimLoadBearingFilterEnabled{false};
@@ -331,6 +348,7 @@ private:
     container::ui::TransformAxis axis{container::ui::TransformAxis::Free};
     bool snapEnabled{false};
     container::ui::TransformControls startControls{};
+    container::ui::SectionPlaneState startSectionPlane{};
     glm::vec3 origin{0.0f};
     float gizmoScale{1.0f};
     glm::vec3 axisX{1.0f, 0.0f, 0.0f};

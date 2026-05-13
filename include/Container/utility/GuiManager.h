@@ -12,6 +12,10 @@
 
 #include "Container/common/CommonMath.h"
 #include "Container/common/CommonVulkan.h"
+#include "Container/renderer/bim/BimCoordinationOverlay.h"
+#include "Container/renderer/bim/BimGeoreferenceTransform.h"
+#include "Container/renderer/bim/BimModelCompare.h"
+#include "Container/renderer/bim/BimScheduleExtractor.h"
 #include "Container/renderer/lighting/EditableLight.h"
 #include "Container/utility/GuiDebugState.h"
 #include "Container/utility/SceneData.h"
@@ -23,9 +27,12 @@ class SceneGraph;
 } // namespace container::scene
 
 namespace container::renderer {
+enum class BimDisciplinePreset : uint32_t;
 enum class BimSemanticColorMode : uint32_t;
+enum class BimSnapKind : uint32_t;
 enum class ScenePrimitiveKind : uint32_t;
 struct BimElementProperty;
+class BimRelationshipGraph;
 struct BimStoreyRange;
 struct CullStats;
 struct RendererTelemetryView;
@@ -159,6 +166,17 @@ struct BimFilterState {
   uint32_t drawBudgetMaxObjects{0};
   bool isolateSelection{false};
   bool hideSelection{false};
+  container::renderer::BimDisciplinePreset disciplinePreset{
+      static_cast<container::renderer::BimDisciplinePreset>(0u)};
+};
+
+struct BimPhaseTimelineUiState {
+  bool enabled{false};
+  uint32_t activePhaseIndex{0};
+  bool showExisting{true};
+  bool showNew{true};
+  bool showDemolished{false};
+  bool ghostFuture{false};
 };
 
 enum class BimFloorPlanElevationMode : uint32_t {
@@ -198,9 +216,47 @@ struct BimElevationViewRequest {
   bool syncSectionPlaneToView{false};
 };
 
+struct BimDrawingExportUiState {
+  std::string path{"bim-drawing.svg"};
+  float paperWidthMm{297.0f};
+  float paperHeightMm{210.0f};
+  float modelUnitsPerPaperMm{50.0f};
+  bool exportRequested{false};
+};
+
+enum class BimMeasurementSnapMode : uint32_t {
+  Off = 0,
+  Vertex = 1,
+  Edge = 2,
+  Face = 3,
+  Bounds = 4,
+  Floor = 5,
+};
+
+struct BimMeasurementSnapUiState {
+  BimMeasurementSnapMode mode{BimMeasurementSnapMode::Off};
+  float maxScreenDistancePixels{12.0f};
+};
+
+struct BimMeasurementCapturedPoint {
+  glm::vec3 center{0.0f};
+  uint32_t objectIndex{std::numeric_limits<uint32_t>::max()};
+  std::string label{};
+  std::string modelPath{};
+  container::renderer::BimSnapKind snapKind{};
+};
+
+struct BimInspectionState;
+
+[[nodiscard]] std::optional<BimMeasurementCapturedPoint>
+CaptureBimMeasurementPointFromSelection(
+    const BimInspectionState &inspection,
+    const BimMeasurementSnapUiState &snapState);
+
 struct BimLayerVisibilityState {
   bool pointCloudVisible{true};
   bool curvesVisible{true};
+  bool spaceLayerVisible{false};
   bool xrayLayerVisible{false};
   bool clashLayerVisible{false};
   bool markupLayerVisible{false};
@@ -220,6 +276,12 @@ struct SectionPlaneState {
   bool enabled{false};
   glm::vec3 normal{0.0f, 1.0f, 0.0f};
   float offset{0.0f};
+  bool visualPlaneVisible{true};
+  bool visualPlaneEditable{false};
+  float visualPlaneSize{10.0f};
+  glm::vec3 visualPlaneColor{0.12f, 0.62f, 1.0f};
+  float visualPlaneOpacity{0.55f};
+  float visualPlaneLineWidth{2.0f};
 };
 
 struct BimBoxClipUiState {
@@ -238,6 +300,14 @@ struct BimClipCapHatchingUiState {
   float hatchAngleDegrees{45.0f};
   float hatchLineWidth{1.0f};
   glm::vec3 hatchColor{0.08f, 0.08f, 0.08f};
+  bool perMaterialCutStyles{false};
+  uint32_t concreteMaterialIndex{0};
+  float concreteHatchSpacing{0.12f};
+  uint32_t glassMaterialIndex{1};
+  float glassHatchSpacing{0.75f};
+  bool sectionMarkersPreview{true};
+  glm::vec3 sectionMarkerColor{0.95f, 0.62f, 0.12f};
+  float sectionMarkerLineWidth{2.0f};
 };
 
 struct BimInspectionState {
@@ -304,6 +374,19 @@ struct BimInspectionState {
   std::string crsAuthority{};
   std::string crsCode{};
   std::string mapConversionName{};
+  std::span<const container::renderer::BimScheduleRow>
+      scheduleByClassAndStoreyRows{};
+  std::span<const container::renderer::BimScheduleRow>
+      scheduleByTypeAndStoreyRows{};
+  std::span<const container::renderer::BimScheduleRow>
+      scheduleByMaterialRows{};
+  std::span<const container::renderer::BimModelCompareElement>
+      modelCompareElements{};
+  bool hasSelectedCoordinateReadout{false};
+  container::renderer::BimCoordinateReadout selectedCoordinateReadout{};
+  bool hasOriginRebaseRecommendation{false};
+  container::renderer::BimOriginRebaseRecommendation
+      originRebaseRecommendation{};
   std::span<const std::string> elementTypes{};
   std::span<const std::string> elementStoreys{};
   std::span<const std::string> elementMaterials{};
@@ -313,6 +396,7 @@ struct BimInspectionState {
   std::span<const std::string> elementLoadBearingValues{};
   std::span<const std::string> elementStatuses{};
   std::span<const container::renderer::BimStoreyRange> elementStoreyRanges{};
+  const container::renderer::BimRelationshipGraph *relationshipGraph{nullptr};
 
   bool hasSelection{false};
   uint32_t selectedObjectIndex{0};
@@ -359,6 +443,22 @@ struct ViewpointSnapshotState {
   std::string selectedBimSourceId{};
   std::string bimModelPath{};
   BimFilterState bimFilter{};
+  BimPhaseTimelineUiState phaseTimeline{};
+};
+
+struct SceneHierarchyParentCandidateRow {
+  std::optional<uint32_t> parent{};
+  std::string label{};
+  bool selected{false};
+};
+
+struct SceneHierarchyParentCandidateCacheState {
+  uint64_t revision{std::numeric_limits<uint64_t>::max()};
+  size_t nodeCount{0};
+  size_t rootCount{0};
+  uint32_t nodeIndex{std::numeric_limits<uint32_t>::max()};
+  uint32_t currentParent{std::numeric_limits<uint32_t>::max()};
+  std::vector<SceneHierarchyParentCandidateRow> rows{};
 };
 
 class GuiManager {
@@ -421,7 +521,12 @@ public:
       const ViewpointSnapshotState &currentViewpoint,
       const std::function<bool(const ViewpointSnapshotState &)>
           &restoreViewpoint,
+      uint32_t rootSceneNode,
       const std::function<void(uint32_t)> &selectMeshNode,
+      const std::function<void(uint32_t)> &focusSceneNode,
+      const std::function<void(uint32_t, bool)> &setSceneNodeVisible,
+      const std::function<void(uint32_t, std::optional<uint32_t>)>
+          &reparentSceneNode,
       const TransformControls &meshTransform,
       const std::function<void(uint32_t, const TransformControls &)>
           &applyMeshTransform);
@@ -467,6 +572,10 @@ public:
   [[nodiscard]] const BimFilterState &bimFilterState() const {
     return bimFilterState_;
   }
+  [[nodiscard]] const BimPhaseTimelineUiState &
+  bimPhaseTimelineUiState() const {
+    return bimPhaseTimelineUiState_;
+  }
   [[nodiscard]] const BimFloorPlanOverlayState &
   bimFloorPlanOverlayState() const {
     return bimFloorPlanOverlayState_;
@@ -480,9 +589,21 @@ public:
     bimElevationViewRequest_.reset();
     return request;
   }
+  [[nodiscard]] std::optional<BimDrawingExportUiState>
+  consumeBimDrawingExportRequest() {
+    if (!bimDrawingExportUiState_.exportRequested) {
+      return std::nullopt;
+    }
+    BimDrawingExportUiState request = bimDrawingExportUiState_;
+    bimDrawingExportUiState_.exportRequested = false;
+    return request;
+  }
   [[nodiscard]] const BimLayerVisibilityState &bimLayerVisibilityState() const {
     return bimLayerVisibilityState_;
   }
+  [[nodiscard]] std::span<
+      const container::renderer::BimCoordinationOverlayIssuePin>
+  bimIssueOverlayPins() const;
   [[nodiscard]] container::renderer::BimSemanticColorMode
   bimSemanticColorMode() const {
     return bimSemanticColorMode_;
@@ -490,6 +611,8 @@ public:
   [[nodiscard]] const SectionPlaneState &sectionPlaneState() const {
     return sectionPlaneState_;
   }
+  void setSectionPlaneState(const SectionPlaneState &state);
+  void setSectionPlaneVisualEditable(bool editable);
   [[nodiscard]] const BimBoxClipUiState &bimBoxClipState() const {
     return bimBoxClipState_;
   }
@@ -572,6 +695,7 @@ private:
     uint32_t objectIndex{std::numeric_limits<uint32_t>::max()};
     std::string label{};
     std::string modelPath{};
+    container::renderer::BimSnapKind snapKind{};
   };
 
   struct BimMeasurementAnnotationState {
@@ -579,11 +703,15 @@ private:
     std::string label{};
     BimMeasurementPointState pointA{};
     BimMeasurementPointState pointB{};
+    BimMeasurementPointState pointC{};
+    bool hasPointC{false};
     float distance{0.0f};
     float horizontalDistance{0.0f};
     float elevationDelta{0.0f};
     float slopeAngleDegrees{0.0f};
     float elevationAxisAngleDegrees{0.0f};
+    float angleDegrees{0.0f};
+    float polygonArea{0.0f};
   };
 
   struct BimSelectionSetMemberState {
@@ -607,6 +735,8 @@ private:
     std::string status{};
     std::string priority{};
     std::string path{};
+    std::vector<container::renderer::BimCoordinationOverlayIssuePin>
+        issuePins{};
     bool hasSnapshot{false};
     ViewpointSnapshotState snapshot{};
   };
@@ -649,12 +779,15 @@ private:
   container::gpu::ExposureSettings exposureSettings_{};
   std::vector<RenderPassToggle> renderPassToggles_;
   BimFilterState bimFilterState_{};
+  BimPhaseTimelineUiState bimPhaseTimelineUiState_{};
   BimFloorPlanOverlayState bimFloorPlanOverlayState_{};
   BimElevationViewState bimElevationViewState_{};
   std::optional<BimElevationViewRequest> bimElevationViewRequest_{};
+  BimDrawingExportUiState bimDrawingExportUiState_{};
   BimLayerVisibilityState bimLayerVisibilityState_{};
   std::string bimQuickFilterSearch_{};
   std::string bimPropertySearch_{};
+  std::string bimRelationshipSearch_{};
   container::renderer::BimSemanticColorMode bimSemanticColorMode_{};
   SectionPlaneState sectionPlaneState_{};
   BimBoxClipUiState bimBoxClipState_{};
@@ -676,15 +809,25 @@ private:
   std::string bcfTopicLabelsInput_{};
   std::string bcfTopicCommentInput_{};
   std::vector<BcfTopicArchiveEntryState> bcfTopicArchiveEntries_{};
+  std::vector<container::renderer::BimCoordinationOverlayIssuePin>
+      bcfIssueOverlayPins_{};
   int selectedBcfTopicArchiveIndex_{-1};
   uint32_t nextBcfTopicArchiveId_{1};
+  std::vector<container::renderer::BimModelCompareElement>
+      bimCompareBaseline_{};
+  std::string bimCompareBaselineModelPath_{};
+  std::vector<container::renderer::BimModelCompareChange>
+      bimCompareChanges_{};
+  SceneHierarchyParentCandidateCacheState sceneHierarchyParentCandidateCache_{};
   BimLodStreamingUiState bimLodStreamingUiState_{};
   BimClipCapHatchingUiState bimClipCapHatchingUiState_{};
   std::string bimMeasurementModelPath_{};
   float bimMeasurementEffectiveImportScale_{1.0f};
   size_t bimMeasurementObjectCount_{0};
+  BimMeasurementSnapUiState bimMeasurementSnapState_{};
   BimMeasurementPointState bimMeasurementPointA_{};
   BimMeasurementPointState bimMeasurementPointB_{};
+  BimMeasurementPointState bimMeasurementPointC_{};
   std::vector<BimMeasurementAnnotationState> bimMeasurementAnnotations_{};
   uint32_t nextBimMeasurementAnnotationId_{1};
   int selectedBimMeasurementAnnotationIndex_{-1};

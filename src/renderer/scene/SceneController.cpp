@@ -16,6 +16,7 @@
 #include <limits>
 #include <span>
 #include <stdexcept>
+#include <string>
 #include <unordered_set>
 
 namespace container::renderer {
@@ -852,7 +853,8 @@ void SceneController::buildSceneGraph(uint32_t& outRootNode,
       static_cast<uint32_t>(sceneGraph_.nodeCount());
   if (existingNodeCount > 0) {
     outRootNode = sceneGraph_.createNode(
-        glm::mat4(1.0f), sceneManager_.defaultMaterialIndex(), false);
+        glm::mat4(1.0f), sceneManager_.defaultMaterialIndex(), false,
+        container::scene::SceneGraph::kInvalidNode, "Scene Root");
     for (uint32_t i = 0; i < existingNodeCount; ++i) {
       const auto* node = sceneGraph_.getNode(i);
       if (node != nullptr &&
@@ -927,7 +929,8 @@ uint32_t SceneController::addScenePrimitive(ScenePrimitiveKind kind,
 
   createGeometryBuffers();
   const uint32_t node = sceneGraph_.createNode(
-      transform, sceneManager_.defaultMaterialIndex(), true, primitiveIndex);
+      transform, sceneManager_.defaultMaterialIndex(), true, primitiveIndex,
+      std::string(scenePrimitiveKindLabel(kind)));
   sceneGraph_.setParent(node, rootNode);
   sceneGraph_.updateWorldTransforms();
   invalidateObjectDataCache();

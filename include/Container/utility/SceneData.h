@@ -557,7 +557,7 @@ struct BlurPushConstants {
   float depthThreshold{0.08f};
   float cameraNear{0.1f};
   float cameraFar{100.0f};
-  float pad0{0.0f};
+  uint32_t orthographicDepth{0};
   float pad1{0.0f};
   float pad2{0.0f};
 };
@@ -1126,8 +1126,8 @@ static_assert(offsetof(BlurPushConstants, cameraNear) == 12,
               "BlurPushConstants.cameraNear offset");
 static_assert(offsetof(BlurPushConstants, cameraFar) == 16,
               "BlurPushConstants.cameraFar offset");
-static_assert(offsetof(BlurPushConstants, pad0) == 20,
-              "BlurPushConstants.pad0 offset");
+static_assert(offsetof(BlurPushConstants, orthographicDepth) == 20,
+              "BlurPushConstants.orthographicDepth offset");
 static_assert(offsetof(BlurPushConstants, pad1) == 24,
               "BlurPushConstants.pad1 offset");
 static_assert(offsetof(BlurPushConstants, pad2) == 28,

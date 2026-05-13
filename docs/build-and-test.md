@@ -53,6 +53,10 @@ at build time and refreshes the local archive when that ref changes.
 `ENABLE_USD_SAMPLE_MODEL_DOWNLOAD` downloads the OpenUSD Kitchen Set and
 PointInstancedMedCity archives into `models/OpenUSD-Sample-Assets` for USD
 loader validation and follow-up work.
+The glTF archive is large; if a slow connection still times out, increase
+`GLTF_SAMPLE_MODELS_DOWNLOAD_TIMEOUT_SECONDS` while configuring. Stalled
+transfers are controlled separately by
+`GLTF_SAMPLE_MODELS_INACTIVITY_TIMEOUT_SECONDS`.
 
 To download or refresh only the USD samples through CMake:
 

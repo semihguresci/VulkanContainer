@@ -2,7 +2,10 @@
 
 #include "Container/common/CommonVulkan.h"
 #include "Container/geometry/Vertex.h"
+#include "Container/renderer/bim/BimCoordinationOverlay.h"
+#include "Container/renderer/bim/BimDrawingExport.h"
 #include "Container/renderer/bim/BimFloorPlanOverlayData.h"
+#include "Container/renderer/bim/BimRelationshipGraph.h"
 #include "Container/renderer/bim/BimSectionCapBuilder.h"
 #include "Container/renderer/bim/BimSemanticColorMode.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
@@ -67,6 +70,42 @@ struct BimElementBounds {
   float radius{0.0f};
   float floorElevation{0.0f};
 };
+
+struct BimCoordinationMarkerDrawData {
+  container::gpu::BufferSlice vertexSlice{};
+  container::gpu::BufferSlice indexSlice{};
+  VkIndexType indexType{VK_INDEX_TYPE_UINT32};
+  std::vector<DrawCommand> issuePinDrawCommands{};
+  std::vector<DrawCommand> clashDrawCommands{};
+
+  [[nodiscard]] bool valid() const {
+    return vertexSlice.buffer != VK_NULL_HANDLE &&
+           indexSlice.buffer != VK_NULL_HANDLE &&
+           (!issuePinDrawCommands.empty() || !clashDrawCommands.empty());
+  }
+};
+
+struct BimSectionPlaneVisualDrawData {
+  container::gpu::BufferSlice vertexSlice{};
+  container::gpu::BufferSlice indexSlice{};
+  VkIndexType indexType{VK_INDEX_TYPE_UINT32};
+  std::vector<DrawCommand> drawCommands{};
+
+  [[nodiscard]] bool valid() const {
+    return vertexSlice.buffer != VK_NULL_HANDLE &&
+           indexSlice.buffer != VK_NULL_HANDLE && !drawCommands.empty();
+  }
+};
+
+namespace detail {
+[[nodiscard]] size_t bimCoordinationMarkerGeometrySignatureForTesting(
+    const BimCoordinationOverlayResult &overlay, float markerRadius,
+    uint64_t objectDataRevision);
+
+[[nodiscard]] size_t bimSectionPlaneVisualGeometrySignatureForTesting(
+    const glm::vec4 &plane, float size, const glm::vec3 &color,
+    uint64_t objectDataRevision);
+} // namespace detail
 
 struct BimStoreyRange {
   std::string label{};
@@ -232,6 +271,12 @@ struct BimSceneStats {
   size_t uniqueStatusCount{0};
 };
 
+enum class BimDisciplinePreset : uint32_t {
+  None = 0,
+  Architecture = 1,
+  MepXray = 2,
+};
+
 struct BimDrawFilter {
   bool typeFilterEnabled{false};
   std::string type{};
@@ -254,6 +299,13 @@ struct BimDrawFilter {
   bool isolateSelection{false};
   bool hideSelection{false};
   uint32_t selectedObjectIndex{std::numeric_limits<uint32_t>::max()};
+  BimDisciplinePreset disciplinePreset{BimDisciplinePreset::None};
+  bool phaseTimelineEnabled{false};
+  uint32_t phaseTimelineActiveIndex{0};
+  bool phaseTimelineShowExisting{true};
+  bool phaseTimelineShowNew{true};
+  bool phaseTimelineShowDemolished{false};
+  bool phaseTimelineGhostFuture{false};
 
   [[nodiscard]] bool active() const {
     return (typeFilterEnabled && !type.empty()) ||
@@ -266,7 +318,14 @@ struct BimDrawFilter {
            (statusFilterEnabled && !status.empty()) ||
            (drawBudgetEnabled && drawBudgetMaxObjects > 0u) ||
            ((isolateSelection || hideSelection) &&
-            selectedObjectIndex != std::numeric_limits<uint32_t>::max());
+            selectedObjectIndex != std::numeric_limits<uint32_t>::max()) ||
+           disciplinePreset != BimDisciplinePreset::None ||
+           phaseTimelineEnabled;
+  }
+
+  [[nodiscard]] bool requiresCpuFiltering() const {
+    return disciplinePreset != BimDisciplinePreset::None ||
+           phaseTimelineEnabled;
   }
 };
 
@@ -593,6 +652,27 @@ public:
   [[nodiscard]] const std::vector<BimElementMetadata> &elementMetadata() const {
     return elementMetadata_;
   }
+  [[nodiscard]] BimCoordinationOverlayResult buildCoordinationOverlay(
+      const BimCoordinationOverlayBuildOptions &options,
+      std::span<const BimCoordinationOverlayClashPair> clashPairs = {},
+      std::span<const BimCoordinationOverlayIssuePin> issuePins = {}) const;
+  bool rebuildCoordinationMarkerGeometry(
+      const BimCoordinationOverlayResult &overlay, float markerRadius = 0.35f);
+  void clearCoordinationMarkerGeometry();
+  [[nodiscard]] const BimCoordinationMarkerDrawData &
+  coordinationMarkerDrawData() const {
+    return coordinationMarkerDrawData_;
+  }
+  bool rebuildSectionPlaneVisualGeometry(glm::vec4 plane, float size,
+                                         glm::vec3 color);
+  void clearSectionPlaneVisualGeometry();
+  [[nodiscard]] const BimSectionPlaneVisualDrawData &
+  sectionPlaneVisualDrawData() const {
+    return sectionPlaneVisualDrawData_;
+  }
+  [[nodiscard]] const BimRelationshipGraph &relationshipGraph() const {
+    return relationshipGraph_;
+  }
   [[nodiscard]] const BimElementMetadata *
   metadataForObject(uint32_t objectIndex) const;
   [[nodiscard]] std::span<const uint32_t>
@@ -738,6 +818,9 @@ public:
   [[nodiscard]] const std::vector<DrawCommand> &floorPlanDrawCommands() const {
     return floorPlanGroundDrawCommands();
   }
+  [[nodiscard]] std::vector<BimDrawingExportLine>
+  floorPlanDrawingExportLines(bool sourceElevation, glm::vec3 color,
+                              float lineWidthMm) const;
   [[nodiscard]] bool hasFloorPlanOverlay() const {
     return floorPlanGround_.valid() || floorPlanSourceElevation_.valid();
   }
@@ -844,6 +927,7 @@ private:
   std::vector<uint32_t> indices_{};
   std::vector<container::gpu::ObjectData> objectData_{};
   std::vector<BimElementMetadata> elementMetadata_{};
+  BimRelationshipGraph relationshipGraph_{};
   std::vector<DrawCommand> objectDrawCommands_{};
   std::vector<uint32_t> objectDrawCommandOffsets_{};
   std::vector<uint32_t> objectDrawCommandCounts_{};
@@ -906,12 +990,24 @@ private:
   BimFloorPlanOverlayData floorPlanGround_{};
   BimFloorPlanOverlayData floorPlanSourceElevation_{};
   BimSectionClipCapDrawData sectionClipCapDrawData_{};
+  BimCoordinationMarkerDrawData coordinationMarkerDrawData_{};
+  BimSectionPlaneVisualDrawData sectionPlaneVisualDrawData_{};
   std::vector<container::geometry::Vertex> sectionClipCapVertices_{};
   std::vector<uint32_t> sectionClipCapIndices_{};
   container::gpu::AllocatedBuffer sectionClipCapVertexBuffer_{};
   container::gpu::AllocatedBuffer sectionClipCapIndexBuffer_{};
   BimSectionCapBuildOptions sectionClipCapBuildOptions_{};
   bool sectionClipCapBuildOptionsValid_{false};
+  std::vector<container::geometry::Vertex> coordinationMarkerVertices_{};
+  std::vector<uint32_t> coordinationMarkerIndices_{};
+  container::gpu::AllocatedBuffer coordinationMarkerVertexBuffer_{};
+  container::gpu::AllocatedBuffer coordinationMarkerIndexBuffer_{};
+  size_t coordinationMarkerGeometrySignature_{0};
+  std::vector<container::geometry::Vertex> sectionPlaneVisualVertices_{};
+  std::vector<uint32_t> sectionPlaneVisualIndices_{};
+  container::gpu::AllocatedBuffer sectionPlaneVisualVertexBuffer_{};
+  container::gpu::AllocatedBuffer sectionPlaneVisualIndexBuffer_{};
+  size_t sectionPlaneVisualGeometrySignature_{0};
 };
 
 } // namespace container::renderer

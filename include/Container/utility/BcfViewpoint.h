@@ -30,9 +30,18 @@ struct BcfComment {
 struct BcfPin {
   std::string guid{};
   std::string label{};
+  bool hasLocation{false};
   glm::vec3 location{0.0f};
   std::string ifcGuid{};
   std::string sourceId{};
+};
+
+struct BcfMarkupLine {
+  std::string guid{};
+  glm::vec3 start{0.0f};
+  glm::vec3 end{0.0f};
+  glm::vec3 color{1.0f};
+  std::string label{};
 };
 
 struct BcfViewpointMarkup {
@@ -40,6 +49,7 @@ struct BcfViewpointMarkup {
   std::string viewpointFile{};
   std::string snapshotFile{};
   std::vector<BcfPin> pins{};
+  std::vector<BcfMarkupLine> lines{};
 };
 
 struct BcfMarkup {
@@ -73,6 +83,9 @@ struct BcfTopicFolder {
 
 [[nodiscard]] std::optional<BcfViewpointMarkup> ImportVisualizationInfoMarkup(
     std::string_view xml);
+
+[[nodiscard]] std::optional<BcfViewpointMarkup> ImportVisualizationInfoMarkup(
+    std::string_view xml, std::string_view topicGuid);
 
 bool SaveVisualizationInfo(const ViewpointSnapshotState& snapshot,
                            const std::filesystem::path& path);

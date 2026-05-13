@@ -132,6 +132,66 @@ TEST(IfcxLoader, ParsesUsdMeshWithInheritedMetadataAndTransform) {
   EXPECT_NEAR(glm::length(model.vertices[0].normal), 1.0f, 1.0e-6f);
 }
 
+TEST(IfcxLoader, LiftsLineMarkingSurfaceFeaturesOffHostSurface) {
+  constexpr const char *kIfcJson = R"json(
+{
+  "data": [
+    {
+      "path": "course",
+      "children": {
+        "Body": "course-mesh",
+        "road - line marking": "line-marking"
+      },
+      "attributes": {
+        "bsi::ifc::class": { "code": "IfcCourse" }
+      }
+    },
+    {
+      "path": "course-mesh",
+      "attributes": {
+        "usd::usdgeom::mesh": {
+          "faceVertexIndices": [0, 1, 2, 1, 0, 3],
+          "points": [[0, 0, 0], [2, 0, 0], [2, 1, 0], [0, 1, 0]]
+        }
+      }
+    },
+    {
+      "path": "line-marking",
+      "children": { "Body": "marking-mesh" },
+      "attributes": {
+        "bsi::ifc::class": { "code": "IfcSurfaceFeatureLINEMARKING" }
+      }
+    },
+    {
+      "path": "marking-mesh",
+      "attributes": {
+        "usd::usdgeom::mesh": {
+          "faceVertexIndices": [0, 1, 2, 1, 0, 3],
+          "points": [[0, 0, 0], [1, 0, 0], [1, 0.1, 0], [0, 0.1, 0]]
+        }
+      }
+    }
+  ]
+}
+)json";
+
+  const auto model = container::geometry::ifcx::LoadFromJson(kIfcJson);
+
+  ASSERT_EQ(model.elements.size(), 2u);
+  const auto courseIt = std::ranges::find_if(model.elements, [](const auto &e) {
+    return e.type == "IfcCourse";
+  });
+  const auto markingIt =
+      std::ranges::find_if(model.elements, [](const auto &e) {
+        return e.type == "IfcSurfaceFeatureLINEMARKING";
+      });
+  ASSERT_NE(courseIt, model.elements.end());
+  ASSERT_NE(markingIt, model.elements.end());
+  EXPECT_NEAR(courseIt->transform[3].y, 0.0f, 1.0e-6f);
+  EXPECT_GT(markingIt->transform[3].y, courseIt->transform[3].y);
+  EXPECT_NEAR(markingIt->transform[3].y, 0.002f, 1.0e-6f);
+}
+
 TEST(IfcxLoader, TriangulatesPolygonCountsAndSkipsInvisibleMeshes) {
   constexpr const char *kIfcJson = R"json(
 {

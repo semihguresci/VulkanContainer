@@ -57,6 +57,7 @@ void EnvironmentManager::createGtaoResources(
     const std::filesystem::path& shaderDir,
     uint32_t fullWidth, uint32_t fullHeight) {
   createGtaoPipelines(shaderDir);
+  gtaoFormat_ = selectGtaoStorageFormat();
   createGtaoTextures(fullWidth / 2, fullHeight / 2);
 }
 
@@ -1152,19 +1153,48 @@ void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shader
 }
 
 // ---------------------------------------------------------------------------
-// GTAO textures (half-resolution R8)
+// GTAO textures (half-resolution AO)
 // ---------------------------------------------------------------------------
+
+VkFormat EnvironmentManager::selectGtaoStorageFormat() const {
+  constexpr std::array<VkFormat, 4> kCandidates{
+      VK_FORMAT_R8_UNORM,
+      VK_FORMAT_R16_UNORM,
+      VK_FORMAT_R16_SFLOAT,
+      VK_FORMAT_R32_SFLOAT,
+  };
+  constexpr VkFormatFeatureFlags kRequiredFeatures =
+      VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT |
+      VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT;
+
+  for (const VkFormat format : kCandidates) {
+    VkFormatProperties props{};
+    vkGetPhysicalDeviceFormatProperties(device_->physicalDevice(), format,
+                                        &props);
+    if ((props.optimalTilingFeatures & kRequiredFeatures) ==
+        kRequiredFeatures) {
+      return format;
+    }
+  }
+
+  throw std::runtime_error(
+      "GPU does not support a sampled storage image format for GTAO");
+}
 
 void EnvironmentManager::createGtaoTextures(uint32_t halfWidth,
                                              uint32_t halfHeight) {
   VkDevice dev = device_->device();
+  if (gtaoFormat_ == VK_FORMAT_UNDEFINED) {
+    gtaoFormat_ = selectGtaoStorageFormat();
+  }
   gtaoWidth_  = std::max(halfWidth, 1u);
   gtaoHeight_ = std::max(halfHeight, 1u);
 
-  auto createR8 = [&](VkImage& image, VmaAllocation& alloc, VkImageView& view) {
+  auto createAoImage = [&](VkImage& image, VmaAllocation& alloc,
+                           VkImageView& view) {
     VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ii.imageType   = VK_IMAGE_TYPE_2D;
-    ii.format      = VK_FORMAT_R8_UNORM;
+    ii.format      = gtaoFormat_;
     ii.extent      = {gtaoWidth_, gtaoHeight_, 1};
     ii.mipLevels   = 1;
     ii.arrayLayers = 1;
@@ -1184,14 +1214,14 @@ void EnvironmentManager::createGtaoTextures(uint32_t halfWidth,
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     vi.image    = image;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
-    vi.format   = VK_FORMAT_R8_UNORM;
+    vi.format   = gtaoFormat_;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     if (vkCreateImageView(dev, &vi, nullptr, &view) != VK_SUCCESS)
       throw std::runtime_error("failed to create GTAO texture view");
   };
 
-  createR8(gtaoImage_, gtaoAlloc_, gtaoView_);
-  createR8(gtaoBlurredImage_, gtaoBlurredAlloc_, gtaoBlurredView_);
+  createAoImage(gtaoImage_, gtaoAlloc_, gtaoView_);
+  createAoImage(gtaoBlurredImage_, gtaoBlurredAlloc_, gtaoBlurredView_);
 
   // Transition both to GENERAL for compute write.
   VkCommandBuffer cmd = VK_NULL_HANDLE;
@@ -1410,7 +1440,8 @@ void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd,
                                           VkImageView depthView,
                                           VkSampler depthSampler,
                                           float cameraNear,
-                                          float cameraFar) const {
+                                          float cameraFar,
+                                          bool orthographicDepth) const {
   if (gtaoBlurPipeline_ == VK_NULL_HANDLE || !aoEnabled_) return;
   if (gtaoBlurredView_ == VK_NULL_HANDLE) return;
   if (depthView == VK_NULL_HANDLE || depthSampler == VK_NULL_HANDLE) return;
@@ -1446,6 +1477,7 @@ void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd,
   pc.depthThreshold = 0.08f;
   pc.cameraNear     = cameraNear;
   pc.cameraFar      = cameraFar;
+  pc.orthographicDepth = orthographicDepth ? 1u : 0u;
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gtaoBlurPipeline_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gtaoBlurPipelineLayout_,

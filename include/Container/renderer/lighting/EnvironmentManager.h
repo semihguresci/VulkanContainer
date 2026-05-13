@@ -65,7 +65,8 @@ class EnvironmentManager {
                         VkImageView depthView,
                         VkSampler depthSampler,
                         float cameraNear,
-                        float cameraFar) const;
+                        float cameraFar,
+                        bool orthographicDepth) const;
 
   // ---- Accessors ----
 
@@ -105,6 +106,7 @@ class EnvironmentManager {
   void createGtaoPipelines(const std::filesystem::path& shaderDir);
   void createGtaoTextures(uint32_t halfWidth, uint32_t halfHeight);
   void destroyGtaoTextures();
+  [[nodiscard]] VkFormat selectGtaoStorageFormat() const;
   void destroyEnvironmentCubemaps();
 
   std::shared_ptr<container::gpu::VulkanDevice> device_;
@@ -154,6 +156,7 @@ class EnvironmentManager {
   VkImageView   gtaoBlurredView_{VK_NULL_HANDLE};
 
   VkSampler     gtaoSampler_{VK_NULL_HANDLE};
+  VkFormat      gtaoFormat_{VK_FORMAT_UNDEFINED};
   uint32_t      gtaoWidth_{0};
   uint32_t      gtaoHeight_{0};
 

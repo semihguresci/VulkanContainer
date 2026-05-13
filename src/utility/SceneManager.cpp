@@ -949,13 +949,14 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
   if (gltfModel_.nodes.empty()) {
     const uint32_t rootNode = sceneGraph.createNode(
         importScaleTransform(config_.importScale), defaultMaterialIndex_,
-        false);
+        false, SceneGraph::kInvalidNode, "Imported Scene");
     for (size_t primitiveIndex = 0; primitiveIndex < primitiveRanges().size();
          ++primitiveIndex) {
       const auto& primitive = primitiveRanges()[primitiveIndex];
       const uint32_t primitiveNode = sceneGraph.createNode(
           glm::mat4(1.0f), resolveLoadedMaterialIndex(primitive.materialIndex),
-          true, static_cast<uint32_t>(primitiveIndex));
+          true, static_cast<uint32_t>(primitiveIndex),
+          "Primitive " + std::to_string(primitiveIndex));
       sceneGraph.setParent(primitiveNode, rootNode);
     }
     sceneGraph.updateWorldTransforms();
@@ -973,8 +974,8 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
   std::optional<uint32_t> importRootNode;
   if (sanitizeImportScale(config_.importScale) != 1.0f) {
     importRootNode = sceneGraph.createNode(
-        importScaleTransform(config_.importScale), defaultMaterialIndex_,
-        false);
+        importScaleTransform(config_.importScale), defaultMaterialIndex_, false,
+        SceneGraph::kInvalidNode, "Import Scale");
   }
 
   std::function<void(int, std::optional<uint32_t>)> appendNode =
@@ -985,8 +986,13 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
         }
 
         const auto& gltfNode = gltfModel_.nodes[gltfNodeIndex];
+        const std::string nodeName =
+            gltfNode.name.empty()
+                ? "glTF Node " + std::to_string(gltfNodeIndex)
+                : gltfNode.name;
         const uint32_t graphNode = sceneGraph.createNode(
-            nodeLocalTransform(gltfNode), defaultMaterialIndex_, false);
+            nodeLocalTransform(gltfNode), defaultMaterialIndex_, false,
+            SceneGraph::kInvalidNode, nodeName);
         sceneGraph.setParent(graphNode, parentNode);
 
         if (gltfNode.mesh >= 0 &&
@@ -1007,7 +1013,8 @@ void SceneManager::populateSceneGraph(SceneGraph& sceneGraph) const {
             const uint32_t primitiveNode = sceneGraph.createNode(
                 glm::mat4(1.0f),
                 resolveLoadedMaterialIndex(primitive.materialIndex), true,
-                primitiveIndex);
+                primitiveIndex,
+                "Primitive " + std::to_string(primitiveIndex));
             sceneGraph.setParent(primitiveNode, graphNode);
           }
         }

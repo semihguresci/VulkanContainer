@@ -106,6 +106,7 @@ target_link_libraries(VulkanSceneRenderer_ui PUBLIC
     Dep_Windowing
     Dep_UI
     VulkanSceneRenderer_scene
+    VulkanSceneRenderer_bim_ui_support
 )
 if(TARGET miniz::miniz)
     target_link_libraries(VulkanSceneRenderer_ui PUBLIC miniz::miniz)

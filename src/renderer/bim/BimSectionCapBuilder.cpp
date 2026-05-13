@@ -1,12 +1,13 @@
 #include "Container/renderer/bim/BimSectionCapBuilder.h"
 
+#include <glm/common.hpp>
 #include <glm/geometric.hpp>
 
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <limits>
-#include <unordered_map>
+#include <map>
 
 namespace container::renderer {
 
@@ -19,13 +20,43 @@ namespace container::renderer {
   return plane / length;
 }
 
+bool appendBimSectionCapClipPlane(BimSectionCapBuildOptions& options,
+                                  glm::vec4 plane) {
+  if (options.clipPlaneCount >= options.clipPlanes.size()) {
+    return false;
+  }
+  if (options.clipPlaneCount == 0u) {
+    options.sectionPlane = plane;
+  }
+  options.clipPlanes[options.clipPlaneCount] = plane;
+  ++options.clipPlaneCount;
+  return true;
+}
+
 [[nodiscard]] BimSectionCapGeneratedMesh BimSectionCapBuilder::build(
     std::span<const BimSectionCapTriangle> triangles,
     const BimSectionCapBuildOptions& options) const {
+  if (options.invertedBoxClip) {
+    return {};
+  }
+
   struct Segment {
     uint32_t objectIndex{std::numeric_limits<uint32_t>::max()};
+    uint32_t materialIndex{kInvalidBimSectionCapMaterialIndex};
     glm::vec3 a{0.0f};
     glm::vec3 b{0.0f};
+  };
+
+  struct SurfaceKey {
+    uint32_t objectIndex{std::numeric_limits<uint32_t>::max()};
+    uint32_t materialIndex{kInvalidBimSectionCapMaterialIndex};
+
+    [[nodiscard]] bool operator<(const SurfaceKey& other) const {
+      if (objectIndex != other.objectIndex) {
+        return objectIndex < other.objectIndex;
+      }
+      return materialIndex < other.materialIndex;
+    }
   };
 
   constexpr float kDistanceEpsilon = 1.0e-5f;
@@ -47,13 +78,59 @@ namespace container::renderer {
     }
   }
 
-  const float spacing =
-      std::max(std::isfinite(options.hatchSpacing) ? options.hatchSpacing
-                                                   : 0.25f,
-               0.001f);
-  const float hatchAngle =
-      std::isfinite(options.hatchAngleRadians) ? options.hatchAngleRadians
-                                               : 0.7853982f;
+  auto sanitizeSpacing = [](float spacing, float fallback) {
+    return std::max(std::isfinite(spacing) ? spacing : fallback, 0.001f);
+  };
+  auto sanitizeAngle = [](float angle, float fallback) {
+    return std::isfinite(angle) ? angle : fallback;
+  };
+  auto sanitizeColor = [](const glm::vec3& color, const glm::vec3& fallback) {
+    return std::isfinite(color.x) && std::isfinite(color.y) &&
+                   std::isfinite(color.z)
+               ? color
+               : fallback;
+  };
+  const float fallbackSpacing = sanitizeSpacing(options.hatchSpacing, 0.25f);
+  const float fallbackHatchAngle =
+      sanitizeAngle(options.hatchAngleRadians, 0.7853982f);
+  const glm::vec3 fallbackFillColor =
+      sanitizeColor(options.fillColor, {0.06f, 0.08f, 0.10f});
+  const float fallbackFillOpacity =
+      std::isfinite(options.fillOpacity)
+          ? std::clamp(options.fillOpacity, 0.0f, 1.0f)
+          : 0.82f;
+  const glm::vec3 fallbackHatchColor =
+      sanitizeColor(options.hatchColor, {0.08f, 0.08f, 0.08f});
+
+  auto resolveStyle = [&](uint32_t objectIndex, uint32_t materialIndex) {
+    BimSectionCapDrawStyle style{
+        .objectIndex = objectIndex,
+        .materialIndex = materialIndex,
+        .fillColor = fallbackFillColor,
+        .fillOpacity = fallbackFillOpacity,
+        .hatchSpacing = fallbackSpacing,
+        .hatchAngleRadians = fallbackHatchAngle,
+        .hatchColor = fallbackHatchColor,
+    };
+    for (const BimSectionCapMaterialStyle& materialStyle :
+         options.materialStyles) {
+      if (materialStyle.materialIndex != materialIndex) {
+        continue;
+      }
+      style.fillColor = materialStyle.fillColor;
+      style.fillOpacity =
+          std::isfinite(materialStyle.fillOpacity)
+              ? std::clamp(materialStyle.fillOpacity, 0.0f, 1.0f)
+              : style.fillOpacity;
+      style.hatchSpacing =
+          sanitizeSpacing(materialStyle.hatchSpacing, fallbackSpacing);
+      style.hatchAngleRadians =
+          sanitizeAngle(materialStyle.hatchAngleRadians, fallbackHatchAngle);
+      style.hatchColor = materialStyle.hatchColor;
+      break;
+    }
+    return style;
+  };
 
   auto finitePoint = [](const glm::vec3& point) {
     return std::isfinite(point.x) && std::isfinite(point.y) &&
@@ -186,27 +263,28 @@ namespace container::renderer {
           kMinSegmentLength2) {
         continue;
       }
-      segments.push_back(
-          Segment{triangle.objectIndex, crossingPoints[0], crossingPoints[1]});
+      segments.push_back(Segment{triangle.objectIndex, triangle.materialIndex,
+                                 crossingPoints[0], crossingPoints[1]});
     }
 
     if (segments.empty()) {
       continue;
     }
 
-    std::unordered_map<uint32_t, std::vector<Segment>> segmentsByObject;
-    segmentsByObject.reserve(segments.size());
+    std::map<SurfaceKey, std::vector<Segment>> segmentsBySurface;
     for (const Segment& segment : segments) {
-      segmentsByObject[segment.objectIndex].push_back(segment);
+      segmentsBySurface[SurfaceKey{segment.objectIndex,
+                                   segment.materialIndex}]
+          .push_back(segment);
     }
 
-    auto addVertex = [&](uint32_t objectIndex,
-                         const glm::vec3& position) -> uint32_t {
+    auto addVertex = [&](uint32_t objectIndex, const glm::vec3& position,
+                         const glm::vec3& color) -> uint32_t {
       (void)objectIndex;
       container::geometry::Vertex vertex{};
       vertex.position = position + normal * options.capOffset;
       vertex.normal = normal;
-      vertex.color = {1.0f, 1.0f, 1.0f};
+      vertex.color = color;
       const uint32_t index = static_cast<uint32_t>(std::min<size_t>(
           mesh.vertices.size(), std::numeric_limits<uint32_t>::max()));
       mesh.vertices.push_back(vertex);
@@ -221,20 +299,65 @@ namespace container::renderer {
       return planeOrigin + axisU * point.x + axisV * point.y;
     };
 
-    auto appendHatchesForTriangle =
-        [&](uint32_t objectIndex, const glm::vec3& a, const glm::vec3& b,
-            const glm::vec3& c, float angle) {
-          const std::array<glm::vec2, 3> p{toPlane2(a), toPlane2(b),
-                                           toPlane2(c)};
+    bool hasMarkerExtents = false;
+    glm::vec2 markerMin{std::numeric_limits<float>::max()};
+    glm::vec2 markerMax{std::numeric_limits<float>::lowest()};
+    auto expandMarkerExtents = [&](const std::vector<glm::vec3>& polygon) {
+      for (const glm::vec3& point : polygon) {
+        const glm::vec2 planePoint = toPlane2(point);
+        markerMin = glm::min(markerMin, planePoint);
+        markerMax = glm::max(markerMax, planePoint);
+        hasMarkerExtents = true;
+      }
+    };
+    auto appendSectionMarker = [&]() {
+      if (!options.sectionMarkersEnabled || !hasMarkerExtents ||
+          !std::isfinite(markerMin.x) || !std::isfinite(markerMin.y) ||
+          !std::isfinite(markerMax.x) || !std::isfinite(markerMax.y)) {
+        return;
+      }
+      const glm::vec2 extent = markerMax - markerMin;
+      const float markerPadding =
+          std::max({0.25f, extent.x * 0.2f, extent.y * 0.2f});
+      const float markerV = markerMax.y + markerPadding;
+      mesh.sectionMarkerLines.push_back(BimSectionMarkerLine{
+          .a = toPlane3({markerMin.x - markerPadding, markerV}),
+          .b = toPlane3({markerMax.x + markerPadding, markerV}),
+          .color = options.sectionMarkerColor,
+          .lineWidth =
+              std::max(std::isfinite(options.sectionMarkerLineWidth)
+                           ? options.sectionMarkerLineWidth
+                           : 2.0f,
+                       0.1f),
+          .startArrow = true,
+          .endArrow = true,
+          .sectionPlaneIndex = capPlaneIndex,
+      });
+    };
+
+    auto appendHatchesForPolygon =
+        [&](uint32_t objectIndex, const std::vector<glm::vec3>& polygon,
+            const BimSectionCapDrawStyle& style, float angle) {
+          if (polygon.size() < 3u) {
+            return;
+          }
+          std::vector<glm::vec2> p;
+          p.reserve(polygon.size());
+          for (const glm::vec3& point : polygon) {
+            p.push_back(toPlane2(point));
+          }
+          const float spacing = style.hatchSpacing;
           const glm::vec2 direction{std::cos(angle), std::sin(angle)};
           const glm::vec2 lineNormal{-direction.y, direction.x};
-          const std::array<float, 3> offsets{
-              glm::dot(lineNormal, p[0]), glm::dot(lineNormal, p[1]),
-              glm::dot(lineNormal, p[2])};
-          const float minOffset =
-              std::min({offsets[0], offsets[1], offsets[2]});
-          const float maxOffset =
-              std::max({offsets[0], offsets[1], offsets[2]});
+          std::vector<float> offsets;
+          offsets.reserve(p.size());
+          for (const glm::vec2& point : p) {
+            offsets.push_back(glm::dot(lineNormal, point));
+          }
+          const auto [minIt, maxIt] =
+              std::ranges::minmax_element(offsets);
+          const float minOffset = *minIt;
+          const float maxOffset = *maxIt;
           const int64_t firstLine =
               static_cast<int64_t>(std::ceil(minOffset / spacing));
           const int64_t lastLine =
@@ -242,9 +365,10 @@ namespace container::renderer {
           for (int64_t line = firstLine; line <= lastLine; ++line) {
             const float offset = static_cast<float>(line) * spacing;
             std::vector<glm::vec2> intersections;
-            intersections.reserve(3u);
-            for (uint32_t edge = 0; edge < 3u; ++edge) {
-              const uint32_t next = (edge + 1u) % 3u;
+            intersections.reserve(p.size());
+            for (uint32_t edge = 0; edge < p.size(); ++edge) {
+              const uint32_t next = (edge + 1u) %
+                                    static_cast<uint32_t>(p.size());
               const float d0 = offsets[edge] - offset;
               const float d1 = offsets[next] - offset;
               if (std::abs(d0) <= kDistanceEpsilon &&
@@ -280,15 +404,20 @@ namespace container::renderer {
                                                  const glm::vec2& rhs) {
               return glm::dot(direction, lhs) < glm::dot(direction, rhs);
             });
-            const glm::vec3 h0 = toPlane3(intersections.front());
-            const glm::vec3 h1 = toPlane3(intersections.back());
-            if (glm::dot(h0 - h1, h0 - h1) <= kMinSegmentLength2) {
-              continue;
+            for (size_t intersectionIndex = 0u;
+                 intersectionIndex + 1u < intersections.size();
+                 intersectionIndex += 2u) {
+              const glm::vec3 h0 = toPlane3(intersections[intersectionIndex]);
+              const glm::vec3 h1 =
+                  toPlane3(intersections[intersectionIndex + 1u]);
+              if (glm::dot(h0 - h1, h0 - h1) <= kMinSegmentLength2) {
+                continue;
+              }
+              const uint32_t i0 = addVertex(objectIndex, h0, style.hatchColor);
+              const uint32_t i1 = addVertex(objectIndex, h1, style.hatchColor);
+              mesh.indices.push_back(i0);
+              mesh.indices.push_back(i1);
             }
-            const uint32_t i0 = addVertex(objectIndex, h0);
-            const uint32_t i1 = addVertex(objectIndex, h1);
-            mesh.indices.push_back(i0);
-            mesh.indices.push_back(i1);
           }
         };
 
@@ -532,15 +661,15 @@ namespace container::renderer {
       return trianglesOut;
     };
 
-    for (const auto& [objectIndex, objectSegments] : segmentsByObject) {
+    for (const auto& [surfaceKey, objectSegments] : segmentsBySurface) {
+      const uint32_t objectIndex = surfaceKey.objectIndex;
+      const BimSectionCapDrawStyle drawStyle =
+          resolveStyle(objectIndex, surfaceKey.materialIndex);
       std::vector<std::vector<glm::vec3>> polygons =
           reconstructSegmentLoops(objectSegments);
       if (polygons.empty()) {
         continue;
       }
-
-      std::vector<std::array<glm::vec3, 3>> clippedTriangles;
-      clippedTriangles.reserve(objectSegments.size());
 
       std::vector<std::vector<glm::vec3>> clippedPolygons;
       clippedPolygons.reserve(polygons.size());
@@ -562,6 +691,8 @@ namespace container::renderer {
 
       const uint32_t fillFirstIndex = static_cast<uint32_t>(std::min<size_t>(
           mesh.indices.size(), std::numeric_limits<uint32_t>::max()));
+      std::vector<std::vector<glm::vec3>> hatchPolygons;
+      hatchPolygons.reserve(clippedPolygons.size());
       for (size_t polygonIndex = 0; polygonIndex < clippedPolygons.size();
            ++polygonIndex) {
         const std::vector<glm::vec3>& polygon = clippedPolygons[polygonIndex];
@@ -590,6 +721,7 @@ namespace container::renderer {
         if (nestedHole) {
           continue;
         }
+        hatchPolygons.push_back(polygon);
 
         const std::vector<std::array<glm::vec3, 3>> polygonTriangles =
             triangulatePolygon(polygon);
@@ -604,36 +736,41 @@ namespace container::renderer {
                   kMinSegmentLength2) {
             continue;
           }
-          const uint32_t i0 = addVertex(objectIndex, triangle[0]);
-          const uint32_t i1 = addVertex(objectIndex, triangle[1]);
-          const uint32_t i2 = addVertex(objectIndex, triangle[2]);
+          const uint32_t i0 =
+              addVertex(objectIndex, triangle[0], drawStyle.fillColor);
+          const uint32_t i1 =
+              addVertex(objectIndex, triangle[1], drawStyle.fillColor);
+          const uint32_t i2 =
+              addVertex(objectIndex, triangle[2], drawStyle.fillColor);
           mesh.indices.push_back(i0);
           mesh.indices.push_back(i1);
           mesh.indices.push_back(i2);
-          clippedTriangles.push_back(triangle);
         }
       }
       const uint32_t fillIndexCount =
           static_cast<uint32_t>(mesh.indices.size() - fillFirstIndex);
       if (fillIndexCount > 0u) {
+        for (const std::vector<glm::vec3>& polygon : hatchPolygons) {
+          expandMarkerExtents(polygon);
+        }
         mesh.fillDrawCommands.push_back(DrawCommand{
             .objectIndex = objectIndex,
             .firstIndex = fillFirstIndex,
             .indexCount = fillIndexCount,
             .instanceCount = 1u,
         });
+        mesh.fillDrawStyles.push_back(drawStyle);
       }
 
       const uint32_t hatchFirstIndex = static_cast<uint32_t>(std::min<size_t>(
           mesh.indices.size(), std::numeric_limits<uint32_t>::max()));
-      for (const std::array<glm::vec3, 3>& triangle : clippedTriangles) {
-        appendHatchesForTriangle(objectIndex, triangle[0], triangle[1],
-                                 triangle[2],
-                                 hatchAngle);
+      for (const std::vector<glm::vec3>& polygon : hatchPolygons) {
+        appendHatchesForPolygon(objectIndex, polygon, drawStyle,
+                                drawStyle.hatchAngleRadians);
         if (options.crossHatch) {
-          appendHatchesForTriangle(objectIndex, triangle[0], triangle[1],
-                                   triangle[2],
-                                   hatchAngle + 1.57079632679f);
+          appendHatchesForPolygon(objectIndex, polygon, drawStyle,
+                                  drawStyle.hatchAngleRadians +
+                                      1.57079632679f);
         }
       }
       const uint32_t hatchIndexCount =
@@ -645,8 +782,10 @@ namespace container::renderer {
             .indexCount = hatchIndexCount,
             .instanceCount = 1u,
         });
+        mesh.hatchDrawStyles.push_back(drawStyle);
       }
     }
+    appendSectionMarker();
   }
 
   return mesh;

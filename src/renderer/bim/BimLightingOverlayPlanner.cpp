@@ -174,6 +174,51 @@ void appendRoute(BimLightingOverlayStylePlan &plan,
   return plan;
 }
 
+[[nodiscard]] BimLightingOverlayDrawPlan buildCoordinationMarker(
+    BimLightingOverlayKind kind, const BimLightingOverlayStyleInputs &style,
+    const std::vector<DrawCommand> *commands,
+    const BimLightingOverlayInputs &inputs) {
+  BimLightingOverlayDrawPlan plan{};
+  plan.kind = kind;
+  plan.pipeline = wireframePipeline(style.depthTest);
+  plan.commands = commands;
+  plan.color = style.color;
+  plan.opacity = sanitizeBimLightingOverlayOpacity(style.opacity);
+  plan.drawLineWidth = sanitizeBimLightingOverlayLineWidth(style.lineWidth);
+  plan.rasterLineWidth = rasterBimLightingOverlayLineWidth(
+      plan.drawLineWidth, inputs.wideLinesSupported);
+  plan.rasterLineWidthApplies = true;
+  plan.active = style.enabled && inputs.coordinationMarkerGeometryReady &&
+                commonWireframeReady(inputs) &&
+                selectedWireframePipelineReady(inputs.pipelines,
+                                               style.depthTest) &&
+                hasDrawCommands(commands);
+  return plan;
+}
+
+[[nodiscard]] BimLightingOverlayDrawPlan buildSectionPlaneVisual(
+    const BimLightingOverlayInputs &inputs) {
+  BimLightingOverlayDrawPlan plan{};
+  plan.kind = BimLightingOverlayKind::SectionPlaneVisual;
+  plan.pipeline = wireframePipeline(inputs.sectionPlaneVisual.depthTest);
+  plan.commands = inputs.sectionPlaneVisualCommands;
+  plan.color = inputs.sectionPlaneVisual.color;
+  plan.opacity =
+      sanitizeBimLightingOverlayOpacity(inputs.sectionPlaneVisual.opacity);
+  plan.drawLineWidth =
+      sanitizeBimLightingOverlayLineWidth(inputs.sectionPlaneVisual.lineWidth);
+  plan.rasterLineWidth = rasterBimLightingOverlayLineWidth(
+      plan.drawLineWidth, inputs.wideLinesSupported);
+  plan.rasterLineWidthApplies = true;
+  plan.active = inputs.sectionPlaneVisual.enabled &&
+                inputs.sectionPlaneVisualGeometryReady &&
+                commonWireframeReady(inputs) &&
+                selectedWireframePipelineReady(
+                    inputs.pipelines, inputs.sectionPlaneVisual.depthTest) &&
+                hasDrawCommands(plan.commands);
+  return plan;
+}
+
 [[nodiscard]] BimLightingSelectionOutlinePlan buildSelectionOutline(
     const std::vector<DrawCommand> *commands, bool geometryReady,
     const BimLightingOverlayInputs &inputs) {
@@ -250,6 +295,15 @@ BimLightingOverlayPlan BimLightingOverlayPlanner::build() const {
       inputs_.pipelines.bimCurveDepth, inputs_.nativeCurveSelectionCommands,
       kSelectionColor, 1.0f,
       nativeCurveSelectionWidth(inputs_.nativeCurveLineWidth), true, inputs_);
+  plan.coordinationIssueMarkers = buildCoordinationMarker(
+      BimLightingOverlayKind::CoordinationIssueMarker,
+      inputs_.coordinationIssueMarkers,
+      inputs_.coordinationIssueMarkerCommands, inputs_);
+  plan.coordinationClashMarkers = buildCoordinationMarker(
+      BimLightingOverlayKind::CoordinationClashMarker,
+      inputs_.coordinationClashMarkers,
+      inputs_.coordinationClashMarkerCommands, inputs_);
+  plan.sectionPlaneVisual = buildSectionPlaneVisual(inputs_);
   return plan;
 }
 

@@ -7,19 +7,25 @@
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <fstream>
 #include <functional>
 #include <limits>
 #include <optional>
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <system_error>
 #include <utility>
 #include <vector>
 
 #include "Container/app/AppConfig.h"
 #include "Container/ecs/World.h"
+#include "Container/renderer/bim/BimDrawingExport.h"
 #include "Container/renderer/bim/BimFrameDrawRoutingPlanner.h"
+#include "Container/renderer/bim/BimGeoreferenceTransform.h"
 #include "Container/renderer/bim/BimManager.h"
+#include "Container/renderer/bim/BimModelCompare.h"
+#include "Container/renderer/bim/BimScheduleExtractor.h"
 #include "Container/renderer/core/FrameConcurrencyPolicy.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderExtraction.h"
@@ -76,6 +82,100 @@ namespace {
 
 using TelemetryClock = std::chrono::steady_clock;
 
+[[nodiscard]] std::string bimFloorPlanDrawingViewName(bool sourceElevation) {
+  return sourceElevation ? "Floor plan (source elevation)"
+                         : "Floor plan (projected ground)";
+}
+
+[[nodiscard]] std::string bimDrawingTitle(const BimManager *bimManager) {
+  if (bimManager == nullptr || bimManager->modelPath().empty()) {
+    return "BIM drawing";
+  }
+  const std::filesystem::path modelPath =
+      container::util::pathFromUtf8(bimManager->modelPath());
+  const std::string filename = container::util::pathToUtf8(modelPath.filename());
+  return filename.empty() ? "BIM drawing" : filename;
+}
+
+[[nodiscard]] BimScheduleBounds
+bimScheduleBounds(const BimElementBounds &bounds) {
+  return {.valid = bounds.valid, .min = bounds.min, .max = bounds.max};
+}
+
+[[nodiscard]] BimModelCompareBounds
+bimModelCompareBounds(const BimElementBounds &bounds) {
+  return {.valid = bounds.valid, .min = bounds.min, .max = bounds.max};
+}
+
+[[nodiscard]] std::vector<BimScheduleElement> buildBimScheduleElements(
+    std::span<const BimElementMetadata> metadata) {
+  std::vector<BimScheduleElement> elements;
+  elements.reserve(metadata.size());
+  for (const BimElementMetadata &element : metadata) {
+    elements.push_back({.guid = element.guid,
+                        .sourceId = element.sourceId,
+                        .ifcClass = element.type,
+                        .type = element.objectType,
+                        .storey = !element.storeyName.empty()
+                                      ? element.storeyName
+                                      : element.storeyId,
+                        .material = !element.materialName.empty()
+                                        ? element.materialName
+                                        : element.materialCategory,
+                        .bounds = bimScheduleBounds(element.bounds)});
+  }
+  return elements;
+}
+
+[[nodiscard]] std::vector<BimModelCompareElement> buildBimModelCompareElements(
+    std::span<const BimElementMetadata> metadata) {
+  std::vector<BimModelCompareElement> elements;
+  elements.reserve(metadata.size());
+  for (const BimElementMetadata &element : metadata) {
+    elements.push_back({.guid = element.guid,
+                        .sourceId = element.sourceId,
+                        .ifcClass = element.type,
+                        .type = element.objectType,
+                        .storey = !element.storeyName.empty()
+                                      ? element.storeyName
+                                      : element.storeyId,
+                        .material = !element.materialName.empty()
+                                        ? element.materialName
+                                        : element.materialCategory,
+                        .bounds = bimModelCompareBounds(element.bounds)});
+  }
+  return elements;
+}
+
+[[nodiscard]] BimGeoreferenceMetadata buildBimGeoreferenceMetadata(
+    const BimModelUnitMetadata &unitMetadata,
+    const BimModelGeoreferenceMetadata &georeferenceMetadata) {
+  BimGeoreferenceMetadata metadata{};
+  metadata.hasMetersPerUnit = unitMetadata.hasMetersPerUnit;
+  metadata.metersPerUnit = unitMetadata.metersPerUnit;
+  metadata.hasEffectiveImportScale = unitMetadata.hasEffectiveImportScale;
+  metadata.effectiveImportScale = unitMetadata.effectiveImportScale;
+  metadata.hasSourceUpAxis = georeferenceMetadata.hasSourceUpAxis;
+  metadata.sourceUpAxis = georeferenceMetadata.sourceUpAxis;
+  metadata.hasRebaseOffset = georeferenceMetadata.hasCoordinateOffset;
+  metadata.rebaseOffset = georeferenceMetadata.coordinateOffset;
+  metadata.crsAuthority = georeferenceMetadata.crsAuthority;
+  metadata.crsCode = georeferenceMetadata.crsCode;
+  metadata.crsName = georeferenceMetadata.crsName;
+  metadata.mapConversionLabel = georeferenceMetadata.mapConversionName;
+  return metadata;
+}
+
+[[nodiscard]] bool hasBimGeoreferenceReadoutMetadata(
+    const BimGeoreferenceMetadata &metadata) {
+  return metadata.hasMetersPerUnit || metadata.hasEffectiveImportScale ||
+         metadata.hasProjectOrigin || metadata.hasSourceUpAxis ||
+         metadata.hasRebaseOffset || metadata.hasSurveyOffset ||
+         !metadata.crsAuthority.empty() ||
+         !metadata.crsCode.empty() || !metadata.crsName.empty() ||
+         !metadata.mapConversionLabel.empty();
+}
+
 float elapsedMilliseconds(
     TelemetryClock::time_point start,
     TelemetryClock::time_point end = TelemetryClock::now()) {
@@ -89,6 +189,8 @@ uint32_t saturatingU32(size_t value) {
 
 constexpr uint32_t kEditableLightTransformNode =
     std::numeric_limits<uint32_t>::max() - 1u;
+constexpr uint32_t kSectionPlaneTransformNode =
+    std::numeric_limits<uint32_t>::max() - 2u;
 
 const FrameResourceBinding *
 deferredRasterRuntimeBinding(const FrameResourceManager *manager,
@@ -413,9 +515,10 @@ bool hasTransparentBimSurfaceGeometry(const BimManager& bimManager,
 BimFrameGpuVisibilityInputs bimFrameGpuVisibilityInputs(
     const BimManager &bimManager, const BimDrawFilter &filter) {
   const BimVisibilityFilterStats &stats = bimManager.visibilityFilterStats();
+  const bool gpuCompatibleFilter = !filter.requiresCpuFiltering();
   return {.filterActive = filter.active(),
-          .gpuResident = stats.gpuResident,
-          .computeReady = stats.computeReady,
+          .gpuResident = stats.gpuResident && gpuCompatibleFilter,
+          .computeReady = stats.computeReady && gpuCompatibleFilter,
           .objectCount = stats.objectCount,
           .visibilityMaskReady =
               bimManager.visibilityMaskBuffer().buffer != VK_NULL_HANDLE};
@@ -504,6 +607,33 @@ sectionPlaneEquation(const container::ui::SectionPlaneState &sectionPlane) {
   const glm::vec3 normal =
       normalizedOr(sectionPlane.normal, {0.0f, 1.0f, 0.0f});
   return {normal, -sectionPlane.offset};
+}
+
+glm::vec3 sectionPlaneOrigin(
+    const container::ui::SectionPlaneState &sectionPlane) {
+  const glm::vec3 normal =
+      normalizedOr(sectionPlane.normal, {0.0f, 1.0f, 0.0f});
+  return normal * sectionPlane.offset;
+}
+
+glm::vec3 rotateVectorAroundAxis(const glm::vec3 &value,
+                                 const glm::vec3 &axis, float degrees) {
+  const glm::vec3 unitAxis = normalizedOr(axis, {0.0f, 1.0f, 0.0f});
+  const float radians = degrees * 0.017453292519943295f;
+  const float c = std::cos(radians);
+  const float s = std::sin(radians);
+  return value * c + glm::cross(unitAxis, value) * s +
+         unitAxis * glm::dot(unitAxis, value) * (1.0f - c);
+}
+
+void sectionPlaneBasis(const glm::vec3 &normal, glm::vec3 &axisX,
+                       glm::vec3 &axisY, glm::vec3 &axisZ) {
+  axisY = normalizedOr(normal, {0.0f, 1.0f, 0.0f});
+  const glm::vec3 helper =
+      std::abs(axisY.y) < 0.9f ? glm::vec3{0.0f, 1.0f, 0.0f}
+                               : glm::vec3{1.0f, 0.0f, 0.0f};
+  axisX = normalizedOr(glm::cross(helper, axisY), {1.0f, 0.0f, 0.0f});
+  axisZ = normalizedOr(glm::cross(axisX, axisY), {0.0f, 0.0f, 1.0f});
 }
 
 std::array<glm::vec4, 6>
@@ -1581,6 +1711,10 @@ void RendererFrontend::processInput(float deltaTime) {
   const bool hasSelectedEditableLight =
       subs_.lightingManager &&
       subs_.lightingManager->selectedEditableLight().has_value();
+  const bool hasEditableSectionPlane =
+      subs_.guiManager &&
+      subs_.guiManager->sectionPlaneState().enabled &&
+      subs_.guiManager->sectionPlaneState().visualPlaneEditable;
   interactionController_.process(RenderSurfaceInteractionController::Context{
       .inputManager = svc_.inputManager,
       .cameraController = *subs_.cameraController,
@@ -1595,7 +1729,7 @@ void RendererFrontend::processInput(float deltaTime) {
           sceneState_.selectedMeshNode !=
               container::scene::SceneGraph::kInvalidNode ||
           selectedBimObjectIndex_ != std::numeric_limits<uint32_t>::max() ||
-          hasSelectedEditableLight,
+          hasSelectedEditableLight || hasEditableSectionPlane,
       .selectAtCursor =
           [this](double cursorX, double cursorY) {
             selectMeshNodeAtCursor(cursorX, cursorY);
@@ -1656,6 +1790,7 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
     selectedBimNativePointDrawCommands_.clear();
     selectedBimNativeCurveDrawCommands_.clear();
     if (subs_.guiManager) {
+      subs_.guiManager->setSectionPlaneVisualEditable(false);
       subs_.guiManager->setStatusMessage("Selected editable light");
     }
   };
@@ -1686,6 +1821,7 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
     selectedBimNativePointDrawCommands_.clear();
     selectedBimNativeCurveDrawCommands_.clear();
     if (subs_.guiManager) {
+      subs_.guiManager->setSectionPlaneVisualEditable(false);
       if (subs_.bimManager) {
         if (const auto *metadata =
                 subs_.bimManager->metadataForObject(objectIndex)) {
@@ -1724,6 +1860,7 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
     selectedBimNativePointDrawCommands_.clear();
     selectedBimNativeCurveDrawCommands_.clear();
     if (subs_.guiManager) {
+      subs_.guiManager->setSectionPlaneVisualEditable(false);
       subs_.guiManager->setStatusMessage("Selected node " +
                                          std::to_string(nodeIndex));
     }
@@ -1849,8 +1986,21 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
       hoverPickCache_.bimDisciplineFilterEnabled ==
           bimFilter.disciplineFilterEnabled &&
       hoverPickCache_.bimFilterDiscipline == bimFilter.discipline &&
+      hoverPickCache_.bimDisciplinePreset == bimFilter.disciplinePreset &&
       hoverPickCache_.bimPhaseFilterEnabled == bimFilter.phaseFilterEnabled &&
       hoverPickCache_.bimFilterPhase == bimFilter.phase &&
+      hoverPickCache_.bimPhaseTimelineEnabled ==
+          bimFilter.phaseTimelineEnabled &&
+      hoverPickCache_.bimPhaseTimelineActiveIndex ==
+          bimFilter.phaseTimelineActiveIndex &&
+      hoverPickCache_.bimPhaseTimelineShowExisting ==
+          bimFilter.phaseTimelineShowExisting &&
+      hoverPickCache_.bimPhaseTimelineShowNew ==
+          bimFilter.phaseTimelineShowNew &&
+      hoverPickCache_.bimPhaseTimelineShowDemolished ==
+          bimFilter.phaseTimelineShowDemolished &&
+      hoverPickCache_.bimPhaseTimelineGhostFuture ==
+          bimFilter.phaseTimelineGhostFuture &&
       hoverPickCache_.bimFireRatingFilterEnabled ==
           bimFilter.fireRatingFilterEnabled &&
       hoverPickCache_.bimFilterFireRating == bimFilter.fireRating &&
@@ -1890,8 +2040,16 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
       .bimFilterMaterial = bimFilter.material,
       .bimDisciplineFilterEnabled = bimFilter.disciplineFilterEnabled,
       .bimFilterDiscipline = bimFilter.discipline,
+      .bimDisciplinePreset = bimFilter.disciplinePreset,
       .bimPhaseFilterEnabled = bimFilter.phaseFilterEnabled,
       .bimFilterPhase = bimFilter.phase,
+      .bimPhaseTimelineEnabled = bimFilter.phaseTimelineEnabled,
+      .bimPhaseTimelineActiveIndex = bimFilter.phaseTimelineActiveIndex,
+      .bimPhaseTimelineShowExisting = bimFilter.phaseTimelineShowExisting,
+      .bimPhaseTimelineShowNew = bimFilter.phaseTimelineShowNew,
+      .bimPhaseTimelineShowDemolished =
+          bimFilter.phaseTimelineShowDemolished,
+      .bimPhaseTimelineGhostFuture = bimFilter.phaseTimelineGhostFuture,
       .bimFireRatingFilterEnabled = bimFilter.fireRatingFilterEnabled,
       .bimFilterFireRating = bimFilter.fireRating,
       .bimLoadBearingFilterEnabled = bimFilter.loadBearingFilterEnabled,
@@ -1998,10 +2156,13 @@ void RendererFrontend::clearSelectedMeshNode() {
   const bool hasSelectedEditableLight =
       subs_.lightingManager &&
       subs_.lightingManager->selectedEditableLight().has_value();
+  const bool hasEditableSectionPlane =
+      subs_.guiManager &&
+      subs_.guiManager->sectionPlaneState().visualPlaneEditable;
   if (sceneState_.selectedMeshNode ==
           container::scene::SceneGraph::kInvalidNode &&
       selectedBimObjectIndex_ == std::numeric_limits<uint32_t>::max() &&
-      !hasSelectedEditableLight) {
+      !hasSelectedEditableLight && !hasEditableSectionPlane) {
     return;
   }
 
@@ -2009,6 +2170,9 @@ void RendererFrontend::clearSelectedMeshNode() {
   selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
   if (subs_.lightingManager) {
     subs_.lightingManager->selectEditableLight({});
+  }
+  if (subs_.guiManager) {
+    subs_.guiManager->setSectionPlaneVisualEditable(false);
   }
   clearHoveredMeshNode();
   selectedDrawCommands_.clear();
@@ -2035,25 +2199,40 @@ void RendererFrontend::transformSelectedNodeByDrag(
       sceneState_.selectedMeshNode ==
           container::scene::SceneGraph::kInvalidNode &&
       selectedEditableLight.has_value();
-  if (!transformingEditableLight &&
+  const bool transformingSectionPlane =
+      subs_.guiManager && subs_.guiManager->sectionPlaneState().enabled &&
+      subs_.guiManager->sectionPlaneState().visualPlaneEditable &&
+      sceneState_.selectedMeshNode ==
+          container::scene::SceneGraph::kInvalidNode &&
+      !selectedEditableLight.has_value();
+  if (!transformingSectionPlane && !transformingEditableLight &&
       sceneState_.selectedMeshNode ==
           container::scene::SceneGraph::kInvalidNode) {
     return;
   }
 
-  const uint32_t selectedNode = transformingEditableLight
-                                    ? kEditableLightTransformNode
-                                    : sceneState_.selectedMeshNode;
+  const uint32_t selectedNode =
+      transformingSectionPlane
+          ? kSectionPlaneTransformNode
+          : (transformingEditableLight ? kEditableLightTransformNode
+                                       : sceneState_.selectedMeshNode);
   auto currentControls =
-      transformingEditableLight
-          ? container::ui::TransformControls{.position = selectedEditableLight
-                                                             ->position,
-                                             .rotationDegrees = glm::vec3(0.0f),
-                                             .scale = glm::vec3(std::max(
-                                                 selectedEditableLight->range,
-                                                 1.0f))}
-          : subs_.cameraController->nodeTransformControls(
-                sceneState_.selectedMeshNode);
+      transformingSectionPlane
+          ? container::ui::TransformControls{
+                .position = sectionPlaneOrigin(
+                    subs_.guiManager->sectionPlaneState()),
+                .rotationDegrees = glm::vec3(0.0f),
+                .scale = glm::vec3(std::max(
+                    subs_.guiManager->sectionPlaneState().visualPlaneSize,
+                    0.1f))}
+          : (transformingEditableLight
+                 ? container::ui::TransformControls{
+                       .position = selectedEditableLight->position,
+                       .rotationDegrees = glm::vec3(0.0f),
+                       .scale = glm::vec3(
+                           std::max(selectedEditableLight->range, 1.0f))}
+                 : subs_.cameraController->nodeTransformControls(
+                       sceneState_.selectedMeshNode));
   if (!transformDragSession_.active ||
       transformDragSession_.nodeIndex != selectedNode ||
       transformDragSession_.tool != tool ||
@@ -2069,6 +2248,9 @@ void RendererFrontend::transformSelectedNodeByDrag(
         .axis = axis,
         .snapEnabled = snapEnabled,
         .startControls = currentControls,
+        .startSectionPlane =
+            transformingSectionPlane ? subs_.guiManager->sectionPlaneState()
+                                     : container::ui::SectionPlaneState{},
         .origin = gizmo.visible ? gizmo.origin : currentControls.position,
         .gizmoScale = std::max(gizmo.scale, 0.0001f),
         .axisX = normalizedOr(gizmo.axisX, {1.0f, 0.0f, 0.0f}),
@@ -2085,6 +2267,11 @@ void RendererFrontend::transformSelectedNodeByDrag(
   const double dragDeltaY = transformDragSession_.accumulatedDeltaY;
 
   auto transformAxisVector = [&]() {
+    if (transformingSectionPlane &&
+        tool == container::ui::ViewportTool::Translate) {
+      return normalizedOr(transformDragSession_.startSectionPlane.normal,
+                          {0.0f, 1.0f, 0.0f});
+    }
     switch (axis) {
     case container::ui::TransformAxis::X:
       return transformDragSession_.axisX;
@@ -2136,6 +2323,15 @@ void RendererFrontend::transformSelectedNodeByDrag(
       const glm::vec3 axisVector = transformAxisVector();
       controls.position +=
           axisVector * projectedAxisDragAmount(axisVector, dragScale);
+      break;
+    }
+
+    if (transformingSectionPlane) {
+      const glm::vec3 normal =
+          normalizedOr(transformDragSession_.startSectionPlane.normal,
+                       {0.0f, 1.0f, 0.0f});
+      controls.position +=
+          normal * static_cast<float>(dragDeltaX - dragDeltaY) * dragScale;
       break;
     }
 
@@ -2290,6 +2486,74 @@ void RendererFrontend::transformSelectedNodeByDrag(
     return;
   }
 
+  if (transformingSectionPlane && subs_.guiManager) {
+    auto nextSectionPlane = transformDragSession_.startSectionPlane;
+    const glm::vec3 startNormal =
+        normalizedOr(nextSectionPlane.normal, {0.0f, 1.0f, 0.0f});
+    const glm::vec3 startOrigin = sectionPlaneOrigin(nextSectionPlane);
+    switch (tool) {
+    case container::ui::ViewportTool::Select:
+      break;
+    case container::ui::ViewportTool::Translate:
+      nextSectionPlane.offset = glm::dot(startNormal, controls.position);
+      break;
+    case container::ui::ViewportTool::Rotate: {
+      glm::vec3 rotatedNormal = startNormal;
+      const glm::vec3 rotationDelta =
+          controls.rotationDegrees -
+          transformDragSession_.startControls.rotationDegrees;
+      auto applyRotation = [&](const glm::vec3 &axisVector, float degrees) {
+        if (std::abs(degrees) > 1.0e-4f) {
+          rotatedNormal =
+              rotateVectorAroundAxis(rotatedNormal, axisVector, degrees);
+        }
+      };
+      switch (axis) {
+      case container::ui::TransformAxis::X:
+        applyRotation(transformDragSession_.axisX, rotationDelta.x);
+        break;
+      case container::ui::TransformAxis::Y:
+        applyRotation(transformDragSession_.axisY, rotationDelta.y);
+        break;
+      case container::ui::TransformAxis::Z:
+        applyRotation(transformDragSession_.axisZ, rotationDelta.z);
+        break;
+      case container::ui::TransformAxis::Free:
+        applyRotation(transformDragSession_.axisY, rotationDelta.y);
+        applyRotation(transformDragSession_.axisX, rotationDelta.x);
+        break;
+      }
+      nextSectionPlane.normal =
+          normalizedOr(rotatedNormal, {0.0f, 1.0f, 0.0f});
+      nextSectionPlane.offset = glm::dot(nextSectionPlane.normal, startOrigin);
+      break;
+    }
+    case container::ui::ViewportTool::Scale: {
+      const float startSize =
+          std::max(transformDragSession_.startSectionPlane.visualPlaneSize,
+                   0.1f);
+      const float startScale =
+          std::max((transformDragSession_.startControls.scale.x +
+                    transformDragSession_.startControls.scale.y +
+                    transformDragSession_.startControls.scale.z) *
+                       0.33333334f,
+                   0.001f);
+      const float nextScale =
+          std::max((controls.scale.x + controls.scale.y + controls.scale.z) *
+                       0.33333334f,
+                   0.001f);
+      nextSectionPlane.visualPlaneSize =
+          std::clamp(startSize * (nextScale / startScale), 0.1f, 100000.0f);
+      break;
+    }
+    }
+    nextSectionPlane.enabled = true;
+    nextSectionPlane.visualPlaneVisible = true;
+    nextSectionPlane.visualPlaneEditable = true;
+    subs_.guiManager->setSectionPlaneState(nextSectionPlane);
+    return;
+  }
+
   subs_.cameraController->applyNodeTransform(sceneState_.selectedMeshNode,
                                              sceneState_.rootNode, controls);
   if (sceneState_.selectedMeshNode == sceneState_.rootNode &&
@@ -2310,9 +2574,13 @@ RendererFrontend::pickTransformGizmoAxisAtCursor(double cursorX,
   const bool hasSelectedEditableLight =
       subs_.lightingManager &&
       subs_.lightingManager->selectedEditableLight().has_value();
+  const bool hasEditableSectionPlane =
+      subs_.guiManager &&
+      subs_.guiManager->sectionPlaneState().enabled &&
+      subs_.guiManager->sectionPlaneState().visualPlaneEditable;
   if (sceneState_.selectedMeshNode ==
           container::scene::SceneGraph::kInvalidNode &&
-      !hasSelectedEditableLight) {
+      !hasSelectedEditableLight && !hasEditableSectionPlane) {
     return std::nullopt;
   }
 
@@ -2728,7 +2996,7 @@ void RendererFrontend::syncCameraSelectionPivotOverride() {
       selectionNavigationAnchor_.valid &&
       selectedBimObjectIndex_ != invalidObjectIndex &&
       selectionNavigationAnchor_.bimObject == selectedBimObjectIndex_;
-  if (anchorMatchesScene || anchorMatchesBim) {
+  if (anchorMatchesScene) {
     subs_.cameraController->setSelectionPivotOverride(
         CameraController::NavigationPivot{
             .center = selectionNavigationAnchor_.point,
@@ -2739,6 +3007,10 @@ void RendererFrontend::syncCameraSelectionPivotOverride() {
 
   if (selectedBimObjectIndex_ == invalidObjectIndex || !subs_.bimManager ||
       !subs_.bimManager->hasScene()) {
+    subs_.cameraController->clearSelectionPivotOverride();
+    return;
+  }
+  if (selectionNavigationAnchor_.valid && !anchorMatchesBim) {
     subs_.cameraController->clearSelectionPivotOverride();
     return;
   }
@@ -3151,8 +3423,19 @@ void RendererFrontend::markDepthVisibilityFrameComplete(uint32_t imageIndex) {
   depthVisibility_.bimDisciplineFilterEnabled =
       bimFilter.disciplineFilterEnabled;
   depthVisibility_.bimFilterDiscipline = bimFilter.discipline;
+  depthVisibility_.bimDisciplinePreset = bimFilter.disciplinePreset;
   depthVisibility_.bimPhaseFilterEnabled = bimFilter.phaseFilterEnabled;
   depthVisibility_.bimFilterPhase = bimFilter.phase;
+  depthVisibility_.bimPhaseTimelineEnabled = bimFilter.phaseTimelineEnabled;
+  depthVisibility_.bimPhaseTimelineActiveIndex =
+      bimFilter.phaseTimelineActiveIndex;
+  depthVisibility_.bimPhaseTimelineShowExisting =
+      bimFilter.phaseTimelineShowExisting;
+  depthVisibility_.bimPhaseTimelineShowNew = bimFilter.phaseTimelineShowNew;
+  depthVisibility_.bimPhaseTimelineShowDemolished =
+      bimFilter.phaseTimelineShowDemolished;
+  depthVisibility_.bimPhaseTimelineGhostFuture =
+      bimFilter.phaseTimelineGhostFuture;
   depthVisibility_.bimFireRatingFilterEnabled =
       bimFilter.fireRatingFilterEnabled;
   depthVisibility_.bimFilterFireRating = bimFilter.fireRating;
@@ -3272,9 +3555,23 @@ bool RendererFrontend::depthVisibilityFrameMatchesCurrentState() const {
       depthVisibility_.bimDisciplineFilterEnabled !=
           currentBimFilter.disciplineFilterEnabled ||
       depthVisibility_.bimFilterDiscipline != currentBimFilter.discipline ||
+      depthVisibility_.bimDisciplinePreset !=
+          currentBimFilter.disciplinePreset ||
       depthVisibility_.bimPhaseFilterEnabled !=
           currentBimFilter.phaseFilterEnabled ||
       depthVisibility_.bimFilterPhase != currentBimFilter.phase ||
+      depthVisibility_.bimPhaseTimelineEnabled !=
+          currentBimFilter.phaseTimelineEnabled ||
+      depthVisibility_.bimPhaseTimelineActiveIndex !=
+          currentBimFilter.phaseTimelineActiveIndex ||
+      depthVisibility_.bimPhaseTimelineShowExisting !=
+          currentBimFilter.phaseTimelineShowExisting ||
+      depthVisibility_.bimPhaseTimelineShowNew !=
+          currentBimFilter.phaseTimelineShowNew ||
+      depthVisibility_.bimPhaseTimelineShowDemolished !=
+          currentBimFilter.phaseTimelineShowDemolished ||
+      depthVisibility_.bimPhaseTimelineGhostFuture !=
+          currentBimFilter.phaseTimelineGhostFuture ||
       depthVisibility_.bimFireRatingFilterEnabled !=
           currentBimFilter.fireRatingFilterEnabled ||
       depthVisibility_.bimFilterFireRating != currentBimFilter.fireRating ||
@@ -3327,8 +3624,16 @@ BimDrawFilter RendererFrontend::currentBimDrawFilter() const {
   filter.material = guiFilter.material;
   filter.disciplineFilterEnabled = guiFilter.disciplineFilterEnabled;
   filter.discipline = guiFilter.discipline;
+  filter.disciplinePreset = guiFilter.disciplinePreset;
   filter.phaseFilterEnabled = guiFilter.phaseFilterEnabled;
   filter.phase = guiFilter.phase;
+  const auto &phaseTimeline = subs_.guiManager->bimPhaseTimelineUiState();
+  filter.phaseTimelineEnabled = phaseTimeline.enabled;
+  filter.phaseTimelineActiveIndex = phaseTimeline.activePhaseIndex;
+  filter.phaseTimelineShowExisting = phaseTimeline.showExisting;
+  filter.phaseTimelineShowNew = phaseTimeline.showNew;
+  filter.phaseTimelineShowDemolished = phaseTimeline.showDemolished;
+  filter.phaseTimelineGhostFuture = phaseTimeline.ghostFuture;
   filter.fireRatingFilterEnabled = guiFilter.fireRatingFilterEnabled;
   filter.fireRating = guiFilter.fireRating;
   filter.loadBearingFilterEnabled = guiFilter.loadBearingFilterEnabled;
@@ -3377,6 +3682,7 @@ RendererFrontend::currentViewpointSnapshot() const {
   snapshot.selectedBimObjectIndex = selectedBimObjectIndex_;
   if (subs_.guiManager) {
     snapshot.bimFilter = subs_.guiManager->bimFilterState();
+    snapshot.phaseTimeline = subs_.guiManager->bimPhaseTimelineUiState();
   }
   if (subs_.bimManager && subs_.bimManager->hasScene()) {
     snapshot.bimModelPath = subs_.bimManager->modelPath();
@@ -3414,6 +3720,14 @@ bool RendererFrontend::restoreViewpointSnapshot(
     clearHoveredMeshNode();
     selectedDrawCommands_.clear();
     selectedBimDrawCommands_.clear();
+    selectedBimNativePointDrawCommands_.clear();
+    selectedBimNativeCurveDrawCommands_.clear();
+    if (subs_.lightingManager) {
+      subs_.lightingManager->selectEditableLight({});
+    }
+    if (subs_.guiManager) {
+      subs_.guiManager->setSectionPlaneVisualEditable(false);
+    }
   };
 
   const uint32_t invalidObjectIndex = std::numeric_limits<uint32_t>::max();
@@ -3481,9 +3795,17 @@ bool RendererFrontend::restoreViewpointSnapshot(
     sceneState_.selectedMeshNode = container::scene::SceneGraph::kInvalidNode;
     selectedBimObjectIndex_ = restoredBimObjectIndex;
     selectionNavigationAnchor_ = {};
+    if (subs_.lightingManager) {
+      subs_.lightingManager->selectEditableLight({});
+    }
     clearHoveredMeshNode();
     selectedDrawCommands_.clear();
     selectedBimDrawCommands_.clear();
+    selectedBimNativePointDrawCommands_.clear();
+    selectedBimNativeCurveDrawCommands_.clear();
+    if (subs_.guiManager) {
+      subs_.guiManager->setSectionPlaneVisualEditable(false);
+    }
     return true;
   }
 
@@ -3492,9 +3814,17 @@ bool RendererFrontend::restoreViewpointSnapshot(
     sceneState_.selectedMeshNode = snapshot.selectedMeshNode;
     selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
     selectionNavigationAnchor_ = {};
+    if (subs_.lightingManager) {
+      subs_.lightingManager->selectEditableLight({});
+    }
     clearHoveredMeshNode();
     selectedDrawCommands_.clear();
     selectedBimDrawCommands_.clear();
+    selectedBimNativePointDrawCommands_.clear();
+    selectedBimNativeCurveDrawCommands_.clear();
+    if (subs_.guiManager) {
+      subs_.guiManager->setSectionPlaneVisualEditable(false);
+    }
     return true;
   }
 
@@ -3876,6 +4206,11 @@ void RendererFrontend::presentSceneControls() {
   const auto selectedEditableLight =
       subs_.lightingManager ? subs_.lightingManager->selectedEditableLightId()
                             : container::renderer::EditableLightId{};
+  std::vector<BimScheduleElement> bimScheduleElements;
+  std::vector<BimScheduleRow> bimScheduleByClassAndStoreyRows;
+  std::vector<BimScheduleRow> bimScheduleByTypeAndStoreyRows;
+  std::vector<BimScheduleRow> bimScheduleByMaterialRows;
+  std::vector<BimModelCompareElement> bimModelCompareElements;
   container::ui::BimInspectionState bimInspection{};
   if (subs_.bimManager && subs_.bimManager->hasScene()) {
     const BimSceneStats stats = subs_.bimManager->sceneStats();
@@ -3893,6 +4228,15 @@ void RendererFrontend::presentSceneControls() {
         subs_.bimManager->elementLoadBearingValues();
     const auto &elementStatuses = subs_.bimManager->elementStatuses();
     const auto &elementStoreyRanges = subs_.bimManager->elementStoreyRanges();
+    const auto &elementMetadata = subs_.bimManager->elementMetadata();
+    bimScheduleElements = buildBimScheduleElements(elementMetadata);
+    bimScheduleByClassAndStoreyRows =
+        buildBimScheduleByIfcClassAndStorey(bimScheduleElements);
+    bimScheduleByTypeAndStoreyRows =
+        buildBimScheduleByTypeAndStorey(bimScheduleElements);
+    bimScheduleByMaterialRows =
+        buildBimScheduleMaterialTotals(bimScheduleElements);
+    bimModelCompareElements = buildBimModelCompareElements(elementMetadata);
     bimInspection.hasScene = true;
     bimInspection.modelPath = subs_.bimManager->modelPath();
     bimInspection.objectCount = stats.objectCount;
@@ -3978,6 +4322,24 @@ void RendererFrontend::presentSceneControls() {
     bimInspection.crsAuthority = georeferenceMetadata.crsAuthority;
     bimInspection.crsCode = georeferenceMetadata.crsCode;
     bimInspection.mapConversionName = georeferenceMetadata.mapConversionName;
+    const BimGeoreferenceMetadata coordinateReadoutMetadata =
+        buildBimGeoreferenceMetadata(unitMetadata, georeferenceMetadata);
+    bimInspection.scheduleByClassAndStoreyRows =
+        std::span<const BimScheduleRow>(bimScheduleByClassAndStoreyRows.data(),
+                                        bimScheduleByClassAndStoreyRows.size());
+    bimInspection.scheduleByTypeAndStoreyRows =
+        std::span<const BimScheduleRow>(bimScheduleByTypeAndStoreyRows.data(),
+                                        bimScheduleByTypeAndStoreyRows.size());
+    bimInspection.scheduleByMaterialRows =
+        std::span<const BimScheduleRow>(bimScheduleByMaterialRows.data(),
+                                        bimScheduleByMaterialRows.size());
+    bimInspection.modelCompareElements =
+        std::span<const BimModelCompareElement>(bimModelCompareElements.data(),
+                                                bimModelCompareElements.size());
+    bimInspection.hasOriginRebaseRecommendation =
+        hasBimGeoreferenceReadoutMetadata(coordinateReadoutMetadata);
+    bimInspection.originRebaseRecommendation =
+        recommendBimOriginRebase(glm::dvec3{0.0}, coordinateReadoutMetadata);
     bimInspection.elementTypes =
         std::span<const std::string>(elementTypes.data(), elementTypes.size());
     bimInspection.elementStoreys = std::span<const std::string>(
@@ -3996,6 +4358,7 @@ void RendererFrontend::presentSceneControls() {
         elementStatuses.data(), elementStatuses.size());
     bimInspection.elementStoreyRanges = std::span<const BimStoreyRange>(
         elementStoreyRanges.data(), elementStoreyRanges.size());
+    bimInspection.relationshipGraph = &subs_.bimManager->relationshipGraph();
     if (const auto *metadata =
             subs_.bimManager->metadataForObject(selectedBimObjectIndex_)) {
       bimInspection.hasSelection = true;
@@ -4035,6 +4398,12 @@ void RendererFrontend::presentSceneControls() {
         bimInspection.selectionBoundsSize = elementBounds.size;
         bimInspection.selectionBoundsRadius = elementBounds.radius;
         bimInspection.selectionFloorElevation = elementBounds.floorElevation;
+        bimInspection.hasSelectedCoordinateReadout = true;
+        bimInspection.selectedCoordinateReadout = buildBimCoordinateReadout(
+            glm::dvec3(elementBounds.center), coordinateReadoutMetadata);
+        bimInspection.hasOriginRebaseRecommendation = true;
+        bimInspection.originRebaseRecommendation = recommendBimOriginRebase(
+            glm::dvec3(elementBounds.center), coordinateReadoutMetadata);
       }
     }
   }
@@ -4065,6 +4434,9 @@ void RendererFrontend::presentSceneControls() {
         }
         if (subs_.lightingManager) {
           subs_.lightingManager->selectEditableLight({});
+        }
+        if (subs_.guiManager) {
+          subs_.guiManager->setSectionPlaneVisualEditable(false);
         }
         syncSceneStateFromController();
         selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
@@ -4124,9 +4496,11 @@ void RendererFrontend::presentSceneControls() {
         clearHoveredMeshNode();
         selectedDrawCommands_.clear();
         selectedBimDrawCommands_.clear();
-        if (subs_.guiManager &&
-            container::renderer::isValidEditableLightId(id)) {
-          subs_.guiManager->setStatusMessage("Selected editable light");
+        if (subs_.guiManager) {
+          subs_.guiManager->setSectionPlaneVisualEditable(false);
+          if (container::renderer::isValidEditableLightId(id)) {
+            subs_.guiManager->setStatusMessage("Selected editable light");
+          }
         }
       },
       [this](const container::renderer::EditableLightEntity &light) {
@@ -4138,6 +4512,9 @@ void RendererFrontend::presentSceneControls() {
             container::scene::SceneGraph::kInvalidNode;
         selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
         selectionNavigationAnchor_ = {};
+        if (subs_.guiManager) {
+          subs_.guiManager->setSectionPlaneVisualEditable(false);
+        }
         subs_.lightingManager->updateLightingData();
         updateFrameDescriptorSets();
       },
@@ -4154,6 +4531,9 @@ void RendererFrontend::presentSceneControls() {
         selectionNavigationAnchor_ = {};
         selectedDrawCommands_.clear();
         selectedBimDrawCommands_.clear();
+        if (subs_.guiManager) {
+          subs_.guiManager->setSectionPlaneVisualEditable(false);
+        }
         updateFrameDescriptorSets();
         if (subs_.guiManager) {
           subs_.guiManager->setStatusMessage("Selected editable light");
@@ -4163,6 +4543,7 @@ void RendererFrontend::presentSceneControls() {
       [this](const container::ui::ViewpointSnapshotState &snapshot) {
         return restoreViewpointSnapshot(snapshot);
       },
+      sceneState_.rootNode,
       [this](uint32_t nodeIndex) {
         if (nodeIndex == container::scene::SceneGraph::kInvalidNode) {
           clearSelectedMeshNode();
@@ -4172,15 +4553,92 @@ void RendererFrontend::presentSceneControls() {
           subs_.cameraController->selectMeshNode(nodeIndex,
                                                  sceneState_.selectedMeshNode);
           selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
+          if (subs_.lightingManager) {
+            subs_.lightingManager->selectEditableLight({});
+          }
           selectionNavigationAnchor_ = {};
           clearHoveredMeshNode();
           selectedDrawCommands_.clear();
           selectedBimDrawCommands_.clear();
+          selectedBimNativePointDrawCommands_.clear();
+          selectedBimNativeCurveDrawCommands_.clear();
           if (subs_.guiManager) {
+            subs_.guiManager->setSectionPlaneVisualEditable(false);
             subs_.guiManager->setStatusMessage(
                 "Selected node " +
                 std::to_string(sceneState_.selectedMeshNode));
           }
+        }
+      },
+      [this, uploadCameraBuffers](uint32_t nodeIndex) {
+        if (nodeIndex == container::scene::SceneGraph::kInvalidNode ||
+            sceneGraph_.getNode(nodeIndex) == nullptr) {
+          return;
+        }
+        if (subs_.cameraController) {
+          subs_.cameraController->selectMeshNode(nodeIndex,
+                                                 sceneState_.selectedMeshNode);
+          subs_.cameraController->frameNodeOrScene(nodeIndex);
+          uploadCameraBuffers();
+        } else {
+          sceneState_.selectedMeshNode = nodeIndex;
+        }
+        selectedBimObjectIndex_ = std::numeric_limits<uint32_t>::max();
+        if (subs_.lightingManager) {
+          subs_.lightingManager->selectEditableLight({});
+        }
+        selectionNavigationAnchor_ = {};
+        clearHoveredMeshNode();
+        selectedDrawCommands_.clear();
+        selectedBimDrawCommands_.clear();
+        selectedBimNativePointDrawCommands_.clear();
+        selectedBimNativeCurveDrawCommands_.clear();
+        if (subs_.guiManager) {
+          subs_.guiManager->setSectionPlaneVisualEditable(false);
+          subs_.guiManager->setStatusMessage("Focused scene node " +
+                                             std::to_string(nodeIndex));
+        }
+      },
+      [this](uint32_t nodeIndex, bool visible) {
+        if (sceneGraph_.getNode(nodeIndex) == nullptr) {
+          return;
+        }
+        sceneGraph_.setVisible(nodeIndex, visible);
+        clearHoveredMeshNode();
+        selectedDrawCommands_.clear();
+        selectedBimDrawCommands_.clear();
+        updateObjectBuffer();
+        syncSceneProviders();
+        if (subs_.guiManager) {
+          subs_.guiManager->setStatusMessage(
+              std::string(visible ? "Showed" : "Hid") + " scene node " +
+              std::to_string(nodeIndex));
+        }
+      },
+      [this](uint32_t nodeIndex, std::optional<uint32_t> parentNode) {
+        if (nodeIndex == sceneState_.rootNode ||
+            sceneGraph_.getNode(nodeIndex) == nullptr) {
+          return;
+        }
+        if (!sceneGraph_.setParentPreserveWorldTransform(nodeIndex,
+                                                          parentNode)) {
+          if (subs_.guiManager) {
+            subs_.guiManager->setStatusMessage(
+                "Failed to reparent scene node " + std::to_string(nodeIndex));
+          }
+          return;
+        }
+        selectionNavigationAnchor_ = {};
+        clearHoveredMeshNode();
+        selectedDrawCommands_.clear();
+        selectedBimDrawCommands_.clear();
+        if (subs_.lightingManager)
+          subs_.lightingManager->updateLightingData();
+        updateObjectBuffer();
+        syncSceneProviders();
+        if (subs_.guiManager) {
+          subs_.guiManager->setStatusMessage("Reparented scene node " +
+                                             std::to_string(nodeIndex));
         }
       },
       subs_.cameraController ? subs_.cameraController->nodeTransformControls(
@@ -4202,6 +4660,72 @@ void RendererFrontend::presentSceneControls() {
       subs_.cameraController->setBimElevationView(sceneState_.selectedMeshNode,
                                                   *elevationRequest);
       uploadCameraBuffers();
+    }
+  }
+
+  if (auto drawingExportRequest =
+          subs_.guiManager->consumeBimDrawingExportRequest()) {
+    const std::filesystem::path outputPath =
+        container::util::pathFromUtf8(drawingExportRequest->path);
+    const std::string outputLabel = container::util::pathToUtf8(outputPath);
+
+    BimDrawingExportRequest svgRequest{};
+    svgRequest.title = bimDrawingTitle(subs_.bimManager.get());
+    const auto &floorPlan = subs_.guiManager->bimFloorPlanOverlayState();
+    svgRequest.paperWidthMm = drawingExportRequest->paperWidthMm;
+    svgRequest.paperHeightMm = drawingExportRequest->paperHeightMm;
+    svgRequest.modelUnitsPerPaperMm =
+        drawingExportRequest->modelUnitsPerPaperMm;
+    bool sourceElevation =
+        floorPlan.elevationMode ==
+        container::ui::BimFloorPlanElevationMode::SourceElevation;
+    if (subs_.bimManager) {
+      svgRequest.lines = subs_.bimManager->floorPlanDrawingExportLines(
+          sourceElevation, floorPlan.color, 0.18f);
+      if (svgRequest.lines.empty() && sourceElevation) {
+        sourceElevation = false;
+        svgRequest.lines = subs_.bimManager->floorPlanDrawingExportLines(
+            false, floorPlan.color, 0.18f);
+      }
+    }
+    svgRequest.viewName = bimFloorPlanDrawingViewName(sourceElevation);
+
+    const std::string svg = ExportBimDrawingSvg(svgRequest);
+    if (outputPath.empty()) {
+      subs_.guiManager->setStatusMessage(
+          "Failed to export BIM drawing SVG: empty path");
+    } else if (svgRequest.lines.empty()) {
+      subs_.guiManager->setStatusMessage(
+          "Failed to export BIM drawing SVG: no floor plan linework available");
+    } else if (svg.empty()) {
+      subs_.guiManager->setStatusMessage(
+          "Failed to export BIM drawing SVG: invalid paper size or scale");
+    } else {
+      bool readyToWrite = true;
+      if (outputPath.has_parent_path()) {
+        std::error_code directoryError;
+        std::filesystem::create_directories(outputPath.parent_path(),
+                                            directoryError);
+        if (directoryError) {
+          readyToWrite = false;
+          subs_.guiManager->setStatusMessage(
+              "Failed to create BIM drawing SVG directory: " +
+              container::util::pathToUtf8(outputPath.parent_path()));
+        }
+      }
+
+      if (readyToWrite) {
+        std::ofstream output(outputPath, std::ios::binary);
+        if (!output) {
+          subs_.guiManager->setStatusMessage(
+              "Failed to open BIM drawing SVG: " + outputLabel);
+        } else {
+          output << svg;
+          subs_.guiManager->setStatusMessage(
+              output ? "Exported BIM drawing SVG: " + outputLabel
+                     : "Failed to write BIM drawing SVG: " + outputLabel);
+        }
+      }
     }
   }
 
@@ -4381,10 +4905,31 @@ FrameTransformGizmoState RendererFrontend::buildTransformGizmoState() const {
   glm::vec3 boundsMax{0.0f};
   bool hasBounds = false;
   bool useLocalAxes = false;
+  bool useSectionPlaneAxes = false;
+  glm::vec3 sectionPlaneNormal{0.0f, 1.0f, 0.0f};
   const container::scene::SceneNode *selectedNode = nullptr;
   std::optional<EditableLightEntity> selectedEditableLightForGizmo{};
+  const bool hasSelectedEditableLightForGizmo =
+      subs_.lightingManager &&
+      subs_.lightingManager->selectedEditableLight().has_value();
 
-  if (sceneState_.selectedMeshNode !=
+  if (subs_.guiManager != nullptr &&
+      subs_.guiManager->sectionPlaneState().enabled &&
+      subs_.guiManager->sectionPlaneState().visualPlaneEditable &&
+      sceneState_.selectedMeshNode ==
+          container::scene::SceneGraph::kInvalidNode &&
+      !hasSelectedEditableLightForGizmo) {
+    const auto &sectionPlane = subs_.guiManager->sectionPlaneState();
+    const glm::vec3 origin = sectionPlaneOrigin(sectionPlane);
+    const float visualSize = std::max(sectionPlane.visualPlaneSize, 0.1f);
+    boundsMin = origin - glm::vec3{visualSize * 0.5f};
+    boundsMax = origin + glm::vec3{visualSize * 0.5f};
+    sectionPlaneNormal =
+        normalizedOr(sectionPlane.normal, {0.0f, 1.0f, 0.0f});
+    hasBounds = true;
+    useSectionPlaneAxes = true;
+    gizmo.transformSpace = container::ui::TransformSpace::Local;
+  } else if (sceneState_.selectedMeshNode !=
           container::scene::SceneGraph::kInvalidNode &&
       subs_.sceneController) {
     const auto &objectData = subs_.sceneController->objectData();
@@ -4444,7 +4989,16 @@ FrameTransformGizmoState RendererFrontend::buildTransformGizmoState() const {
   gizmo.radius = std::max(glm::length(boundsMax - boundsMin) * 0.5f, 0.1f);
   gizmo.scale =
       transformGizmoScale(gizmo.origin, gizmo.radius, buffers_.cameraData);
-  if (useLocalAxes && selectedNode != nullptr) {
+  if (useSectionPlaneAxes) {
+    if (gizmo.tool == container::ui::ViewportTool::Translate) {
+      gizmo.axisX = sectionPlaneNormal;
+      gizmo.axisY = sectionPlaneNormal;
+      gizmo.axisZ = sectionPlaneNormal;
+    } else {
+      sectionPlaneBasis(sectionPlaneNormal, gizmo.axisX, gizmo.axisY,
+                        gizmo.axisZ);
+    }
+  } else if (useLocalAxes && selectedNode != nullptr) {
     gizmo.axisX = normalizedOr(glm::vec3{selectedNode->worldTransform[0]},
                                {1.0f, 0.0f, 0.0f});
     gizmo.axisY = normalizedOr(glm::vec3{selectedNode->worldTransform[1]},
@@ -4629,7 +5183,13 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       residencySettings.forceResident = false;
     }
     subs_.bimManager->updateMeshletResidencySettings(residencySettings);
-    subs_.bimManager->updateVisibilityFilterSettings(bimFilter);
+    // Exact type/storey/material/discipline/phase/status filters still route
+    // through the existing GPU metadata IDs. Timeline and discipline-preset
+    // filters use phase ranges and class tokens, so they intentionally fall
+    // back to the CPU draw filter until the shader mask grows that model.
+    const BimDrawFilter gpuVisibilityFilter =
+        bimFilter.requiresCpuFiltering() ? BimDrawFilter{} : bimFilter;
+    subs_.bimManager->updateVisibilityFilterSettings(gpuVisibilityFilter);
     const auto bimLayers = subs_.guiManager
                                ? subs_.guiManager->bimLayerVisibilityState()
                                : container::ui::BimLayerVisibilityState{};
@@ -4745,6 +5305,50 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       p.bim.floorPlan.opacity = floorPlan.opacity;
       p.bim.floorPlan.lineWidth = floorPlan.lineWidth;
 
+      const bool coordinationLayerRequested =
+          bimLayers.clashLayerVisible || bimLayers.markupLayerVisible;
+      if (coordinationLayerRequested) {
+        const auto issuePins = subs_.guiManager->bimIssueOverlayPins();
+        const BimCoordinationOverlayResult coordinationOverlay =
+            subs_.bimManager->buildCoordinationOverlay(
+                {.spacesEnabled = false,
+                 .mepXrayEnabled = false,
+                 .clashesEnabled = bimLayers.clashLayerVisible,
+                 .issuePinsEnabled = bimLayers.markupLayerVisible},
+                std::span<const BimCoordinationOverlayClashPair>{}, issuePins);
+        if (coordinationOverlay.markers.empty()) {
+          subs_.bimManager->clearCoordinationMarkerGeometry();
+        } else if (subs_.bimManager->rebuildCoordinationMarkerGeometry(
+                coordinationOverlay)) {
+          const BimCoordinationMarkerDrawData &markerDrawData =
+              subs_.bimManager->coordinationMarkerDrawData();
+          p.bim.coordinationMarkerScene.vertexSlice =
+              markerDrawData.vertexSlice;
+          p.bim.coordinationMarkerScene.indexSlice = markerDrawData.indexSlice;
+          p.bim.coordinationMarkerScene.indexType = markerDrawData.indexType;
+          p.bim.coordinationMarkerScene.objectData =
+              &subs_.bimManager->objectData();
+          p.bim.coordinationMarkerScene.objectDataRevision =
+              subs_.bimManager->objectDataRevision();
+          p.bim.coordinationMarkerScene.objectBuffer =
+              subs_.bimManager->objectBuffer();
+          p.bim.coordinationMarkerScene.objectBufferSize =
+              subs_.bimManager->objectBufferSize();
+          p.bim.coordinationIssueMarkerDrawCommands =
+              &markerDrawData.issuePinDrawCommands;
+          p.bim.coordinationClashMarkerDrawCommands =
+              &markerDrawData.clashDrawCommands;
+          p.bim.coordinationMarkers.issueMarkersEnabled =
+              bimLayers.markupLayerVisible &&
+              !markerDrawData.issuePinDrawCommands.empty();
+          p.bim.coordinationMarkers.clashMarkersEnabled =
+              bimLayers.clashLayerVisible &&
+              !markerDrawData.clashDrawCommands.empty();
+        }
+      } else {
+        subs_.bimManager->clearCoordinationMarkerGeometry();
+      }
+
       const auto &elevation = subs_.guiManager->bimElevationViewState();
       const bool hiddenLineElevation =
           elevation.style ==
@@ -4802,13 +5406,46 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     subs_.sceneManager->updateSceneClipState(sceneClipState);
   }
   if (subs_.bimManager != nullptr && subs_.guiManager != nullptr) {
+    const auto &sectionPlane = subs_.guiManager->sectionPlaneState();
+    const bool sectionPlaneVisualEnabled =
+        sectionPlaneActive && sectionPlane.visualPlaneVisible;
+    p.bim.sectionPlaneVisual.enabled = sectionPlaneVisualEnabled;
+    p.bim.sectionPlaneVisual.depthTest = true;
+    p.bim.sectionPlaneVisual.color = sectionPlane.visualPlaneColor;
+    p.bim.sectionPlaneVisual.opacity =
+        std::clamp(sectionPlane.visualPlaneOpacity, 0.05f, 1.0f);
+    p.bim.sectionPlaneVisual.lineWidth =
+        std::clamp(sectionPlane.visualPlaneLineWidth, 0.5f, 8.0f);
+    if (sectionPlaneVisualEnabled &&
+        subs_.bimManager->rebuildSectionPlaneVisualGeometry(
+            activeSectionPlane, sectionPlane.visualPlaneSize,
+            sectionPlane.visualPlaneColor)) {
+      const auto &visualData =
+          subs_.bimManager->sectionPlaneVisualDrawData();
+      p.bim.sectionPlaneVisualScene.vertexSlice = visualData.vertexSlice;
+      p.bim.sectionPlaneVisualScene.indexSlice = visualData.indexSlice;
+      p.bim.sectionPlaneVisualScene.indexType = visualData.indexType;
+      p.bim.sectionPlaneVisualScene.objectData =
+          &subs_.bimManager->objectData();
+      p.bim.sectionPlaneVisualScene.objectDataRevision =
+          subs_.bimManager->objectDataRevision();
+      p.bim.sectionPlaneVisualScene.objectBuffer =
+          subs_.bimManager->objectBuffer();
+      p.bim.sectionPlaneVisualScene.objectBufferSize =
+          subs_.bimManager->objectBufferSize();
+      p.bim.sectionPlaneVisualDrawCommands = &visualData.drawCommands;
+    } else {
+      subs_.bimManager->clearSectionPlaneVisualGeometry();
+    }
+
     const auto &capUi = subs_.guiManager->bimClipCapHatchingUiState();
     const bool technicalCapsEnabled =
         p.bim.technicalElevation.enabled &&
         p.bim.technicalElevation.sectionCapsEnabled;
     const bool capStyleEnabled =
         (sectionPlaneActive || boxClipActive) &&
-        (capUi.capPreview || capUi.hatchingPreview || technicalCapsEnabled);
+        (capUi.capPreview || capUi.hatchingPreview ||
+         capUi.sectionMarkersPreview || technicalCapsEnabled);
     p.bim.sectionClipCaps.enabled = capStyleEnabled;
     p.bim.sectionClipCaps.fillEnabled =
         capUi.capPreview ||
@@ -4834,17 +5471,49 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     p.bim.sectionClipCaps.boxClip.invert = sceneClipState.boxClipInvert != 0u;
     p.bim.sectionClipCaps.boxClip.planeCount = sceneClipState.boxClipPlaneCount;
     p.bim.sectionClipCaps.boxClip.planes = activeBoxClipPlanes;
-    if (capStyleEnabled) {
+    const bool invertedBoxClipCapsUnsupported =
+        boxClipActive && p.bim.sectionClipCaps.boxClip.invert;
+    if (capStyleEnabled && !invertedBoxClipCapsUnsupported) {
       BimSectionCapBuildOptions capOptions{};
-      capOptions.sectionPlane = activeSectionPlane;
+      if (sectionPlaneActive) {
+        appendBimSectionCapClipPlane(capOptions, activeSectionPlane);
+      } else {
+        capOptions.sectionPlane = activeSectionPlane;
+      }
       if (boxClipActive) {
-        capOptions.clipPlaneCount =
-            static_cast<uint32_t>(activeBoxClipPlanes.size());
-        capOptions.clipPlanes = activeBoxClipPlanes;
+        for (const glm::vec4& boxClipPlane : activeBoxClipPlanes) {
+          appendBimSectionCapClipPlane(capOptions, boxClipPlane);
+        }
       }
       capOptions.hatchSpacing = p.bim.sectionClipCaps.hatchSpacing;
       capOptions.hatchAngleRadians = p.bim.sectionClipCaps.hatchAngleRadians;
       capOptions.capOffset = p.bim.sectionClipCaps.capOffset;
+      capOptions.fillColor = glm::vec3(capUi.capColor);
+      capOptions.fillOpacity = capUi.capOpacity;
+      capOptions.hatchColor = glm::vec3(capUi.hatchColor);
+      capOptions.sectionMarkersEnabled = capUi.sectionMarkersPreview;
+      capOptions.sectionMarkerColor = capUi.sectionMarkerColor;
+      capOptions.sectionMarkerLineWidth = capUi.sectionMarkerLineWidth;
+      if (capUi.perMaterialCutStyles) {
+        capOptions.materialStyles.push_back(BimSectionCapMaterialStyle{
+            .materialIndex = capUi.concreteMaterialIndex,
+            .fillColor = capUi.capColor,
+            .fillOpacity = capUi.capOpacity,
+            .hatchSpacing = capUi.concreteHatchSpacing,
+            .hatchAngleRadians = p.bim.sectionClipCaps.hatchAngleRadians,
+            .hatchColor = capUi.hatchColor,
+        });
+        if (capUi.glassMaterialIndex != capUi.concreteMaterialIndex) {
+          capOptions.materialStyles.push_back(BimSectionCapMaterialStyle{
+              .materialIndex = capUi.glassMaterialIndex,
+              .fillColor = capUi.capColor,
+              .fillOpacity = std::min(capUi.capOpacity, 0.45f),
+              .hatchSpacing = capUi.glassHatchSpacing,
+              .hatchAngleRadians = p.bim.sectionClipCaps.hatchAngleRadians,
+              .hatchColor = capUi.hatchColor,
+          });
+        }
+      }
       if (subs_.bimManager->rebuildSectionClipCapGeometry(capOptions)) {
         const auto &capData = subs_.bimManager->sectionClipCapDrawData();
         p.bim.sectionClipCapGeometry.scene.vertexSlice = capData.vertexSlice;
@@ -4854,6 +5523,11 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
             &capData.fillDrawCommands;
         p.bim.sectionClipCapGeometry.hatchDrawCommands =
             &capData.hatchDrawCommands;
+        p.bim.sectionClipCapGeometry.fillDrawStyles = &capData.fillDrawStyles;
+        p.bim.sectionClipCapGeometry.hatchDrawStyles =
+            &capData.hatchDrawStyles;
+        p.bim.sectionClipCapGeometry.sectionMarkerLines =
+          &capData.sectionMarkerLines;
       }
     } else {
       subs_.bimManager->clearSectionClipCapGeometry();
@@ -4877,6 +5551,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       p.camera.farPlane = perspCam->farPlane();
     }
   }
+  p.camera.orthographic =
+      subs_.cameraController != nullptr &&
+      subs_.cameraController->isOrthographic();
   if (subs_.shadowManager) {
     p.shadows.renderPass = resources_.renderPasses.shadow;
     p.shadows.shadowFramebuffers = subs_.shadowManager->framebuffers().data();

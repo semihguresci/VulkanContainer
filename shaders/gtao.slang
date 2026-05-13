@@ -172,7 +172,9 @@ void computeMain(uint3 dtid : SV_DispatchThreadID)
                            bitangent * sampleOffset.y +
                            normal * sampleOffset.z;
 
-        float3 samplePos = worldPos + sampleDir * radius;
+        float sampleProgress = saturate((float(i) + noise) / float(sampleCount));
+        float sampleDistance = lerp(0.08, 1.0, sampleProgress * sampleProgress);
+        float3 samplePos = worldPos + sampleDir * (radius * sampleDistance);
 
         float2 sampleUV = 0.0.xx;
         if (!ProjectWorldToSceneUv(samplePos, sampleUV)) continue;

@@ -33,6 +33,8 @@ struct FrameBufferBinding;
 struct FrameDescriptorBinding;
 struct FrameFramebufferBinding;
 struct FrameImageBinding;
+struct BimSectionCapDrawStyle;
+struct BimSectionMarkerLine;
 struct FrameResourceBinding;
 struct FrameSamplerBinding;
 struct LightPushConstants;
@@ -171,6 +173,9 @@ struct FrameSectionClipCapGeometry {
   FrameSceneGeometry scene{};
   const std::vector<DrawCommand> *fillDrawCommands{nullptr};
   const std::vector<DrawCommand> *hatchDrawCommands{nullptr};
+  const std::vector<BimSectionCapDrawStyle> *fillDrawStyles{nullptr};
+  const std::vector<BimSectionCapDrawStyle> *hatchDrawStyles{nullptr};
+  const std::vector<BimSectionMarkerLine> *sectionMarkerLines{nullptr};
 
   [[nodiscard]] bool valid() const {
     return scene.vertexSlice.buffer != VK_NULL_HANDLE &&
@@ -194,6 +199,26 @@ struct FrameBimTechnicalElevationState {
   float overlayIntensity{0.95f};
 };
 
+struct FrameBimCoordinationMarkerState {
+  bool issueMarkersEnabled{false};
+  bool clashMarkersEnabled{false};
+  bool depthTest{true};
+  glm::vec3 issueColor{0.12f, 0.48f, 1.0f};
+  glm::vec3 clashColor{1.0f, 0.16f, 0.05f};
+  float issueOpacity{0.9f};
+  float clashOpacity{1.0f};
+  float issueLineWidth{3.0f};
+  float clashLineWidth{4.0f};
+};
+
+struct FrameBimSectionPlaneVisualState {
+  bool enabled{false};
+  bool depthTest{true};
+  glm::vec3 color{0.12f, 0.62f, 1.0f};
+  float opacity{0.55f};
+  float lineWidth{2.0f};
+};
+
 struct FrameBimResources {
   // BIM models use a separate render path so semantic overlays, selection, and
   // future IFC metadata can evolve without perturbing regular glTF draws.
@@ -203,9 +228,16 @@ struct FrameBimResources {
   FrameDrawLists curveDraws{};
   FrameDrawLists nativePointDraws{};
   FrameDrawLists nativeCurveDraws{};
+  FrameSceneGeometry coordinationMarkerScene{};
+  FrameSceneGeometry sectionPlaneVisualScene{};
+  const std::vector<DrawCommand> *coordinationIssueMarkerDrawCommands{nullptr};
+  const std::vector<DrawCommand> *coordinationClashMarkerDrawCommands{nullptr};
+  const std::vector<DrawCommand> *sectionPlaneVisualDrawCommands{nullptr};
   const std::vector<DrawCommand> *floorPlanDrawCommands{nullptr};
   FrameBimFloorPlanOverlayState floorPlan{};
   FrameBimPointCurveStyleState pointCurveStyle{};
+  FrameBimCoordinationMarkerState coordinationMarkers{};
+  FrameBimSectionPlaneVisualState sectionPlaneVisual{};
   FrameBimPrimitivePassState primitivePasses{};
   FrameSectionClipCapStyleState sectionClipCaps{};
   FrameSectionClipCapGeometry sectionClipCapGeometry{};
@@ -222,6 +254,7 @@ struct FrameCameraResources {
   // Camera plane data shared by passes that derive depth-space values.
   float nearPlane{0.1f};
   float farPlane{100.0f};
+  bool orthographic{false};
 };
 
 struct FrameRegistryState {

@@ -9,6 +9,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 
@@ -29,6 +30,8 @@ TEST(SceneNode, DefaultsAreIdentityAndInvalid) {
   EXPECT_EQ(node.materialIndex, 0u);
   EXPECT_EQ(node.primitiveIndex, SceneGraph::kInvalidNode);
   EXPECT_FALSE(node.renderable);
+  EXPECT_TRUE(node.visible);
+  EXPECT_TRUE(node.name.empty());
   EXPECT_TRUE(node.children.empty());
 }
 
@@ -39,6 +42,7 @@ TEST(SceneNode, DefaultsAreIdentityAndInvalid) {
 TEST(SceneGraph, DefaultConstructionIsEmpty) {
   SceneGraph graph;
   EXPECT_EQ(graph.nodeCount(), 0u);
+  EXPECT_TRUE(graph.rootNodes().empty());
   EXPECT_TRUE(graph.renderableNodes().empty());
 }
 
@@ -104,7 +108,7 @@ TEST(SceneGraph, CreateNodeReturnsSequentialIndices) {
 TEST(SceneGraph, CreateNodePreservesTransformAndMaterial) {
   SceneGraph graph;
   const glm::mat4 t = glm::translate(glm::mat4(1.0f), glm::vec3(3, 4, 5));
-  const uint32_t idx = graph.createNode(t, 7, false, 42);
+  const uint32_t idx = graph.createNode(t, 7, false, 42, "Named node");
 
   const auto* node = graph.getNode(idx);
   ASSERT_NE(node, nullptr);
@@ -112,6 +116,7 @@ TEST(SceneGraph, CreateNodePreservesTransformAndMaterial) {
   EXPECT_EQ(node->materialIndex, 7u);
   EXPECT_EQ(node->primitiveIndex, 42u);
   EXPECT_FALSE(node->renderable);
+  EXPECT_EQ(node->name, "Named node");
 }
 
 TEST(SceneGraph, CreateRenderableNodeRegistersInList) {
@@ -156,6 +161,33 @@ TEST(SceneGraph, SetRenderableTwiceDoesNotDuplicate) {
   EXPECT_EQ(graph.renderableNodes().size(), 1u);
 }
 
+TEST(SceneGraph, VisibilityInheritsFromParents) {
+  SceneGraph graph;
+  const uint32_t parent = graph.createNode(glm::mat4(1.0f), 0);
+  const uint32_t child = graph.createNode(glm::mat4(1.0f), 0, true, 0);
+  graph.setParent(child, parent);
+
+  EXPECT_TRUE(graph.isNodeEffectivelyVisible(parent));
+  EXPECT_TRUE(graph.isNodeEffectivelyVisible(child));
+
+  graph.setVisible(parent, false);
+
+  EXPECT_FALSE(graph.getNode(parent)->visible);
+  EXPECT_TRUE(graph.getNode(child)->visible);
+  EXPECT_FALSE(graph.isNodeEffectivelyVisible(parent));
+  EXPECT_FALSE(graph.isNodeEffectivelyVisible(child));
+}
+
+TEST(SceneGraph, VisibilityNoOpDoesNotAdvanceRevision) {
+  SceneGraph graph;
+  const uint32_t node = graph.createNode(glm::mat4(1.0f), 0);
+  const uint64_t revision = graph.revision();
+
+  graph.setVisible(node, true);
+
+  EXPECT_EQ(graph.revision(), revision);
+}
+
 // ============================================================================
 // SceneGraph — parent/child
 // ============================================================================
@@ -164,6 +196,8 @@ TEST(SceneGraph, SetParentEstablishesRelationship) {
   SceneGraph graph;
   const uint32_t parent = graph.createNode(glm::mat4(1.0f), 0);
   const uint32_t child  = graph.createNode(glm::mat4(1.0f), 0);
+
+  ASSERT_EQ(graph.rootNodes().size(), 2u);
 
   graph.setParent(child, parent);
 
@@ -174,6 +208,8 @@ TEST(SceneGraph, SetParentEstablishesRelationship) {
   EXPECT_EQ(childNode->parent, parent);
   ASSERT_EQ(parentNode->children.size(), 1u);
   EXPECT_EQ(parentNode->children[0], child);
+  ASSERT_EQ(graph.rootNodes().size(), 1u);
+  EXPECT_EQ(graph.rootNodes()[0], parent);
 }
 
 TEST(SceneGraph, SetParentNulloptDetachesChild) {
@@ -190,6 +226,12 @@ TEST(SceneGraph, SetParentNulloptDetachesChild) {
   ASSERT_NE(parentNode, nullptr);
   EXPECT_EQ(childNode->parent, SceneGraph::kInvalidNode);
   EXPECT_TRUE(parentNode->children.empty());
+  EXPECT_NE(std::find(graph.rootNodes().begin(), graph.rootNodes().end(),
+                      parent),
+            graph.rootNodes().end());
+  EXPECT_NE(std::find(graph.rootNodes().begin(), graph.rootNodes().end(),
+                      child),
+            graph.rootNodes().end());
 }
 
 TEST(SceneGraph, ReparentMovesChild) {
@@ -246,9 +288,76 @@ TEST(SceneGraph, SetParentRejectsInvalidParentWithoutDetaching) {
   EXPECT_EQ(graph.getNode(parent)->children[0], child);
 }
 
+TEST(SceneGraph, ReparentPreservingWorldTransformKeepsNodeInPlace) {
+  SceneGraph graph;
+  const uint32_t firstParent = graph.createNode(
+      glm::translate(glm::mat4(1.0f), glm::vec3(10.0f, 0.0f, 0.0f)), 0);
+  const uint32_t secondParent = graph.createNode(
+      glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 5.0f, 0.0f)), 0);
+  const uint32_t child = graph.createNode(
+      glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 2.0f, 3.0f)), 0);
+  graph.setParent(child, firstParent);
+  graph.updateWorldTransforms();
+  const glm::mat4 originalWorld = graph.getNode(child)->worldTransform;
+
+  EXPECT_TRUE(graph.setParentPreserveWorldTransform(child, secondParent));
+  graph.updateWorldTransforms();
+
+  const auto *childNode = graph.getNode(child);
+  ASSERT_NE(childNode, nullptr);
+  EXPECT_EQ(childNode->parent, secondParent);
+  for (int c = 0; c < 4; ++c) {
+    for (int r = 0; r < 4; ++r) {
+      EXPECT_NEAR(childNode->worldTransform[c][r], originalWorld[c][r],
+                  1e-5f);
+    }
+  }
+}
+
+TEST(SceneGraph, ReparentPreservingWorldTransformRejectsSingularParent) {
+  SceneGraph graph;
+  const uint32_t child = graph.createNode(
+      glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 2.0f, 3.0f)), 0);
+  const uint32_t singularParent =
+      graph.createNode(glm::scale(glm::mat4(1.0f), glm::vec3(0.0f)), 0);
+  graph.updateWorldTransforms();
+  const uint64_t revision = graph.revision();
+  const glm::mat4 originalLocal = graph.getNode(child)->localTransform;
+
+  EXPECT_FALSE(
+      graph.setParentPreserveWorldTransform(child, singularParent));
+
+  EXPECT_EQ(graph.getNode(child)->parent, SceneGraph::kInvalidNode);
+  EXPECT_EQ(graph.getNode(child)->localTransform, originalLocal);
+  EXPECT_EQ(graph.revision(), revision);
+}
+
 // ============================================================================
 // SceneGraph — transforms
 // ============================================================================
+
+TEST(SceneGraph, ReparentPreservingWorldTransformAcceptsTinyValidScale) {
+  SceneGraph graph;
+  const uint32_t child = graph.createNode(
+      glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 2.0f, 3.0f)), 0);
+  const uint32_t tinyParent =
+      graph.createNode(glm::scale(glm::mat4(1.0f), glm::vec3(0.001f)), 0);
+  graph.updateWorldTransforms();
+  const glm::mat4 originalWorld = graph.getNode(child)->worldTransform;
+
+  EXPECT_TRUE(graph.setParentPreserveWorldTransform(child, tinyParent));
+  graph.updateWorldTransforms();
+
+  const auto *childNode = graph.getNode(child);
+  ASSERT_NE(childNode, nullptr);
+  EXPECT_EQ(childNode->parent, tinyParent);
+  for (int c = 0; c < 4; ++c) {
+    for (int r = 0; r < 4; ++r) {
+      EXPECT_NEAR(childNode->worldTransform[c][r], originalWorld[c][r],
+                  1e-4f);
+    }
+  }
+}
 
 TEST(SceneGraph, SetLocalTransformUpdatesNode) {
   SceneGraph graph;

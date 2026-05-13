@@ -19,6 +19,25 @@ set(TEST_RENDERER_SHADOW_DIR "${TEST_RENDERER_DIR}/shadow")
 set(TEST_SCENE_DIR "${TESTS_DIR}/scene")
 set(TEST_UI_DIR "${TESTS_DIR}/ui")
 set(TEST_VALIDATION_DIR "${TESTS_DIR}/validation")
+set(TEST_CMAKE_DIR "${TESTS_DIR}/cmake")
+
+add_test(
+    NAME fetch_gltf_sample_models_config_tests
+    COMMAND ${CMAKE_COMMAND}
+            "-DPROJECT_SOURCE_DIR_FOR_TEST=${CMAKE_SOURCE_DIR}"
+            "-DTEST_WORK_DIR=${CMAKE_BINARY_DIR}/cmake_test_work/fetch_gltf_sample_models_config_tests"
+            -P "${TEST_CMAKE_DIR}/fetch_gltf_sample_models_config_tests.cmake"
+)
+
+add_test(
+    NAME shaders_incremental_config_tests
+    COMMAND ${CMAKE_COMMAND}
+            "-DPROJECT_SOURCE_DIR_FOR_TEST=${CMAKE_SOURCE_DIR}"
+            "-DTEST_WORK_DIR=${CMAKE_BINARY_DIR}/cmake_test_work/shaders_incremental_config_tests"
+            "-DTEST_CMAKE_GENERATOR=${CMAKE_GENERATOR}"
+            "-DTEST_CMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+            -P "${TEST_CMAKE_DIR}/shaders_incremental_config_tests.cmake"
+)
 
 # ── Helper function ──────────────────────────────────────────────────────────
 # add_custom_test(TARGET_NAME SOURCE_FILE SHADER_DIR TEST_RESULTS_DIR [deps...])
@@ -142,7 +161,7 @@ add_custom_test(materialx_integration_tests
 
 add_custom_test(bcf_viewpoint_tests
     ${TEST_UI_DIR}/bcf_viewpoint_tests.cpp  ""  ${TEST_RESULTS_DIR}
-    VulkanSceneRenderer_ui
+    VulkanSceneRenderer_renderer
 )
 
 add_custom_test(rendering_convention_tests
@@ -366,6 +385,53 @@ add_custom_test(bim_draw_filter_state_tests
     VulkanSceneRenderer_renderer
 )
 
+add_custom_test(bim_drawing_export_tests
+    ${TEST_RENDERER_BIM_DIR}/bim_drawing_export_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
+add_custom_test(bim_relationship_graph_tests
+    ${TEST_RENDERER_BIM_DIR}/bim_relationship_graph_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
+add_custom_test(bim_measurement_snapping_tests
+    ${TEST_RENDERER_BIM_DIR}/bim_measurement_snapping_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
+
+add_custom_test(bim_schedule_extractor_tests
+    ${TEST_RENDERER_BIM_DIR}/bim_schedule_extractor_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(bim_schedule_extractor_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/bim/BimScheduleExtractor.cpp
+)
+
+add_custom_test(bim_model_compare_tests
+    ${TEST_RENDERER_BIM_DIR}/bim_model_compare_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(bim_model_compare_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/bim/BimModelCompare.cpp
+)
+
+add_custom_test(bim_georeference_transform_tests
+    ${TEST_RENDERER_BIM_DIR}/bim_georeference_transform_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(bim_georeference_transform_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/bim/BimGeoreferenceTransform.cpp
+)
+
+add_custom_test(bim_coordination_overlay_tests
+    ${TEST_RENDERER_BIM_DIR}/bim_coordination_overlay_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(bim_coordination_overlay_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/bim/BimCoordinationOverlay.cpp
+)
+
 add_custom_test(bim_frame_draw_routing_planner_tests
     ${TEST_RENDERER_BIM_DIR}/bim_frame_draw_routing_planner_tests.cpp  ""  ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_renderer
@@ -520,6 +586,14 @@ add_custom_test(bim_section_cap_tests
     Dep_Math
 )
 target_sources(bim_section_cap_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/bim/BimSectionCapBuilder.cpp
+)
+
+add_custom_test(bim_section_cap_builder_tests
+    ${TEST_RENDERER_BIM_DIR}/bim_section_cap_builder_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(bim_section_cap_builder_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/renderer/bim/BimSectionCapBuilder.cpp
 )
 

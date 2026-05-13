@@ -1652,6 +1652,52 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(gtao, "projected.w <= 1e-6"));
 }
 
+TEST(RenderingConventionTests, GtaoKernelSamplesInsideRadius) {
+  const std::string gtao = readRepoTextFile("shaders/gtao.slang");
+
+  EXPECT_TRUE(contains(gtao, "sampleDistance"));
+  EXPECT_TRUE(contains(gtao, "radius * sampleDistance"));
+  EXPECT_FALSE(contains(gtao, "sampleDir * radius"));
+}
+
+TEST(RenderingConventionTests, GtaoBlurHandlesOrthographicDepth) {
+  const std::string blur = readRepoTextFile("shaders/gtao_blur.slang");
+  const std::string sceneData =
+      readRepoTextFile("include/Container/utility/SceneData.h");
+  const std::string frameRecorder =
+      readRepoTextFile("include/Container/renderer/core/FrameRecorder.h");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+  const std::string environmentManager =
+      readRepoTextFile("src/renderer/lighting/EnvironmentManager.cpp");
+
+  EXPECT_TRUE(contains(sceneData, "uint32_t orthographicDepth"));
+  EXPECT_TRUE(contains(frameRecorder, "bool orthographic"));
+  EXPECT_TRUE(contains(rendererFrontend, "p.camera.orthographic"));
+  EXPECT_TRUE(contains(environmentManager, "pc.orthographicDepth"));
+  EXPECT_TRUE(contains(blur, "LinearizeDepthForProjection"));
+  EXPECT_TRUE(contains(blur, "pc.orthographicDepth != 0u"));
+  EXPECT_TRUE(contains(blur, "lerp(f, n, saturate(depth))"));
+}
+
+TEST(RenderingConventionTests, GtaoTextureFormatIsCapabilityChecked) {
+  const std::string environmentHeader = readRepoTextFile(
+      "include/Container/renderer/lighting/EnvironmentManager.h");
+  const std::string environmentManager =
+      readRepoTextFile("src/renderer/lighting/EnvironmentManager.cpp");
+
+  EXPECT_TRUE(contains(environmentHeader, "gtaoFormat_"));
+  EXPECT_TRUE(contains(environmentManager, "selectGtaoStorageFormat"));
+  EXPECT_TRUE(
+      contains(environmentManager, "vkGetPhysicalDeviceFormatProperties"));
+  EXPECT_TRUE(
+      contains(environmentManager, "VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT"));
+  EXPECT_TRUE(
+      contains(environmentManager, "VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT"));
+  EXPECT_TRUE(contains(environmentManager, "ii.format      = gtaoFormat_"));
+  EXPECT_TRUE(contains(environmentManager, "vi.format   = gtaoFormat_"));
+}
+
 TEST(RenderingConventionTests, SpotLightsSharePointLightDataWithConeFields) {
   const std::string sceneData =
       readRepoTextFile("include/Container/utility/SceneData.h");
@@ -1825,6 +1871,10 @@ TEST(RenderingConventionTests, AreaLightShadersUseSampledIntegration) {
   EXPECT_TRUE(contains(areaLightCommon, "float2(0.0, 0.0)"));
   EXPECT_TRUE(contains(areaLightCommon, "EvaluateAreaLightSampleRadiance"));
   EXPECT_TRUE(contains(areaLightCommon, "frame.area * AreaLightSampleWeight"));
+  EXPECT_TRUE(
+      contains(areaLightCommon, "AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT = 5u"));
+  EXPECT_TRUE(contains(areaLightCommon, "AreaLightShadowVisibilitySampleIndex"));
+  EXPECT_TRUE(contains(areaLightCommon, "AreaLightSampleContributionWeight"));
   EXPECT_TRUE(contains(localShadow, "LocalAreaLightShadowVisibility"));
   EXPECT_TRUE(contains(localShadow, "PackedLocalShadowAreaRef"));
 
@@ -1837,6 +1887,29 @@ TEST(RenderingConventionTests, AreaLightShadersUseSampledIntegration) {
       contains(directional, "LocalShadowMapsEnabled(uLighting, uLocalShadow)"));
   EXPECT_TRUE(contains(directional, "LocalAreaLightShadowVisibility("));
   EXPECT_FALSE(contains(directional, "ClosestPointOnAreaLight"));
+  const size_t deferredAreaLightStart =
+      directional.find("float3 EvaluateDeferredAreaLight");
+  ASSERT_NE(deferredAreaLightStart, std::string::npos);
+  const size_t deferredAreaLightSampleLoop =
+      directional.find("sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT",
+                       deferredAreaLightStart);
+  ASSERT_NE(deferredAreaLightSampleLoop, std::string::npos);
+  const size_t deferredAreaLightEnd =
+      directional.find("[shader(\"fragment\")]", deferredAreaLightStart);
+  ASSERT_NE(deferredAreaLightEnd, std::string::npos);
+  const size_t deferredAreaLightShadowBeforeSampleLoop =
+      directional.find("LocalAreaLightShadowVisibility(",
+                       deferredAreaLightStart);
+  ASSERT_NE(deferredAreaLightShadowBeforeSampleLoop, std::string::npos);
+  EXPECT_LT(deferredAreaLightShadowBeforeSampleLoop,
+            deferredAreaLightSampleLoop)
+      << "Area-light shadow visibility should use the reduced shared estimate "
+         "instead of paying a full PCF for every lighting sample.";
+  const size_t deferredAreaLightShadowAfterSampleLoop =
+      directional.find("LocalAreaLightShadowVisibility(",
+                       deferredAreaLightSampleLoop);
+  EXPECT_TRUE(deferredAreaLightShadowAfterSampleLoop == std::string::npos ||
+              deferredAreaLightShadowAfterSampleLoop >= deferredAreaLightEnd);
 
   EXPECT_TRUE(contains(transparent, "#include \"area_light_common.slang\""));
   EXPECT_TRUE(contains(transparent, "#include \"local_shadow_common.slang\""));
@@ -1847,6 +1920,31 @@ TEST(RenderingConventionTests, AreaLightShadersUseSampledIntegration) {
       contains(transparent, "LocalShadowMapsEnabled(uLighting, uLocalShadow)"));
   EXPECT_TRUE(contains(transparent, "LocalAreaLightShadowVisibility("));
   EXPECT_FALSE(contains(transparent, "ClosestPointOnAreaLight"));
+  const size_t transparentAreaLightLoop =
+      transparent.find("for (uint i = 0u; i < areaLightCount; ++i)");
+  ASSERT_NE(transparentAreaLightLoop, std::string::npos);
+  const size_t transparentAreaLightSampleLoop =
+      transparent.find("sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT",
+                       transparentAreaLightLoop);
+  ASSERT_NE(transparentAreaLightSampleLoop, std::string::npos);
+  const size_t transparentAreaLightShadowBeforeSampleLoop =
+      transparent.find("LocalAreaLightShadowVisibility(",
+                       transparentAreaLightLoop);
+  ASSERT_NE(transparentAreaLightShadowBeforeSampleLoop, std::string::npos);
+  EXPECT_LT(transparentAreaLightShadowBeforeSampleLoop,
+            transparentAreaLightSampleLoop)
+      << "Transparent area-light shadow visibility should use the reduced "
+         "shared estimate.";
+  const size_t transparentAreaLightLoopEnd =
+      transparent.find("if ((vertIn.flags & kPbrObjectFlagUnlit) == 0u)",
+                       transparentAreaLightLoop);
+  ASSERT_NE(transparentAreaLightLoopEnd, std::string::npos);
+  const size_t transparentAreaLightShadowAfterSampleLoop =
+      transparent.find("LocalAreaLightShadowVisibility(",
+                       transparentAreaLightSampleLoop);
+  EXPECT_TRUE(transparentAreaLightShadowAfterSampleLoop == std::string::npos ||
+              transparentAreaLightShadowAfterSampleLoop >=
+                  transparentAreaLightLoopEnd);
 }
 
 TEST(RenderingConventionTests,
@@ -2503,6 +2601,17 @@ TEST(RenderingConventionTests, SceneControlsExposeEditableLightInspector) {
   EXPECT_TRUE(contains(header, "EditableLightEntity"));
   EXPECT_TRUE(contains(header, "addManualEditableLight"));
   EXPECT_TRUE(contains(gui, "Editable lights"));
+  EXPECT_TRUE(contains(gui, "Selected Light Properties"));
+  EXPECT_TRUE(contains(gui, "Light Transform"));
+  EXPECT_TRUE(contains(gui, "Light Radiance"));
+  EXPECT_TRUE(contains(gui, "Spot Beam"));
+  EXPECT_TRUE(contains(gui, "Area Emitter"));
+  EXPECT_TRUE(contains(gui, "Area Width"));
+  EXPECT_TRUE(contains(gui, "Area Height"));
+  EXPECT_TRUE(contains(gui, "Shadow Eligibility"));
+  EXPECT_TRUE(
+      contains(gui, "Local shadow budget assigns the first eligible point/spot "
+                    "lights"));
   EXPECT_TRUE(contains(gui, "Directional direction"));
   EXPECT_TRUE(contains(gui, "Light Runtime Stats"));
   EXPECT_TRUE(contains(gui, "Lighting Settings"));
@@ -5702,6 +5811,95 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(guiManager, "Bounds"));
 }
 
+TEST(RenderingConventionTests, BimCameraPivotUsesElementBoundsCenter) {
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+  const size_t syncStart =
+      rendererFrontend.find("void RendererFrontend::syncCameraSelectionPivotOverride()");
+  ASSERT_NE(syncStart, std::string::npos);
+  const size_t syncEnd =
+      rendererFrontend.find("void RendererFrontend::initializeScene", syncStart);
+  ASSERT_NE(syncEnd, std::string::npos);
+  const std::string syncBlock =
+      rendererFrontend.substr(syncStart, syncEnd - syncStart);
+
+  EXPECT_TRUE(contains(syncBlock, "if (anchorMatchesScene)"));
+  EXPECT_FALSE(contains(syncBlock, "anchorMatchesScene || anchorMatchesBim"));
+
+  const size_t bimAnchor = syncBlock.find("anchorMatchesBim");
+  const size_t bimGuard = syncBlock.find("if (selectedBimObjectIndex_");
+  const size_t boundsLookup =
+      syncBlock.find("elementBoundsForObject(selectedBimObjectIndex_)");
+  ASSERT_NE(bimAnchor, std::string::npos);
+  ASSERT_NE(bimGuard, std::string::npos);
+  ASSERT_NE(boundsLookup, std::string::npos);
+  EXPECT_LT(bimAnchor, boundsLookup);
+  EXPECT_LT(bimGuard, boundsLookup);
+  EXPECT_EQ(syncBlock.substr(bimGuard, boundsLookup - bimGuard)
+                .find("selectionNavigationAnchor_.point"),
+            std::string::npos);
+
+  const size_t boundsPivot =
+      syncBlock.find(".center = bounds.center", boundsLookup);
+  ASSERT_NE(boundsPivot, std::string::npos);
+}
+
+TEST(RenderingConventionTests, SceneHierarchyPanelExposesNodeActions) {
+  const std::string sceneGraphHeader =
+      readRepoTextFile("include/Container/utility/SceneGraph.h");
+  const std::string sceneGraph =
+      readRepoTextFile("src/utility/SceneGraph.cpp");
+  const std::string world = readRepoTextFile("src/ecs/World.cpp");
+  const std::string guiHeader =
+      readRepoTextFile("include/Container/utility/GuiManager.h");
+  const std::string gui = readRepoTextFile("src/utility/GuiManager.cpp");
+  const std::string frontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(sceneGraphHeader, "rootNodes()"));
+  EXPECT_TRUE(contains(sceneGraphHeader, "visible = true"));
+  EXPECT_TRUE(contains(sceneGraphHeader, "setParentPreserveWorldTransform"));
+  EXPECT_TRUE(contains(sceneGraph, "isNodeEffectivelyVisible"));
+  EXPECT_TRUE(contains(world, "graph.isNodeEffectivelyVisible(nodeIndex)"));
+
+  EXPECT_TRUE(contains(guiHeader, "focusSceneNode"));
+  EXPECT_TRUE(contains(guiHeader, "setSceneNodeVisible"));
+  EXPECT_TRUE(contains(guiHeader, "reparentSceneNode"));
+  EXPECT_TRUE(contains(gui, "Scene Hierarchy"));
+  EXPECT_TRUE(contains(gui, "DrawSceneHierarchyPanel"));
+  EXPECT_TRUE(contains(gui, "DrawSceneHierarchyParentCombo"));
+  EXPECT_TRUE(contains(gui, "SceneHierarchyDescendants"));
+  EXPECT_TRUE(contains(gui, "SceneHierarchyVisitedNodes"));
+  EXPECT_TRUE(contains(gui, "SceneHierarchyParentCandidateCache"));
+  EXPECT_TRUE(contains(gui, "ImGuiListClipper"));
+  EXPECT_TRUE(contains(gui, "SceneHierarchyParentChange"));
+  EXPECT_TRUE(contains(gui, "Focus"));
+  EXPECT_TRUE(contains(gui, "Visible"));
+  EXPECT_TRUE(contains(gui, "Parent"));
+  EXPECT_TRUE(contains(frontend, "frameNodeOrScene(nodeIndex)"));
+  EXPECT_TRUE(contains(frontend, "setVisible(nodeIndex, visible)"));
+  EXPECT_TRUE(contains(frontend, "setParentPreserveWorldTransform"));
+  EXPECT_TRUE(contains(frontend, "Failed to reparent scene node"));
+  const size_t restoreSnapshot =
+      frontend.find("return restoreViewpointSnapshot(snapshot);");
+  ASSERT_NE(restoreSnapshot, std::string::npos);
+  const size_t hierarchyStart =
+      frontend.find("[this](uint32_t nodeIndex) {", restoreSnapshot);
+  ASSERT_NE(hierarchyStart, std::string::npos);
+  const size_t hierarchyEnd = frontend.find(
+      "subs_.cameraController ? subs_.cameraController->nodeTransformControls",
+      hierarchyStart);
+  ASSERT_NE(hierarchyEnd, std::string::npos);
+  const std::string hierarchyBlock =
+      frontend.substr(hierarchyStart, hierarchyEnd - hierarchyStart);
+  EXPECT_TRUE(contains(hierarchyBlock, "selectEditableLight({})"));
+  EXPECT_TRUE(contains(hierarchyBlock, "setSectionPlaneVisualEditable(false)"));
+  EXPECT_TRUE(contains(hierarchyBlock,
+                       "selectedBimNativePointDrawCommands_.clear()"));
+  EXPECT_TRUE(contains(hierarchyBlock,
+                       "selectedBimNativeCurveDrawCommands_.clear()"));
+}
+
 TEST(RenderingConventionTests, BimMeasurementToolsUseSelectionBoundsInGui) {
   const std::string guiManagerHeader =
       readRepoTextFile("include/Container/utility/GuiManager.h");
@@ -5718,7 +5916,7 @@ TEST(RenderingConventionTests, BimMeasurementToolsUseSelectionBoundsInGui) {
   EXPECT_TRUE(contains(guiManager, "BimMeasurementDimensions"));
   EXPECT_TRUE(contains(guiManager, "BimMeasurementFootprintArea"));
   EXPECT_TRUE(contains(guiManager, "BimMeasurementVolume"));
-  EXPECT_TRUE(contains(guiManager, "BimMeasurementBetweenCenters"));
+  EXPECT_TRUE(contains(guiManager, "ComputeBimMeasurement"));
   EXPECT_TRUE(contains(guiManager, "measurementSourceChanged"));
   EXPECT_TRUE(contains(guiManager, "bimInspection.effectiveImportScale"));
   EXPECT_TRUE(contains(guiManager, "bimInspection.objectCount"));
@@ -5728,9 +5926,11 @@ TEST(RenderingConventionTests, BimMeasurementToolsUseSelectionBoundsInGui) {
   EXPECT_TRUE(contains(guiManager, "Dimensions (X/Y/Z)"));
   EXPECT_TRUE(contains(guiManager, "Footprint (X*Z)"));
   EXPECT_TRUE(contains(guiManager, "Volume (bounds)"));
-  EXPECT_TRUE(contains(guiManager, "Set A from selection center"));
-  EXPECT_TRUE(contains(guiManager, "Set B from selection center"));
-  EXPECT_TRUE(contains(guiManager, "Center-to-center"));
+  EXPECT_TRUE(contains(guiManager, "CaptureBimMeasurementPointFromSelection"));
+  EXPECT_TRUE(contains(guiManager, "BimMeasurementSnapMode"));
+  EXPECT_TRUE(contains(guiManager, "Set A from selection"));
+  EXPECT_TRUE(contains(guiManager, "Set B from selection"));
+  EXPECT_TRUE(contains(guiManager, "Measurement points"));
   EXPECT_TRUE(contains(guiManager, "Distance: %.3f"));
   EXPECT_TRUE(contains(guiManager, "Horizontal distance"));
   EXPECT_TRUE(contains(guiManager, "Elevation delta"));
@@ -5873,7 +6073,6 @@ TEST(RenderingConventionTests, BimUiGapControlsExposeGracefulPlaceholders) {
   EXPECT_TRUE(contains(guiManagerHeader, "bimLayerVisibilityState()"));
   EXPECT_TRUE(contains(guiManagerHeader, "pointCloudVisible"));
   EXPECT_TRUE(contains(guiManagerHeader, "curvesVisible"));
-  EXPECT_TRUE(contains(guiManagerHeader, "xrayLayerVisible"));
   EXPECT_TRUE(contains(guiManagerHeader, "clashLayerVisible"));
   EXPECT_TRUE(contains(guiManagerHeader, "markupLayerVisible"));
   EXPECT_TRUE(contains(guiManagerHeader, "bimQuickFilterSearch_"));
@@ -5886,6 +6085,10 @@ TEST(RenderingConventionTests, BimUiGapControlsExposeGracefulPlaceholders) {
   EXPECT_TRUE(contains(guiManagerHeader, "bimLodStreamingUiState_"));
   EXPECT_TRUE(contains(guiManagerHeader, "BimClipCapHatchingUiState"));
   EXPECT_TRUE(contains(guiManagerHeader, "bimClipCapHatchingUiState_"));
+  EXPECT_TRUE(contains(guiManagerHeader, "scheduleByClassAndStoreyRows"));
+  EXPECT_TRUE(contains(guiManagerHeader, "modelCompareElements"));
+  EXPECT_TRUE(contains(guiManagerHeader, "selectedCoordinateReadout"));
+  EXPECT_TRUE(contains(guiManagerHeader, "bimIssueOverlayPins()"));
   EXPECT_TRUE(contains(guiManagerHeader, "screenErrorPixels"));
   EXPECT_TRUE(contains(guiManagerHeader, "hatchSpacing"));
   EXPECT_TRUE(contains(guiManagerHeader, "hatchAngleDegrees"));
@@ -5900,10 +6103,18 @@ TEST(RenderingConventionTests, BimUiGapControlsExposeGracefulPlaceholders) {
   EXPECT_TRUE(contains(guiManager, "bimInspection.properties"));
   EXPECT_TRUE(contains(guiManager, "Georeference and Units"));
   EXPECT_TRUE(contains(guiManager, "BimGeoreferenceAndUnits"));
+  EXPECT_TRUE(contains(guiManager, "Selected coordinate readout"));
+  EXPECT_TRUE(contains(guiManager, "Origin rebase recommended"));
   EXPECT_TRUE(contains(guiManager, "Source up axis"));
   EXPECT_TRUE(contains(guiManager, "Coordinate offset"));
   EXPECT_TRUE(contains(guiManager, "CRS:"));
   EXPECT_TRUE(contains(guiManager, "No CRS metadata exposed"));
+  EXPECT_TRUE(contains(guiManager, "Schedules and Quantities"));
+  EXPECT_TRUE(contains(guiManager, "BimScheduleClassStoreyRows"));
+  EXPECT_TRUE(contains(guiManager, "Material totals"));
+  EXPECT_TRUE(contains(guiManager, "Model Compare"));
+  EXPECT_TRUE(contains(guiManager, "Capture compare baseline"));
+  EXPECT_TRUE(contains(guiManager, "compareBimModels"));
   EXPECT_TRUE(contains(guiManager, "Search and Filters"));
   EXPECT_TRUE(contains(guiManager, "Search filter values"));
   EXPECT_TRUE(contains(guiManager, "Clear all BIM filters"));
@@ -5928,9 +6139,8 @@ TEST(RenderingConventionTests, BimUiGapControlsExposeGracefulPlaceholders) {
   EXPECT_TRUE(contains(guiManager, "Filter related material"));
   EXPECT_TRUE(contains(guiManager, "Filter related type"));
   EXPECT_TRUE(contains(guiManager, "BimIfcPropertySetSummary"));
-  EXPECT_TRUE(contains(
-      guiManager,
-      "Full IFC inverse relationship graph is not exposed by backend"));
+  EXPECT_TRUE(contains(guiManager, "BimRelationshipSearchResults"));
+  EXPECT_TRUE(contains(guiManager, "BimSelectedRelationshipEdges"));
   EXPECT_TRUE(contains(
       guiManager, "Select an element to browse inferred IFC relationships"));
   EXPECT_TRUE(contains(guiManager, "No spatial hierarchy exposed by renderer"));
@@ -5938,9 +6148,12 @@ TEST(RenderingConventionTests, BimUiGapControlsExposeGracefulPlaceholders) {
   EXPECT_TRUE(contains(guiManager, "Layer Visibility"));
   EXPECT_TRUE(contains(guiManager, "Point-cloud visibility"));
   EXPECT_TRUE(contains(guiManager, "Curve visibility"));
-  EXPECT_TRUE(contains(guiManager, "X-ray layer (placeholder)"));
-  EXPECT_TRUE(contains(guiManager, "Clash layer (placeholder)"));
-  EXPECT_TRUE(contains(guiManager, "Markup layer (placeholder)"));
+  EXPECT_FALSE(contains(guiManager, "Space volumes"));
+  EXPECT_FALSE(contains(guiManager, "X-ray layer"));
+  EXPECT_TRUE(contains(guiManager, "Clash markers"));
+  EXPECT_TRUE(contains(guiManager, "Issue markers"));
+  EXPECT_TRUE(contains(guiManager, "Active issue pins"));
+  EXPECT_TRUE(contains(guiManager, "bcfIssueOverlayPins_"));
   EXPECT_TRUE(contains(guiManager, "Point-cloud and curve toggles mask"));
   EXPECT_TRUE(contains(guiManager, "LOD / Streaming"));
   EXPECT_TRUE(contains(guiManager, "Loaded BIM objects"));
@@ -6612,6 +6825,47 @@ TEST(RenderingConventionTests, BimLightingOverlaysUsePlanner) {
       contains(srcCmake, "renderer/bim/BimLightingOverlayRecorder.cpp"));
   EXPECT_TRUE(contains(testsCmake, "bim_lighting_overlay_planner_tests"));
   EXPECT_TRUE(contains(testsCmake, "bim_lighting_overlay_recorder_tests"));
+}
+
+TEST(RenderingConventionTests, BimIssueAndClashMarkersAreRendererPlumbed) {
+  const std::string frameRecorderHeader =
+      readRepoTextFile("include/Container/renderer/core/FrameRecorder.h");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+  const std::string bimManagerHeader =
+      readRepoTextFile("include/Container/renderer/bim/BimManager.h");
+  const std::string bimManager =
+      readRepoTextFile("src/renderer/bim/BimManager.cpp");
+  const std::string lightingHeader = readRepoTextFile(
+      "include/Container/renderer/bim/BimLightingOverlayPlanner.h");
+  const std::string lightingRecorder =
+      readRepoTextFile("src/renderer/bim/BimLightingOverlayRecorder.cpp");
+  const std::string deferredLighting = readRepoTextFile(
+      "src/renderer/deferred/DeferredRasterLightingPassRecorder.cpp");
+
+  EXPECT_TRUE(
+      contains(frameRecorderHeader, "coordinationMarkerScene"));
+  EXPECT_TRUE(
+      contains(frameRecorderHeader, "coordinationIssueMarkerDrawCommands"));
+  EXPECT_TRUE(
+      contains(frameRecorderHeader, "coordinationClashMarkerDrawCommands"));
+  EXPECT_TRUE(contains(bimManagerHeader, "BimCoordinationMarkerDrawData"));
+  EXPECT_TRUE(contains(bimManagerHeader, "rebuildCoordinationMarkerGeometry"));
+  EXPECT_TRUE(contains(bimManagerHeader, "coordinationMarkerDrawData()"));
+  EXPECT_TRUE(contains(bimManager,
+                       "buildBimCoordinationOverlayMarkerWirePrimitives"));
+  EXPECT_TRUE(contains(bimManager, "coordinationMarkerGeometrySignature_"));
+  EXPECT_TRUE(contains(bimManager, "resolveIssuePinObjectIndex"));
+  EXPECT_TRUE(contains(bimManager, "objectIndicesForGuid(pin.ifcGuid)"));
+  EXPECT_TRUE(contains(bimManager, "objectIndicesForSourceId(pin.sourceId)"));
+  EXPECT_TRUE(contains(rendererFrontend, "bimIssueOverlayPins()"));
+  EXPECT_TRUE(contains(rendererFrontend,
+                       "rebuildCoordinationMarkerGeometry("));
+  EXPECT_TRUE(contains(rendererFrontend, "coordinationOverlay"));
+  EXPECT_TRUE(contains(lightingHeader, "CoordinationIssueMarker"));
+  EXPECT_TRUE(contains(lightingHeader, "CoordinationClashMarker"));
+  EXPECT_TRUE(contains(lightingRecorder, "coordinationMarkers"));
+  EXPECT_TRUE(contains(deferredLighting, "coordinationMarkerScene"));
 }
 
 TEST(RenderingConventionTests,
@@ -7923,6 +8177,8 @@ TEST(RenderingConventionTests, BimSectionClipCapsExposeShaderStyleContract) {
       readRepoTextFile("src/renderer/bim/BimSectionClipCapPassPlanner.cpp");
   const std::string sectionClipCapRecorder =
       readRepoTextFile("src/renderer/bim/BimSectionClipCapPassRecorder.cpp");
+  const std::string sectionCapHeader =
+      readRepoTextFile("include/Container/renderer/bim/BimSectionCapBuilder.h");
   const std::string pipelineTypes =
       readRepoTextFile("include/Container/renderer/pipeline/PipelineTypes.h");
   const std::string pipelineBuilder =
@@ -7998,7 +8254,21 @@ TEST(RenderingConventionTests, BimSectionClipCapsExposeShaderStyleContract) {
   EXPECT_TRUE(contains(sectionClipCapRecorder, "vkCmdBindDescriptorSets"));
   EXPECT_TRUE(contains(sectionClipCapRecorder, "vkCmdSetLineWidth"));
   EXPECT_TRUE(contains(sectionClipCapRecorder, "sectionPlaneEnabled = 0u"));
-  EXPECT_TRUE(contains(sectionClipCapRecorder, "debugOverlay->drawWireframe"));
+  EXPECT_TRUE(contains(sectionClipCapRecorder, "debugOverlay.drawWireframe"));
+  EXPECT_TRUE(contains(sectionClipCapRecorder, "drawStyledRouteCommands"));
+  EXPECT_TRUE(contains(sectionClipCapRecorder, "style.fillColor"));
+  EXPECT_TRUE(contains(sectionClipCapRecorder, "style.hatchColor"));
+  EXPECT_TRUE(contains(sectionClipCapRecorder, "style.lineWidth"));
+  const size_t drawStyleStart =
+      sectionCapHeader.find("struct BimSectionCapDrawStyle");
+  ASSERT_NE(drawStyleStart, std::string::npos);
+  const size_t drawStyleEnd =
+      sectionCapHeader.find("struct BimSectionMarkerLine", drawStyleStart);
+  ASSERT_NE(drawStyleEnd, std::string::npos);
+  const std::string drawStyleBlock =
+      sectionCapHeader.substr(drawStyleStart, drawStyleEnd - drawStyleStart);
+  EXPECT_TRUE(contains(drawStyleBlock, "float lineWidth"));
+  EXPECT_TRUE(contains(sectionClipCapRecorder, "markerCommandsOnly"));
   EXPECT_TRUE(contains(sectionClipCapPlanner, "BimSectionClipCapPassPlanner"));
   EXPECT_TRUE(contains(sectionClipCapPlanner, "Fill"));
   EXPECT_TRUE(contains(sectionClipCapPlanner, "Hatch"));
@@ -8018,13 +8288,26 @@ TEST(RenderingConventionTests, BimSectionClipCapsExposeShaderStyleContract) {
   EXPECT_TRUE(contains(rendererFrontend, "bimClipCapHatchingUiState()"));
   EXPECT_TRUE(contains(rendererFrontend, "makeBoxClipPlanes"));
   EXPECT_TRUE(contains(rendererFrontend, "updateSceneClipState"));
-  EXPECT_TRUE(contains(rendererFrontend, "capOptions.clipPlaneCount"));
-  EXPECT_TRUE(contains(rendererFrontend,
-                       "capOptions.clipPlanes = activeBoxClipPlanes"));
+  EXPECT_TRUE(contains(rendererFrontend, "appendBimSectionCapClipPlane"));
+  EXPECT_TRUE(contains(rendererFrontend, "invertedBoxClipCapsUnsupported"));
   EXPECT_TRUE(contains(rendererFrontend, "rebuildSectionClipCapGeometry"));
   EXPECT_TRUE(contains(rendererFrontend, "sectionClipCapDrawData()"));
+  const size_t capStyleEnabledStart =
+      rendererFrontend.find("const bool capStyleEnabled");
+  ASSERT_NE(capStyleEnabledStart, std::string::npos);
+  const size_t capStyleEnabledEnd =
+      rendererFrontend.find("p.bim.sectionClipCaps.enabled",
+                            capStyleEnabledStart);
+  ASSERT_NE(capStyleEnabledEnd, std::string::npos);
+  const std::string capStyleEnabledBlock = rendererFrontend.substr(
+      capStyleEnabledStart, capStyleEnabledEnd - capStyleEnabledStart);
+  EXPECT_TRUE(contains(capStyleEnabledBlock, "capUi.sectionMarkersPreview"));
   EXPECT_TRUE(contains(bimManager, "sameSectionCapBuildOptions"));
   EXPECT_TRUE(contains(bimManager, "sectionClipCapBuildOptionsValid_"));
+  EXPECT_TRUE(contains(bimManager, "appendSectionMarkerGeometry"));
+  EXPECT_TRUE(contains(bimManager,
+                       "sectionClipCapDrawData_.hatchDrawCommands.push_back"));
+  EXPECT_TRUE(contains(bimManager, ".lineWidth = marker.lineWidth"));
   EXPECT_TRUE(contains(guiManagerHeader, "BimClipCapHatchingUiState"));
   EXPECT_TRUE(contains(guiManagerHeader, "BimBoxClipUiState"));
   EXPECT_TRUE(contains(guiManagerHeader, "bimBoxClipState()"));
@@ -8136,9 +8419,9 @@ TEST(RenderingConventionTests, BimTechnicalElevationRendererComposesPasses) {
   EXPECT_TRUE(
       contains(rendererFrontend, "p.bim.technicalElevation.depthTestLines"));
   EXPECT_TRUE(contains(rendererFrontend, "technicalCapsEnabled"));
-  EXPECT_TRUE(contains(
-      rendererFrontend,
-      "capUi.capPreview || capUi.hatchingPreview || technicalCapsEnabled"));
+  EXPECT_TRUE(contains(rendererFrontend, "capUi.capPreview"));
+  EXPECT_TRUE(contains(rendererFrontend, "capUi.hatchingPreview"));
+  EXPECT_TRUE(contains(rendererFrontend, "capUi.sectionMarkersPreview"));
 }
 
 TEST(RenderingConventionTests, BimMetadataCatalogOwnsSemanticCatalogState) {
@@ -8277,4 +8560,43 @@ TEST(RenderingConventionTests, BimGenericPropertiesAndGeoreferenceReachUi) {
   EXPECT_TRUE(contains(guiManager, "Coordinate offset"));
   EXPECT_TRUE(contains(guiManager, "CRS:"));
   EXPECT_TRUE(contains(usdLoader, "applySourceUpAxis"));
+}
+
+TEST(RenderingConventionTests, BimSectionPlaneVisualIsEditableAndRendered) {
+  const std::string guiHeader =
+      readRepoTextFile("include/Container/utility/GuiManager.h");
+  const std::string guiManager = readRepoTextFile("src/utility/GuiManager.cpp");
+  const std::string frameRecorderHeader =
+      readRepoTextFile("include/Container/renderer/core/FrameRecorder.h");
+  const std::string bimManagerHeader =
+      readRepoTextFile("include/Container/renderer/bim/BimManager.h");
+  const std::string bimManager =
+      readRepoTextFile("src/renderer/bim/BimManager.cpp");
+  const std::string overlayPlannerHeader =
+      readRepoTextFile("include/Container/renderer/bim/"
+                       "BimLightingOverlayPlanner.h");
+  const std::string overlayRecorder =
+      readRepoTextFile("src/renderer/bim/BimLightingOverlayRecorder.cpp");
+  const std::string lightingPassRecorder = readRepoTextFile(
+      "src/renderer/deferred/DeferredRasterLightingPassRecorder.cpp");
+  const std::string rendererFrontend =
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
+
+  EXPECT_TRUE(contains(guiHeader, "visualPlaneVisible"));
+  EXPECT_TRUE(contains(guiHeader, "visualPlaneEditable"));
+  EXPECT_TRUE(contains(guiHeader, "setSectionPlaneState"));
+  EXPECT_TRUE(contains(guiManager, "Show cut plane"));
+  EXPECT_TRUE(contains(guiManager, "Edit cut plane as object"));
+  EXPECT_TRUE(contains(guiManager, "Cut plane origin"));
+  EXPECT_TRUE(contains(frameRecorderHeader, "FrameBimSectionPlaneVisualState"));
+  EXPECT_TRUE(contains(frameRecorderHeader, "sectionPlaneVisualScene"));
+  EXPECT_TRUE(contains(frameRecorderHeader, "sectionPlaneVisualDrawCommands"));
+  EXPECT_TRUE(contains(bimManagerHeader, "BimSectionPlaneVisualDrawData"));
+  EXPECT_TRUE(contains(bimManagerHeader, "rebuildSectionPlaneVisualGeometry"));
+  EXPECT_TRUE(contains(bimManager, "sectionPlaneVisualGeometrySignature_"));
+  EXPECT_TRUE(contains(overlayPlannerHeader, "SectionPlaneVisual ="));
+  EXPECT_TRUE(contains(overlayRecorder, "sectionPlaneVisualGeometryReady"));
+  EXPECT_TRUE(contains(lightingPassRecorder, "sectionPlaneVisualScene"));
+  EXPECT_TRUE(contains(rendererFrontend, "rebuildSectionPlaneVisualGeometry"));
+  EXPECT_TRUE(contains(rendererFrontend, "transformingSectionPlane"));
 }

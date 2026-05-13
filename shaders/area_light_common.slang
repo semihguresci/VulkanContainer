@@ -5,6 +5,7 @@
 #include "brdf_common.slang"
 
 static const uint AREA_LIGHT_INTEGRATION_SAMPLE_COUNT = 25u;
+static const uint AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT = 5u;
 static const float AREA_LIGHT_MIN_DISTANCE_SQ = 0.01;
 
 struct AreaLightFrame
@@ -151,14 +152,19 @@ float3 AreaLightSamplePosition(AreaLightFrame frame, uint sampleIndex)
         frame.bitangent * offset.y;
 }
 
-float3 EvaluateAreaLightSampleRadiance(AreaLightData light,
-                                       AreaLightFrame frame,
-                                       float3 worldPosition,
-                                       uint sampleIndex,
-                                       out float3 surfaceToLight)
+uint AreaLightShadowVisibilitySampleIndex(uint visibilitySampleIndex)
 {
-    // This computes raw direct radiance. Callers apply local light-space
-    // visibility separately.
+    static const uint indices[5] = { 12u, 2u, 10u, 14u, 22u };
+    return indices[visibilitySampleIndex %
+                   AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT];
+}
+
+float AreaLightSampleContributionWeight(AreaLightData light,
+                                        AreaLightFrame frame,
+                                        float3 worldPosition,
+                                        uint sampleIndex,
+                                        out float3 surfaceToLight)
+{
     float3 samplePosition = AreaLightSamplePosition(frame, sampleIndex);
     float3 lightVector = samplePosition - worldPosition;
     float distanceSq = dot(lightVector, lightVector);
@@ -167,19 +173,31 @@ float3 EvaluateAreaLightSampleRadiance(AreaLightData light,
 
     if (PointLightHasFiniteRange(range) && distanceSq >= range * range)
     {
-        return 0.0.xxx;
+        return 0.0;
     }
 
     surfaceToLight = lightVector * rsqrt(max(distanceSq, 1.0e-8));
     float sourceFacing = saturate(dot(frame.normal, -surfaceToLight));
     if (sourceFacing <= 0.0)
     {
-        return 0.0.xxx;
+        return 0.0;
     }
 
-    float attenuation =
-        SmoothRangeAttenuation(distanceSq, range) * sourceFacing *
+    return SmoothRangeAttenuation(distanceSq, range) * sourceFacing *
         frame.area * AreaLightSampleWeight(frame, sampleIndex) /
         max(distanceSq, AREA_LIGHT_MIN_DISTANCE_SQ);
-    return light.colorIntensity.rgb * light.colorIntensity.a * attenuation;
+}
+
+float3 EvaluateAreaLightSampleRadiance(AreaLightData light,
+                                       AreaLightFrame frame,
+                                       float3 worldPosition,
+                                       uint sampleIndex,
+                                       out float3 surfaceToLight)
+{
+    // This computes raw direct radiance. Callers apply local light-space
+    // visibility separately.
+    float contributionWeight = AreaLightSampleContributionWeight(
+        light, frame, worldPosition, sampleIndex, surfaceToLight);
+    return light.colorIntensity.rgb * light.colorIntensity.a *
+        contributionWeight;
 }

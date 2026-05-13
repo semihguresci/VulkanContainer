@@ -10,7 +10,7 @@ void World::syncFromSceneGraph(const container::scene::SceneGraph &graph) {
 
   for (const uint32_t nodeIndex : graph.renderableNodes()) {
     const auto *node = graph.getNode(nodeIndex);
-    if (!node)
+    if (!node || !graph.isNodeEffectivelyVisible(nodeIndex))
       continue;
 
     const auto entity = registry_.create();

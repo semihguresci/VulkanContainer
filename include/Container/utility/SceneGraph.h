@@ -6,6 +6,7 @@
 #include <limits>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace container::scene {
@@ -17,6 +18,8 @@ struct SceneNode {
   uint32_t materialIndex = 0;
   uint32_t primitiveIndex = std::numeric_limits<uint32_t>::max();
   bool renderable = false;
+  bool visible = true;
+  std::string name{};
   std::vector<uint32_t> children{};
 };
 
@@ -27,22 +30,35 @@ class SceneGraph {
 
   uint32_t createNode(const glm::mat4& localTransform, uint32_t materialIndex,
                       bool renderable = false,
-                      uint32_t primitiveIndex = kInvalidNode);
-  void setParent(uint32_t child, std::optional<uint32_t> parentIndex);
+                      uint32_t primitiveIndex = kInvalidNode,
+                      std::string name = {});
+  bool setParent(uint32_t child, std::optional<uint32_t> parentIndex);
+  bool setParentPreserveWorldTransform(
+      uint32_t child, std::optional<uint32_t> parentIndex);
   void setLocalTransform(uint32_t nodeIndex, const glm::mat4& localTransform);
   void setRenderable(uint32_t nodeIndex, bool renderable);
+  void setVisible(uint32_t nodeIndex, bool visible);
   void updateWorldTransforms();
 
-  [[nodiscard]] const std::vector<uint32_t>& renderableNodes() const { return renderableNodes_; }
+  [[nodiscard]] const std::vector<uint32_t>& rootNodes() const {
+    return roots_;
+  }
+  [[nodiscard]] const std::vector<uint32_t>& renderableNodes() const {
+    return renderableNodes_;
+  }
   [[nodiscard]] const SceneNode* getNode(uint32_t nodeIndex) const;
   [[nodiscard]] SceneNode* getNode(uint32_t nodeIndex);
   [[nodiscard]] size_t nodeCount() const { return nodes_.size(); }
   [[nodiscard]] uint64_t revision() const { return revision_; }
+  [[nodiscard]] bool isNodeEffectivelyVisible(uint32_t nodeIndex) const;
 
  private:
+  [[nodiscard]] bool canSetParent(uint32_t child,
+                                  std::optional<uint32_t> parentIndex) const;
   [[nodiscard]] bool isDescendant(uint32_t ancestor,
                                   uint32_t candidate) const;
-  void updateWorldRecursive(uint32_t nodeIndex, const glm::mat4& parentTransform);
+  void updateWorldRecursive(uint32_t nodeIndex,
+                            const glm::mat4& parentTransform);
   void registerRenderable(uint32_t nodeIndex);
   void unregisterRenderable(uint32_t nodeIndex);
 

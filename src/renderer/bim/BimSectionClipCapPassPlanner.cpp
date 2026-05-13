@@ -12,11 +12,17 @@ namespace {
   return commands != nullptr && !commands->empty();
 }
 
+[[nodiscard]] bool
+hasSectionMarkerLines(const std::vector<BimSectionMarkerLine> *lines) {
+  return lines != nullptr && !lines->empty();
+}
+
 [[nodiscard]] bool commonSectionClipCapReady(
     const BimSectionClipCapPassInputs &inputs) {
   return inputs.enabled && inputs.geometryReady && inputs.wireframeLayoutReady &&
          inputs.wireframePushConstantsReady &&
-         (inputs.fillEnabled || inputs.hatchEnabled);
+         (inputs.fillEnabled || inputs.hatchEnabled ||
+          hasSectionMarkerLines(inputs.sectionMarkerLines));
 }
 
 void appendRoute(BimSectionClipCapPassPlan &plan,
@@ -50,6 +56,7 @@ BimSectionClipCapPassPlan BimSectionClipCapPassPlanner::build() const {
   if (!commonSectionClipCapReady(inputs_)) {
     return plan;
   }
+  plan.sectionMarkerLines = inputs_.sectionMarkerLines;
 
   if (inputs_.fillEnabled && inputs_.fillPipelineReady) {
     appendRoute(plan,
@@ -60,10 +67,14 @@ BimSectionClipCapPassPlan BimSectionClipCapPassPlanner::build() const {
                  .drawLineWidth = 1.0f,
                  .rasterLineWidth = 1.0f,
                  .rasterLineWidthApplies = false,
-                 .resetRasterLineWidth = false});
+                 .resetRasterLineWidth = false,
+                 .drawStyles = inputs_.fillDrawStyles});
   }
 
-  if (inputs_.hatchEnabled && inputs_.hatchPipelineReady) {
+  const bool markerCommandsOnly =
+      !inputs_.hatchEnabled && hasSectionMarkerLines(inputs_.sectionMarkerLines);
+  if ((inputs_.hatchEnabled || markerCommandsOnly) &&
+      inputs_.hatchPipelineReady) {
     const float lineWidth = rasterBimSectionClipCapLineWidth(
         inputs_.hatchLineWidth, inputs_.wideLinesSupported);
     appendRoute(plan,
@@ -74,7 +85,9 @@ BimSectionClipCapPassPlan BimSectionClipCapPassPlanner::build() const {
                  .drawLineWidth = lineWidth,
                  .rasterLineWidth = lineWidth,
                  .rasterLineWidthApplies = true,
-                 .resetRasterLineWidth = true});
+                 .resetRasterLineWidth = true,
+                 .markerCommandsOnly = markerCommandsOnly,
+                 .drawStyles = inputs_.hatchDrawStyles});
   }
 
   plan.active = plan.routeCount > 0u;

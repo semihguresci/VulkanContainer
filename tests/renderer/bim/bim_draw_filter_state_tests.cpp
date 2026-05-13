@@ -2,10 +2,12 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <vector>
 
 namespace {
 
+using container::renderer::BimDisciplinePreset;
 using container::renderer::BimDrawFilter;
 using container::renderer::BimDrawFilterState;
 using container::renderer::BimDrawFilterStateInputs;
@@ -14,11 +16,13 @@ using container::renderer::DrawCommand;
 
 [[nodiscard]] BimDrawFilterStateInputs
 makeInputs(uint64_t revision, const std::vector<BimElementMetadata> &metadata,
-           const std::vector<DrawCommand> &opaqueSingleSided) {
+           const std::vector<DrawCommand> &opaqueSingleSided,
+           std::span<const std::string> phaseOrder = {}) {
   return BimDrawFilterStateInputs{
       .revision = revision,
       .objectCount = metadata.size(),
       .metadata = {metadata.data(), metadata.size()},
+      .phaseOrder = phaseOrder,
       .opaqueSingleSidedDrawCommands = &opaqueSingleSided,
   };
 }
@@ -119,6 +123,126 @@ TEST(BimDrawFilterStateTests, CachedListsRefreshOnlyWhenRevisionChanges) {
   filteredCount = state.filteredDrawLists(filter, inputs)
                       .opaqueSingleSidedDrawCommands.size();
   EXPECT_EQ(filteredCount, 2u);
+}
+
+TEST(BimDrawFilterStateTests, PhaseTimelineHidesFutureAndDemolishedElements) {
+  std::vector<BimElementMetadata> metadata(4u);
+  metadata[0].objectIndex = 0u;
+  metadata[0].phase = "Existing";
+  metadata[0].status = "Existing";
+  metadata[1].objectIndex = 1u;
+  metadata[1].phase = "New";
+  metadata[1].status = "New";
+  metadata[2].objectIndex = 2u;
+  metadata[2].phase = "Future";
+  metadata[2].status = "New";
+  metadata[3].objectIndex = 3u;
+  metadata[3].phase = "Existing";
+  metadata[3].status = "Demolished";
+  const std::vector<DrawCommand> opaqueSingleSided;
+  const std::array<std::string, 3u> phases{"Existing", "New", "Future"};
+
+  BimDrawFilter filter{};
+  filter.phaseTimelineEnabled = true;
+  filter.phaseTimelineActiveIndex = 1u;
+  filter.phaseTimelineShowExisting = true;
+  filter.phaseTimelineShowNew = true;
+  filter.phaseTimelineShowDemolished = false;
+  filter.phaseTimelineGhostFuture = false;
+
+  BimDrawFilterState state;
+  const auto inputs = makeInputs(3u, metadata, opaqueSingleSided, phases);
+
+  EXPECT_TRUE(state.objectMatchesFilter(0u, filter, inputs));
+  EXPECT_TRUE(state.objectMatchesFilter(1u, filter, inputs));
+  EXPECT_FALSE(state.objectMatchesFilter(2u, filter, inputs));
+  EXPECT_FALSE(state.objectMatchesFilter(3u, filter, inputs));
+}
+
+TEST(BimDrawFilterStateTests, ArchitecturePresetHidesMepClasses) {
+  std::vector<BimElementMetadata> metadata(3u);
+  metadata[0].objectIndex = 0u;
+  metadata[0].type = "IfcWall";
+  metadata[1].objectIndex = 1u;
+  metadata[1].type = "IfcDuctSegment";
+  metadata[2].objectIndex = 2u;
+  metadata[2].type = "IfcPipeSegment";
+  const std::vector<DrawCommand> opaqueSingleSided;
+
+  BimDrawFilter filter{};
+  filter.disciplinePreset = BimDisciplinePreset::Architecture;
+
+  BimDrawFilterState state;
+  const auto inputs = makeInputs(4u, metadata, opaqueSingleSided);
+
+  EXPECT_TRUE(state.objectMatchesFilter(0u, filter, inputs));
+  EXPECT_FALSE(state.objectMatchesFilter(1u, filter, inputs));
+  EXPECT_FALSE(state.objectMatchesFilter(2u, filter, inputs));
+}
+
+TEST(BimDrawFilterStateTests, MepXrayPresetShowsMepServiceClasses) {
+  std::vector<BimElementMetadata> metadata(5u);
+  metadata[0].objectIndex = 0u;
+  metadata[0].type = "IfcWall";
+  metadata[1].objectIndex = 1u;
+  metadata[1].type = "IfcPipeSegment";
+  metadata[2].objectIndex = 2u;
+  metadata[2].type = "IfcDuctSegment";
+  metadata[3].objectIndex = 3u;
+  metadata[3].type = "IfcCableCarrierSegment";
+  metadata[4].objectIndex = 4u;
+  metadata[4].type = "IfcServiceTerminal";
+  const std::vector<DrawCommand> opaqueSingleSided;
+
+  BimDrawFilter filter{};
+  filter.disciplinePreset = BimDisciplinePreset::MepXray;
+
+  BimDrawFilterState state;
+  const auto inputs = makeInputs(5u, metadata, opaqueSingleSided);
+
+  EXPECT_FALSE(state.objectMatchesFilter(0u, filter, inputs));
+  EXPECT_TRUE(state.objectMatchesFilter(1u, filter, inputs));
+  EXPECT_TRUE(state.objectMatchesFilter(2u, filter, inputs));
+  EXPECT_TRUE(state.objectMatchesFilter(3u, filter, inputs));
+  EXPECT_TRUE(state.objectMatchesFilter(4u, filter, inputs));
+}
+
+TEST(BimDrawFilterStateTests, DisciplinePresetsIgnoreMepWordsOutsideTypeFields) {
+  std::vector<BimElementMetadata> metadata(5u);
+  metadata[0].objectIndex = 0u;
+  metadata[0].type = "IfcWall";
+  metadata[0].objectType = "Basic Wall";
+  metadata[0].displayName = "Conductive service wall";
+  metadata[0].materialName = "conductive service coating";
+  metadata[0].discipline = "Architecture";
+  metadata[1].objectIndex = 1u;
+  metadata[1].type = "IfcDuctSegment";
+  metadata[2].objectIndex = 2u;
+  metadata[2].type = "IfcPipeSegment";
+  metadata[3].objectIndex = 3u;
+  metadata[3].type = "IfcCableCarrierSegment";
+  metadata[4].objectIndex = 4u;
+  metadata[4].type = "IfcServiceTerminal";
+  const std::vector<DrawCommand> opaqueSingleSided;
+
+  BimDrawFilterState state;
+  const auto inputs = makeInputs(6u, metadata, opaqueSingleSided);
+
+  BimDrawFilter architecture{};
+  architecture.disciplinePreset = BimDisciplinePreset::Architecture;
+  EXPECT_TRUE(state.objectMatchesFilter(0u, architecture, inputs));
+  EXPECT_FALSE(state.objectMatchesFilter(1u, architecture, inputs));
+  EXPECT_FALSE(state.objectMatchesFilter(2u, architecture, inputs));
+  EXPECT_FALSE(state.objectMatchesFilter(3u, architecture, inputs));
+  EXPECT_FALSE(state.objectMatchesFilter(4u, architecture, inputs));
+
+  BimDrawFilter mepXray{};
+  mepXray.disciplinePreset = BimDisciplinePreset::MepXray;
+  EXPECT_FALSE(state.objectMatchesFilter(0u, mepXray, inputs));
+  EXPECT_TRUE(state.objectMatchesFilter(1u, mepXray, inputs));
+  EXPECT_TRUE(state.objectMatchesFilter(2u, mepXray, inputs));
+  EXPECT_TRUE(state.objectMatchesFilter(3u, mepXray, inputs));
+  EXPECT_TRUE(state.objectMatchesFilter(4u, mepXray, inputs));
 }
 
 } // namespace

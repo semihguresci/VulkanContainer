@@ -3,7 +3,10 @@
 #include "Container/renderer/bim/BimMetadataCatalog.h"
 
 #include <algorithm>
+#include <array>
+#include <cctype>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -19,10 +22,137 @@ metadataForObject(std::span<const BimElementMetadata> metadata,
   return &metadata[objectIndex];
 }
 
+[[nodiscard]] std::string lowerAscii(std::string_view value) {
+  std::string lowered(value);
+  std::ranges::transform(lowered, lowered.begin(), [](unsigned char c) {
+    return static_cast<char>(std::tolower(c));
+  });
+  return lowered;
+}
+
+[[nodiscard]] bool containsToken(std::string_view value,
+                                 std::string_view token) {
+  return lowerAscii(value).find(token) != std::string::npos;
+}
+
+[[nodiscard]] bool isTokenCharacter(char value) {
+  return std::isalnum(static_cast<unsigned char>(value)) != 0;
+}
+
+[[nodiscard]] bool containsBoundedToken(std::string_view lowered,
+                                        std::string_view token) {
+  size_t offset = 0u;
+  while ((offset = lowered.find(token, offset)) != std::string_view::npos) {
+    const bool hasLeadingBoundary =
+        offset == 0u || !isTokenCharacter(lowered[offset - 1u]);
+    const size_t afterToken = offset + token.size();
+    const bool hasTrailingBoundary =
+        afterToken >= lowered.size() || !isTokenCharacter(lowered[afterToken]);
+    if (hasLeadingBoundary && hasTrailingBoundary) {
+      return true;
+    }
+    offset = afterToken;
+  }
+  return false;
+}
+
+[[nodiscard]] bool matchesIfcClassToken(std::string_view lowered,
+                                        std::string_view token) {
+  const std::string ifcPrefix = "ifc" + std::string(token);
+  return lowered.starts_with(std::string_view{ifcPrefix}) ||
+         containsBoundedToken(lowered, token);
+}
+
+[[nodiscard]] bool containsMepClassificationToken(std::string_view value) {
+  const std::string lowered = lowerAscii(value);
+  return matchesIfcClassToken(lowered, "pipe") ||
+         matchesIfcClassToken(lowered, "duct") ||
+         matchesIfcClassToken(lowered, "cable") ||
+         matchesIfcClassToken(lowered, "service") ||
+         containsBoundedToken(lowered, "mep") ||
+         containsBoundedToken(lowered, "mechanical") ||
+         containsBoundedToken(lowered, "electrical") ||
+         containsBoundedToken(lowered, "plumbing") ||
+         containsBoundedToken(lowered, "hvac");
+}
+
+[[nodiscard]] bool containsAnyMepToken(const BimElementMetadata &metadata) {
+  const std::array<std::string_view, 3u> values{{
+      metadata.type,
+      metadata.objectType,
+      metadata.discipline,
+  }};
+  for (std::string_view value : values) {
+    if (containsMepClassificationToken(value)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+[[nodiscard]] bool metadataMatchesDisciplinePreset(
+    const BimElementMetadata &metadata, BimDisciplinePreset preset) {
+  switch (preset) {
+  case BimDisciplinePreset::None:
+    return true;
+  case BimDisciplinePreset::Architecture:
+    return !containsAnyMepToken(metadata);
+  case BimDisciplinePreset::MepXray:
+    return containsAnyMepToken(metadata);
+  }
+  return true;
+}
+
+[[nodiscard]] bool phaseIsDemolished(const BimElementMetadata &metadata) {
+  return containsToken(metadata.status, "demolish") ||
+         containsToken(metadata.phase, "demolish");
+}
+
+[[nodiscard]] std::optional<size_t>
+phaseIndex(std::span<const std::string> phaseOrder,
+           std::string_view phaseLabel) {
+  if (phaseLabel.empty()) {
+    return std::nullopt;
+  }
+  const auto found = std::ranges::find(phaseOrder, phaseLabel);
+  if (found == phaseOrder.end()) {
+    return std::nullopt;
+  }
+  return static_cast<size_t>(std::distance(phaseOrder.begin(), found));
+}
+
+[[nodiscard]] bool metadataMatchesPhaseTimeline(
+    const BimElementMetadata &metadata, const BimDrawFilter &filter,
+    const BimDrawFilterStateInputs &inputs) {
+  if (!filter.phaseTimelineEnabled) {
+    return true;
+  }
+  if (phaseIsDemolished(metadata)) {
+    return filter.phaseTimelineShowDemolished;
+  }
+  const auto currentPhase = phaseIndex(inputs.phaseOrder, metadata.phase);
+  if (!currentPhase) {
+    return true;
+  }
+  const size_t activePhaseIndex =
+      inputs.phaseOrder.empty()
+          ? static_cast<size_t>(filter.phaseTimelineActiveIndex)
+          : std::min(static_cast<size_t>(filter.phaseTimelineActiveIndex),
+                     inputs.phaseOrder.size() - 1u);
+  if (*currentPhase < activePhaseIndex) {
+    return filter.phaseTimelineShowExisting;
+  }
+  if (*currentPhase == activePhaseIndex) {
+    return filter.phaseTimelineShowNew;
+  }
+  return filter.phaseTimelineGhostFuture;
+}
+
 [[nodiscard]] bool
 metadataMatchesFilter(uint32_t objectIndex, const BimElementMetadata &metadata,
                       const BimDrawFilter &filter,
-                      const BimElementMetadata *selectedMetadata) {
+                      const BimElementMetadata *selectedMetadata,
+                      const BimDrawFilterStateInputs &inputs) {
   const bool hasSelectedFilter =
       filter.selectedObjectIndex != std::numeric_limits<uint32_t>::max();
   if (filter.isolateSelection && hasSelectedFilter) {
@@ -66,6 +196,12 @@ metadataMatchesFilter(uint32_t objectIndex, const BimElementMetadata &metadata,
   }
   if (filter.statusFilterEnabled && !filter.status.empty() &&
       metadata.status != filter.status) {
+    return false;
+  }
+  if (!metadataMatchesDisciplinePreset(metadata, filter.disciplinePreset)) {
+    return false;
+  }
+  if (!metadataMatchesPhaseTimeline(metadata, filter, inputs)) {
     return false;
   }
   if (filter.drawBudgetEnabled && filter.drawBudgetMaxObjects > 0u &&
@@ -139,7 +275,15 @@ bool bimDrawFiltersEqual(const BimDrawFilter &lhs, const BimDrawFilter &rhs) {
          lhs.drawBudgetMaxObjects == rhs.drawBudgetMaxObjects &&
          lhs.isolateSelection == rhs.isolateSelection &&
          lhs.hideSelection == rhs.hideSelection &&
-         lhs.selectedObjectIndex == rhs.selectedObjectIndex;
+         lhs.selectedObjectIndex == rhs.selectedObjectIndex &&
+         lhs.disciplinePreset == rhs.disciplinePreset &&
+         lhs.phaseTimelineEnabled == rhs.phaseTimelineEnabled &&
+         lhs.phaseTimelineActiveIndex == rhs.phaseTimelineActiveIndex &&
+         lhs.phaseTimelineShowExisting == rhs.phaseTimelineShowExisting &&
+         lhs.phaseTimelineShowNew == rhs.phaseTimelineShowNew &&
+         lhs.phaseTimelineShowDemolished ==
+             rhs.phaseTimelineShowDemolished &&
+         lhs.phaseTimelineGhostFuture == rhs.phaseTimelineGhostFuture;
 }
 
 void BimDrawFilterState::clear() {
@@ -168,7 +312,7 @@ bool BimDrawFilterState::objectMatchesFilter(
         metadataForObject(inputs.metadata, filter.selectedObjectIndex);
   }
   return metadataMatchesFilter(objectIndex, *metadata, filter,
-                               selectedMetadata);
+                               selectedMetadata, inputs);
 }
 
 const BimDrawLists &
@@ -228,7 +372,7 @@ BimDrawFilterState::filteredDrawLists(const BimDrawFilter &filter,
             metadataForObject(inputs.metadata, objectIndex);
         if (metadata == nullptr ||
             !metadataMatchesFilter(objectIndex, *metadata, filter,
-                                   selectedMetadata)) {
+                                   selectedMetadata, inputs)) {
           continue;
         }
         appendDrawCommand(out, objectIndex, command.firstIndex,

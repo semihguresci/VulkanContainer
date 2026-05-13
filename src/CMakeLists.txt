@@ -3,6 +3,18 @@ add_library(VulkanSceneRenderer_Core
     app/Application.cpp
 )
 
+add_library(VulkanSceneRenderer_bim_ui_support
+    renderer/bim/BimMeasurementSnapping.cpp
+    renderer/bim/BimModelCompare.cpp
+)
+target_compile_features(VulkanSceneRenderer_bim_ui_support PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_bim_ui_support PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/../include
+)
+target_link_libraries(VulkanSceneRenderer_bim_ui_support PUBLIC
+    Dep_Math
+)
+
 # Renderer subsystem
 add_library(VulkanSceneRenderer_renderer
     renderer/core/RenderPassManager.cpp
@@ -90,10 +102,13 @@ add_library(VulkanSceneRenderer_renderer
     renderer/deferred/DeferredTransparentOitFramePassRecorder.cpp
     renderer/deferred/DeferredTransparentOitRecorder.cpp
 
+    renderer/bim/BimCoordinationOverlay.cpp
     renderer/bim/BimDrawFilterState.cpp
+    renderer/bim/BimDrawingExport.cpp
     renderer/bim/BimDrawCompactionPlanner.cpp
     renderer/bim/BimFrameDrawRoutingPlanner.cpp
     renderer/bim/BimFrameGpuVisibilityRecorder.cpp
+    renderer/bim/BimGeoreferenceTransform.cpp
     renderer/bim/BimLightingOverlayPlanner.cpp
     renderer/bim/BimLightingOverlayRecorder.cpp
     renderer/bim/BimManager.cpp
@@ -101,6 +116,8 @@ add_library(VulkanSceneRenderer_renderer
     renderer/bim/BimMetadataIndex.cpp
     renderer/bim/BimPrimitivePassPlanner.cpp
     renderer/bim/BimPrimitivePassRecorder.cpp
+    renderer/bim/BimRelationshipGraph.cpp
+    renderer/bim/BimScheduleExtractor.cpp
     renderer/bim/BimSectionCapBuilder.cpp
     renderer/bim/BimSectionClipCapPassPlanner.cpp
     renderer/bim/BimSectionClipCapPassRecorder.cpp
@@ -141,6 +158,7 @@ target_link_libraries(VulkanSceneRenderer_renderer PUBLIC
     VulkanSceneRenderer_window
     VulkanSceneRenderer_scene
     VulkanSceneRenderer_ui
+    VulkanSceneRenderer_bim_ui_support
     VulkanSceneRenderer_ecs
 )
 

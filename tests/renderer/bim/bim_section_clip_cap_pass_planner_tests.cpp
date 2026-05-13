@@ -1,5 +1,6 @@
 #include "Container/renderer/bim/BimSectionClipCapPassPlanner.h"
 #include "Container/renderer/bim/BimSectionClipCapPassRecorder.h"
+#include "Container/renderer/bim/BimSectionCapBuilder.h"
 #include "Container/renderer/scene/DrawCommand.h"
 
 #include <gtest/gtest.h>
@@ -12,12 +13,17 @@ namespace {
 using container::renderer::BimSectionClipCapFramePassRecordInputs;
 using container::renderer::BimSectionClipCapPassGeometryBinding;
 using container::renderer::BimSectionClipCapPassInputs;
+using container::renderer::BimSectionClipCapPassPlan;
 using container::renderer::BimSectionClipCapPassPipeline;
+using container::renderer::BimSectionClipCapPassRecordInputs;
+using container::renderer::BimSectionCapDrawStyle;
 using container::renderer::buildBimSectionClipCapFramePassPlanInputs;
 using container::renderer::buildBimSectionClipCapPassPlan;
+using container::renderer::DebugOverlayRenderer;
 using container::renderer::DrawCommand;
 using container::renderer::hasBimSectionClipCapFramePassGeometry;
 using container::renderer::rasterBimSectionClipCapLineWidth;
+using container::renderer::recordBimSectionClipCapPassCommands;
 using container::renderer::recordBimSectionClipCapFramePassCommands;
 using container::renderer::sanitizeBimSectionClipCapLineWidth;
 using container::renderer::WireframePushConstants;
@@ -33,6 +39,40 @@ template <typename Handle> Handle fakeHandle(uintptr_t value) {
                       .instanceCount = 1u}};
 }
 
+[[nodiscard]] std::vector<DrawCommand> twoDrawCommands() {
+  return {DrawCommand{.objectIndex = 20u,
+                      .firstIndex = 4u,
+                      .indexCount = 6u,
+                      .instanceCount = 1u},
+          DrawCommand{.objectIndex = 21u,
+                      .firstIndex = 10u,
+                      .indexCount = 2u,
+                      .instanceCount = 1u}};
+}
+
+struct RecordedWireframePush {
+  glm::vec4 colorIntensity{0.0f};
+  float lineWidth{1.0f};
+  uint32_t sectionPlaneEnabled{0u};
+};
+
+struct RecordedIndexedDraw {
+  uint32_t indexCount{0u};
+  uint32_t instanceCount{0u};
+  uint32_t firstIndex{0u};
+  uint32_t firstInstance{0u};
+};
+
+std::vector<RecordedWireframePush> g_wireframePushes;
+std::vector<RecordedIndexedDraw> g_indexedDraws;
+std::vector<float> g_rasterLineWidths;
+
+void resetRecordedVkCommands() {
+  g_wireframePushes.clear();
+  g_indexedDraws.clear();
+  g_rasterLineWidths.clear();
+}
+
 [[nodiscard]] BimSectionClipCapPassInputs readyInputs() {
   return {.enabled = true,
           .fillEnabled = true,
@@ -44,6 +84,68 @@ template <typename Handle> Handle fakeHandle(uintptr_t value) {
           .fillPipelineReady = true,
           .hatchPipelineReady = true};
 }
+
+[[nodiscard]] BimSectionClipCapPassRecordInputs recordInputs(
+    const BimSectionClipCapPassPlan &plan,
+    const WireframePushConstants &pushConstants,
+    const DebugOverlayRenderer &debugOverlay) {
+  return {.plan = &plan,
+          .fillPipeline = fakeHandle<VkPipeline>(0x10),
+          .hatchPipeline = fakeHandle<VkPipeline>(0x11),
+          .wireframeLayout = fakeHandle<VkPipelineLayout>(0x12),
+          .sceneDescriptorSet = fakeHandle<VkDescriptorSet>(0x13),
+          .vertexSlice = {.buffer = fakeHandle<VkBuffer>(0x14)},
+          .indexSlice = {.buffer = fakeHandle<VkBuffer>(0x15)},
+          .indexType = VK_INDEX_TYPE_UINT32,
+          .pushConstants = &pushConstants,
+          .debugOverlay = &debugOverlay};
+}
+
+} // namespace
+
+extern "C" VKAPI_ATTR void VKAPI_CALL vkCmdBindDescriptorSets(
+    VkCommandBuffer, VkPipelineBindPoint, VkPipelineLayout, uint32_t, uint32_t,
+    const VkDescriptorSet *, uint32_t, const uint32_t *) {}
+
+extern "C" VKAPI_ATTR void VKAPI_CALL vkCmdBindVertexBuffers(
+    VkCommandBuffer, uint32_t, uint32_t, const VkBuffer *,
+    const VkDeviceSize *) {}
+
+extern "C" VKAPI_ATTR void VKAPI_CALL vkCmdBindIndexBuffer(
+    VkCommandBuffer, VkBuffer, VkDeviceSize, VkIndexType) {}
+
+extern "C" VKAPI_ATTR void VKAPI_CALL
+vkCmdBindPipeline(VkCommandBuffer, VkPipelineBindPoint, VkPipeline) {}
+
+extern "C" VKAPI_ATTR void VKAPI_CALL vkCmdSetLineWidth(VkCommandBuffer,
+                                                        float lineWidth) {
+  g_rasterLineWidths.push_back(lineWidth);
+}
+
+extern "C" VKAPI_ATTR void VKAPI_CALL vkCmdPushConstants(
+    VkCommandBuffer, VkPipelineLayout, VkShaderStageFlags, uint32_t,
+    uint32_t size, const void *values) {
+  if (size != sizeof(WireframePushConstants) || values == nullptr) {
+    return;
+  }
+  const auto *pc = static_cast<const WireframePushConstants *>(values);
+  g_wireframePushes.push_back(RecordedWireframePush{
+      .colorIntensity = pc->colorIntensity,
+      .lineWidth = pc->lineWidth,
+      .sectionPlaneEnabled = pc->sectionPlaneEnabled,
+  });
+}
+
+extern "C" VKAPI_ATTR void VKAPI_CALL vkCmdDrawIndexed(
+    VkCommandBuffer, uint32_t indexCount, uint32_t instanceCount,
+    uint32_t firstIndex, int32_t, uint32_t firstInstance) {
+  g_indexedDraws.push_back(RecordedIndexedDraw{.indexCount = indexCount,
+                                               .instanceCount = instanceCount,
+                                               .firstIndex = firstIndex,
+                                               .firstInstance = firstInstance});
+}
+
+namespace {
 
 TEST(BimSectionClipCapPassPlannerTests,
      FillAndHatchRoutesPreserveOrderAndStyle) {
@@ -164,6 +266,109 @@ TEST(BimSectionClipCapPassPlannerTests,
   ASSERT_EQ(plan.routeCount, 1u);
   EXPECT_FLOAT_EQ(plan.routes[0].drawLineWidth, 1.0f);
   EXPECT_FLOAT_EQ(plan.routes[0].rasterLineWidth, 1.0f);
+}
+
+TEST(BimSectionClipCapPassPlannerTests,
+     RoutesExposePerMaterialStylesAndSectionMarkers) {
+  const auto fill = drawCommands(9u);
+  const auto hatch = drawCommands(10u);
+  const std::vector<container::renderer::BimSectionCapDrawStyle> fillStyles{
+      {.objectIndex = 9u,
+       .materialIndex = 3u,
+       .fillColor = {0.1f, 0.2f, 0.3f},
+       .fillOpacity = 0.4f,
+       .hatchSpacing = 0.5f,
+       .hatchAngleRadians = 0.0f,
+       .hatchColor = {0.5f, 0.6f, 0.7f}}};
+  const std::vector<container::renderer::BimSectionCapDrawStyle> hatchStyles{
+      {.objectIndex = 10u,
+       .materialIndex = 4u,
+       .fillColor = {0.2f, 0.3f, 0.4f},
+       .fillOpacity = 0.5f,
+       .hatchSpacing = 0.25f,
+       .hatchAngleRadians = 0.2f,
+       .hatchColor = {0.6f, 0.7f, 0.8f},
+       .lineWidth = 3.0f}};
+  const std::vector<container::renderer::BimSectionMarkerLine> markers{
+      {.a = {-2.0f, 0.0f, 0.0f},
+       .b = {2.0f, 0.0f, 0.0f},
+       .color = {1.0f, 0.7f, 0.1f},
+       .lineWidth = 2.0f,
+       .startArrow = true,
+       .endArrow = true,
+       .sectionPlaneIndex = 0u}};
+
+  auto inputs = readyInputs();
+  inputs.fillDrawCommands = &fill;
+  inputs.hatchDrawCommands = &hatch;
+  inputs.fillDrawStyles = &fillStyles;
+  inputs.hatchDrawStyles = &hatchStyles;
+  inputs.sectionMarkerLines = &markers;
+
+  const auto plan = buildBimSectionClipCapPassPlan(inputs);
+
+  ASSERT_TRUE(plan.active);
+  ASSERT_EQ(plan.routeCount, 2u);
+  EXPECT_EQ(plan.routes[0].drawStyles, &fillStyles);
+  EXPECT_EQ(plan.routes[1].drawStyles, &hatchStyles);
+  EXPECT_EQ(plan.sectionMarkerLines, &markers);
+}
+
+TEST(BimSectionClipCapPassPlannerTests,
+     MarkerOnlyRouteDrawsOnlyStyledMarkerCommands) {
+  const auto hatch = twoDrawCommands();
+  const std::vector<container::renderer::BimSectionCapDrawStyle> hatchStyles{
+      {.objectIndex = 20u,
+       .materialIndex = 4u,
+       .fillColor = {0.2f, 0.3f, 0.4f},
+       .fillOpacity = 0.5f,
+       .hatchSpacing = 0.25f,
+       .hatchAngleRadians = 0.2f,
+       .hatchColor = {0.6f, 0.7f, 0.8f}},
+      {.objectIndex = 21u,
+       .materialIndex = container::renderer::kInvalidBimSectionCapMaterialIndex,
+       .fillColor = {1.0f, 0.7f, 0.1f},
+       .fillOpacity = 1.0f,
+       .hatchSpacing = 0.0f,
+       .hatchAngleRadians = 0.0f,
+       .hatchColor = {1.0f, 0.7f, 0.1f},
+       .lineWidth = 3.5f}};
+  const std::vector<container::renderer::BimSectionMarkerLine> markers{
+      {.a = {-2.0f, 0.0f, 0.0f},
+       .b = {2.0f, 0.0f, 0.0f},
+       .color = {1.0f, 0.7f, 0.1f},
+       .lineWidth = 3.5f,
+       .startArrow = true,
+       .endArrow = true,
+       .sectionPlaneIndex = 0u}};
+
+  auto inputs = readyInputs();
+  inputs.fillEnabled = false;
+  inputs.hatchEnabled = false;
+  inputs.hatchDrawCommands = &hatch;
+  inputs.hatchDrawStyles = &hatchStyles;
+  inputs.sectionMarkerLines = &markers;
+
+  const auto plan = buildBimSectionClipCapPassPlan(inputs);
+
+  ASSERT_TRUE(plan.active);
+  ASSERT_EQ(plan.routeCount, 1u);
+  EXPECT_EQ(plan.routes[0].pipeline, BimSectionClipCapPassPipeline::Hatch);
+  EXPECT_TRUE(plan.routes[0].markerCommandsOnly);
+
+  resetRecordedVkCommands();
+  const WireframePushConstants pushConstants{};
+  const DebugOverlayRenderer debugOverlay{};
+  EXPECT_TRUE(recordBimSectionClipCapPassCommands(
+      fakeHandle<VkCommandBuffer>(0x30),
+      recordInputs(plan, pushConstants, debugOverlay)));
+
+  ASSERT_EQ(g_indexedDraws.size(), 1u);
+  EXPECT_EQ(g_indexedDraws.front().firstIndex, hatch.back().firstIndex);
+  ASSERT_EQ(g_wireframePushes.size(), 1u);
+  EXPECT_EQ(g_wireframePushes.front().colorIntensity,
+            glm::vec4(1.0f, 0.7f, 0.1f, 0.95f));
+  EXPECT_FLOAT_EQ(g_wireframePushes.front().lineWidth, 3.5f);
 }
 
 TEST(BimSectionClipCapPassPlannerTests,

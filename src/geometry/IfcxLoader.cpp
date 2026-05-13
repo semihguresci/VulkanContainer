@@ -34,6 +34,8 @@ namespace {
 
 using Json = nlohmann::json;
 
+constexpr float kLineMarkingSurfaceFeatureOffset = 0.002f;
+
 struct Node {
   std::string path{};
   Json attributes{Json::object()};
@@ -1565,6 +1567,22 @@ std::string lowerAscii(std::string value) {
   return value;
 }
 
+bool isLineMarkingSurfaceFeature(std::string_view type) {
+  const std::string lower = lowerAscii(std::string(type));
+  return lower.starts_with("ifcsurfacefeature") &&
+         lower.find("linemarking") != std::string::npos;
+}
+
+void liftLineMarkingSurfaceFeature(dotbim::Element &element) {
+  if (!isLineMarkingSurfaceFeature(element.type) ||
+      element.geometryKind != dotbim::GeometryKind::Mesh) {
+    return;
+  }
+
+  element.transform[3] +=
+      element.transform[2] * kLineMarkingSurfaceFeatureOffset;
+}
+
 std::vector<std::string> splitWords(std::string_view line) {
   std::istringstream stream{std::string(line)};
   std::vector<std::string> words;
@@ -2072,6 +2090,7 @@ void appendElement(SceneBuilder &builder, const std::string &geometryKey,
                                 "guid"})
           .value_or(logicalPath);
   element.type = inheritedType(chain, builder.graph.nodes);
+  liftLineMarkingSurfaceFeature(element);
   element.displayName =
       inheritedStringAttribute(chain, builder.graph.nodes,
                                {"bsi::ifc::name", "bsi::ifc::prop::Name",

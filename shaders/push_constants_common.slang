@@ -315,7 +315,7 @@ struct BlurPushConstants
     float depthThreshold;
     float cameraNear;
     float cameraFar;
-    float pad0;
+    uint orthographicDepth;
     float pad1;
     float pad2;
 };

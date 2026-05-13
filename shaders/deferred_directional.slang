@@ -122,6 +122,41 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
 {
     AreaLightFrame frame = BuildAreaLightFrame(light);
     float3 directLighting = 0.0.xxx;
+    float areaShadowVisibility = 1.0;
+    if (LocalShadowMapsEnabled(uLighting, uLocalShadow))
+    {
+        // The local-shadow PCF radius already models finite source size; a
+        // reduced weighted shadow estimate avoids a full PCF for every
+        // lighting integration sample.
+        areaShadowVisibility = 0.0;
+        float visibilityWeightSum = 0.0;
+        [unroll]
+        for (uint visibilitySample = 0u;
+             visibilitySample < AREA_LIGHT_SHADOW_VISIBILITY_SAMPLE_COUNT;
+             ++visibilitySample)
+        {
+            uint areaSampleIndex =
+                AreaLightShadowVisibilitySampleIndex(visibilitySample);
+            float3 visibilitySurfaceToLight;
+            float weight = AreaLightSampleContributionWeight(
+                light, frame, worldPosition, areaSampleIndex,
+                visibilitySurfaceToLight);
+            if (weight <= 0.0)
+            {
+                continue;
+            }
+            float3 samplePosition =
+                AreaLightSamplePosition(frame, areaSampleIndex);
+            areaShadowVisibility += weight * LocalAreaLightShadowVisibility(
+                areaIndex, worldPosition, geometricNormal, samplePosition,
+                uLocalShadow, gLocalShadowAtlas, gLocalShadowSampler);
+            visibilityWeightSum += weight;
+        }
+        areaShadowVisibility =
+            visibilityWeightSum > 1.0e-4
+                ? areaShadowVisibility / visibilityWeightSum
+                : 1.0;
+    }
 
     float transmissionWeight =
         saturate(DeferredFiniteOr(layerTerms.transmissionFactor, 0.0) *
@@ -132,17 +167,10 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
          sampleIndex < AREA_LIGHT_INTEGRATION_SAMPLE_COUNT; ++sampleIndex)
     {
         float3 L;
-        float3 samplePosition = AreaLightSamplePosition(frame, sampleIndex);
         float3 radiance = EvaluateAreaLightSampleRadiance(
             light, frame, worldPosition, sampleIndex, L);
-        float lightVisibility = 1.0;
-        if (LocalShadowMapsEnabled(uLighting, uLocalShadow))
-        {
-            lightVisibility = LocalAreaLightShadowVisibility(
-                areaIndex, worldPosition, geometricNormal, samplePosition,
-                uLocalShadow, gLocalShadowAtlas, gLocalShadowSampler);
-            radiance *= lightVisibility;
-        }
+        float lightVisibility = areaShadowVisibility;
+        radiance *= lightVisibility;
         directLighting += EvaluateDeferredLayeredDirectLight(
             albedo, F0, metallic, roughness, normal, V, L, radiance,
             layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,

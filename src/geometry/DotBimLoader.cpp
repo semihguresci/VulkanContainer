@@ -260,6 +260,64 @@ std::vector<ElementProperty> readElementProperties(const Json &source) {
   return properties;
 }
 
+ElementRelationship relationshipFromJsonObject(const Json &value) {
+  ElementRelationship relationship{};
+  if (!value.is_object()) {
+    return relationship;
+  }
+  relationship.fromGuid = firstScalarStringOrEmpty(
+      value, {"fromGuid", "from_guid", "sourceGuid", "source_guid",
+              "relatingGuid", "relating_guid"});
+  relationship.fromSourceId = firstScalarStringOrEmpty(
+      value, {"fromSourceId", "from_source_id", "sourceId", "source_id",
+              "relatingSourceId", "relating_source_id"});
+  relationship.toGuid = firstScalarStringOrEmpty(
+      value, {"toGuid", "to_guid", "targetGuid", "target_guid",
+              "relatedGuid", "related_guid"});
+  relationship.toSourceId = firstScalarStringOrEmpty(
+      value, {"toSourceId", "to_source_id", "targetSourceId",
+              "target_source_id", "relatedSourceId", "related_source_id"});
+  relationship.kind =
+      firstScalarStringOrEmpty(value, {"kind", "relationshipKind",
+                                       "relationship_kind", "relationship",
+                                       "type"});
+  relationship.label =
+      firstScalarStringOrEmpty(value, {"label", "name", "description"});
+  return relationship;
+}
+
+std::vector<ElementRelationship> readElementRelationships(const Json &root) {
+  std::vector<ElementRelationship> relationships;
+  if (!root.is_object()) {
+    return relationships;
+  }
+
+  const Json *relationshipArray = nullptr;
+  for (const char *key : {"relationships", "elementRelationships",
+                          "element_relationships"}) {
+    if (root.contains(key) && root.at(key).is_array()) {
+      relationshipArray = &root.at(key);
+      break;
+    }
+  }
+  if (relationshipArray == nullptr) {
+    return relationships;
+  }
+
+  relationships.reserve(relationshipArray->size());
+  for (const Json &item : *relationshipArray) {
+    ElementRelationship relationship = relationshipFromJsonObject(item);
+    if (relationship.fromGuid.empty() && relationship.fromSourceId.empty()) {
+      continue;
+    }
+    if (relationship.toGuid.empty() && relationship.toSourceId.empty()) {
+      continue;
+    }
+    relationships.push_back(std::move(relationship));
+  }
+  return relationships;
+}
+
 std::optional<double> numberAsDouble(const Json &value) {
   if (!value.is_number()) {
     return std::nullopt;
@@ -491,6 +549,7 @@ Model LoadFromJson(std::string_view jsonText, float importScale) {
   Model model{};
   model.unitMetadata = makeUnitMetadata(importScale);
   model.georeferenceMetadata = readGeoreferenceMetadata(root);
+  model.relationships = readElementRelationships(root);
   model.meshRanges.reserve(meshes.size());
   std::unordered_set<uint32_t> seenMeshIds;
 

@@ -137,6 +137,15 @@ struct ModelGeoreferenceMetadata {
   std::string mapConversionName{};
 };
 
+struct ElementRelationship {
+  std::string fromGuid{};
+  std::string fromSourceId{};
+  std::string toGuid{};
+  std::string toSourceId{};
+  std::string kind{};
+  std::string label{};
+};
+
 struct Model {
   std::vector<Vertex> vertices{};
   std::vector<uint32_t> indices{};
@@ -146,6 +155,7 @@ struct Model {
   std::vector<MeshletClusterRange> meshletClusters{};
   std::vector<Element> elements{};
   std::vector<Material> materials{};
+  std::vector<ElementRelationship> relationships{};
   ModelUnitMetadata unitMetadata{};
   ModelGeoreferenceMetadata georeferenceMetadata{};
 };

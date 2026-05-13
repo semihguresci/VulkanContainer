@@ -19,6 +19,9 @@ enum class BimLightingOverlayKind : uint32_t {
   NativeCurveHover = 6,
   NativePointSelection = 7,
   NativeCurveSelection = 8,
+  CoordinationIssueMarker = 9,
+  CoordinationClashMarker = 10,
+  SectionPlaneVisual = 11,
 };
 
 enum class BimLightingOverlayPipeline : uint32_t {
@@ -92,8 +95,16 @@ struct BimLightingOverlayInputs {
   const std::vector<DrawCommand> *nativeCurveHoverCommands{nullptr};
   const std::vector<DrawCommand> *nativePointSelectionCommands{nullptr};
   const std::vector<DrawCommand> *nativeCurveSelectionCommands{nullptr};
+  const std::vector<DrawCommand> *coordinationIssueMarkerCommands{nullptr};
+  const std::vector<DrawCommand> *coordinationClashMarkerCommands{nullptr};
+  const std::vector<DrawCommand> *sectionPlaneVisualCommands{nullptr};
   float nativePointSize{1.0f};
   float nativeCurveLineWidth{1.0f};
+  bool coordinationMarkerGeometryReady{false};
+  bool sectionPlaneVisualGeometryReady{false};
+  BimLightingOverlayStyleInputs coordinationIssueMarkers{};
+  BimLightingOverlayStyleInputs coordinationClashMarkers{};
+  BimLightingOverlayStyleInputs sectionPlaneVisual{};
 };
 
 struct BimLightingOverlayDrawRoute {
@@ -144,6 +155,9 @@ struct BimLightingOverlayPlan {
   BimLightingOverlayDrawPlan nativeCurveHover{};
   BimLightingOverlayDrawPlan nativePointSelection{};
   BimLightingOverlayDrawPlan nativeCurveSelection{};
+  BimLightingOverlayDrawPlan coordinationIssueMarkers{};
+  BimLightingOverlayDrawPlan coordinationClashMarkers{};
+  BimLightingOverlayDrawPlan sectionPlaneVisual{};
   BimLightingSelectionOutlinePlan sceneSelectionOutline{};
   BimLightingSelectionOutlinePlan bimSelectionOutline{};
 };

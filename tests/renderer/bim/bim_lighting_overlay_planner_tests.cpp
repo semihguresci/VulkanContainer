@@ -11,6 +11,9 @@ using container::renderer::BimLightingOverlayInputs;
 using container::renderer::BimLightingOverlayKind;
 using container::renderer::BimLightingOverlayPipeline;
 using container::renderer::BimLightingOverlayPipelineReadiness;
+using container::renderer::BimCoordinationOverlayKind;
+using container::renderer::BimCoordinationOverlayMarker;
+using container::renderer::BimCoordinationOverlayResult;
 using container::renderer::buildBimLightingOverlayPlan;
 using container::renderer::DrawCommand;
 
@@ -88,6 +91,38 @@ TEST(BimLightingOverlayPlannerTests, StyleRoutesPreserveSplitDrawOrder) {
   EXPECT_EQ(plan.pointStyle.routes[5].pipeline,
             BimLightingOverlayPipeline::WireframeDepth);
   EXPECT_FALSE(plan.curveStyle.active);
+}
+
+TEST(BimLightingOverlayPlannerTests,
+     GeometryCacheSignaturesIncludeObjectDataRevision) {
+  BimCoordinationOverlayResult overlay{};
+  overlay.markers.push_back(BimCoordinationOverlayMarker{
+      .kind = BimCoordinationOverlayKind::IssuePin,
+      .position = {1.0f, 2.0f, 3.0f},
+      .color = {0.2f, 0.4f, 0.6f},
+      .label = "pin",
+      .ifcGuid = "guid",
+      .sourceId = "source",
+      .primaryObjectIndex = 4u,
+      .secondaryObjectIndex = 5u});
+
+  const size_t markerRevision1 =
+      container::renderer::detail::
+          bimCoordinationMarkerGeometrySignatureForTesting(overlay, 0.35f, 1u);
+  const size_t markerRevision2 =
+      container::renderer::detail::
+          bimCoordinationMarkerGeometrySignatureForTesting(overlay, 0.35f, 2u);
+  EXPECT_NE(markerRevision1, markerRevision2);
+
+  const size_t planeRevision1 =
+      container::renderer::detail::
+          bimSectionPlaneVisualGeometrySignatureForTesting(
+              {0.0f, 1.0f, 0.0f, 0.0f}, 10.0f, {0.1f, 0.2f, 0.3f}, 1u);
+  const size_t planeRevision2 =
+      container::renderer::detail::
+          bimSectionPlaneVisualGeometrySignatureForTesting(
+              {0.0f, 1.0f, 0.0f, 0.0f}, 10.0f, {0.1f, 0.2f, 0.3f}, 2u);
+  EXPECT_NE(planeRevision1, planeRevision2);
 }
 
 TEST(BimLightingOverlayPlannerTests, CurveStyleCanSelectNoDepthPipeline) {
@@ -234,6 +269,67 @@ TEST(BimLightingOverlayPlannerTests,
   EXPECT_FLOAT_EQ(plan.nativePointSelection.drawLineWidth, 7.0f);
   ASSERT_TRUE(plan.nativeCurveSelection.active);
   EXPECT_FLOAT_EQ(plan.nativeCurveSelection.drawLineWidth, 4.5f);
+}
+
+TEST(BimLightingOverlayPlannerTests,
+     CoordinationMarkersUseDepthTestedWireframePlans) {
+  const auto issuePins = drawCommands(19u);
+  const auto clashes = drawCommands(20u);
+  auto inputs = readyInputs();
+  inputs.coordinationMarkerGeometryReady = true;
+  inputs.coordinationIssueMarkerCommands = &issuePins;
+  inputs.coordinationClashMarkerCommands = &clashes;
+  inputs.coordinationIssueMarkers = {.enabled = true,
+                                     .depthTest = true,
+                                     .opacity = 0.75f,
+                                     .lineWidth = 3.0f};
+  inputs.coordinationClashMarkers = {.enabled = true,
+                                     .depthTest = true,
+                                     .opacity = 1.0f,
+                                     .lineWidth = 4.0f};
+
+  const auto plan = buildBimLightingOverlayPlan(inputs);
+
+  ASSERT_TRUE(plan.coordinationIssueMarkers.active);
+  EXPECT_EQ(plan.coordinationIssueMarkers.kind,
+            BimLightingOverlayKind::CoordinationIssueMarker);
+  EXPECT_EQ(plan.coordinationIssueMarkers.commands, &issuePins);
+  EXPECT_EQ(plan.coordinationIssueMarkers.pipeline,
+            BimLightingOverlayPipeline::WireframeDepth);
+  EXPECT_FLOAT_EQ(plan.coordinationIssueMarkers.opacity, 0.75f);
+  EXPECT_FLOAT_EQ(plan.coordinationIssueMarkers.drawLineWidth, 3.0f);
+
+  ASSERT_TRUE(plan.coordinationClashMarkers.active);
+  EXPECT_EQ(plan.coordinationClashMarkers.kind,
+            BimLightingOverlayKind::CoordinationClashMarker);
+  EXPECT_EQ(plan.coordinationClashMarkers.commands, &clashes);
+  EXPECT_EQ(plan.coordinationClashMarkers.pipeline,
+            BimLightingOverlayPipeline::WireframeDepth);
+  EXPECT_FLOAT_EQ(plan.coordinationClashMarkers.drawLineWidth, 4.0f);
+}
+
+TEST(BimLightingOverlayPlannerTests,
+     SectionPlaneVisualUsesDepthTestedWireframePlan) {
+  const auto cutPlaneGrid = drawCommands(21u);
+  auto inputs = readyInputs();
+  inputs.sectionPlaneVisualGeometryReady = true;
+  inputs.sectionPlaneVisualCommands = &cutPlaneGrid;
+  inputs.sectionPlaneVisual = {.enabled = true,
+                               .depthTest = true,
+                               .color = {0.1f, 0.6f, 1.0f},
+                               .opacity = 0.45f,
+                               .lineWidth = 2.0f};
+
+  const auto plan = buildBimLightingOverlayPlan(inputs);
+
+  ASSERT_TRUE(plan.sectionPlaneVisual.active);
+  EXPECT_EQ(plan.sectionPlaneVisual.kind,
+            BimLightingOverlayKind::SectionPlaneVisual);
+  EXPECT_EQ(plan.sectionPlaneVisual.commands, &cutPlaneGrid);
+  EXPECT_EQ(plan.sectionPlaneVisual.pipeline,
+            BimLightingOverlayPipeline::WireframeDepth);
+  EXPECT_FLOAT_EQ(plan.sectionPlaneVisual.opacity, 0.45f);
+  EXPECT_FLOAT_EQ(plan.sectionPlaneVisual.drawLineWidth, 2.0f);
 }
 
 TEST(BimLightingOverlayPlannerTests,

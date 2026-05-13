@@ -131,13 +131,19 @@ TEST(BimLightingOverlayRecorderTests,
 TEST(BimLightingOverlayRecorderTests,
      FrameOverlayInputsBuildPlanAndPreserveRecordingHandles) {
   const std::vector<DrawCommand> commands = oneDrawCommand();
+  const std::vector<DrawCommand> cutPlaneCommands = oneDrawCommand();
   WireframePushConstants pushConstants{};
   DebugOverlayRenderer debugOverlay{};
   const BimLightingOverlayFrameRecordInputs inputs{
       .bimGeometryReady = true,
       .floorPlan = {.enabled = true, .depthTest = true, .lineWidth = 2.0f},
-      .draws = {.floorPlan = &commands},
-      .pipelines = {.bimFloorPlanDepth = fakeHandle<VkPipeline>(0x4)},
+      .sectionPlaneVisual =
+          {.enabled = true, .depthTest = true, .lineWidth = 3.0f},
+      .draws = {.floorPlan = &commands,
+                .sectionPlaneVisual = &cutPlaneCommands},
+      .sectionPlaneVisualGeometryReady = true,
+      .pipelines = {.wireframeDepth = fakeHandle<VkPipeline>(0x6),
+                    .bimFloorPlanDepth = fakeHandle<VkPipeline>(0x4)},
       .wireframeLayout = fakeHandle<VkPipelineLayout>(0x5),
       .wireframePushConstants = &pushConstants,
       .debugOverlay = &debugOverlay};
@@ -147,9 +153,12 @@ TEST(BimLightingOverlayRecorderTests,
 
   EXPECT_TRUE(planInputs.wireframeLayoutReady);
   EXPECT_TRUE(planInputs.wireframePushConstantsReady);
+  EXPECT_TRUE(planInputs.pipelines.wireframeDepth);
   EXPECT_TRUE(planInputs.pipelines.bimFloorPlanDepth);
   EXPECT_TRUE(plan.floorPlan.active);
   EXPECT_EQ(plan.floorPlan.commands, &commands);
+  ASSERT_TRUE(plan.sectionPlaneVisual.active);
+  EXPECT_EQ(plan.sectionPlaneVisual.commands, &cutPlaneCommands);
   EXPECT_EQ(inputs.pipelines.bimFloorPlanDepth, fakeHandle<VkPipeline>(0x4));
   EXPECT_EQ(inputs.wireframePushConstants, &pushConstants);
   EXPECT_EQ(inputs.debugOverlay, &debugOverlay);

@@ -30,6 +30,9 @@ struct BimSectionClipCapFramePassStyle {
   float hatchLineWidth{1.0f};
   const std::vector<DrawCommand> *fillDrawCommands{nullptr};
   const std::vector<DrawCommand> *hatchDrawCommands{nullptr};
+  const std::vector<BimSectionCapDrawStyle> *fillDrawStyles{nullptr};
+  const std::vector<BimSectionCapDrawStyle> *hatchDrawStyles{nullptr};
+  const std::vector<BimSectionMarkerLine> *sectionMarkerLines{nullptr};
 };
 
 struct BimSectionClipCapPassGeometryBinding {

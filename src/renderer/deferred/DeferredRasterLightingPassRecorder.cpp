@@ -278,7 +278,11 @@ bimSectionClipCapFramePassStyle(const FrameRecordParams &p) {
                   ? std::max(style.hatchLineWidth, technicalElevation.lineWidth)
                   : style.hatchLineWidth,
           .fillDrawCommands = p.bim.sectionClipCapGeometry.fillDrawCommands,
-          .hatchDrawCommands = p.bim.sectionClipCapGeometry.hatchDrawCommands};
+          .hatchDrawCommands = p.bim.sectionClipCapGeometry.hatchDrawCommands,
+          .fillDrawStyles = p.bim.sectionClipCapGeometry.fillDrawStyles,
+          .hatchDrawStyles = p.bim.sectionClipCapGeometry.hatchDrawStyles,
+          .sectionMarkerLines =
+              p.bim.sectionClipCapGeometry.sectionMarkerLines};
 }
 
 SceneTransparentDrawLists
@@ -488,6 +492,33 @@ bimLightingOverlayFloorPlanFrameStyle(const FrameRecordParams &p) {
           .lineWidth = p.bim.floorPlan.lineWidth};
 }
 
+BimLightingOverlayFrameStyleState
+bimLightingOverlayIssueMarkerFrameStyle(const FrameRecordParams &p) {
+  return {.enabled = p.bim.coordinationMarkers.issueMarkersEnabled,
+          .depthTest = p.bim.coordinationMarkers.depthTest,
+          .color = p.bim.coordinationMarkers.issueColor,
+          .opacity = p.bim.coordinationMarkers.issueOpacity,
+          .lineWidth = p.bim.coordinationMarkers.issueLineWidth};
+}
+
+BimLightingOverlayFrameStyleState
+bimLightingOverlayClashMarkerFrameStyle(const FrameRecordParams &p) {
+  return {.enabled = p.bim.coordinationMarkers.clashMarkersEnabled,
+          .depthTest = p.bim.coordinationMarkers.depthTest,
+          .color = p.bim.coordinationMarkers.clashColor,
+          .opacity = p.bim.coordinationMarkers.clashOpacity,
+          .lineWidth = p.bim.coordinationMarkers.clashLineWidth};
+}
+
+BimLightingOverlayFrameStyleState
+bimLightingOverlaySectionPlaneVisualFrameStyle(const FrameRecordParams &p) {
+  return {.enabled = p.bim.sectionPlaneVisual.enabled,
+          .depthTest = p.bim.sectionPlaneVisual.depthTest,
+          .color = p.bim.sectionPlaneVisual.color,
+          .opacity = p.bim.sectionPlaneVisual.opacity,
+          .lineWidth = p.bim.sectionPlaneVisual.lineWidth};
+}
+
 BimLightingOverlayFrameDrawSources
 bimLightingOverlayFrameDrawSources(const FrameRecordParams &p) {
   return {
@@ -502,6 +533,9 @@ bimLightingOverlayFrameDrawSources(const FrameRecordParams &p) {
       .nativeCurveHover = p.bim.nativeCurveDraws.hoveredDrawCommands,
       .nativePointSelection = p.bim.nativePointDraws.selectedDrawCommands,
       .nativeCurveSelection = p.bim.nativeCurveDraws.selectedDrawCommands,
+      .coordinationIssueMarkers = p.bim.coordinationIssueMarkerDrawCommands,
+      .coordinationClashMarkers = p.bim.coordinationClashMarkerDrawCommands,
+      .sectionPlaneVisual = p.bim.sectionPlaneVisualDrawCommands,
   };
 }
 
@@ -824,9 +858,18 @@ void DeferredRasterLightingPassRecorder::record(
        .points = bimLightingOverlayPointFrameStyle(p),
        .curves = bimLightingOverlayCurveFrameStyle(p),
        .floorPlan = bimLightingOverlayFloorPlanFrameStyle(p),
+       .coordinationIssueMarkers = bimLightingOverlayIssueMarkerFrameStyle(p),
+       .coordinationClashMarkers = bimLightingOverlayClashMarkerFrameStyle(p),
+       .sectionPlaneVisual = bimLightingOverlaySectionPlaneVisualFrameStyle(p),
        .draws = bimLightingOverlayFrameDrawSources(p),
        .nativePointSize = p.bim.primitivePasses.pointCloud.pointSize,
        .nativeCurveLineWidth = p.bim.primitivePasses.curves.lineWidth,
+       .coordinationMarkerGeometryReady =
+           p.bim.coordinationMarkerScene.vertexSlice.buffer != VK_NULL_HANDLE &&
+           p.bim.coordinationMarkerScene.indexSlice.buffer != VK_NULL_HANDLE,
+       .sectionPlaneVisualGeometryReady =
+           p.bim.sectionPlaneVisualScene.vertexSlice.buffer != VK_NULL_HANDLE &&
+           p.bim.sectionPlaneVisualScene.indexSlice.buffer != VK_NULL_HANDLE,
        .pipelines = bimLightingOverlayPipelineHandles(p),
        .wireframeLayout = deferredRasterPipelineLayout(
            p, DeferredRasterPipelineLayoutId::Wireframe),
@@ -834,6 +877,12 @@ void DeferredRasterLightingPassRecorder::record(
            deferredRasterSceneDescriptorSet(p), p.scene),
        .bim = bimLightingOverlayGeometryBinding(
            deferredRasterBimSceneDescriptorSet(p), p.bim.scene),
+       .coordinationMarkers = bimLightingOverlayGeometryBinding(
+           deferredRasterBimSceneDescriptorSet(p),
+           p.bim.coordinationMarkerScene),
+       .sectionPlaneVisualGeometry = bimLightingOverlayGeometryBinding(
+           deferredRasterBimSceneDescriptorSet(p),
+           p.bim.sectionPlaneVisualScene),
        .selectionStencilClearAttachment =
            lightingPassPlan.selectionStencilClearAttachment,
        .selectionStencilClearRect = lightingPassPlan.selectionStencilClearRect,

@@ -1,5 +1,7 @@
 #include "Container/renderer/bim/BimSectionClipCapPassRecorder.h"
 
+#include "Container/renderer/bim/BimSectionCapBuilder.h"
+
 namespace container::renderer {
 
 namespace {
@@ -38,6 +40,76 @@ hasRequiredInputs(const BimSectionClipCapPassRecordInputs &inputs) {
          inputs.pushConstants != nullptr && inputs.debugOverlay != nullptr;
 }
 
+[[nodiscard]] bool hasPerCommandStyles(
+    const BimSectionClipCapPassRoute &route) {
+  return route.commands != nullptr && route.drawStyles != nullptr &&
+         route.drawStyles->size() == route.commands->size();
+}
+
+[[nodiscard]] glm::vec3 routeStyleColor(
+    const BimSectionClipCapPassRoute &route,
+    const BimSectionCapDrawStyle &style) {
+  switch (route.pipeline) {
+  case BimSectionClipCapPassPipeline::Fill:
+    return style.fillColor;
+  case BimSectionClipCapPassPipeline::Hatch:
+    return style.hatchColor;
+  }
+  return route.color;
+}
+
+[[nodiscard]] float routeStyleOpacity(
+    const BimSectionClipCapPassRoute &route,
+    const BimSectionCapDrawStyle &style) {
+  switch (route.pipeline) {
+  case BimSectionClipCapPassPipeline::Fill:
+    return style.fillOpacity;
+  case BimSectionClipCapPassPipeline::Hatch:
+    return route.opacity;
+  }
+  return route.opacity;
+}
+
+[[nodiscard]] float routeStyleLineWidth(
+    const BimSectionClipCapPassRoute &route,
+    const BimSectionCapDrawStyle &style) {
+  return style.lineWidth > 0.0f ? style.lineWidth : route.drawLineWidth;
+}
+
+[[nodiscard]] bool drawStyledRouteCommands(
+    VkCommandBuffer cmd, VkPipelineLayout wireframeLayout,
+    const DebugOverlayRenderer &debugOverlay,
+    const BimSectionClipCapPassRoute &route, WireframePushConstants &pc) {
+  if (!hasPerCommandStyles(route)) {
+    if (route.markerCommandsOnly) {
+      return false;
+    }
+    debugOverlay.drawWireframe(cmd, wireframeLayout, *route.commands,
+                               route.color, route.opacity,
+                               route.drawLineWidth, pc);
+    return true;
+  }
+
+  bool recorded = false;
+  std::vector<DrawCommand> commandBatch;
+  commandBatch.reserve(1u);
+  for (size_t commandIndex = 0u; commandIndex < route.commands->size();
+       ++commandIndex) {
+    const BimSectionCapDrawStyle &style = (*route.drawStyles)[commandIndex];
+    if (route.markerCommandsOnly && style.lineWidth <= 0.0f) {
+      continue;
+    }
+    commandBatch.clear();
+    commandBatch.push_back((*route.commands)[commandIndex]);
+    debugOverlay.drawWireframe(cmd, wireframeLayout, commandBatch,
+                               routeStyleColor(route, style),
+                               routeStyleOpacity(route, style),
+                               routeStyleLineWidth(route, style), pc);
+    recorded = true;
+  }
+  return recorded;
+}
+
 } // namespace
 
 bool hasBimSectionClipCapFramePassGeometry(
@@ -64,6 +136,9 @@ BimSectionClipCapPassInputs buildBimSectionClipCapFramePassPlanInputs(
       .hatchLineWidth = inputs.style.hatchLineWidth,
       .fillDrawCommands = inputs.style.fillDrawCommands,
       .hatchDrawCommands = inputs.style.hatchDrawCommands,
+      .fillDrawStyles = inputs.style.fillDrawStyles,
+      .hatchDrawStyles = inputs.style.hatchDrawStyles,
+      .sectionMarkerLines = inputs.style.sectionMarkerLines,
   };
 }
 
@@ -93,13 +168,12 @@ bool recordBimSectionClipCapPassCommands(
     if (route.rasterLineWidthApplies) {
       vkCmdSetLineWidth(cmd, route.rasterLineWidth);
     }
-    inputs.debugOverlay->drawWireframe(cmd, inputs.wireframeLayout,
-                                       *route.commands, route.color,
-                                       route.opacity, route.drawLineWidth, pc);
+    const bool routeRecorded = drawStyledRouteCommands(
+        cmd, inputs.wireframeLayout, *inputs.debugOverlay, route, pc);
     if (route.resetRasterLineWidth) {
       vkCmdSetLineWidth(cmd, 1.0f);
     }
-    recorded = true;
+    recorded = recorded || routeRecorded;
   }
   return recorded;
 }
