@@ -635,16 +635,45 @@ void ShadowManager::update(const container::scene::BaseCamera* camera,
   const float normalBiasMaxTexels =
       std::max(shadowSettings.normalBiasMaxTexels, normalBiasMinTexels);
   const float maxDepthBias = std::max(shadowSettings.maxDepthBias, 0.0f);
+  const float baseFilterRadiusTexels =
+      std::max(shadowSettings.filterRadiusTexels, 0.25f);
+  const float pcssLightRadiusDegrees = std::clamp(
+      shadowSettings.directionalPcssLightRadiusDegrees, 0.0f, 10.0f);
+  const float pcssTanLightRadius =
+      std::tan(pcssLightRadiusDegrees * kPi / 180.0f);
+  const float pcssBlockerSearchRadiusTexels = std::max(
+      shadowSettings.directionalPcssBlockerSearchRadiusTexels,
+      baseFilterRadiusTexels);
+  const float pcssMaxFilterRadiusTexels = std::max(
+      shadowSettings.directionalPcssMaxFilterRadiusTexels,
+      baseFilterRadiusTexels);
+  const float directionalContactMaxDistance = std::clamp(
+      shadowSettings.directionalContactMaxDistance, 0.0f, 10.0f);
+  const float directionalContactThickness = std::clamp(
+      shadowSettings.directionalContactThickness, 0.0f, 1.0f);
+  const float directionalContactFadeDistance = std::max(
+      shadowSettings.directionalContactFadeDistance,
+      directionalContactThickness);
   shadowData_.biasSettings = glm::vec4(
       normalBiasMinTexels,
       normalBiasMaxTexels,
       std::max(shadowSettings.slopeBiasScale, 0.0f),
       std::max(shadowSettings.receiverPlaneBiasScale, 0.0f));
   shadowData_.filterSettings = glm::vec4(
-      std::max(shadowSettings.filterRadiusTexels, 0.25f),
+      baseFilterRadiusTexels,
       std::clamp(shadowSettings.cascadeBlendFraction, 0.0f, 0.45f),
       std::max(shadowSettings.constantDepthBias, 0.0f),
       maxDepthBias);
+  shadowData_.softShadowSettings = glm::vec4(
+      shadowSettings.directionalPcssEnabled ? 1.0f : 0.0f,
+      pcssTanLightRadius,
+      pcssBlockerSearchRadiusTexels,
+      pcssMaxFilterRadiusTexels);
+  shadowData_.contactShadowSettings = glm::vec4(
+      shadowSettings.directionalContactVisibility ? 1.0f : 0.0f,
+      directionalContactMaxDistance,
+      directionalContactThickness,
+      directionalContactFadeDistance);
 
   for (uint32_t i = 0; i < kShadowCascadeCount; ++i) {
     const CascadeViewProjData cascadeData =

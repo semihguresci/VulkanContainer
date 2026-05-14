@@ -31,6 +31,7 @@
 #include "Container/renderer/core/RenderExtraction.h"
 #include "Container/renderer/core/RenderPassGpuProfiler.h"
 #include "Container/renderer/core/RenderTechnique.h"
+#include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/core/RendererTelemetry.h"
 #include "Container/renderer/culling/GpuCullManager.h"
 #include "Container/renderer/debug/DebugUiPresenter.h"
@@ -1125,6 +1126,19 @@ void RendererFrontend::initialize() {
   subs_.renderPassManager =
       std::make_unique<RenderPassManager>(svc_.ctx.deviceWrapper);
   subs_.oitManager = std::make_unique<OitManager>(svc_.ctx.deviceWrapper);
+  {
+    const RendererMsaaDeviceSupport msaaSupport =
+        queryRendererMsaaDeviceSupport(svc_.ctx.deviceWrapper->physicalDevice());
+    const auto supportedSampleCounts =
+        supportedMsaaSampleCounts(msaaSupport.color, msaaSupport.depth);
+    supportedMsaaSamples_.clear();
+    supportedMsaaSamples_.reserve(supportedSampleCounts.size());
+    for (VkSampleCountFlagBits sampleCount : supportedSampleCounts) {
+      supportedMsaaSamples_.push_back(sampleCountToSamples(sampleCount));
+    }
+    msaaSampleCount_ = clampMsaaSampleCount(
+        svc_.config.msaaSamples, msaaSupport.color, msaaSupport.depth);
+  }
   createRenderPasses();
 
   subs_.sceneManager = std::make_unique<container::scene::SceneManager>(
@@ -1365,6 +1379,17 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
               subs_.renderPassGpuProfiler->resultLatencyFrames(),
           .status = std::string(subs_.renderPassGpuProfiler->backendStatus()),
       });
+    }
+  }
+
+  if (pendingMsaaSampleCount_) {
+    phaseStart = TelemetryClock::now();
+    const VkSampleCountFlagBits requestedSampleCount = *pendingMsaaSampleCount_;
+    pendingMsaaSampleCount_.reset();
+    recreateMsaaResources(requestedSampleCount);
+    if (telemetry) {
+      telemetry->addCpuPhase(RendererTelemetryPhase::ResourceGrowth,
+                             elapsedMilliseconds(phaseStart));
     }
   }
 
@@ -2927,7 +2952,7 @@ void RendererFrontend::createRenderPasses() {
       resources_.gBufferFormats.sceneColor, resources_.gBufferFormats.albedo,
       resources_.gBufferFormats.normal, resources_.gBufferFormats.material,
       resources_.gBufferFormats.emissive, resources_.gBufferFormats.specular,
-      resources_.gBufferFormats.pickId);
+      resources_.gBufferFormats.pickId, msaaSampleCount_);
   resources_.renderPasses = subs_.renderPassManager->passes();
 }
 
@@ -2960,7 +2985,8 @@ void RendererFrontend::createGraphicsPipelines() {
                                 resources_.renderPasses.transformGizmos,
                                 resources_.renderPasses.postProcess};
   resources_.builtPipelines = subs_.pipelineBuilder->build(
-      container::util::executableDirectory(), descLayouts, rp);
+      container::util::executableDirectory(), descLayouts, rp,
+      msaaSampleCount_);
   if (!resources_.builtPipelines.pipelines.layoutRegistry) {
     resources_.builtPipelines.pipelines.layoutRegistry =
         resources_.builtPipelines.layouts.layoutRegistry
@@ -2970,6 +2996,141 @@ void RendererFrontend::createGraphicsPipelines() {
   }
   resources_.builtPipelines.layouts.layoutRegistry =
       resources_.builtPipelines.pipelines.layoutRegistry;
+}
+
+void RendererFrontend::destroyGraphicsPipelines() {
+  auto &pipelines = resources_.builtPipelines.pipelines;
+  auto destroyPipeline = [this](VkPipeline &pipeline) {
+    svc_.pipelineManager.destroyPipeline(pipeline);
+  };
+  destroyPipeline(pipelines.depthPrepass);
+  destroyPipeline(pipelines.depthPrepassFrontCull);
+  destroyPipeline(pipelines.depthPrepassNoCull);
+  destroyPipeline(pipelines.bimDepthPrepass);
+  destroyPipeline(pipelines.bimDepthPrepassFrontCull);
+  destroyPipeline(pipelines.bimDepthPrepassNoCull);
+  destroyPipeline(pipelines.gBuffer);
+  destroyPipeline(pipelines.gBufferFrontCull);
+  destroyPipeline(pipelines.gBufferNoCull);
+  destroyPipeline(pipelines.bimGBuffer);
+  destroyPipeline(pipelines.bimGBufferFrontCull);
+  destroyPipeline(pipelines.bimGBufferNoCull);
+  destroyPipeline(pipelines.shadowDepth);
+  destroyPipeline(pipelines.shadowDepthFrontCull);
+  destroyPipeline(pipelines.shadowDepthNoCull);
+  destroyPipeline(pipelines.localShadowDepth);
+  destroyPipeline(pipelines.localShadowDepthFrontCull);
+  destroyPipeline(pipelines.localShadowDepthNoCull);
+  destroyPipeline(pipelines.directionalLight);
+  destroyPipeline(pipelines.stencilVolume);
+  destroyPipeline(pipelines.pointLight);
+  destroyPipeline(pipelines.pointLightStencilDebug);
+  destroyPipeline(pipelines.tiledPointLight);
+  destroyPipeline(pipelines.transparent);
+  destroyPipeline(pipelines.transparentFrontCull);
+  destroyPipeline(pipelines.transparentNoCull);
+  destroyPipeline(pipelines.transparentPick);
+  destroyPipeline(pipelines.transparentPickFrontCull);
+  destroyPipeline(pipelines.transparentPickNoCull);
+  destroyPipeline(pipelines.postProcess);
+  destroyPipeline(pipelines.geometryDebug);
+  destroyPipeline(pipelines.normalValidation);
+  destroyPipeline(pipelines.normalValidationFrontCull);
+  destroyPipeline(pipelines.normalValidationNoCull);
+  destroyPipeline(pipelines.wireframeDepth);
+  destroyPipeline(pipelines.wireframeDepthFrontCull);
+  destroyPipeline(pipelines.wireframeNoDepth);
+  destroyPipeline(pipelines.wireframeNoDepthFrontCull);
+  destroyPipeline(pipelines.selectionMask);
+  destroyPipeline(pipelines.selectionOutline);
+  destroyPipeline(pipelines.bimFloorPlanDepth);
+  destroyPipeline(pipelines.bimFloorPlanNoDepth);
+  destroyPipeline(pipelines.bimPointCloudDepth);
+  destroyPipeline(pipelines.bimPointCloudNoDepth);
+  destroyPipeline(pipelines.bimCurveDepth);
+  destroyPipeline(pipelines.bimCurveNoDepth);
+  destroyPipeline(pipelines.bimSectionClipCapFill);
+  destroyPipeline(pipelines.bimSectionClipCapHatch);
+  destroyPipeline(pipelines.surfaceNormalLine);
+  destroyPipeline(pipelines.objectNormalDebug);
+  destroyPipeline(pipelines.objectNormalDebugFrontCull);
+  destroyPipeline(pipelines.objectNormalDebugNoCull);
+  destroyPipeline(pipelines.lightGizmo);
+  destroyPipeline(pipelines.lightGizmoCoverage);
+  destroyPipeline(pipelines.lightGizmoPick);
+  destroyPipeline(pipelines.transformGizmo);
+  destroyPipeline(pipelines.transformGizmoSolid);
+  destroyPipeline(pipelines.transformGizmoOverlay);
+  destroyPipeline(pipelines.transformGizmoSolidOverlay);
+
+  auto &layouts = resources_.builtPipelines.layouts;
+  auto destroyLayout = [this](VkPipelineLayout &layout) {
+    svc_.pipelineManager.destroyPipelineLayout(layout);
+  };
+  destroyLayout(layouts.scene);
+  destroyLayout(layouts.transparent);
+  destroyLayout(layouts.lighting);
+  destroyLayout(layouts.lightGizmo);
+  destroyLayout(layouts.tiledLighting);
+  destroyLayout(layouts.shadow);
+  destroyLayout(layouts.postProcess);
+  destroyLayout(layouts.wireframe);
+  destroyLayout(layouts.normalValidation);
+  destroyLayout(layouts.surfaceNormal);
+  destroyLayout(layouts.transformGizmo);
+
+  resources_.builtPipelines = {};
+}
+
+void RendererFrontend::recreateMsaaResources(
+    VkSampleCountFlagBits sampleCount) {
+  if (sampleCount == msaaSampleCount_) {
+    return;
+  }
+
+  vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
+  destroyGBufferResources();
+  svc_.swapChainManager.destroyFramebuffers();
+  destroyGraphicsPipelines();
+  if (subs_.renderPassManager) {
+    subs_.renderPassManager->destroy();
+  }
+
+  const bool guiWasInitialized = subs_.guiManager != nullptr;
+  if (guiWasInitialized) {
+    subs_.guiManager->shutdown(svc_.ctx.deviceWrapper->device());
+  }
+
+  msaaSampleCount_ = sampleCount;
+  createRenderPasses();
+  svc_.swapChainManager.createFramebuffers(resources_.renderPasses.postProcess);
+  if (guiWasInitialized) {
+    subs_.guiManager->initialize(
+        svc_.ctx.instance, svc_.ctx.deviceWrapper->device(),
+        svc_.ctx.deviceWrapper->physicalDevice(),
+        svc_.ctx.deviceWrapper->graphicsQueue(),
+        svc_.ctx.deviceWrapper->queueFamilyIndices().graphicsFamily.value(),
+        resources_.renderPasses.postProcess,
+        static_cast<uint32_t>(svc_.swapChainManager.imageCount()),
+        svc_.nativeWindow, svc_.config.modelPath, svc_.config.importScale);
+    subs_.guiManager->setWireframeCapabilities(
+        svc_.ctx.wireframeSupported, svc_.ctx.wireframeRasterModeSupported,
+        svc_.ctx.wireframeWideLinesSupported);
+    if (subs_.environmentManager) {
+      subs_.guiManager->setEnvironmentStatus(
+          subs_.environmentManager->environmentStatus());
+    }
+  }
+  createGraphicsPipelines();
+  createFrameResources();
+  updateFrameDescriptorSets();
+  depthVisibility_.valid = false;
+  depthVisibility_.renderFence = VK_NULL_HANDLE;
+  if (subs_.guiManager) {
+    subs_.guiManager->setStatusMessage(
+        "MSAA set to " + std::to_string(sampleCountToSamples(sampleCount)) +
+        "x");
+  }
 }
 
 void RendererFrontend::createCamera() {
@@ -3119,7 +3280,7 @@ void RendererFrontend::createFrameResources() {
       resources_.renderPasses.bimDepthPrepass, resources_.renderPasses.gBuffer,
       resources_.renderPasses.bimGBuffer,
       resources_.renderPasses.transparentPick, resources_.renderPasses.lighting,
-      resources_.renderPasses.transformGizmos, buffers_.cameras,
+      resources_.renderPasses.transformGizmos, msaaSampleCount_, buffers_.cameras,
       buffers_.object);
 }
 
@@ -4178,6 +4339,10 @@ void RendererFrontend::presentSceneControls() {
 
   // Sync freeze-culling: push debug state into GUI before rendering.
   subs_.guiManager->setFreezeCulling(debugState_.freezeCulling);
+  subs_.guiManager->setMsaaSampleState(
+      std::span<const uint32_t>(supportedMsaaSamples_.data(),
+                                supportedMsaaSamples_.size()),
+      sampleCountToSamples(msaaSampleCount_));
 
   // Sync bloom: push BloomManager settings into GUI before rendering.
   if (subs_.bloomManager) {
@@ -4653,6 +4818,16 @@ void RendererFrontend::presentSceneControls() {
           subs_.lightingManager->updateLightingData();
         updateObjectBuffer();
       });
+
+  if (auto msaaRequest = subs_.guiManager->consumeMsaaSampleChange()) {
+    const RendererMsaaDeviceSupport msaaSupport =
+        queryRendererMsaaDeviceSupport(svc_.ctx.deviceWrapper->physicalDevice());
+    const VkSampleCountFlagBits requestedSampleCount = clampMsaaSampleCount(
+        *msaaRequest, msaaSupport.color, msaaSupport.depth);
+    if (requestedSampleCount != msaaSampleCount_) {
+      pendingMsaaSampleCount_ = requestedSampleCount;
+    }
+  }
 
   if (auto elevationRequest =
           subs_.guiManager->consumeBimElevationViewRequest()) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Container/common/CommonVulkan.h"
+#include "Container/renderer/scene/SceneOpaqueDrawRecorder.h"
 #include "Container/renderer/scene/SceneTransparentDrawRecorder.h"
 #include "Container/renderer/bim/BimSurfacePassRecorder.h"
 #include "Container/utility/VulkanMemoryManager.h"
@@ -21,7 +22,9 @@ struct TransparentPickPassPipelineHandles {
 };
 
 struct TransparentPickPassRecordInputs {
+  const SceneOpaqueDrawPlan *sceneOpaquePlan{nullptr};
   const SceneTransparentDrawPlan *scenePlan{nullptr};
+  const BimSurfacePassPlan *bimOpaquePlan{nullptr};
   const BimSurfacePassPlan *bimPlan{nullptr};
   TransparentPickPassGeometryBinding scene{};
   TransparentPickPassGeometryBinding bim{};

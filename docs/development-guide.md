@@ -8,6 +8,8 @@ front-face selection, UV/NDC conversion, and matrix upload rules.
 For architecture and feature context, read:
 
 - [architecture.md](architecture.md) for current ownership and frame flow.
+- [msaa.md](msaa.md) for deferred raster multisampling, resolve behavior, and
+  render graph boundaries.
 - [refactoring-plan.md](refactoring-plan.md) for dependency cleanup, historical
   refactoring phases, and render graph direction.
 - [lighting-system-improvement-plan.md](lighting-system-improvement-plan.md)

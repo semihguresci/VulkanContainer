@@ -27,7 +27,8 @@ GraphicsPipelineBuilder::GraphicsPipelineBuilder(
 PipelineBuildResult GraphicsPipelineBuilder::build(
     const std::filesystem::path &shaderDir,
     const PipelineDescriptorLayouts &descriptorLayouts,
-    const PipelineRenderPasses &renderPasses) const {
+    const PipelineRenderPasses &renderPasses,
+    VkSampleCountFlagBits sceneSampleCount) const {
 
   // ---- shader loading helpers -----------------------------------------------
   struct ShaderModuleStore {
@@ -367,9 +368,12 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   wfFbDepthFrontCullRaster.cullMode = VK_CULL_MODE_FRONT_BIT;
 
   // ---- multisample ----------------------------------------------------------
-  VkPipelineMultisampleStateCreateInfo msaa{};
-  msaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
-  msaa.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+  VkPipelineMultisampleStateCreateInfo sceneMsaa{};
+  sceneMsaa.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  sceneMsaa.rasterizationSamples = sceneSampleCount;
+  VkPipelineMultisampleStateCreateInfo singleSample{};
+  singleSample.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+  singleSample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
 
   // ---- color blend attachments ----------------------------------------------
   VkPipelineColorBlendAttachmentState opaqueAttach{};
@@ -623,7 +627,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   scenePCI.pInputAssemblyState = &triAssembly;
   scenePCI.pViewportState = &vpState;
   scenePCI.pRasterizationState = &sceneRaster;
-  scenePCI.pMultisampleState = &msaa;
+  scenePCI.pMultisampleState = &sceneMsaa;
   scenePCI.pDepthStencilState = &depthPrepassDS;
   scenePCI.pColorBlendState = &noBlend;
   scenePCI.pDynamicState = &dynState;
@@ -637,7 +641,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   fsPCI.pInputAssemblyState = &triAssembly;
   fsPCI.pViewportState = &vpState;
   fsPCI.pRasterizationState = &fullscreenRaster;
-  fsPCI.pMultisampleState = &msaa;
+  fsPCI.pMultisampleState = &singleSample;
   fsPCI.pDepthStencilState = &noDS;
   fsPCI.pColorBlendState = &opaqueBlend;
   fsPCI.pDynamicState = &dynState;
@@ -651,7 +655,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   meshPCI.pInputAssemblyState = &triAssembly;
   meshPCI.pViewportState = &vpState;
   meshPCI.pRasterizationState = &sceneRaster;
-  meshPCI.pMultisampleState = &msaa;
+  meshPCI.pMultisampleState = &singleSample;
   meshPCI.pDepthStencilState = &transparentDS;
   meshPCI.pColorBlendState = &noColorBlend;
   meshPCI.pDynamicState = &dynState;
@@ -759,6 +763,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   sdPCI.pVertexInputState = &posTexNormInput;
   sdPCI.pInputAssemblyState = &triAssembly;
   sdPCI.pRasterizationState = &shadowRaster;
+  sdPCI.pMultisampleState = &singleSample;
   sdPCI.pDepthStencilState = &depthPrepassDS;
   sdPCI.pColorBlendState = &noBlend;
   sdPCI.pDynamicState       = &shadowDynState;

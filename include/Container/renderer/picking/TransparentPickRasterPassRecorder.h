@@ -3,6 +3,7 @@
 #include "Container/common/CommonVulkan.h"
 #include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
 #include "Container/renderer/picking/TransparentPickPassRecorder.h"
+#include "Container/renderer/scene/SceneOpaqueDrawPlanner.h"
 
 #include <functional>
 
@@ -27,7 +28,9 @@ struct TransparentPickFramePassRecordInputs {
   VkImage sourceDepthStencilImage{VK_NULL_HANDLE};
   VkImage pickDepthImage{VK_NULL_HANDLE};
   VkImage pickIdImage{VK_NULL_HANDLE};
+  SceneOpaqueDrawLists sceneOpaqueDraws{};
   SceneTransparentDrawLists sceneDraws{};
+  BimSurfaceFramePassDrawSources bimOpaqueDraws{};
   BimSurfaceFramePassDrawSources bimDraws{};
   TransparentPickPassGeometryBinding scene{};
   TransparentPickPassGeometryBinding bim{};

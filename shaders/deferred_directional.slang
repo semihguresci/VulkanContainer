@@ -2,6 +2,7 @@
 #include "area_light_common.slang"
 #include "material_data_common.slang"
 #include "local_shadow_common.slang"
+#include "screen_space_light_shadow_common.slang"
 #include "shadow_common.slang"
 
 [[vk::binding(0, 0)]] ConstantBuffer<CameraBuffer> uCamera;
@@ -299,6 +300,17 @@ float4 fragMain(VSOutput input) : SV_Target0
         shadowFactor = ComputeShadowFactor(
             worldPosition, geometricNormal, uLighting.directionalDirection.xyz,
             viewDepth, uShadow, gShadowAtlas, gShadowSampler);
+        if (ShadowFiniteOr(uShadow.contactShadowSettings.x, 0.0) > 0.0)
+        {
+            float contactVisibility = ScreenSpaceDirectionalContactVisibility(
+                worldPosition, geometricNormal, L,
+                uShadow.contactShadowSettings.y,
+                uShadow.contactShadowSettings.z,
+                uShadow.contactShadowSettings.w,
+                gDepthTexture, gNormalTexture,
+                uCamera.viewProj, uCamera.inverseViewProj);
+            shadowFactor *= contactVisibility;
+        }
     }
 
     float iridescenceThickness = EstimateDeferredIridescenceThickness(

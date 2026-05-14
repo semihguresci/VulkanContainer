@@ -30,7 +30,8 @@ class GraphicsPipelineBuilder {
   PipelineBuildResult build(
       const std::filesystem::path&         shaderDir,
       const PipelineDescriptorLayouts&     descriptorLayouts,
-      const PipelineRenderPasses&          renderPasses) const;
+      const PipelineRenderPasses&          renderPasses,
+      VkSampleCountFlagBits                sceneSampleCount) const;
 
  private:
   std::shared_ptr<container::gpu::VulkanDevice> device_;

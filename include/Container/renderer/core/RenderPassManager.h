@@ -31,11 +31,12 @@ class RenderPassManager {
               VkFormat depthStencilFormat,
               VkFormat sceneColorFormat,
               VkFormat albedoFormat,
-               VkFormat normalFormat,
-               VkFormat materialFormat,
-               VkFormat emissiveFormat,
-               VkFormat specularFormat,
-               VkFormat pickIdFormat);
+              VkFormat normalFormat,
+              VkFormat materialFormat,
+              VkFormat emissiveFormat,
+              VkFormat specularFormat,
+              VkFormat pickIdFormat,
+              VkSampleCountFlagBits msaaSamples);
 
   void destroy();
 

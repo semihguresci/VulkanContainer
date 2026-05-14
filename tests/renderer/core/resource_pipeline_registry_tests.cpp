@@ -2,6 +2,7 @@
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/pipeline/PipelineRegistry.h"
 #include "Container/renderer/pipeline/PipelineTypes.h"
+#include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/deferred/DeferredRasterFrameGraphContext.h"
 #include "Container/renderer/deferred/DeferredRasterPipelineBridge.h"
@@ -83,6 +84,10 @@ using container::renderer::shadowPipelineReady;
 using container::renderer::shadowDescriptorBinding;
 using container::renderer::shadowDescriptorSet;
 using container::renderer::ShadowDescriptorSetId;
+using container::renderer::clampMsaaSampleCount;
+using container::renderer::sampleCountFromSamples;
+using container::renderer::sampleCountToSamples;
+using container::renderer::supportedMsaaSampleCounts;
 
 std::string readRepoTextFile(const std::filesystem::path& relativePath) {
   const std::filesystem::path path =
@@ -355,6 +360,36 @@ TEST(FrameResourceRegistryTests, RegistersSamplerContractsWithMetadata) {
   EXPECT_EQ(sampler->lifetime, FrameResourceLifetime::Imported);
 }
 
+TEST(FrameResourceRegistryTests, StoresImageSampleCountMetadata) {
+  FrameResourceRegistry registry;
+
+  registry.registerImage(
+      RenderTechniqueId::DeferredRaster, "gbuffer-albedo-msaa",
+      FrameImageDesc{.format = VK_FORMAT_R8G8B8A8_UNORM,
+                     .extent = {1920, 1080, 1},
+                     .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                     .samples = VK_SAMPLE_COUNT_4_BIT});
+
+  const auto* contract = registry.find(TechniqueResourceKey{
+      RenderTechniqueId::DeferredRaster, "gbuffer-albedo-msaa"});
+  ASSERT_NE(contract, nullptr);
+  EXPECT_EQ(contract->image.samples, VK_SAMPLE_COUNT_4_BIT);
+
+  const auto handle = registry.bindImage(
+      RenderTechniqueId::DeferredRaster, "gbuffer-albedo-msaa", 0u,
+      FrameImageBinding{.image = fakeHandle<VkImage>(0x200),
+                        .view = fakeHandle<VkImageView>(0x201),
+                        .format = VK_FORMAT_R8G8B8A8_UNORM,
+                        .extent = {1920, 1080, 1},
+                        .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                        .samples = VK_SAMPLE_COUNT_4_BIT});
+  ASSERT_TRUE(handle.valid());
+
+  const auto* binding = registry.findBinding(handle);
+  ASSERT_NE(binding, nullptr);
+  EXPECT_EQ(binding->image.samples, VK_SAMPLE_COUNT_4_BIT);
+}
+
 TEST(FrameResourceRegistryTests, RegistersFramebufferContractsWithMetadata) {
   FrameResourceRegistry registry;
 
@@ -369,6 +404,46 @@ TEST(FrameResourceRegistryTests, RegistersFramebufferContractsWithMetadata) {
   EXPECT_EQ(gbuffer->kind, FrameResourceKind::Framebuffer);
   EXPECT_EQ(gbuffer->lifetime, FrameResourceLifetime::PerFrame);
   EXPECT_EQ(gbuffer->framebuffer.attachmentCount, 7u);
+}
+
+TEST(RendererMsaaTests, ConvertsSampleCountsToUserVisibleIntegers) {
+  EXPECT_EQ(sampleCountToSamples(VK_SAMPLE_COUNT_1_BIT), 1u);
+  EXPECT_EQ(sampleCountToSamples(VK_SAMPLE_COUNT_2_BIT), 2u);
+  EXPECT_EQ(sampleCountToSamples(VK_SAMPLE_COUNT_4_BIT), 4u);
+  EXPECT_EQ(sampleCountToSamples(VK_SAMPLE_COUNT_8_BIT), 8u);
+  EXPECT_EQ(sampleCountFromSamples(0u), VK_SAMPLE_COUNT_1_BIT);
+  EXPECT_EQ(sampleCountFromSamples(3u), VK_SAMPLE_COUNT_2_BIT);
+  EXPECT_EQ(sampleCountFromSamples(6u), VK_SAMPLE_COUNT_4_BIT);
+  EXPECT_EQ(sampleCountFromSamples(16u), VK_SAMPLE_COUNT_16_BIT);
+}
+
+TEST(RendererMsaaTests, ClampsRequestedSamplesToColorAndDepthSupport) {
+  const VkSampleCountFlags color =
+      VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT |
+      VK_SAMPLE_COUNT_4_BIT | VK_SAMPLE_COUNT_8_BIT;
+  const VkSampleCountFlags depth =
+      VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT | VK_SAMPLE_COUNT_4_BIT;
+
+  EXPECT_EQ(clampMsaaSampleCount(8u, color, depth), VK_SAMPLE_COUNT_4_BIT);
+  EXPECT_EQ(clampMsaaSampleCount(4u, color, depth), VK_SAMPLE_COUNT_4_BIT);
+  EXPECT_EQ(clampMsaaSampleCount(2u, color, depth), VK_SAMPLE_COUNT_2_BIT);
+  EXPECT_EQ(clampMsaaSampleCount(1u, color, depth), VK_SAMPLE_COUNT_1_BIT);
+}
+
+TEST(RendererMsaaTests, ListsSupportedSamplesInAscendingUiOrder) {
+  const VkSampleCountFlags color =
+      VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_2_BIT |
+      VK_SAMPLE_COUNT_4_BIT | VK_SAMPLE_COUNT_8_BIT;
+  const VkSampleCountFlags depth =
+      VK_SAMPLE_COUNT_1_BIT | VK_SAMPLE_COUNT_4_BIT |
+      VK_SAMPLE_COUNT_8_BIT;
+
+  const auto samples = supportedMsaaSampleCounts(color, depth);
+
+  ASSERT_EQ(samples.size(), 3u);
+  EXPECT_EQ(samples[0], VK_SAMPLE_COUNT_1_BIT);
+  EXPECT_EQ(samples[1], VK_SAMPLE_COUNT_4_BIT);
+  EXPECT_EQ(samples[2], VK_SAMPLE_COUNT_8_BIT);
 }
 
 TEST(PipelineRegistryTests, RegistersTechniqueScopedRecipes) {

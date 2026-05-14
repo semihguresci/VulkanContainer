@@ -524,7 +524,7 @@ bool deferredRasterSceneTransparentPickReady(const FrameRecordParams &p) {
   return deferredRasterSceneDescriptorSet(p) != VK_NULL_HANDLE &&
          p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
          p.scene.indexSlice.buffer != VK_NULL_HANDLE &&
-         hasTransparentDrawCommands(p.draws);
+         (hasOpaqueDrawCommands(p.draws) || hasTransparentDrawCommands(p.draws));
 }
 
 bool deferredRasterLightGizmoPickReady(
@@ -577,7 +577,12 @@ TransparentPickFramePassRecordInputs deferredRasterTransparentPickInputs(
   }
   return {
       .scenePassReady = deferredRasterSceneTransparentPickReady(p),
-      .bimPassReady = hasBimTransparentGeometry(p),
+      .bimPassReady =
+          hasBimTransparentGeometry(p) ||
+          (deferredRasterBimSceneDescriptorSet(p) != VK_NULL_HANDLE &&
+           p.bim.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
+           p.bim.scene.indexSlice.buffer != VK_NULL_HANDLE &&
+           hasBimOpaqueDrawCommands(p.bim)),
       .renderPass = deferredRasterRenderPass(
           p, DeferredRasterFramebufferId::TransparentPick),
       .framebuffer = deferredRasterFramebuffer(
@@ -588,7 +593,9 @@ TransparentPickFramePassRecordInputs deferredRasterTransparentPickInputs(
       .pickDepthImage =
           deferredRasterImage(p, DeferredRasterImageId::PickDepth),
       .pickIdImage = deferredRasterImage(p, DeferredRasterImageId::PickId),
+      .sceneOpaqueDraws = deferredRasterSceneOpaqueDrawLists(p.draws),
       .sceneDraws = deferredRasterSceneTransparentDrawLists(p.draws),
+      .bimOpaqueDraws = deferredRasterBimSurfaceDrawSources(p.bim),
       .bimDraws = deferredRasterBimSurfaceDrawSources(p.bim),
       .scene = {.descriptorSet = deferredRasterSceneDescriptorSet(p),
                 .vertexSlice = p.scene.vertexSlice,
@@ -1613,15 +1620,18 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         }
         const bool lightGizmoPickReady =
             deferredRasterLightGizmoPickReady(p, *deferred);
-        if (!hasTransparentDrawCommands(p) && !lightGizmoPickReady) {
+        if (!hasOpaqueDrawCommands(p.draws) && !hasBimOpaqueDrawCommands(p.bim) &&
+            !hasTransparentDrawCommands(p) && !lightGizmoPickReady) {
           return renderPassNotNeeded();
         }
         const bool sceneDrawable =
             deferredRasterSceneDescriptorSet(p) != VK_NULL_HANDLE &&
             p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
             p.scene.indexSlice.buffer != VK_NULL_HANDLE &&
-            hasTransparentDrawCommands(p.draws);
+            (hasOpaqueDrawCommands(p.draws) ||
+             hasTransparentDrawCommands(p.draws));
         if (!lightGizmoPickReady && !sceneDrawable &&
+            !hasBimOpaqueDrawCommands(p.bim) &&
             !hasBimTransparentGeometry(p)) {
           return renderPassMissingResource(RenderResourceId::SceneGeometry);
         }

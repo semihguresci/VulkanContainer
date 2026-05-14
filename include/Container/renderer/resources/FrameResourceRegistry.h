@@ -40,6 +40,7 @@ struct FrameImageDesc {
   VkFormat format{VK_FORMAT_UNDEFINED};
   VkExtent3D extent{0, 0, 1};
   VkImageUsageFlags usage{0};
+  VkSampleCountFlagBits samples{VK_SAMPLE_COUNT_1_BIT};
 };
 
 struct FrameBufferDesc {
@@ -79,6 +80,7 @@ struct FrameImageBinding {
   VkFormat format{VK_FORMAT_UNDEFINED};
   VkExtent3D extent{0, 0, 1};
   VkImageUsageFlags usage{0};
+  VkSampleCountFlagBits samples{VK_SAMPLE_COUNT_1_BIT};
 };
 
 struct FrameBufferBinding {

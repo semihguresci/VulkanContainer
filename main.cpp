@@ -86,6 +86,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.windowWidth = parseUint(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--height") {
       config.windowHeight = parseUint(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--msaa") {
+      config.msaaSamples = parseUint(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--import-scale") {
       config.importScale = parseFloat(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--bim-model") {

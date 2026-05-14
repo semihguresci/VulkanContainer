@@ -24,6 +24,7 @@ class SwapChainManager {
   void recreate(VkRenderPass renderPass);
   void cleanup();
   void createFramebuffers(VkRenderPass renderPass);
+  void destroyFramebuffers();
 
   [[nodiscard]] VkResult present(VkQueue presentQueue, uint32_t imageIndex,
                                  VkSemaphore waitSemaphore) const;
@@ -54,7 +55,6 @@ class SwapChainManager {
  private:
   void createSwapChain(VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE);
   void createImageViews();
-  void destroyFramebuffers();
   void destroyImageViews();
   void waitForNonZeroFramebufferExtent() const;
 

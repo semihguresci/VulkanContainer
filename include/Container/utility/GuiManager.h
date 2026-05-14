@@ -475,6 +475,9 @@ public:
 
   void shutdown(VkDevice device);
   void updateSwapchainImageCount(uint32_t imageCount);
+  void setMsaaSampleState(std::span<const uint32_t> options,
+                          uint32_t activeSamples);
+  [[nodiscard]] std::optional<uint32_t> consumeMsaaSampleChange();
 
   void startFrame();
   void render(VkCommandBuffer commandBuffer);
@@ -763,6 +766,9 @@ private:
   float importScale_{1.0f};
   std::string statusMessage_{};
   std::string environmentStatus_{};
+  std::vector<uint32_t> msaaSampleOptions_{1u};
+  uint32_t msaaSamples_{1u};
+  std::optional<uint32_t> pendingMsaaSamples_{};
   uint32_t cullStatsTotal_{0};
   uint32_t cullStatsFrustum_{0};
   uint32_t cullStatsOcclusion_{0};

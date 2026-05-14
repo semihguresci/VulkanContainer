@@ -4979,10 +4979,12 @@ TEST(RenderingConventionTests,
   EXPECT_EQ(offsetof(ShadowCascadeData, depthRange), 76u);
   EXPECT_EQ(sizeof(ShadowData),
             sizeof(ShadowCascadeData) * container::gpu::kShadowCascadeCount +
-                32u);
+                64u);
   EXPECT_EQ(offsetof(ShadowData, cascades), 0u);
   EXPECT_EQ(offsetof(ShadowData, biasSettings), 320u);
   EXPECT_EQ(offsetof(ShadowData, filterSettings), 336u);
+  EXPECT_EQ(offsetof(ShadowData, softShadowSettings), 352u);
+  EXPECT_EQ(offsetof(ShadowData, contactShadowSettings), 368u);
 
   EXPECT_EQ(sizeof(ShadowCascadeCullData), 192u);
   EXPECT_EQ(alignof(ShadowCascadeCullData), 16u);
@@ -5000,7 +5002,7 @@ TEST(RenderingConventionTests, ShadowSettingsMapToShadowBufferVectors) {
   using container::gpu::ShadowData;
   using container::gpu::ShadowSettings;
 
-  EXPECT_EQ(sizeof(ShadowSettings), 44u);
+  EXPECT_EQ(sizeof(ShadowSettings), 68u);
   EXPECT_EQ(offsetof(ShadowSettings, normalBiasMinTexels), 0u);
   EXPECT_EQ(offsetof(ShadowSettings, normalBiasMaxTexels), 4u);
   EXPECT_EQ(offsetof(ShadowSettings, slopeBiasScale), 8u);
@@ -5011,7 +5013,17 @@ TEST(RenderingConventionTests, ShadowSettingsMapToShadowBufferVectors) {
   EXPECT_EQ(offsetof(ShadowSettings, maxDepthBias), 28u);
   EXPECT_EQ(offsetof(ShadowSettings, rasterConstantBias), 32u);
   EXPECT_EQ(offsetof(ShadowSettings, rasterSlopeBias), 36u);
-  EXPECT_EQ(offsetof(ShadowSettings, localContactVisibility), 40u);
+  EXPECT_EQ(offsetof(ShadowSettings, directionalPcssLightRadiusDegrees), 40u);
+  EXPECT_EQ(offsetof(ShadowSettings, directionalPcssBlockerSearchRadiusTexels),
+            44u);
+  EXPECT_EQ(offsetof(ShadowSettings, directionalPcssMaxFilterRadiusTexels),
+            48u);
+  EXPECT_EQ(offsetof(ShadowSettings, directionalContactMaxDistance), 52u);
+  EXPECT_EQ(offsetof(ShadowSettings, directionalContactThickness), 56u);
+  EXPECT_EQ(offsetof(ShadowSettings, directionalContactFadeDistance), 60u);
+  EXPECT_EQ(offsetof(ShadowSettings, directionalPcssEnabled), 64u);
+  EXPECT_EQ(offsetof(ShadowSettings, directionalContactVisibility), 65u);
+  EXPECT_EQ(offsetof(ShadowSettings, localContactVisibility), 66u);
 
   const ShadowSettings settings{};
   const ShadowData shadowData{};
@@ -5023,8 +5035,24 @@ TEST(RenderingConventionTests, ShadowSettingsMapToShadowBufferVectors) {
   EXPECT_FLOAT_EQ(shadowData.filterSettings.y, settings.cascadeBlendFraction);
   EXPECT_FLOAT_EQ(shadowData.filterSettings.z, settings.constantDepthBias);
   EXPECT_FLOAT_EQ(shadowData.filterSettings.w, settings.maxDepthBias);
+  EXPECT_FLOAT_EQ(shadowData.softShadowSettings.x, 1.0f);
+  EXPECT_NEAR(shadowData.softShadowSettings.y,
+              container::gpu::kDefaultDirectionalPcssTanLightRadius, 1e-7f);
+  EXPECT_FLOAT_EQ(shadowData.softShadowSettings.z,
+                  settings.directionalPcssBlockerSearchRadiusTexels);
+  EXPECT_FLOAT_EQ(shadowData.softShadowSettings.w,
+                  settings.directionalPcssMaxFilterRadiusTexels);
+  EXPECT_FLOAT_EQ(shadowData.contactShadowSettings.x, 1.0f);
+  EXPECT_FLOAT_EQ(shadowData.contactShadowSettings.y,
+                  settings.directionalContactMaxDistance);
+  EXPECT_FLOAT_EQ(shadowData.contactShadowSettings.z,
+                  settings.directionalContactThickness);
+  EXPECT_FLOAT_EQ(shadowData.contactShadowSettings.w,
+                  settings.directionalContactFadeDistance);
   EXPECT_FLOAT_EQ(settings.rasterConstantBias, -4.0f);
   EXPECT_FLOAT_EQ(settings.rasterSlopeBias, -1.5f);
+  EXPECT_TRUE(settings.directionalPcssEnabled);
+  EXPECT_TRUE(settings.directionalContactVisibility);
   EXPECT_TRUE(settings.localContactVisibility);
 }
 
@@ -5056,6 +5084,23 @@ TEST(RenderingConventionTests, ShadowSettingsFlowFromUiThroughShadowUpload) {
   EXPECT_TRUE(contains(guiManager, "&shadowSettings_.maxDepthBias"));
   EXPECT_TRUE(contains(guiManager, "&shadowSettings_.rasterConstantBias"));
   EXPECT_TRUE(contains(guiManager, "&shadowSettings_.rasterSlopeBias"));
+  EXPECT_TRUE(
+      contains(guiManager, "&shadowSettings_.directionalPcssEnabled"));
+  EXPECT_TRUE(contains(
+      guiManager, "&shadowSettings_.directionalPcssLightRadiusDegrees"));
+  EXPECT_TRUE(contains(
+      guiManager,
+      "&shadowSettings_.directionalPcssBlockerSearchRadiusTexels"));
+  EXPECT_TRUE(contains(
+      guiManager, "&shadowSettings_.directionalPcssMaxFilterRadiusTexels"));
+  EXPECT_TRUE(
+      contains(guiManager, "&shadowSettings_.directionalContactVisibility"));
+  EXPECT_TRUE(
+      contains(guiManager, "&shadowSettings_.directionalContactMaxDistance"));
+  EXPECT_TRUE(
+      contains(guiManager, "&shadowSettings_.directionalContactThickness"));
+  EXPECT_TRUE(
+      contains(guiManager, "&shadowSettings_.directionalContactFadeDistance"));
   EXPECT_TRUE(contains(guiManager, "&shadowSettings_.localContactVisibility"));
 
   EXPECT_TRUE(contains(shadowManager, "shadowData_.biasSettings = glm::vec4("));
@@ -5069,6 +5114,121 @@ TEST(RenderingConventionTests, ShadowSettingsFlowFromUiThroughShadowUpload) {
   EXPECT_TRUE(contains(shadowManager, "shadowSettings.cascadeBlendFraction"));
   EXPECT_TRUE(contains(shadowManager, "shadowSettings.constantDepthBias"));
   EXPECT_TRUE(contains(shadowManager, "shadowSettings.maxDepthBias"));
+  EXPECT_TRUE(contains(shadowManager,
+                       "shadowData_.softShadowSettings = glm::vec4("));
+  EXPECT_TRUE(
+      contains(shadowManager, "shadowSettings.directionalPcssEnabled"));
+  EXPECT_TRUE(contains(
+      shadowManager, "shadowSettings.directionalPcssLightRadiusDegrees"));
+  EXPECT_TRUE(contains(
+      shadowManager, "shadowSettings.directionalPcssBlockerSearchRadiusTexels"));
+  EXPECT_TRUE(contains(
+      shadowManager, "shadowSettings.directionalPcssMaxFilterRadiusTexels"));
+  EXPECT_TRUE(contains(shadowManager,
+                       "shadowData_.contactShadowSettings = glm::vec4("));
+  EXPECT_TRUE(
+      contains(shadowManager, "shadowSettings.directionalContactVisibility"));
+  EXPECT_TRUE(
+      contains(shadowManager, "shadowSettings.directionalContactMaxDistance"));
+  EXPECT_TRUE(
+      contains(shadowManager, "shadowSettings.directionalContactThickness"));
+  EXPECT_TRUE(
+      contains(shadowManager, "shadowSettings.directionalContactFadeDistance"));
+}
+
+TEST(RenderingConventionTests,
+     DirectionalShadowsUsePcssBlockerSearchAndAdaptivePenumbra) {
+  const std::string sceneData =
+      readRepoTextFile("include/Container/utility/SceneData.h");
+  const std::string lightingStructs =
+      readRepoTextFile("shaders/lighting_structs.slang");
+  const std::string shadowCommon =
+      readRepoTextFile("shaders/shadow_common.slang");
+  const std::string shadowManager =
+      readRepoTextFile("src/renderer/shadow/ShadowManager.cpp");
+  const std::string guiManager = readRepoTextFile("src/utility/GuiManager.cpp");
+
+  EXPECT_TRUE(contains(sceneData, "directionalPcssEnabled"));
+  EXPECT_TRUE(contains(sceneData, "directionalPcssLightRadiusDegrees"));
+  EXPECT_TRUE(
+      contains(sceneData, "directionalPcssBlockerSearchRadiusTexels"));
+  EXPECT_TRUE(contains(sceneData, "directionalPcssMaxFilterRadiusTexels"));
+  EXPECT_TRUE(contains(sceneData, "kDefaultDirectionalPcssTanLightRadius"));
+
+  EXPECT_TRUE(contains(lightingStructs, "float4 softShadowSettings"));
+  EXPECT_TRUE(contains(lightingStructs, "float4 contactShadowSettings"));
+  EXPECT_TRUE(contains(shadowCommon, "SHADOW_PCSS_BLOCKER_SAMPLE_COUNT"));
+  EXPECT_TRUE(contains(shadowCommon, "DirectionalShadowPoissonOffset"));
+  EXPECT_TRUE(contains(shadowCommon, "DirectionalPcssAverageBlockerDepth"));
+  EXPECT_TRUE(contains(shadowCommon, "DirectionalPcssSearchRadiusTexels"));
+  EXPECT_TRUE(contains(shadowCommon, "DirectionalPcssFilterRadiusTexels"));
+  EXPECT_TRUE(contains(shadowCommon, "SampleWeightedPcfWithRadius"));
+  EXPECT_TRUE(contains(shadowCommon, "shadowAtlas.Load"));
+  EXPECT_TRUE(contains(shadowCommon, "1.0 - receiverDepth"));
+  EXPECT_TRUE(contains(shadowCommon,
+                       "receiverDistanceFromNearWorld * lightTanRadius"));
+  EXPECT_TRUE(contains(shadowCommon, "avgBlockerDepth - receiverDepth"));
+  EXPECT_TRUE(contains(shadowCommon,
+                       "shadowData.cascades[cascadeIndex].depthRange"));
+  EXPECT_TRUE(contains(shadowCommon,
+                       "shadowData.cascades[cascadeIndex].texelSize"));
+  EXPECT_TRUE(contains(shadowCommon, "shadowData.softShadowSettings.x"));
+  EXPECT_TRUE(contains(shadowCommon, "shadowData.softShadowSettings.y"));
+  EXPECT_TRUE(contains(shadowCommon, "shadowData.softShadowSettings.z"));
+  EXPECT_TRUE(contains(shadowCommon, "shadowData.softShadowSettings.w"));
+
+  EXPECT_TRUE(contains(shadowManager, "std::tan"));
+  EXPECT_TRUE(contains(shadowManager, "directionalPcssLightRadiusDegrees"));
+  EXPECT_TRUE(contains(guiManager, "\"Directional PCSS\""));
+  EXPECT_TRUE(contains(guiManager, "\"Sun Radius Degrees\""));
+  EXPECT_TRUE(contains(guiManager, "\"Blocker Search Texels\""));
+  EXPECT_TRUE(contains(guiManager, "\"Max PCSS Filter Texels\""));
+}
+
+TEST(RenderingConventionTests,
+     DirectionalShadowsUseScreenSpaceContactVisibility) {
+  const std::string sceneData =
+      readRepoTextFile("include/Container/utility/SceneData.h");
+  const std::string lightingStructs =
+      readRepoTextFile("shaders/lighting_structs.slang");
+  const std::string directional =
+      readRepoTextFile("shaders/deferred_directional.slang");
+  const std::string screenSpaceShadow =
+      readRepoTextFile("shaders/screen_space_light_shadow_common.slang");
+  const std::string shadowManager =
+      readRepoTextFile("src/renderer/shadow/ShadowManager.cpp");
+  const std::string guiManager = readRepoTextFile("src/utility/GuiManager.cpp");
+
+  EXPECT_TRUE(contains(sceneData, "directionalContactVisibility"));
+  EXPECT_TRUE(contains(sceneData, "directionalContactMaxDistance"));
+  EXPECT_TRUE(contains(sceneData, "directionalContactThickness"));
+  EXPECT_TRUE(contains(sceneData, "directionalContactFadeDistance"));
+  EXPECT_TRUE(contains(lightingStructs, "float4 contactShadowSettings"));
+  EXPECT_TRUE(contains(shadowManager, "shadowData_.contactShadowSettings"));
+
+  EXPECT_TRUE(contains(
+      screenSpaceShadow, "ScreenSpaceDirectionalContactVisibility"));
+  EXPECT_TRUE(contains(screenSpaceShadow,
+                       "SCREEN_SPACE_DIRECTIONAL_CONTACT_SHADOW_STEPS"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "sampleT * sampleT"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "TryProjectWorldToScenePixel"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "TryReconstructWorldPosition"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "grazingNormalFade"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "coplanarReceiverSurface"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "distanceFromLightRay"));
+  EXPECT_TRUE(contains(screenSpaceShadow, "return saturate(visibility)"));
+
+  EXPECT_TRUE(contains(directional,
+                       "#include \"screen_space_light_shadow_common.slang\""));
+  EXPECT_TRUE(contains(directional, "uShadow.contactShadowSettings.x"));
+  EXPECT_TRUE(
+      contains(directional, "ScreenSpaceDirectionalContactVisibility("));
+  EXPECT_TRUE(contains(directional, "shadowFactor *= contactVisibility"));
+
+  EXPECT_TRUE(contains(guiManager, "\"Directional contact shadows\""));
+  EXPECT_TRUE(contains(guiManager, "\"Contact Max Distance\""));
+  EXPECT_TRUE(contains(guiManager, "\"Contact Thickness\""));
+  EXPECT_TRUE(contains(guiManager, "\"Contact Fade Distance\""));
 }
 
 TEST(RenderingConventionTests, ShadowRasterDepthBiasIsDynamicFrameSetting) {

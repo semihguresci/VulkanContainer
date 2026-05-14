@@ -13,17 +13,25 @@ struct AttachmentImage {
   VmaAllocation allocation{nullptr};
   VkImageView view{VK_NULL_HANDLE};
   VkFormat format{VK_FORMAT_UNDEFINED};
+  VkSampleCountFlagBits samples{VK_SAMPLE_COUNT_1_BIT};
 };
 
 struct FrameResources {
   AttachmentImage albedo{};
+  AttachmentImage albedoMsaa{};
   AttachmentImage normal{};
+  AttachmentImage normalMsaa{};
   AttachmentImage material{};
+  AttachmentImage materialMsaa{};
   AttachmentImage emissive{};
+  AttachmentImage emissiveMsaa{};
   AttachmentImage specular{};
+  AttachmentImage specularMsaa{};
   AttachmentImage pickId{};
+  AttachmentImage pickIdMsaa{};
   AttachmentImage pickDepth{};
   AttachmentImage depthStencil{};
+  AttachmentImage depthStencilMsaa{};
   VkImageView     depthSamplingView{VK_NULL_HANDLE};
   AttachmentImage sceneColor{};
   AttachmentImage oitHeadPointers{};

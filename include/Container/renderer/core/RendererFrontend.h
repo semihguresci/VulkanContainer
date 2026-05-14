@@ -192,6 +192,9 @@ private:
   // ----------------------------------------------------------
   RenderResources resources_{};
   PushConstantBlock pushConstants_{};
+  VkSampleCountFlagBits msaaSampleCount_{VK_SAMPLE_COUNT_1_BIT};
+  std::vector<uint32_t> supportedMsaaSamples_{1u};
+  std::optional<VkSampleCountFlagBits> pendingMsaaSampleCount_{};
 
   // GPU buffers backing the camera UBO and per-object SSBO.
   struct SceneBufferState {
@@ -363,6 +366,8 @@ private:
   // --------------------------------------------------
   void createRenderPasses();
   void createGraphicsPipelines();
+  void destroyGraphicsPipelines();
+  void recreateMsaaResources(VkSampleCountFlagBits sampleCount);
   void createCamera();
   void syncCameraSelectionPivotOverride();
   void initializeScene();

@@ -1786,6 +1786,21 @@ void GuiManager::updateSwapchainImageCount(uint32_t imageCount) {
   ImGui_ImplVulkan_SetMinImageCount(imageCount);
 }
 
+void GuiManager::setMsaaSampleState(std::span<const uint32_t> options,
+                                    uint32_t activeSamples) {
+  msaaSampleOptions_.assign(options.begin(), options.end());
+  if (msaaSampleOptions_.empty()) {
+    msaaSampleOptions_.push_back(1u);
+  }
+  msaaSamples_ = activeSamples == 0u ? 1u : activeSamples;
+}
+
+std::optional<uint32_t> GuiManager::consumeMsaaSampleChange() {
+  auto requested = pendingMsaaSamples_;
+  pendingMsaaSamples_.reset();
+  return requested;
+}
+
 void GuiManager::startFrame() {
   if (!initialized_)
     return;
@@ -2413,6 +2428,31 @@ void GuiManager::drawSceneControls(
                    kSceneViewportModeLabels,
                    IM_ARRAYSIZE(kSceneViewportModeLabels))) {
     sceneViewportMode_ = static_cast<SceneViewportMode>(sceneViewportMode);
+  }
+  std::vector<std::string> msaaLabels;
+  std::vector<const char *> msaaLabelPtrs;
+  msaaLabels.reserve(msaaSampleOptions_.size());
+  msaaLabelPtrs.reserve(msaaSampleOptions_.size());
+  int msaaIndex = 0;
+  for (size_t i = 0; i < msaaSampleOptions_.size(); ++i) {
+    if (msaaSampleOptions_[i] == msaaSamples_) {
+      msaaIndex = static_cast<int>(i);
+    }
+    msaaLabels.push_back(std::to_string(msaaSampleOptions_[i]) + "x");
+  }
+  for (const std::string &label : msaaLabels) {
+    msaaLabelPtrs.push_back(label.c_str());
+  }
+  if (!msaaLabelPtrs.empty() &&
+      ImGui::Combo("MSAA", &msaaIndex, msaaLabelPtrs.data(),
+                   static_cast<int>(msaaLabelPtrs.size()))) {
+    const uint32_t requestedSamples =
+        msaaSampleOptions_[static_cast<size_t>(msaaIndex)];
+    if (requestedSamples != msaaSamples_) {
+      pendingMsaaSamples_ = requestedSamples;
+      statusMessage_ = "MSAA change pending: " +
+                       std::to_string(requestedSamples) + "x";
+    }
   }
 
   ImGui::BeginDisabled(!editorOverlaysEnabled());
@@ -5684,6 +5724,39 @@ void GuiManager::drawSceneControls(
     ImGui::SliderFloat("Filter Radius Texels",
                        &shadowSettings_.filterRadiusTexels, 0.25f, 3.0f,
                        "%.2f");
+    ImGui::Checkbox("Directional PCSS",
+                    &shadowSettings_.directionalPcssEnabled);
+    if (shadowSettings_.directionalPcssEnabled) {
+      ImGui::SliderFloat("Sun Radius Degrees",
+                         &shadowSettings_.directionalPcssLightRadiusDegrees,
+                         0.0f, 3.0f, "%.2f");
+      ImGui::SliderFloat(
+          "Blocker Search Texels",
+          &shadowSettings_.directionalPcssBlockerSearchRadiusTexels, 1.0f,
+          32.0f, "%.1f");
+      ImGui::SliderFloat("Max PCSS Filter Texels",
+                         &shadowSettings_.directionalPcssMaxFilterRadiusTexels,
+                         shadowSettings_.filterRadiusTexels, 32.0f, "%.1f");
+      shadowSettings_.directionalPcssMaxFilterRadiusTexels =
+          std::max(shadowSettings_.directionalPcssMaxFilterRadiusTexels,
+                   shadowSettings_.filterRadiusTexels);
+    }
+    ImGui::Checkbox("Directional contact shadows",
+                    &shadowSettings_.directionalContactVisibility);
+    if (shadowSettings_.directionalContactVisibility) {
+      ImGui::SliderFloat("Contact Max Distance",
+                         &shadowSettings_.directionalContactMaxDistance,
+                         0.0f, 5.0f, "%.2f");
+      ImGui::SliderFloat("Contact Thickness",
+                         &shadowSettings_.directionalContactThickness, 0.0f,
+                         0.5f, "%.3f");
+      ImGui::SliderFloat("Contact Fade Distance",
+                         &shadowSettings_.directionalContactFadeDistance,
+                         0.05f, 5.0f, "%.2f");
+      shadowSettings_.directionalContactFadeDistance =
+          std::max(shadowSettings_.directionalContactFadeDistance,
+                   shadowSettings_.directionalContactThickness);
+    }
     ImGui::SliderFloat("Cascade Blend", &shadowSettings_.cascadeBlendFraction,
                        0.0f, 0.45f, "%.2f");
     ImGui::SliderFloat("Constant Depth Bias",

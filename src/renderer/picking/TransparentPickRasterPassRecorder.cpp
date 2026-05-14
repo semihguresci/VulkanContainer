@@ -1,6 +1,7 @@
 #include "Container/renderer/picking/TransparentPickRasterPassRecorder.h"
 
 #include "Container/renderer/picking/TransparentPickDepthCopyRecorder.h"
+#include "Container/renderer/scene/SceneOpaqueDrawRecorder.h"
 #include "Container/renderer/scene/SceneViewport.h"
 
 #include <array>
@@ -48,6 +49,10 @@ bool recordTransparentPickRasterPassCommands(
   info.framebuffer = inputs.framebuffer;
   info.renderArea.offset = {0, 0};
   info.renderArea.extent = inputs.extent;
+  VkClearValue pickClear{};
+  pickClear.color = {{0u, 0u, 0u, 0u}};
+  info.clearValueCount = 1u;
+  info.pClearValues = &pickClear;
 
   vkCmdBeginRenderPass(cmd, &info, VK_SUBPASS_CONTENTS_INLINE);
   recordSceneViewportAndScissor(cmd, inputs.extent);
@@ -77,6 +82,11 @@ bool recordTransparentPickFramePassCommands(
   const bool sceneRecordReady = transparentPickStateReady &&
                                 inputs.scenePassReady &&
                                 hasTransparentPickGeometry(inputs.scene);
+  const SceneOpaqueDrawPlan opaquePickPlan =
+      sceneRecordReady
+          ? buildSceneOpaqueDrawPlan({.gpuIndirectAvailable = false,
+                                      .draws = inputs.sceneOpaqueDraws})
+          : SceneOpaqueDrawPlan{};
   const SceneTransparentDrawPlan transparentPlan =
       sceneRecordReady ? buildSceneTransparentDrawPlan(inputs.sceneDraws)
                        : SceneTransparentDrawPlan{};
@@ -96,9 +106,20 @@ bool recordTransparentPickFramePassCommands(
            .pipelines = {.singleSided = inputs.pipelines.primary},
            .pushConstants = &pushConstants,
            .semanticColorMode = inputs.bimSemanticColorMode});
+  const BimSurfacePassPlan bimOpaquePickPlan =
+      buildBimSurfaceFramePassPlan(
+          {.kind = BimSurfacePassKind::GBuffer,
+           .passReady = transparentPickStateReady && inputs.bimPassReady &&
+                        hasTransparentPickGeometry(inputs.bim),
+           .draws = inputs.bimOpaqueDraws,
+           .geometry = bimSurfacePickGeometry(bimDescriptorSets, inputs.bim),
+           .pipelines = {.singleSided = inputs.pipelines.primary},
+           .pushConstants = &pushConstants,
+           .semanticColorMode = inputs.bimSemanticColorMode});
 
-  if (transparentPlan.routeCount == 0u && !bimTransparentPickPlan.active &&
-      !inputs.extraPassWorkActive) {
+  if (opaquePickPlan.cpuRouteCount == 0u &&
+      transparentPlan.routeCount == 0u && !bimOpaquePickPlan.active &&
+      !bimTransparentPickPlan.active && !inputs.extraPassWorkActive) {
     return false;
   }
 
@@ -116,7 +137,9 @@ bool recordTransparentPickFramePassCommands(
             .renderPass = inputs.renderPass,
             .framebuffer = inputs.framebuffer,
             .extent = inputs.extent,
-            .pass = {.scenePlan = &transparentPlan,
+            .pass = {.sceneOpaquePlan = &opaquePickPlan,
+                     .scenePlan = &transparentPlan,
+                     .bimOpaquePlan = &bimOpaquePickPlan,
                      .bimPlan = &bimTransparentPickPlan,
                      .scene = inputs.scene,
                      .bim = inputs.bim,

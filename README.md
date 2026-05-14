@@ -54,6 +54,8 @@ cmake --build out/build/windows-release --target download_usd_models --config Re
   commands, helper scripts, and known test status.
 - [Development guide](docs/development-guide.md) - renderer conventions,
   shader/C++ layout contracts, and commenting guidance.
+- [MSAA](docs/msaa.md) - deferred raster multisampling configuration,
+  render-pass resolves, and render graph boundaries.
 - [Renderer telemetry](docs/renderer-telemetry.md) - live frame timing,
   GPU query backends, render graph metrics, and validation commands.
 - [Coordinate conventions](docs/coordinate-conventions.md) - source of truth

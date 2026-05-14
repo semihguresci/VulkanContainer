@@ -41,6 +41,7 @@ struct AppConfig {
   bool enableValidationLayers{false};
   bool enableGui{true};
   bool windowVisible{true};
+  uint32_t msaaSamples{1};
   std::string renderTechnique{"deferred-raster"};
   std::string displayModeOverride{};
   std::string modelPath{std::string(kDefaultModelRelativePath)};

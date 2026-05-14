@@ -8,7 +8,7 @@ static const uint MAX_AREA_LIGHTS = 256u;
 static const uint TILE_SIZE = 16u;
 static const uint CLUSTER_DEPTH_SLICES = 16u;
 static const uint MAX_LIGHTS_PER_TILE = 128u;
-static const uint LOCAL_SHADOW_MAP_RESOLUTION = 1024u;
+static const uint LOCAL_SHADOW_MAP_RESOLUTION = 2048u;
 static const uint MAX_SHADOWED_LOCAL_LIGHT_LAYERS = 24u;
 static const uint LOCAL_SHADOW_POINT_FACE_COUNT = 6u;
 static const uint LOCAL_SHADOW_SPOT_LAYER_COUNT = 1u;
@@ -200,6 +200,12 @@ struct ShadowBuffer
     // x = PCF radius in texels, y = cascade blend fraction,
     // z = constant depth bias, w = max depth bias.
     float4 filterSettings;
+    // x = directional PCSS enabled, y = tan(light angular radius),
+    // z = blocker-search radius in texels, w = max adaptive filter radius.
+    float4 softShadowSettings;
+    // x = directional contact enabled, y = max ray distance, z = ray thickness,
+    // w = fade distance; distances are in world units.
+    float4 contactShadowSettings;
 };
 
 struct LocalShadowLayerData

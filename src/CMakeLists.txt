@@ -20,6 +20,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RenderPassManager.cpp
     renderer/core/CommandBufferScopeRecorder.cpp
     renderer/core/FrameRecorder.cpp
+    renderer/core/RendererMsaa.cpp
     renderer/core/RendererFrontend.cpp
     renderer/core/RendererTelemetry.cpp
     renderer/core/RenderGraph.cpp

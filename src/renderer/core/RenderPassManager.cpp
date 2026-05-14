@@ -1,6 +1,9 @@
 #include "Container/renderer/core/RenderPassManager.h"
 
+#include "Container/renderer/core/RendererMsaa.h"
+
 #include <array>
+#include <cstddef>
 #include <initializer_list>
 #include <stdexcept>
 #include <utility>
@@ -32,6 +35,72 @@ VkSubpassDependency MakeDependency(uint32_t srcSubpass,
   dependency.dstAccessMask = dstAccess;
   dependency.dependencyFlags = flags;
   return dependency;
+}
+
+VkAttachmentDescription2 MakeAttachmentDescription2(
+    const VkAttachmentDescription& attachment) {
+  VkAttachmentDescription2 result{
+      VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2};
+  result.flags = attachment.flags;
+  result.format = attachment.format;
+  result.samples = attachment.samples;
+  result.loadOp = attachment.loadOp;
+  result.storeOp = attachment.storeOp;
+  result.stencilLoadOp = attachment.stencilLoadOp;
+  result.stencilStoreOp = attachment.stencilStoreOp;
+  result.initialLayout = attachment.initialLayout;
+  result.finalLayout = attachment.finalLayout;
+  return result;
+}
+
+VkAttachmentReference2 MakeAttachmentReference2(
+    const VkAttachmentReference& reference) {
+  VkAttachmentReference2 result{VK_STRUCTURE_TYPE_ATTACHMENT_REFERENCE_2};
+  result.attachment = reference.attachment;
+  result.layout = reference.layout;
+  return result;
+}
+
+VkSubpassDependency2 MakeDependency2(const VkSubpassDependency& dependency) {
+  VkSubpassDependency2 result{VK_STRUCTURE_TYPE_SUBPASS_DEPENDENCY_2};
+  result.srcSubpass = dependency.srcSubpass;
+  result.dstSubpass = dependency.dstSubpass;
+  result.srcStageMask = dependency.srcStageMask;
+  result.dstStageMask = dependency.dstStageMask;
+  result.srcAccessMask = dependency.srcAccessMask;
+  result.dstAccessMask = dependency.dstAccessMask;
+  result.dependencyFlags = dependency.dependencyFlags;
+  return result;
+}
+
+template <std::size_t N>
+std::array<VkAttachmentDescription2, N> MakeAttachmentDescriptions2(
+    const std::array<VkAttachmentDescription, N>& attachments) {
+  std::array<VkAttachmentDescription2, N> result{};
+  for (std::size_t i = 0; i < N; ++i) {
+    result[i] = MakeAttachmentDescription2(attachments[i]);
+  }
+  return result;
+}
+
+template <std::size_t N>
+std::array<VkAttachmentReference2, N> MakeAttachmentReferences2(
+    const std::array<VkAttachmentReference, N>& references) {
+  std::array<VkAttachmentReference2, N> result{};
+  for (std::size_t i = 0; i < N; ++i) {
+    result[i] = MakeAttachmentReference2(references[i]);
+  }
+  return result;
+}
+
+template <std::size_t N>
+std::array<VkSubpassDependency2, N> MakeDependencies2(
+    const std::array<VkSubpassDependency, N>& dependencies) {
+  std::array<VkSubpassDependency2, N> result{};
+  for (std::size_t i = 0; i < N; ++i) {
+    result[i] = MakeDependency2(dependencies[i]);
+  }
+  return result;
 }
 
 }  // namespace
@@ -74,8 +143,13 @@ void RenderPassManager::create(VkFormat swapchainFormat,
                                VkFormat materialFormat,
                                VkFormat emissiveFormat,
                                VkFormat specularFormat,
-                               VkFormat pickIdFormat) {
+                               VkFormat pickIdFormat,
+                               VkSampleCountFlagBits msaaSamples) {
   VkDevice dev = device_->device();
+  const bool useMsaa = msaaSamples != VK_SAMPLE_COUNT_1_BIT;
+  const VkResolveModeFlagBits depthResolveMode = preferredDepthResolveMode(
+      queryRendererMsaaDeviceSupport(device_->physicalDevice())
+          .depthResolveModes);
 
   // ---- Depth Prepass ----
   VkAttachmentDescription ds{};
@@ -109,25 +183,71 @@ void RenderPassManager::create(VkFormat swapchainFormat,
 
   VkRenderPassCreateInfo rpInfo{};
   rpInfo.sType           = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
-  rpInfo.attachmentCount = 1;
-  rpInfo.pAttachments    = &ds;
   rpInfo.subpassCount    = 1;
-  rpInfo.pSubpasses      = &depthSubpass;
   rpInfo.dependencyCount = static_cast<uint32_t>(depthDeps.size());
   rpInfo.pDependencies   = depthDeps.data();
-  if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.depthPrepass) != VK_SUCCESS)
-    throw std::runtime_error("failed to create depth prepass render pass");
+  std::array<VkAttachmentDescription, 2> depthAttachments{};
+  VkAttachmentReference depthResolveRef{
+      1, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  VkSubpassDescriptionDepthStencilResolve depthResolve{
+      VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE};
+  if (useMsaa) {
+    depthAttachments[0] = ds;
+    depthAttachments[0].samples = msaaSamples;
+    depthAttachments[1] = ds;
+    depthAttachments[1].samples = VK_SAMPLE_COUNT_1_BIT;
+    depthAttachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    depthAttachments[1].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    depthResolve.depthResolveMode = depthResolveMode;
+    depthResolve.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+    auto depthAttachments2 = MakeAttachmentDescriptions2(depthAttachments);
+    auto depthDeps2 = MakeDependencies2(depthDeps);
+    const VkAttachmentReference2 dsRef2 = MakeAttachmentReference2(dsRef);
+    const VkAttachmentReference2 depthResolveRef2 =
+        MakeAttachmentReference2(depthResolveRef);
+    depthResolve.pDepthStencilResolveAttachment = &depthResolveRef2;
+    VkSubpassDescription2 depthSubpass2{
+        VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2};
+    depthSubpass2.pNext = &depthResolve;
+    depthSubpass2.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    depthSubpass2.pDepthStencilAttachment = &dsRef2;
+    VkRenderPassCreateInfo2 rpInfo2{
+        VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2};
+    rpInfo2.attachmentCount =
+        static_cast<uint32_t>(depthAttachments2.size());
+    rpInfo2.pAttachments = depthAttachments2.data();
+    rpInfo2.subpassCount = 1;
+    rpInfo2.pSubpasses = &depthSubpass2;
+    rpInfo2.dependencyCount = static_cast<uint32_t>(depthDeps2.size());
+    rpInfo2.pDependencies = depthDeps2.data();
+    if (vkCreateRenderPass2(dev, &rpInfo2, nullptr,
+                            &passes_.depthPrepass) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create depth prepass render pass");
+    }
+  } else {
+    rpInfo.attachmentCount = 1;
+    rpInfo.pAttachments = &ds;
+    rpInfo.pSubpasses = &depthSubpass;
+    if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.depthPrepass) !=
+        VK_SUCCESS) {
+      throw std::runtime_error("failed to create depth prepass render pass");
+    }
+  }
 
   // ---- BIM Depth Prepass ----
   // BIM geometry extends the same depth buffer after the regular scene depth
   // prepass. Loading depth keeps existing scene occluders intact while allowing
   // BIM surfaces to participate in Hi-Z, GTAO, and deferred lighting.
   VkAttachmentDescription bimDs = ds;
+  if (useMsaa) {
+    bimDs.samples = msaaSamples;
+  }
   bimDs.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
   bimDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
   bimDs.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
   VkSubpassDescription bimDepthSubpass = depthSubpass;
+  bimDepthSubpass.pDepthStencilAttachment = &dsRef;
   std::array<VkSubpassDependency, 2> bimDepthDeps{};
   bimDepthDeps[0] = MakeDependency(
       VK_SUBPASS_EXTERNAL, 0,
@@ -145,40 +265,128 @@ void RenderPassManager::create(VkFormat swapchainFormat,
           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
       kFramebufferLocalDependency);
 
-  rpInfo.attachmentCount = 1;
-  rpInfo.pAttachments = &bimDs;
-  rpInfo.pSubpasses = &bimDepthSubpass;
-  rpInfo.dependencyCount = static_cast<uint32_t>(bimDepthDeps.size());
-  rpInfo.pDependencies = bimDepthDeps.data();
-  if (vkCreateRenderPass(dev, &rpInfo, nullptr,
-                         &passes_.bimDepthPrepass) != VK_SUCCESS) {
-    throw std::runtime_error("failed to create BIM depth prepass render pass");
+  std::array<VkAttachmentDescription, 2> bimDepthAttachments{};
+  VkSubpassDescriptionDepthStencilResolve bimDepthResolve{
+      VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE};
+  if (useMsaa) {
+    bimDepthAttachments[0] = bimDs;
+    bimDepthAttachments[1] = ds;
+    bimDepthAttachments[1].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+    bimDepthAttachments[1].initialLayout =
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    bimDepthAttachments[1].finalLayout =
+        VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    bimDepthResolve.depthResolveMode = depthResolveMode;
+    bimDepthResolve.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+    auto bimDepthAttachments2 =
+        MakeAttachmentDescriptions2(bimDepthAttachments);
+    auto bimDepthDeps2 = MakeDependencies2(bimDepthDeps);
+    const VkAttachmentReference2 dsRef2 = MakeAttachmentReference2(dsRef);
+    const VkAttachmentReference2 depthResolveRef2 =
+        MakeAttachmentReference2(depthResolveRef);
+    bimDepthResolve.pDepthStencilResolveAttachment = &depthResolveRef2;
+    VkSubpassDescription2 bimDepthSubpass2{
+        VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2};
+    bimDepthSubpass2.pNext = &bimDepthResolve;
+    bimDepthSubpass2.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    bimDepthSubpass2.pDepthStencilAttachment = &dsRef2;
+    VkRenderPassCreateInfo2 rpInfo2{
+        VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2};
+    rpInfo2.attachmentCount =
+        static_cast<uint32_t>(bimDepthAttachments2.size());
+    rpInfo2.pAttachments = bimDepthAttachments2.data();
+    rpInfo2.subpassCount = 1;
+    rpInfo2.pSubpasses = &bimDepthSubpass2;
+    rpInfo2.dependencyCount = static_cast<uint32_t>(bimDepthDeps2.size());
+    rpInfo2.pDependencies = bimDepthDeps2.data();
+    if (vkCreateRenderPass2(dev, &rpInfo2, nullptr,
+                            &passes_.bimDepthPrepass) != VK_SUCCESS) {
+      throw std::runtime_error(
+          "failed to create BIM depth prepass render pass");
+    }
+  } else {
+    rpInfo.attachmentCount = 1;
+    rpInfo.pAttachments = &bimDs;
+    rpInfo.pSubpasses = &bimDepthSubpass;
+    rpInfo.dependencyCount = static_cast<uint32_t>(bimDepthDeps.size());
+    rpInfo.pDependencies = bimDepthDeps.data();
+    if (vkCreateRenderPass(dev, &rpInfo, nullptr,
+                           &passes_.bimDepthPrepass) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create BIM depth prepass render pass");
+    }
   }
 
   // ---- GBuffer ----
-  auto makeColor = [](VkFormat fmt) {
+  auto makeColor = [](VkFormat fmt, VkSampleCountFlagBits samples,
+                      VkImageLayout finalLayout) {
     VkAttachmentDescription a{};
     a.format         = fmt;
-    a.samples        = VK_SAMPLE_COUNT_1_BIT;
+    a.samples        = samples;
     a.loadOp         = VK_ATTACHMENT_LOAD_OP_CLEAR;
     a.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
     a.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
     a.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
-    a.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    a.finalLayout    = finalLayout;
     return a;
   };
 
   VkAttachmentDescription gbDs = ds;
+  if (useMsaa) {
+    gbDs.samples = msaaSamples;
+  }
   gbDs.loadOp        = VK_ATTACHMENT_LOAD_OP_LOAD;
   gbDs.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   gbDs.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
   gbDs.initialLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
   std::array<VkAttachmentDescription, 7> gbAttachments = {
-      makeColor(albedoFormat), makeColor(normalFormat), makeColor(materialFormat),
-      makeColor(emissiveFormat), makeColor(specularFormat),
-      makeColor(pickIdFormat), gbDs};
+      makeColor(albedoFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(normalFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(materialFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(emissiveFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(specularFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(pickIdFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      gbDs};
+  std::array<VkAttachmentDescription, 13> gbMsaaAttachments = {{
+      makeColor(albedoFormat, msaaSamples,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeColor(normalFormat, msaaSamples,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeColor(materialFormat, msaaSamples,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeColor(emissiveFormat, msaaSamples,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeColor(specularFormat, msaaSamples,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeColor(pickIdFormat, msaaSamples,
+                VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      gbDs,
+      makeColor(albedoFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(normalFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(materialFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(emissiveFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeColor(specularFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      ds,
+  }};
+  for (uint32_t i = 7u; i <= 12u; ++i) {
+    gbMsaaAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  }
+  gbMsaaAttachments[12].initialLayout =
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  gbMsaaAttachments[12].finalLayout =
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
   std::array<VkAttachmentReference, 6> colorRefs = {{
       {0, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
@@ -189,6 +397,18 @@ void RenderPassManager::create(VkFormat swapchainFormat,
       {5, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
   }};
   VkAttachmentReference gbDsRef{6, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  std::array<VkAttachmentReference, 6> colorResolveRefs = {{
+      {7, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+      {8, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+      {9, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+      {10, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+      {11, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
+      {VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_UNDEFINED},
+  }};
+  VkAttachmentReference gbDepthResolveRef{
+      12, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
+  VkSubpassDescriptionDepthStencilResolve gbDepthResolve{
+      VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE};
 
   VkSubpassDescription gbSubpass{};
   gbSubpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
@@ -221,28 +441,67 @@ void RenderPassManager::create(VkFormat swapchainFormat,
           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
       VK_ACCESS_SHADER_READ_BIT);
 
-  rpInfo.attachmentCount = static_cast<uint32_t>(gbAttachments.size());
-  rpInfo.pAttachments    = gbAttachments.data();
-  rpInfo.pSubpasses      = &gbSubpass;
-  rpInfo.dependencyCount = static_cast<uint32_t>(gbDeps.size());
-  rpInfo.pDependencies   = gbDeps.data();
-  if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.gBuffer) != VK_SUCCESS)
-    throw std::runtime_error("failed to create GBuffer render pass");
+  if (useMsaa) {
+    auto gbAttachments2 = MakeAttachmentDescriptions2(gbMsaaAttachments);
+    auto colorRefs2 = MakeAttachmentReferences2(colorRefs);
+    auto colorResolveRefs2 = MakeAttachmentReferences2(colorResolveRefs);
+    auto gbDeps2 = MakeDependencies2(gbDeps);
+    const VkAttachmentReference2 gbDsRef2 =
+        MakeAttachmentReference2(gbDsRef);
+    const VkAttachmentReference2 gbDepthResolveRef2 =
+        MakeAttachmentReference2(gbDepthResolveRef);
+    gbDepthResolve.depthResolveMode = depthResolveMode;
+    gbDepthResolve.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+    gbDepthResolve.pDepthStencilResolveAttachment = &gbDepthResolveRef2;
+    VkSubpassDescription2 gbSubpass2{
+        VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2};
+    gbSubpass2.pNext = &gbDepthResolve;
+    gbSubpass2.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    gbSubpass2.colorAttachmentCount =
+        static_cast<uint32_t>(colorRefs2.size());
+    gbSubpass2.pColorAttachments = colorRefs2.data();
+    gbSubpass2.pResolveAttachments = colorResolveRefs2.data();
+    gbSubpass2.pDepthStencilAttachment = &gbDsRef2;
+    VkRenderPassCreateInfo2 rpInfo2{
+        VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2};
+    rpInfo2.attachmentCount = static_cast<uint32_t>(gbAttachments2.size());
+    rpInfo2.pAttachments = gbAttachments2.data();
+    rpInfo2.subpassCount = 1;
+    rpInfo2.pSubpasses = &gbSubpass2;
+    rpInfo2.dependencyCount = static_cast<uint32_t>(gbDeps2.size());
+    rpInfo2.pDependencies = gbDeps2.data();
+    if (vkCreateRenderPass2(dev, &rpInfo2, nullptr, &passes_.gBuffer) !=
+        VK_SUCCESS) {
+      throw std::runtime_error("failed to create GBuffer render pass");
+    }
+  } else {
+    rpInfo.attachmentCount = static_cast<uint32_t>(gbAttachments.size());
+    rpInfo.pAttachments = gbAttachments.data();
+    rpInfo.pSubpasses = &gbSubpass;
+    rpInfo.dependencyCount = static_cast<uint32_t>(gbDeps.size());
+    rpInfo.pDependencies = gbDeps.data();
+    if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.gBuffer) !=
+        VK_SUCCESS) {
+      throw std::runtime_error("failed to create GBuffer render pass");
+    }
+  }
 
   // ---- BIM GBuffer ----
   // This pass appends BIM geometry into the deferred attachments. Color
   // attachments are loaded from the regular G-buffer and stored back for the
   // lighting pass.
-  auto makeLoadedColor = [](VkFormat fmt) {
+  auto makeLoadedColor = [](VkFormat fmt, VkSampleCountFlagBits samples,
+                            VkImageLayout initialLayout,
+                            VkImageLayout finalLayout) {
     VkAttachmentDescription a{};
     a.format         = fmt;
-    a.samples        = VK_SAMPLE_COUNT_1_BIT;
+    a.samples        = samples;
     a.loadOp         = VK_ATTACHMENT_LOAD_OP_LOAD;
     a.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
     a.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
     a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-    a.initialLayout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-    a.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    a.initialLayout  = initialLayout;
+    a.finalLayout    = finalLayout;
     return a;
   };
 
@@ -252,9 +511,69 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   bimGbDs.finalLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
   std::array<VkAttachmentDescription, 7> bimGbAttachments = {
-      makeLoadedColor(albedoFormat), makeLoadedColor(normalFormat),
-      makeLoadedColor(materialFormat), makeLoadedColor(emissiveFormat),
-      makeLoadedColor(specularFormat), makeLoadedColor(pickIdFormat), bimGbDs};
+      makeLoadedColor(albedoFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(normalFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(materialFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(emissiveFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(specularFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(pickIdFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      bimGbDs};
+  std::array<VkAttachmentDescription, 13> bimGbMsaaAttachments = {{
+      makeLoadedColor(albedoFormat, msaaSamples,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeLoadedColor(normalFormat, msaaSamples,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeLoadedColor(materialFormat, msaaSamples,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeLoadedColor(emissiveFormat, msaaSamples,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeLoadedColor(specularFormat, msaaSamples,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      makeLoadedColor(pickIdFormat, msaaSamples,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+                      VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
+      bimGbDs,
+      makeLoadedColor(albedoFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(normalFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(materialFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(emissiveFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      makeLoadedColor(specularFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
+      ds,
+  }};
+  for (uint32_t i = 7u; i <= 12u; ++i) {
+    bimGbMsaaAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
+  }
+  bimGbMsaaAttachments[12].initialLayout =
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  bimGbMsaaAttachments[12].finalLayout =
+      VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
 
   std::array<VkSubpassDependency, 2> bimGbDeps{};
   bimGbDeps[0] = MakeDependency(
@@ -276,14 +595,55 @@ void RenderPassManager::create(VkFormat swapchainFormat,
           VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT,
       VK_ACCESS_SHADER_READ_BIT);
 
-  rpInfo.attachmentCount = static_cast<uint32_t>(bimGbAttachments.size());
-  rpInfo.pAttachments = bimGbAttachments.data();
-  rpInfo.pSubpasses = &gbSubpass;
-  rpInfo.dependencyCount = static_cast<uint32_t>(bimGbDeps.size());
-  rpInfo.pDependencies = bimGbDeps.data();
-  if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.bimGBuffer) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("failed to create BIM GBuffer render pass");
+  if (useMsaa) {
+    auto bimGbAttachments2 =
+        MakeAttachmentDescriptions2(bimGbMsaaAttachments);
+    auto colorRefs2 = MakeAttachmentReferences2(colorRefs);
+    auto colorResolveRefs2 = MakeAttachmentReferences2(colorResolveRefs);
+    auto bimGbDeps2 = MakeDependencies2(bimGbDeps);
+    const VkAttachmentReference2 gbDsRef2 =
+        MakeAttachmentReference2(gbDsRef);
+    const VkAttachmentReference2 gbDepthResolveRef2 =
+        MakeAttachmentReference2(gbDepthResolveRef);
+    VkSubpassDescriptionDepthStencilResolve bimGbDepthResolve{
+        VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_DEPTH_STENCIL_RESOLVE};
+    bimGbDepthResolve.depthResolveMode = depthResolveMode;
+    bimGbDepthResolve.stencilResolveMode = VK_RESOLVE_MODE_NONE;
+    bimGbDepthResolve.pDepthStencilResolveAttachment =
+        &gbDepthResolveRef2;
+    VkSubpassDescription2 bimGbSubpass2{
+        VK_STRUCTURE_TYPE_SUBPASS_DESCRIPTION_2};
+    bimGbSubpass2.pNext = &bimGbDepthResolve;
+    bimGbSubpass2.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
+    bimGbSubpass2.colorAttachmentCount =
+        static_cast<uint32_t>(colorRefs2.size());
+    bimGbSubpass2.pColorAttachments = colorRefs2.data();
+    bimGbSubpass2.pResolveAttachments = colorResolveRefs2.data();
+    bimGbSubpass2.pDepthStencilAttachment = &gbDsRef2;
+    VkRenderPassCreateInfo2 rpInfo2{
+        VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO_2};
+    rpInfo2.attachmentCount =
+        static_cast<uint32_t>(bimGbAttachments2.size());
+    rpInfo2.pAttachments = bimGbAttachments2.data();
+    rpInfo2.subpassCount = 1;
+    rpInfo2.pSubpasses = &bimGbSubpass2;
+    rpInfo2.dependencyCount = static_cast<uint32_t>(bimGbDeps2.size());
+    rpInfo2.pDependencies = bimGbDeps2.data();
+    if (vkCreateRenderPass2(dev, &rpInfo2, nullptr,
+                            &passes_.bimGBuffer) != VK_SUCCESS) {
+      throw std::runtime_error("failed to create BIM GBuffer render pass");
+    }
+  } else {
+    rpInfo.attachmentCount =
+        static_cast<uint32_t>(bimGbAttachments.size());
+    rpInfo.pAttachments = bimGbAttachments.data();
+    rpInfo.pSubpasses = &gbSubpass;
+    rpInfo.dependencyCount = static_cast<uint32_t>(bimGbDeps.size());
+    rpInfo.pDependencies = bimGbDeps.data();
+    if (vkCreateRenderPass(dev, &rpInfo, nullptr, &passes_.bimGBuffer) !=
+        VK_SUCCESS) {
+      throw std::runtime_error("failed to create BIM GBuffer render pass");
+    }
   }
 
   // ---- Transparent Picking ----
@@ -294,11 +654,11 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   VkAttachmentDescription pickColor{};
   pickColor.format = pickIdFormat;
   pickColor.samples = VK_SAMPLE_COUNT_1_BIT;
-  pickColor.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+  pickColor.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
   pickColor.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
   pickColor.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   pickColor.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-  pickColor.initialLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  pickColor.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   pickColor.finalLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
   VkAttachmentDescription pickDepth = ds;

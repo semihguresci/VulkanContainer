@@ -202,6 +202,11 @@ inline constexpr uint32_t kLocalShadowAreaRefPackedCount =
 inline constexpr float kLocalShadowTypePoint = 0.0f;
 inline constexpr float kLocalShadowTypeSpot = 1.0f;
 inline constexpr float kLocalShadowTypeArea = 2.0f;
+inline constexpr float kDefaultDirectionalPcssLightRadiusDegrees = 0.27f;
+inline constexpr float kDefaultDirectionalPcssTanLightRadius = 0.004712424f;
+inline constexpr float kDefaultDirectionalContactMaxDistance = 1.5f;
+inline constexpr float kDefaultDirectionalContactThickness = 0.08f;
+inline constexpr float kDefaultDirectionalContactFadeDistance = 1.25f;
 
 struct LightingSettings {
   uint32_t preset{0};
@@ -235,6 +240,15 @@ struct ShadowSettings {
   float maxDepthBias{0.006f};
   float rasterConstantBias{-4.0f};
   float rasterSlopeBias{-1.5f};
+  float directionalPcssLightRadiusDegrees{
+      kDefaultDirectionalPcssLightRadiusDegrees};
+  float directionalPcssBlockerSearchRadiusTexels{8.0f};
+  float directionalPcssMaxFilterRadiusTexels{12.0f};
+  float directionalContactMaxDistance{kDefaultDirectionalContactMaxDistance};
+  float directionalContactThickness{kDefaultDirectionalContactThickness};
+  float directionalContactFadeDistance{kDefaultDirectionalContactFadeDistance};
+  bool directionalPcssEnabled{true};
+  bool directionalContactVisibility{true};
   bool localContactVisibility{true};
 };
 
@@ -250,6 +264,16 @@ struct ShadowData {
   ShadowCascadeData cascades[kShadowCascadeCount];
   alignas(16) glm::vec4 biasSettings{1.5f, 3.5f, 0.0012f, 1.5f};
   alignas(16) glm::vec4 filterSettings{1.0f, 0.1f, 0.00035f, 0.006f};
+  // x = directional PCSS enabled, y = tan(light angular radius),
+  // z = blocker-search radius in texels, w = max adaptive filter radius.
+  alignas(16) glm::vec4 softShadowSettings{
+      1.0f, kDefaultDirectionalPcssTanLightRadius, 8.0f, 12.0f};
+  // x = directional contact enabled, y = max ray distance in world units,
+  // z = ray thickness in world units, w = fade distance in world units.
+  alignas(16) glm::vec4 contactShadowSettings{
+      1.0f, kDefaultDirectionalContactMaxDistance,
+      kDefaultDirectionalContactThickness,
+      kDefaultDirectionalContactFadeDistance};
 };
 
 struct LocalShadowLayerData {
@@ -660,9 +684,9 @@ static_assert(offsetof(ShadowCascadeData, worldRadius) == 72,
 static_assert(offsetof(ShadowCascadeData, depthRange) == 76,
               "ShadowCascadeData.depthRange offset");
 
-static_assert(sizeof(ShadowSettings) == 44,
-              "ShadowSettings stores two float4 shader vectors, raster "
-              "depth-bias controls, and CPU contact-visibility state.");
+static_assert(sizeof(ShadowSettings) == 68,
+              "ShadowSettings stores shader vectors, PCSS controls, raster "
+              "depth-bias controls, and contact-visibility state.");
 static_assert(offsetof(ShadowSettings, normalBiasMinTexels) == 0,
               "ShadowSettings.normalBiasMinTexels offset");
 static_assert(offsetof(ShadowSettings, normalBiasMaxTexels) == 4,
@@ -683,10 +707,29 @@ static_assert(offsetof(ShadowSettings, rasterConstantBias) == 32,
               "ShadowSettings.rasterConstantBias offset");
 static_assert(offsetof(ShadowSettings, rasterSlopeBias) == 36,
               "ShadowSettings.rasterSlopeBias offset");
-static_assert(offsetof(ShadowSettings, localContactVisibility) == 40,
+static_assert(offsetof(ShadowSettings, directionalPcssLightRadiusDegrees) == 40,
+              "ShadowSettings.directionalPcssLightRadiusDegrees offset");
+static_assert(offsetof(ShadowSettings,
+                       directionalPcssBlockerSearchRadiusTexels) == 44,
+              "ShadowSettings.directionalPcssBlockerSearchRadiusTexels "
+              "offset");
+static_assert(offsetof(ShadowSettings,
+                       directionalPcssMaxFilterRadiusTexels) == 48,
+              "ShadowSettings.directionalPcssMaxFilterRadiusTexels offset");
+static_assert(offsetof(ShadowSettings, directionalContactMaxDistance) == 52,
+              "ShadowSettings.directionalContactMaxDistance offset");
+static_assert(offsetof(ShadowSettings, directionalContactThickness) == 56,
+              "ShadowSettings.directionalContactThickness offset");
+static_assert(offsetof(ShadowSettings, directionalContactFadeDistance) == 60,
+              "ShadowSettings.directionalContactFadeDistance offset");
+static_assert(offsetof(ShadowSettings, directionalPcssEnabled) == 64,
+              "ShadowSettings.directionalPcssEnabled offset");
+static_assert(offsetof(ShadowSettings, directionalContactVisibility) == 65,
+              "ShadowSettings.directionalContactVisibility offset");
+static_assert(offsetof(ShadowSettings, localContactVisibility) == 66,
               "ShadowSettings.localContactVisibility offset");
 
-static_assert(sizeof(ShadowData) == 80 * kShadowCascadeCount + 32,
+static_assert(sizeof(ShadowData) == 80 * kShadowCascadeCount + 64,
               "ShadowData size mismatch with shaders/lighting_structs.slang "
               "ShadowBuffer. Update shader layout in lockstep.");
 static_assert(alignof(ShadowData) == 16, "ShadowData must be 16-byte aligned.");
@@ -696,6 +739,10 @@ static_assert(offsetof(ShadowData, biasSettings) == 320,
               "ShadowData.biasSettings offset");
 static_assert(offsetof(ShadowData, filterSettings) == 336,
               "ShadowData.filterSettings offset");
+static_assert(offsetof(ShadowData, softShadowSettings) == 352,
+              "ShadowData.softShadowSettings offset");
+static_assert(offsetof(ShadowData, contactShadowSettings) == 368,
+              "ShadowData.contactShadowSettings offset");
 
 static_assert(sizeof(LocalShadowLayerData) == 128,
               "LocalShadowLayerData size mismatch with shader "

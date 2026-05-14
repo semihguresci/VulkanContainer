@@ -51,6 +51,12 @@ namespace {
   return plan != nullptr && plan->routeCount > 0u;
 }
 
+[[nodiscard]] bool hasSceneOpaqueRecordablePlan(
+    const SceneOpaqueDrawPlan *plan) {
+  return plan != nullptr &&
+         (plan->useGpuIndirectSingleSided || plan->cpuRouteCount > 0u);
+}
+
 [[nodiscard]] bool hasBimRecordableRoute(
     const TransparentPickPassRecordInputs &inputs,
     const TransparentPickPassPipelineHandles &pipelines) {
@@ -83,7 +89,7 @@ namespace {
 
 bool recordTransparentPickPassCommands(
     VkCommandBuffer cmd, const TransparentPickPassRecordInputs &inputs) {
-  if (inputs.pipelineLayout == VK_NULL_HANDLE ||
+  if (cmd == VK_NULL_HANDLE || inputs.pipelineLayout == VK_NULL_HANDLE ||
       inputs.debugOverlay == nullptr) {
     return false;
   }
@@ -91,6 +97,25 @@ bool recordTransparentPickPassCommands(
   bool recorded = false;
   const TransparentPickPassPipelineHandles pipelines =
       resolvedPipelines(inputs.pipelines);
+  if (hasSceneOpaqueRecordablePlan(inputs.sceneOpaquePlan) &&
+      hasReadyGeometry(inputs.scene)) {
+    recorded =
+        recordSceneOpaqueDrawCommands(
+            cmd,
+            {.plan = inputs.sceneOpaquePlan,
+             .geometry = {.descriptorSet = inputs.scene.descriptorSet,
+                          .vertexSlice = inputs.scene.vertexSlice,
+                          .indexSlice = inputs.scene.indexSlice,
+                          .indexType = inputs.scene.indexType},
+             .pipelines = {.primary = pipelines.primary,
+                           .frontCull = pipelines.frontCull,
+                           .noCull = pipelines.noCull},
+             .pipelineLayout = inputs.pipelineLayout,
+             .pushConstants = inputs.pushConstants,
+             .debugOverlay = inputs.debugOverlay}) ||
+        recorded;
+  }
+
   if (hasSceneRecordablePlan(inputs.scenePlan) &&
       hasReadyGeometry(inputs.scene)) {
     const std::array<VkDescriptorSet, 1> sceneDescriptorSets = {
@@ -110,6 +135,28 @@ bool recordTransparentPickPassCommands(
              .pushConstants = inputs.pushConstants,
              .debugOverlay = inputs.debugOverlay}) ||
         recorded;
+  }
+
+  if (hasReadyGeometry(inputs.bim)) {
+    const std::array<VkDescriptorSet, 1> bimDescriptorSets = {
+        inputs.bim.descriptorSet};
+    if (inputs.bimOpaquePlan != nullptr && inputs.bimOpaquePlan->active) {
+      recorded =
+          recordBimSurfacePassCommands(
+              cmd, {.plan = inputs.bimOpaquePlan,
+                    .geometry = {.descriptorSets = bimDescriptorSets,
+                                 .vertexSlice = inputs.bim.vertexSlice,
+                                 .indexSlice = inputs.bim.indexSlice,
+                                 .indexType = inputs.bim.indexType},
+                    .singleSidedPipeline = pipelines.primary,
+                    .windingFlippedPipeline = pipelines.frontCull,
+                    .doubleSidedPipeline = pipelines.noCull,
+                    .pipelineLayout = inputs.pipelineLayout,
+                    .pushConstants = inputs.pushConstants,
+                    .debugOverlay = inputs.debugOverlay,
+                    .bimManager = inputs.bimManager}) ||
+          recorded;
+    }
   }
 
   if (hasBimRecordableRoute(inputs, pipelines) && hasReadyGeometry(inputs.bim)) {

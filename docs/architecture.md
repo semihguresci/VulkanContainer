@@ -59,6 +59,13 @@ Prefer adding new behavior to the narrowest manager that already owns the data
 being mutated. Keep `RendererFrontend` as orchestration code rather than a home
 for feature-specific Vulkan resources.
 
+## MSAA
+
+Deferred raster MSAA is documented in [MSAA](msaa.md). The short version:
+multisampled depth and G-buffer attachments are private `FrameResourceManager`
+resources, while the render graph and downstream passes continue to consume the
+resolved single-sample depth and G-buffer images.
+
 ## BIM GPU Filtering
 
 The BIM renderer uses GPU visibility masks and compacted indirect draw streams

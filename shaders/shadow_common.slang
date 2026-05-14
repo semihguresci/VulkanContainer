@@ -5,6 +5,7 @@
 #include "lighting_structs.slang"
 
 static const float SHADOW_PCF_KERNEL_RADIUS = 2.0;
+static const uint SHADOW_PCSS_BLOCKER_SAMPLE_COUNT = 16u;
 
 float ShadowFiniteOr(float value, float fallback)
 {
@@ -17,6 +18,44 @@ float2 ShadowNdcToUv(float2 shadowNdcXY)
     // keeps Vulkan's default framebuffer orientation and does not need the
     // scene pass Y inversion used for negative-height viewports.
     return shadowNdcXY * 0.5 + 0.5;
+}
+
+float2 DirectionalShadowPoissonOffset(uint sampleIndex)
+{
+    static const float2 offsets[16] = {
+        float2(0.000000, 0.000000),
+        float2(0.130526, 0.321439),
+        float2(-0.363221, 0.225041),
+        float2(0.392938, -0.177877),
+        float2(-0.086824, -0.492404),
+        float2(0.572062, 0.205212),
+        float2(-0.576713, -0.112348),
+        float2(0.213938, -0.681998),
+        float2(-0.231052, 0.666525),
+        float2(0.746285, -0.443145),
+        float2(-0.748956, 0.398171),
+        float2(0.521132, 0.612118),
+        float2(-0.469846, -0.671010),
+        float2(0.033328, 0.845572),
+        float2(-0.054318, -0.838721),
+        float2(0.859472, 0.077016),
+    };
+    return offsets[sampleIndex % SHADOW_PCSS_BLOCKER_SAMPLE_COUNT];
+}
+
+float ShadowStableRotation(float2 shadowUv, uint cascadeIndex)
+{
+    float seed = dot(shadowUv, float2(127.1, 311.7)) +
+        float(cascadeIndex) * 19.19;
+    return frac(sin(seed) * 43758.5453123) * 6.28318530718;
+}
+
+float2 RotateDirectionalShadowOffset(float2 offset, float angle)
+{
+    float s = sin(angle);
+    float c = cos(angle);
+    return float2(offset.x * c - offset.y * s,
+                  offset.x * s + offset.y * c);
 }
 
 float ComputeReceiverPlaneDepthBias(float3 shadowNDC, ShadowBuffer shadowData)
@@ -90,10 +129,11 @@ bool ProjectShadowCascade(
     return true;
 }
 
-float SampleWeightedPcf(
+float SampleWeightedPcfWithRadius(
     float2 shadowUV,
     uint cascadeIndex,
     float compareDepth,
+    float filterRadiusTexels,
     ShadowBuffer shadowData,
     Texture2DArray<float> shadowAtlas,
     SamplerComparisonState shadowSampler)
@@ -104,8 +144,7 @@ float SampleWeightedPcf(
     }
 
     compareDepth = saturate(compareDepth);
-    float filterRadiusTexels =
-        max(ShadowFiniteOr(shadowData.filterSettings.x, 0.0), 0.0);
+    filterRadiusTexels = max(ShadowFiniteOr(filterRadiusTexels, 0.0), 0.0);
     ShadowCascadeData cascade = shadowData.cascades[cascadeIndex];
     float cascadeExtent =
         max(ShadowFiniteOr(cascade.worldRadius, 0.0) * 2.0, 1e-4);
@@ -142,6 +181,161 @@ float SampleWeightedPcf(
     }
 
     return shadow / max(totalWeight, 1e-4);
+}
+
+float SampleWeightedPcf(
+    float2 shadowUV,
+    uint cascadeIndex,
+    float compareDepth,
+    ShadowBuffer shadowData,
+    Texture2DArray<float> shadowAtlas,
+    SamplerComparisonState shadowSampler)
+{
+    float filterRadiusTexels =
+        max(ShadowFiniteOr(shadowData.filterSettings.x, 0.0), 0.0);
+    return SampleWeightedPcfWithRadius(
+        shadowUV, cascadeIndex, compareDepth, filterRadiusTexels, shadowData,
+        shadowAtlas, shadowSampler);
+}
+
+float DirectionalPcssAverageBlockerDepth(
+    float2 shadowUV,
+    uint cascadeIndex,
+    float compareDepth,
+    float searchRadiusTexels,
+    ShadowBuffer shadowData,
+    Texture2DArray<float> shadowAtlas,
+    out uint blockerCount)
+{
+    blockerCount = 0u;
+    if (!all(isfinite(shadowUV)) || !isfinite(compareDepth) ||
+        !isfinite(searchRadiusTexels) || searchRadiusTexels <= 0.0)
+    {
+        return 0.0;
+    }
+
+    uint width = 0u;
+    uint height = 0u;
+    uint layers = 0u;
+    shadowAtlas.GetDimensions(width, height, layers);
+    if (width == 0u || height == 0u || cascadeIndex >= layers)
+    {
+        return 0.0;
+    }
+
+    float2 atlasSize = float2(float(width), float(height));
+    int2 baseTexel = int2(floor(shadowUV * atlasSize));
+    int2 minTexel = int2(0, 0);
+    int2 maxTexel = int2(int(width) - 1, int(height) - 1);
+    float rotation = ShadowStableRotation(shadowUV, cascadeIndex);
+    float avgBlockerDepth = 0.0;
+    float receiverCompareDepth = saturate(compareDepth);
+
+    [unroll]
+    for (uint sampleIndex = 0u;
+         sampleIndex < SHADOW_PCSS_BLOCKER_SAMPLE_COUNT;
+         ++sampleIndex)
+    {
+        float2 o = RotateDirectionalShadowOffset(
+            DirectionalShadowPoissonOffset(sampleIndex), rotation);
+        int2 sampleTexel =
+            clamp(int2(round(float2(baseTexel) + o * searchRadiusTexels)),
+                  minTexel, maxTexel);
+        float storedDepth =
+            shadowAtlas.Load(int4(sampleTexel, int(cascadeIndex), 0));
+
+        // Reverse-Z: stored depths larger than the receiver compare depth are
+        // closer to the light and therefore can cast onto this receiver.
+        if (isfinite(storedDepth) && storedDepth > receiverCompareDepth)
+        {
+            avgBlockerDepth += storedDepth;
+            blockerCount += 1u;
+        }
+    }
+
+    return blockerCount > 0u ? avgBlockerDepth / float(blockerCount) : 0.0;
+}
+
+float DirectionalPcssSearchRadiusTexels(
+    uint cascadeIndex,
+    float receiverDepth,
+    float lightTanRadius,
+    float baseSearchRadiusTexels,
+    float maxSearchRadiusTexels,
+    ShadowBuffer shadowData)
+{
+    float depthRange =
+        max(ShadowFiniteOr(shadowData.cascades[cascadeIndex].depthRange, 0.0),
+            1.0e-4);
+    float texelSizeWorld =
+        max(ShadowFiniteOr(shadowData.cascades[cascadeIndex].texelSize, 0.0),
+            1.0e-5);
+    float receiverDistanceFromNearWorld =
+        saturate(1.0 - receiverDepth) * depthRange;
+    float adaptiveSearchRadiusTexels =
+        receiverDistanceFromNearWorld * lightTanRadius / texelSizeWorld;
+
+    return clamp(max(baseSearchRadiusTexels, adaptiveSearchRadiusTexels),
+                 baseSearchRadiusTexels,
+                 max(maxSearchRadiusTexels, baseSearchRadiusTexels));
+}
+
+float DirectionalPcssFilterRadiusTexels(
+    float2 shadowUV,
+    uint cascadeIndex,
+    float receiverDepth,
+    float compareDepth,
+    ShadowBuffer shadowData,
+    Texture2DArray<float> shadowAtlas)
+{
+    float baseFilterRadiusTexels =
+        max(ShadowFiniteOr(shadowData.filterSettings.x, 0.0), 0.0);
+    if (ShadowFiniteOr(shadowData.softShadowSettings.x, 0.0) <= 0.0)
+    {
+        return baseFilterRadiusTexels;
+    }
+
+    float lightTanRadius =
+        max(ShadowFiniteOr(shadowData.softShadowSettings.y, 0.0), 0.0);
+    float maxBlockerSearchRadiusTexels =
+        max(ShadowFiniteOr(shadowData.softShadowSettings.z,
+                           baseFilterRadiusTexels),
+            baseFilterRadiusTexels);
+    float maxPcssFilterRadiusTexels =
+        max(ShadowFiniteOr(shadowData.softShadowSettings.w,
+                           baseFilterRadiusTexels),
+            baseFilterRadiusTexels);
+    if (lightTanRadius <= 0.0 || maxBlockerSearchRadiusTexels <= 0.0 ||
+        maxPcssFilterRadiusTexels <= baseFilterRadiusTexels)
+    {
+        return baseFilterRadiusTexels;
+    }
+
+    float blockerSearchRadiusTexels = DirectionalPcssSearchRadiusTexels(
+        cascadeIndex, receiverDepth, lightTanRadius, baseFilterRadiusTexels,
+        maxBlockerSearchRadiusTexels, shadowData);
+    uint blockerCount = 0u;
+    float avgBlockerDepth = DirectionalPcssAverageBlockerDepth(
+        shadowUV, cascadeIndex, compareDepth, blockerSearchRadiusTexels,
+        shadowData, shadowAtlas, blockerCount);
+    if (blockerCount == 0u)
+    {
+        return baseFilterRadiusTexels;
+    }
+
+    float depthRange =
+        max(ShadowFiniteOr(shadowData.cascades[cascadeIndex].depthRange, 0.0),
+            1.0e-4);
+    float texelSizeWorld =
+        max(ShadowFiniteOr(shadowData.cascades[cascadeIndex].texelSize, 0.0),
+            1.0e-5);
+    float depthSeparationWorld =
+        max(avgBlockerDepth - receiverDepth, 0.0) * depthRange;
+    float penumbraTexels =
+        depthSeparationWorld * lightTanRadius / texelSizeWorld;
+
+    return clamp(max(baseFilterRadiusTexels, penumbraTexels),
+                 baseFilterRadiusTexels, maxPcssFilterRadiusTexels);
 }
 
 // Select the cascade index based on the fragment's view-space depth.
@@ -195,10 +389,13 @@ float SampleCascadeShadow(
                  ComputeReceiverPlaneDepthBias(shadowNDC, shadowData);
     // Reverse-Z: push compare depth towards the light (larger = closer = near=1).
     float compareDepth = shadowNDC.z + bias;
+    float filterRadiusTexels = DirectionalPcssFilterRadiusTexels(
+        shadowUV, cascadeIndex, saturate(shadowNDC.z), compareDepth,
+        shadowData, shadowAtlas);
 
-    return SampleWeightedPcf(
-        shadowUV, cascadeIndex, compareDepth, shadowData, shadowAtlas,
-        shadowSampler);
+    return SampleWeightedPcfWithRadius(
+        shadowUV, cascadeIndex, compareDepth, filterRadiusTexels, shadowData,
+        shadowAtlas, shadowSampler);
 }
 
 // Compute the shadow factor for a world-space position.

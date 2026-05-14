@@ -22,19 +22,22 @@ constexpr RenderTechniqueId kDeferredRasterTechnique =
 
 FrameImageBinding frameImageBinding(VkImage image, VkImageView view,
                                     VkFormat format, VkExtent2D extent,
-                                    VkImageUsageFlags usage) {
+                                    VkImageUsageFlags usage,
+                                    VkSampleCountFlagBits samples =
+                                        VK_SAMPLE_COUNT_1_BIT) {
   return {.image = image,
           .view = view,
           .format = format,
           .extent = {extent.width, extent.height, 1},
-          .usage = usage};
+          .usage = usage,
+          .samples = samples};
 }
 
 FrameImageBinding frameImageBinding(const AttachmentImage& image,
                                     VkExtent2D extent,
                                     VkImageUsageFlags usage) {
   return frameImageBinding(image.image, image.view, image.format, extent,
-                           usage);
+                           usage, image.samples);
 }
 
 FrameBufferBinding frameBufferBinding(VkBuffer buffer, VkDeviceSize size,
@@ -256,6 +259,7 @@ void FrameResourceManager::create(
     VkRenderPass                             transparentPickPass,
     VkRenderPass                             lightingPass,
     VkRenderPass                             transformGizmoPass,
+    VkSampleCountFlagBits                    msaaSampleCount,
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer) {
   destroy();
@@ -268,6 +272,7 @@ void FrameResourceManager::create(
   transparentPickPass_ = transparentPickPass;
   lightingPass_     = lightingPass;
   transformGizmoPass_ = transformGizmoPass;
+  sampleCount_ = msaaSampleCount;
 
   validateOitFormatSupport();
   validatePickIdFormatSupport();
@@ -346,6 +351,7 @@ void FrameResourceManager::create(
   // --- Per-frame attachments, buffers, framebuffers ---
   frames_.resize(n);
   const VkExtent2D ext = swapChain_->extent();
+  const bool useMsaa = sampleCount_ != VK_SAMPLE_COUNT_1_BIT;
 
   for (uint32_t i = 0; i < n; ++i) {
     auto& f = frames_[i];
@@ -373,6 +379,26 @@ void FrameResourceManager::create(
                        VK_IMAGE_USAGE_SAMPLED_BIT |
                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
+    if (useMsaa) {
+      f.albedoMsaa = createAttachment(formats_.albedo,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT, sampleCount_);
+      f.normalMsaa = createAttachment(formats_.normal,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT, sampleCount_);
+      f.materialMsaa = createAttachment(formats_.material,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT, sampleCount_);
+      f.emissiveMsaa = createAttachment(formats_.emissive,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT, sampleCount_);
+      f.specularMsaa = createAttachment(formats_.specular,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT, sampleCount_);
+      f.pickIdMsaa = createAttachment(formats_.pickId,
+                   VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT,
+                   VK_IMAGE_ASPECT_COLOR_BIT, sampleCount_);
+    }
     f.sceneColor = createAttachment(formats_.sceneColor,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                    VK_IMAGE_ASPECT_COLOR_BIT);
@@ -403,6 +429,12 @@ void FrameResourceManager::create(
                        VK_IMAGE_USAGE_SAMPLED_BIT |
                        VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
                    VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT);
+    if (useMsaa) {
+      f.depthStencilMsaa = createAttachment(
+          formats_.depthStencil, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+          VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+          sampleCount_);
+    }
     f.pickDepth = createAttachment(formats_.depthStencil,
                    VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                        VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -426,10 +458,13 @@ void FrameResourceManager::create(
 
     // Depth prepass framebuffer
     {
+      std::array<VkImageView, 2> views = {f.depthStencilMsaa.view,
+                                          f.depthStencil.view};
+      const VkImageView singleSampleDepthView = f.depthStencil.view;
       VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
       fbi.renderPass      = depthPrepassPass_;
-      fbi.attachmentCount = 1;
-      fbi.pAttachments    = &f.depthStencil.view;
+      fbi.attachmentCount = useMsaa ? static_cast<uint32_t>(views.size()) : 1u;
+      fbi.pAttachments    = useMsaa ? views.data() : &singleSampleDepthView;
       fbi.width           = ext.width;
       fbi.height          = ext.height;
       fbi.layers          = 1;
@@ -439,10 +474,13 @@ void FrameResourceManager::create(
 
     // BIM depth prepass framebuffer
     {
+      std::array<VkImageView, 2> views = {f.depthStencilMsaa.view,
+                                          f.depthStencil.view};
+      const VkImageView singleSampleDepthView = f.depthStencil.view;
       VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
       fbi.renderPass      = bimDepthPrepassPass_;
-      fbi.attachmentCount = 1;
-      fbi.pAttachments    = &f.depthStencil.view;
+      fbi.attachmentCount = useMsaa ? static_cast<uint32_t>(views.size()) : 1u;
+      fbi.pAttachments    = useMsaa ? views.data() : &singleSampleDepthView;
       fbi.width           = ext.width;
       fbi.height          = ext.height;
       fbi.layers          = 1;
@@ -453,14 +491,20 @@ void FrameResourceManager::create(
 
     // GBuffer framebuffer
     {
-      std::array<VkImageView, 7> views = {f.albedo.view, f.normal.view,
-                                          f.material.view, f.emissive.view,
-                                          f.specular.view, f.pickId.view,
-                                          f.depthStencil.view};
+      std::array<VkImageView, 7> views = {
+          f.albedo.view, f.normal.view,   f.material.view, f.emissive.view,
+          f.specular.view, f.pickId.view, f.depthStencil.view};
+      std::array<VkImageView, 13> msaaViews = {
+          f.albedoMsaa.view,   f.normalMsaa.view,   f.materialMsaa.view,
+          f.emissiveMsaa.view, f.specularMsaa.view, f.pickIdMsaa.view,
+          f.depthStencilMsaa.view,
+          f.albedo.view,       f.normal.view,       f.material.view,
+          f.emissive.view,     f.specular.view,     f.depthStencil.view};
       VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
       fbi.renderPass      = gBufferPass_;
-      fbi.attachmentCount = static_cast<uint32_t>(views.size());
-      fbi.pAttachments    = views.data();
+      fbi.attachmentCount = useMsaa ? static_cast<uint32_t>(msaaViews.size())
+                                    : static_cast<uint32_t>(views.size());
+      fbi.pAttachments    = useMsaa ? msaaViews.data() : views.data();
       fbi.width           = ext.width;
       fbi.height          = ext.height;
       fbi.layers          = 1;
@@ -470,14 +514,20 @@ void FrameResourceManager::create(
 
     // BIM GBuffer framebuffer
     {
-      std::array<VkImageView, 7> views = {f.albedo.view, f.normal.view,
-                                          f.material.view, f.emissive.view,
-                                          f.specular.view, f.pickId.view,
-                                          f.depthStencil.view};
+      std::array<VkImageView, 7> views = {
+          f.albedo.view, f.normal.view,   f.material.view, f.emissive.view,
+          f.specular.view, f.pickId.view, f.depthStencil.view};
+      std::array<VkImageView, 13> msaaViews = {
+          f.albedoMsaa.view,   f.normalMsaa.view,   f.materialMsaa.view,
+          f.emissiveMsaa.view, f.specularMsaa.view, f.pickIdMsaa.view,
+          f.depthStencilMsaa.view,
+          f.albedo.view,       f.normal.view,       f.material.view,
+          f.emissive.view,     f.specular.view,     f.depthStencil.view};
       VkFramebufferCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
       fbi.renderPass      = bimGBufferPass_;
-      fbi.attachmentCount = static_cast<uint32_t>(views.size());
-      fbi.pAttachments    = views.data();
+      fbi.attachmentCount = useMsaa ? static_cast<uint32_t>(msaaViews.size())
+                                    : static_cast<uint32_t>(views.size());
+      fbi.pAttachments    = useMsaa ? msaaViews.data() : views.data();
       fbi.width           = ext.width;
       fbi.height          = ext.height;
       fbi.layers          = 1;
@@ -555,17 +605,24 @@ void FrameResourceManager::destroy() {
     destroyFB(f.transformGizmoFramebuffer);
 
     destroyAttachment(f.albedo);
+    destroyAttachment(f.albedoMsaa);
     destroyAttachment(f.normal);
+    destroyAttachment(f.normalMsaa);
     destroyAttachment(f.material);
+    destroyAttachment(f.materialMsaa);
     destroyAttachment(f.emissive);
+    destroyAttachment(f.emissiveMsaa);
     destroyAttachment(f.specular);
+    destroyAttachment(f.specularMsaa);
     destroyAttachment(f.pickId);
+    destroyAttachment(f.pickIdMsaa);
     destroyAttachment(f.pickDepth);
     if (f.depthSamplingView != VK_NULL_HANDLE) {
       vkDestroyImageView(dev, f.depthSamplingView, nullptr);
       f.depthSamplingView = VK_NULL_HANDLE;
     }
     destroyAttachment(f.depthStencil);
+    destroyAttachment(f.depthStencilMsaa);
     destroyAttachment(f.sceneColor);
     destroyAttachment(f.oitHeadPointers);
 
@@ -950,9 +1007,11 @@ void FrameResourceManager::updateDescriptorSets(
 // -----------------------------------------------------------------------
 AttachmentImage FrameResourceManager::createAttachment(VkFormat fmt,
                                                         VkImageUsageFlags usage,
-                                                        VkImageAspectFlags aspect) const {
+                                                        VkImageAspectFlags aspect,
+                                                        VkSampleCountFlagBits samples) const {
   AttachmentImage a{};
   a.format = fmt;
+  a.samples = samples;
   const VkExtent2D ext = swapChain_->extent();
 
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -961,7 +1020,7 @@ AttachmentImage FrameResourceManager::createAttachment(VkFormat fmt,
   ii.extent      = {ext.width, ext.height, 1};
   ii.mipLevels   = 1;
   ii.arrayLayers = 1;
-  ii.samples     = VK_SAMPLE_COUNT_1_BIT;
+  ii.samples     = samples;
   ii.tiling      = VK_IMAGE_TILING_OPTIMAL;
   ii.usage       = usage;
   ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
@@ -1139,7 +1198,8 @@ void FrameResourceManager::publishFrameResourceBindings() {
                           f.depthStencil.format, ext,
                           VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                               VK_IMAGE_USAGE_SAMPLED_BIT |
-                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT));
+                              VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+                          f.depthStencil.samples));
     bindImage("scene-color", f.sceneColor,
               VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_SAMPLED_BIT);
@@ -1186,14 +1246,20 @@ void FrameResourceManager::publishFrameResourceBindings() {
                       f.postProcessDescriptorSet);
     bindDescriptorSet("oit-descriptor-set", f.oitDescriptorSet);
 
+    const uint32_t depthAttachmentCount =
+        sampleCount_ == VK_SAMPLE_COUNT_1_BIT ? 1u : 2u;
+    const uint32_t gBufferAttachmentCount =
+        sampleCount_ == VK_SAMPLE_COUNT_1_BIT ? 7u : 13u;
+
     bindFramebuffer("depth-prepass-framebuffer", f.depthPrepassFramebuffer,
-                    depthPrepassPass_, 1u);
+                    depthPrepassPass_, depthAttachmentCount);
     bindFramebuffer("bim-depth-prepass-framebuffer",
-                    f.bimDepthPrepassFramebuffer, bimDepthPrepassPass_, 1u);
+                    f.bimDepthPrepassFramebuffer, bimDepthPrepassPass_,
+                    depthAttachmentCount);
     bindFramebuffer("gbuffer-framebuffer", f.gBufferFramebuffer, gBufferPass_,
-                    7u);
+                    gBufferAttachmentCount);
     bindFramebuffer("bim-gbuffer-framebuffer", f.bimGBufferFramebuffer,
-                    bimGBufferPass_, 7u);
+                    bimGBufferPass_, gBufferAttachmentCount);
     bindFramebuffer("transparent-pick-framebuffer",
                     f.transparentPickFramebuffer, transparentPickPass_, 2u);
     bindFramebuffer("lighting-framebuffer", f.lightingFramebuffer,

@@ -107,6 +107,7 @@ class FrameResourceManager {
               VkRenderPass                             transparentPickPass,
               VkRenderPass                             lightingPass,
               VkRenderPass                             transformGizmoPass,
+              VkSampleCountFlagBits                    msaaSampleCount,
               std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
               const container::gpu::AllocatedBuffer& objectBuffer);
 
@@ -156,7 +157,9 @@ class FrameResourceManager {
 
  private:
   AttachmentImage createAttachment(VkFormat fmt, VkImageUsageFlags usage,
-                                   VkImageAspectFlags aspect) const;
+                                   VkImageAspectFlags aspect,
+                                   VkSampleCountFlagBits samples =
+                                       VK_SAMPLE_COUNT_1_BIT) const;
   void            destroyAttachment(AttachmentImage& a) const;
   void            transitionToGeneral(VkImage image, VkImageAspectFlags mask) const;
   void            transitionToDepthAttachment(VkImage image,
@@ -226,6 +229,7 @@ class FrameResourceManager {
   VkRenderPass   transparentPickPass_{VK_NULL_HANDLE};
   VkRenderPass   lightingPass_{VK_NULL_HANDLE};
   VkRenderPass   transformGizmoPass_{VK_NULL_HANDLE};
+  VkSampleCountFlagBits sampleCount_{VK_SAMPLE_COUNT_1_BIT};
 
   std::vector<FrameResources> frames_;
   FrameResourceRegistry resourceRegistry_{};
